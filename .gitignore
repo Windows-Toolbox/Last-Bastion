@@ -1,0 +1,29 @@
+# --- Finished game (built, see README.md) ---
+/dist/
+
+# --- Build output: C# / .NET ---
+bin/
+obj/
+*.user
+
+# --- Build output: Rust ---
+target/
+
+# --- Build output: C / C++ ---
+build/
+out/
+
+# --- Player settings (DESIGN.md 11.4), logs ---
+/settings.json
+*.log
+
+# --- Editors / Windows ---
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# --- Claude Code (local only) ---
+CLAUDE.md
+.claude/
