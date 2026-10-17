@@ -26,7 +26,7 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Params {
-        Params { fill: 0.46, smoothing: 5.0, grain: 2.0, material: 0.0, ponds: 0.15, trees: 0.02 }
+        Params { fill: 0.47, smoothing: 6.0, grain: 2.0, material: 0.0, ponds: 0.15, trees: 0.02 }
     }
 }
 
@@ -54,20 +54,24 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
     let index = |x: i32, y: i32| (y * cells + x) as usize;
 
     // Start: rock at random – but not near the base (it's cleared anyway, and this way the canyons lead up to it).
+    // A slow noise tilts the chance: here more rock (massifs), there less (open valleys) – without it the whole map
+    // turned into the same even mush of little rocks.
+    let big = Noise::new(rng.next_u64() as u32);
     let mut rock: Vec<bool> = (0..cells * cells)
         .map(|i| {
             let (x, y) = ((i % cells) * grain + grain / 2, (i / cells) * grain + grain / 2);
-            rng.unit_f32() < p.fill * ctx.fade(x, y, 10.0)
+            let tilt = (big.fractal(x as f32, y as f32, 70.0, 2) - 0.5) * 0.5;
+            rng.unit_f32() < (p.fill + tilt) * ctx.fade(x, y, 10.0)
         })
         .collect();
     for _ in 0..p.smoothing.round() as u32 {
         rock = step(&rock, cells);
     }
 
-    // Cells → tiles, then two rounds on the tiles themselves, which rounds off the stairs of big cells.
+    // Cells → tiles, then a few rounds on the tiles themselves, which round off the stairs of big cells.
     let mut solid: Vec<bool> = tiles.all().map(|(x, y)| rock[index(x / grain, y / grain)]).collect();
     if grain > 1 {
-        for _ in 0..2 {
+        for _ in 0..2 + grain {
             solid = step(&solid, tiles.size);
         }
     }
@@ -88,6 +92,7 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
         };
         tiles.set(x, y, terrain);
     }
+    tools::remove_specks(tiles, 12);
     tools::scatter_trees(tiles, rng, p.trees);
 }
 

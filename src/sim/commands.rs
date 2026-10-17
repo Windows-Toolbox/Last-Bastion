@@ -215,6 +215,16 @@ impl World {
             None => None,
         };
 
+        // Patrol: the way back leads to where each unit stands when the patrol starts – one shared field to the
+        // middle of those spots (before: one field per unit, a hitch with every patrol order).
+        let back = match command {
+            Command::Patrol(_) if !starts.is_empty() => {
+                let middle = starts.iter().sum::<Vec2>() / starts.len() as f32;
+                free_point_near(&self.map, middle).map(|p| (Rc::new(FlowField::new(&self.map, p)), p))
+            }
+            _ => None,
+        };
+
         // First build all tasks (only reading), then enter them (writing).
         let mut tasks = Vec::with_capacity(units.len());
         for (k, &i) in units.iter().enumerate() {
@@ -224,10 +234,10 @@ impl World {
             let task = match (command, to) {
                 (Command::Move(_), Some(to)) => Task::Move(to),
                 (Command::AttackMove(_), Some(to)) => Task::AttackMove(to),
-                (Command::Patrol(_), Some(to)) => {
-                    // The way back leads to where the unit stands when the patrol starts.
-                    Task::Patrol { to, back: Waypoint::new(&self.map, starts[k]) }
-                }
+                (Command::Patrol(_), Some(to)) => match &back {
+                    Some((field, middle)) => Task::Patrol { to, back: self.waypoint(field, *middle, Some(starts[k])) },
+                    None => Task::Move(to), // nowhere free to come back to
+                },
                 (Command::Attack(zombie), _) if !heals => Task::Attack { zombie, chase: None },
                 (Command::Heal(other), _) if heals && other != id => Task::Heal { unit: other, chase: None },
                 (Command::Heal(_), Some(to)) if !heals => Task::AttackMove(to),

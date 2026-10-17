@@ -8,11 +8,12 @@ use crate::draw::{building_color, kind_color, ZOMBIE};
 use crate::formation::Shape;
 use crate::iso::{iso, iso_inverse, Camera, TILE_W};
 use crate::editor::Sight;
-use crate::kinds::{BuildingKind, UnitKind, TOWER_SLOTS};
+use crate::data;
+use crate::kinds::{BuildingKind, UnitKind};
 use crate::map::Region;
 use crate::picture::MapPicture;
-use crate::sim::{Building, World, MAX_PRODUCTION};
-use crate::ui::Ui;
+use crate::sim::{Building, World, MAX_PRODUCTION, TICKS_PER_SECOND};
+use crate::ui::{Pick, Sub, Ui};
 
 pub const PANEL_H: f32 = 200.0;
 const PAD: f32 = 8.0;
@@ -46,15 +47,31 @@ pub enum Button {
     FormCircle,
     // Command center
     TrainSoldier,
+    TrainRanger,
     TrainSniper,
     TrainMedic,
     Rally,
     PlaceTent,
+    /// Open one of the build menus – the card then shows its buildings (`Ui::submenu`).
+    Open(Submenu),
+    /// Back from a build menu to the command center's buttons (Esc).
+    Back,
     PlaceWall,
     PlaceGate,
     PlaceTower,
     // Tower
     Unload,
+}
+
+/// The build menus of the command center, like StarCraft's "build structure" pages.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Submenu {
+    /// D: walls, gates, towers.
+    Defense,
+    /// E: power plants and the grid (DESIGN.md 5.5) – nothing yet.
+    Energy,
+    /// A: special buildings (DESIGN.md 6) – nothing yet.
+    Special,
 }
 
 /// The buttons for units – top row like in StarCraft, the formations at the bottom.
@@ -68,19 +85,32 @@ pub const UNIT_BUTTONS: [Button; 8] = [
     Button::FormBox,
     Button::FormCircle,
 ];
-/// The buttons of the command center.
-pub const COMMAND_CENTER_BUTTONS: [Button; 8] = [
+/// The buttons of the command center (StarCraft's grid layout: the key is where the button sits).
+pub const COMMAND_CENTER_BUTTONS: [Button; 9] = [
     Button::TrainSoldier,
+    Button::TrainRanger,
+    Button::Open(Submenu::Energy),
     Button::TrainSniper,
     Button::TrainMedic,
-    Button::Rally,
+    Button::Open(Submenu::Special),
     Button::PlaceTent,
-    Button::PlaceWall,
-    Button::PlaceGate,
-    Button::PlaceTower,
+    Button::Open(Submenu::Defense),
+    Button::Rally,
 ];
+/// The defense build menu (D).
+pub const DEFENSE_BUTTONS: [Button; 4] = [Button::PlaceWall, Button::PlaceGate, Button::PlaceTower, Button::Back];
 /// The buttons of a tower.
 pub const TOWER_BUTTONS: [Button; 2] = [Button::Unload, Button::Rally];
+
+/// StarCraft's grid layout: the keys of the 15 spots of the command card, row by row – the left part of the
+/// keyboard. macroquad reads keys by their place on a US keyboard: on a German one the first key of the bottom row
+/// is Y.
+const GRID_KEYS: [KeyCode; 15] = [
+    KeyCode::Q, KeyCode::W, KeyCode::E, KeyCode::R, KeyCode::T,
+    KeyCode::A, KeyCode::S, KeyCode::D, KeyCode::F, KeyCode::G,
+    KeyCode::Z, KeyCode::X, KeyCode::C, KeyCode::V, KeyCode::B,
+];
+const GRID_LABELS: [&str; 15] = ["Q", "W", "E", "R", "T", "A", "S", "D", "F", "G", "Y", "X", "C", "V", "B"];
 
 impl Button {
     pub fn name(self) -> &'static str {
@@ -94,10 +124,15 @@ impl Button {
             Button::FormBox => "Box",
             Button::FormCircle => "Circle",
             Button::TrainSoldier => "Soldier",
+            Button::TrainRanger => "Ranger",
             Button::TrainSniper => "Sniper",
             Button::TrainMedic => "Medic",
             Button::Rally => "Rally",
             Button::PlaceTent => "Tent",
+            Button::Open(Submenu::Defense) => "Defense",
+            Button::Open(Submenu::Energy) => "Energy",
+            Button::Open(Submenu::Special) => "Special",
+            Button::Back => "Back",
             Button::PlaceWall => "Wall",
             Button::PlaceGate => "Gate",
             Button::PlaceTower => "Tower",
@@ -105,6 +140,7 @@ impl Button {
         }
     }
 
+    /// The key: for units their own letters (M = move, S = stop …), for buildings the grid (`GRID_KEYS`).
     pub fn key(self) -> KeyCode {
         match self {
             Button::Move => KeyCode::M,
@@ -115,15 +151,8 @@ impl Button {
             Button::FormLine => KeyCode::X,
             Button::FormBox => KeyCode::C,
             Button::FormCircle => KeyCode::V,
-            Button::TrainSoldier => KeyCode::Q,
-            Button::TrainSniper => KeyCode::W,
-            Button::TrainMedic => KeyCode::E,
-            Button::Rally => KeyCode::R,
-            Button::PlaceTent => KeyCode::B,
-            Button::PlaceWall => KeyCode::V,
-            Button::PlaceGate => KeyCode::G,
-            Button::PlaceTower => KeyCode::T,
-            Button::Unload => KeyCode::U,
+            Button::Back => KeyCode::Escape,
+            _ => GRID_KEYS[self.slot()],
         }
     }
 
@@ -138,30 +167,27 @@ impl Button {
             Button::FormLine => "X",
             Button::FormBox => "C",
             Button::FormCircle => "V",
-            Button::TrainSoldier => "Q",
-            Button::TrainSniper => "W",
-            Button::TrainMedic => "E",
-            Button::Rally => "R",
-            Button::PlaceTent => "B",
-            Button::PlaceWall => "V",
-            Button::PlaceGate => "G",
-            Button::PlaceTower => "T",
-            Button::Unload => "U",
+            Button::Back => "Esc",
+            _ => GRID_LABELS[self.slot()],
         }
     }
 
-    /// Spot on the command card: 0–4 top row, 5–9 middle, 10–14 bottom.
+    /// Spot on the command card: 0–4 top row, 5–9 middle, 10–14 bottom. For buildings this also decides the key.
     fn slot(self) -> usize {
         match self {
-            Button::Move | Button::TrainSoldier | Button::Unload => 0,
-            Button::Stop | Button::TrainSniper => 1,
-            Button::Hold | Button::TrainMedic => 2,
-            Button::Patrol => 3,
-            Button::Attack | Button::Rally => 4,
-            Button::PlaceTent | Button::FormLine => 10,
-            Button::PlaceWall | Button::FormBox => 11,
-            Button::PlaceGate | Button::FormCircle => 12,
-            Button::PlaceTower => 13,
+            Button::Move | Button::TrainSoldier | Button::Unload | Button::PlaceWall => 0,
+            Button::Stop | Button::TrainRanger | Button::PlaceGate => 1,
+            Button::Hold | Button::Open(Submenu::Energy) | Button::PlaceTower => 2,
+            Button::Patrol | Button::TrainSniper => 3,
+            Button::Attack | Button::TrainMedic => 4,
+            Button::Open(Submenu::Special) => 5,
+            Button::PlaceTent => 6,
+            Button::Open(Submenu::Defense) => 7,
+            Button::Rally => 9,
+            Button::FormLine => 10,
+            Button::FormBox => 11,
+            Button::FormCircle => 12,
+            Button::Back => 14,
         }
     }
 
@@ -179,6 +205,7 @@ impl Button {
     pub fn trains(self) -> Option<UnitKind> {
         match self {
             Button::TrainSoldier => Some(UnitKind::Soldier),
+            Button::TrainRanger => Some(UnitKind::Ranger),
             Button::TrainSniper => Some(UnitKind::Sniper),
             Button::TrainMedic => Some(UnitKind::Medic),
             _ => None,
@@ -206,11 +233,16 @@ impl Button {
             Button::FormLine => "Formation: rows along the line you drag with the right mouse button. Soldiers in front.",
             Button::FormBox => "Formation: a square block, the dragged line is its front. Soldiers in front.",
             Button::FormCircle => "Formation: a ring around where you start dragging, the drag is the radius. Soldiers outside.",
-            Button::TrainSoldier => "Build time: 5 s. Shift: 5 at once.",
-            Button::TrainSniper => "Build time: 8 s. Shift: 5 at once.",
+            Button::TrainSoldier => "Tough, short range, aims quickly, loud. Build time: 5 s. Shift: 5 at once.",
+            Button::TrainRanger => "Fast and weak, draws the bow a while before every arrow, quiet. Build time: 4 s. Shift: 5 at once.",
+            Button::TrainSniper => "Long range, one big shot - very loud. Build time: 8 s. Shift: 5 at once.",
             Button::TrainMedic => "No attack. Beams at hurt units nearby (healing comes later). Build time: 6 s.",
             Button::Rally => "Where new units go (tower: where units go when unloaded). On a unit: follow it. Also with right click.",
-            Button::PlaceTent => "Tent (2 x 2). Does nothing yet, but blocks the way. Drag: a line. Right click / Esc: stop building.",
+            Button::PlaceTent => "Tent (2 x 2). 6 colonists pay gold; shield down = infected. Drag: a line. Right click / Esc: stop building.",
+            Button::Open(Submenu::Defense) => "Defense buildings: wall, gate, tower.",
+            Button::Open(Submenu::Energy) => "Energy buildings - none yet (the power grid comes with the economy).",
+            Button::Open(Submenu::Special) => "Special buildings - none yet.",
+            Button::Back => "Back to the command center.",
             Button::PlaceWall => "Wall (1 x 1, 400 HP). Zombies have to tear it down. Drag: a line, diagonal too. Right click / Esc: stop building.",
             Button::PlaceGate => "Gate (3 x 1, 400 HP). Your units walk through the middle, zombies don't. Can go on walls (cheaper there, but walls + gate still cost more than the gate alone). R: turn. Right click / Esc: stop building.",
             Button::PlaceTower => "Tower (1 x 1, 600 HP). Right click it with units: up to 4 go in, shoot and see 2 tiles further and can't be hit. Needs 1 free tile to the next tower. Drag: a line.",
@@ -226,7 +258,7 @@ pub enum HudHit {
     Minimap(Vec2),
     /// A control group (0 = key 1 … 9 = key 0).
     Group(usize),
-    /// An icon in the selection – the index in `Ui::selection_view`.
+    /// An icon in the selection – the index in `Ui::selection_view` (units and buildings).
     Icon(usize),
     /// An entry in the production queue of the selected building.
     Queue(usize),
@@ -359,11 +391,11 @@ impl Layout {
     }
 }
 
-/// The clock of the round at the top right, next to the Game View / Editor Mode buttons – day and hour like in TAB,
-/// and how long until the next wave of the editor's timeline.
+/// The clock of the round at the top right, next to the Game View / Editor Mode buttons – the gold and what comes in
+/// per hour, day and hour like in TAB, and how long until the next wave of the editor's timeline.
 pub fn draw_clock(world: &World) {
     let (day, hour) = world.clock();
-    let mut text = format!("Day {day}  {hour:02}:00");
+    let mut text = format!("Gold {} (+{}/h)   Day {day}  {hour:02}:00", world.gold, world.income());
     if let Some(next) = world.waves.iter().map(|w| w.at).filter(|&at| at > world.tick).min() {
         let seconds = (next - world.tick) / 20;
         text += &format!("   wave in {}:{:02}", seconds / 60, seconds % 60);
@@ -405,7 +437,7 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
     minimap.draw(area, to_mini);
     let fog = ui.sight() == Sight::Player;
     for building in &world.buildings {
-        let color = if ui.selected_building == Some(building.id) { WHITE } else { building_color(building.kind) };
+        let color = if ui.selected_buildings.contains(&building.id) { WHITE } else { building_color(building.kind) };
         diamond(building.corner(), building.far_corner() - building.corner(), color);
     }
 
@@ -431,7 +463,7 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
 fn draw_groups(layout: &Layout, world: &World, ui: &Ui) {
     for (g, group) in ui.groups.iter().enumerate() {
         let r = layout.group_rect(g);
-        let selected = !group.is_empty() && *group == ui.selected;
+        let selected = !group.is_empty() && group.units == ui.selected && group.buildings == ui.selected_buildings;
         draw_rectangle(r.x, r.y, r.w, r.h, if group.is_empty() { PANEL_BG } else { BOX_BG });
         draw_rectangle_lines(r.x, r.y, r.w, r.h, if selected { 2.0 } else { 1.0 }, if selected { WHITE } else { BORDER });
 
@@ -440,28 +472,35 @@ fn draw_groups(layout: &Layout, world: &World, ui: &Ui) {
         if group.is_empty() {
             continue;
         }
-        // Icon: the most common type in the group, plus the count.
-        let count = |kind: UnitKind| group.iter().filter(|&&id| unit_kind(world, id) == Some(kind)).count();
-        let kinds = [UnitKind::Soldier, UnitKind::Sniper, UnitKind::Medic];
-        let main = kinds.into_iter().max_by_key(|&kind| count(kind)).unwrap_or(UnitKind::Soldier);
-        draw_rectangle(r.x + 16.0, r.y + 5.0, 14.0, r.h - 10.0, kind_color(main));
+        // Icon: the most common unit type in the group – only buildings: the first building – plus the count.
+        let count = |kind: UnitKind| group.units.iter().filter(|&&id| unit_kind(world, id) == Some(kind)).count();
+        let main = UnitKind::ALL.into_iter().filter(|&kind| count(kind) > 0).max_by_key(|&kind| count(kind));
+        let building = group.buildings.iter().find_map(|&id| world.find_building(id)).map(|b| world.buildings[b].kind);
+        let color = match (main, building) {
+            (Some(kind), _) => kind_color(kind),
+            (None, Some(kind)) => building_color(kind),
+            (None, None) => BORDER,
+        };
+        draw_rectangle(r.x + 16.0, r.y + 5.0, 14.0, r.h - 10.0, color);
         draw_text(&group.len().to_string(), r.x + 34.0, r.y + r.h - 7.0, 18.0, WHITE);
     }
 }
 
 fn draw_selection(layout: &Layout, world: &World, ui: &Ui) {
-    if let Some(b) = ui.selected_building.and_then(|id| world.find_building(id)) {
-        draw_building(layout, world, &world.buildings[b]);
-        return;
-    }
     let view = ui.selection_view(world);
-    match view.len() {
-        0 => {
+    match view.as_slice() {
+        [] => {
             draw_text("Nothing selected", layout.icons.x + 8.0, layout.icons.y + 24.0, 20.0, DIM);
         }
-        1 => draw_single(layout, world, view[0]),
+        [Pick::Unit(i)] => draw_single(layout, world, *i),
+        [Pick::Building(b)] => draw_building(layout, world, &world.buildings[*b]),
         _ => draw_icons(layout, world, ui, &view),
     }
+}
+
+/// Ticks → seconds, for showing the times of `data\units.json` the way they are written there.
+fn seconds(ticks: u32) -> f32 {
+    ticks as f32 / TICKS_PER_SECOND
 }
 
 /// One unit selected: big picture and all values.
@@ -474,11 +513,11 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
     let size = area.h.min(110.0);
     draw_rectangle(area.x, area.y, size, size, kind_color(unit.kind));
     draw_rectangle_lines(area.x, area.y, size, size, 2.0, BORDER);
-    draw_centered(stats.letter, area.x + size / 2.0, area.y + size / 2.0 + 12.0, 40.0, BLACK);
+    draw_centered(&stats.letter, area.x + size / 2.0, area.y + size / 2.0 + 12.0, 40.0, BLACK);
 
     let x = area.x + size + 16.0;
     let mut y = area.y + 18.0;
-    draw_text(stats.name, x, y, 24.0, WHITE);
+    draw_text(&stats.name, x, y, 24.0, WHITE);
     y += 12.0;
 
     // Health bar
@@ -495,9 +534,9 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
         if stats.heals {
             format!("Beam range {}   (healing comes later)", stats.range)
         } else {
-            format!("Range {}   Shots per s {:.1}", stats.range, 20.0 / stats.cooldown as f32)
+            format!("Range {}   Shots per s {:.1}   Aim {:.2} s", stats.range, 20.0 / stats.shot_ticks() as f32, seconds(stats.aim))
         },
-        format!("Speed {}   Kills {}", stats.speed, unit.kills),
+        format!("Speed {}   Turn {:.2} s   Kills {}", stats.speed, seconds(stats.turn_around), unit.kills),
         match unit.queue_len() {
             0 | 1 => format!("Order: {}", unit.order_name()),
             n => format!("Order: {} (+{} queued)", unit.order_name(), n - 1),
@@ -517,44 +556,48 @@ fn draw_building(layout: &Layout, world: &World, building: &Building) {
     let size = area.h.min(110.0);
     draw_rectangle(area.x, area.y, size, size, building_color(building.kind));
     draw_rectangle_lines(area.x, area.y, size, size, 2.0, BORDER);
-    draw_centered(stats.letter, area.x + size / 2.0, area.y + size / 2.0 + 12.0, 36.0, BLACK);
+    draw_centered(&stats.letter, area.x + size / 2.0, area.y + size / 2.0 + 12.0, 36.0, BLACK);
 
     let x = area.x + size + 16.0;
-    draw_text(stats.name, x, area.y + 18.0, 24.0, WHITE);
+    draw_text(&stats.name, x, area.y + 18.0, 24.0, WHITE);
     let bar_w = (area.right() - x).min(220.0);
-    let frac = building.hp as f32 / stats.hp as f32;
-    draw_rectangle(x, area.y + 30.0, bar_w, 12.0, BOX_BG);
-    draw_rectangle(x, area.y + 30.0, bar_w * frac, 12.0, hp_color(frac));
-    draw_rectangle_lines(x, area.y + 30.0, bar_w, 12.0, 1.0, BORDER);
-    draw_text(&format!("HP {} / {}", building.hp, stats.hp), x, area.y + 62.0, 18.0, WHITE);
+    let bar = Rect::new(x, area.y + 30.0, bar_w, 12.0);
+    draw_life(bar, (building.hp, stats.hp), (building.shield, stats.max_shield()), BOX_BG, Some(BORDER));
+    let mut text = format!("HP {} / {}", building.hp, stats.hp);
+    if stats.max_shield() > 0 {
+        text += &format!("   Shield {} %", building.shield * 100 / stats.max_shield());
+    }
+    draw_text(&text, x, area.y + 62.0, 18.0, WHITE);
 
     if building.kind == BuildingKind::Tower {
         // One box per spot: the unit in it, or empty.
         let inside = world.garrison(building.id);
-        let text = format!("Garrison {} / {}   (right click with units: go in)", inside.len(), TOWER_SLOTS);
+        let text = format!("Garrison {} / {}   (right click with units: go in)", inside.len(), data::get().buildings.tower_slots);
         draw_text(&text, x, area.y + 90.0, 18.0, DIM);
-        for k in 0..TOWER_SLOTS {
+        for k in 0..data::get().buildings.tower_slots {
             let r = layout.queue_rect(k);
             match inside.get(k) {
                 Some(&i) => {
                     let unit = &world.units[i];
                     draw_rectangle(r.x, r.y, r.w, r.h, kind_color(unit.kind));
-                    draw_centered(unit.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+                    draw_centered(&unit.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
                 }
                 None => draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER),
             }
         }
-        let rally = if building.rally.is_some() { "Rally point set - U unloads towards it" } else { "No rally point (R or right click)" };
+        let rally = if building.rally.is_some() { "Rally point set - Q unloads towards it" } else { "No rally point (G or right click)" };
         draw_text(rally, layout.queue_rect(0).x, layout.queue_rect(0).bottom() + 22.0, 18.0, DIM);
         return;
     }
     if building.kind != BuildingKind::CommandCenter {
         let note = match building.kind {
-            BuildingKind::Wall => "Holds zombies back - they have to tear it down.",
-            BuildingKind::Gate => "Your units walk through the middle - zombies have to tear it down.",
-            _ => "Does nothing yet - but blocks the way.",
+            BuildingKind::Wall => "Holds zombies back - they have to tear it down.".to_owned(),
+            BuildingKind::Gate => "Your units walk through the middle - zombies have to tear it down.".to_owned(),
+            _ if building.infected => "INFECTED - its colonists came out as zombies.".to_owned(),
+            _ if stats.colonists > 0 => format!("{} colonists, +{} gold per hour. Shield down = infected.", stats.colonists, building.income()),
+            _ => "Does nothing yet - but blocks the way.".to_owned(),
         };
-        draw_text(note, x, area.y + 90.0, 18.0, DIM);
+        draw_text(&note, x, area.y + 90.0, 18.0, DIM);
         return;
     }
     // Production queue: 5 spots, the front one with a progress bar. A click cancels.
@@ -563,7 +606,7 @@ fn draw_building(layout: &Layout, world: &World, building: &Building) {
         match building.production.get(i) {
             Some(&kind) => {
                 draw_rectangle(r.x, r.y, r.w, r.h, kind_color(kind));
-                draw_centered(kind.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+                draw_centered(&kind.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
                 if i == 0 {
                     let t = building.progress as f32 / kind.stats().build_time as f32;
                     draw_rectangle(r.x, r.bottom() - 5.0, r.w * t, 5.0, GREEN);
@@ -575,34 +618,61 @@ fn draw_building(layout: &Layout, world: &World, building: &Building) {
             None => draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER),
         }
     }
-    let rally = if building.rally.is_some() { "Rally point set" } else { "No rally point (R or right click)" };
+    let rally = if building.rally.is_some() { "Rally point set" } else { "No rally point (G or right click)" };
     draw_text(rally, layout.queue_rect(0).x, layout.queue_rect(0).bottom() + 22.0, 18.0, DIM);
 }
 
-/// Several units: one icon per unit, sorted by type. The active type (Tab) is bright.
-fn draw_icons(layout: &Layout, world: &World, ui: &Ui, view: &[usize]) {
+/// What an icon in the selection shows: type (for Tab), colour, letter, name, hit points, shield.
+struct IconInfo {
+    sub: Sub,
+    color: Color,
+    letter: &'static str,
+    name: &'static str,
+    hp: (u32, u32),
+    shield: (u32, u32),
+}
+
+fn icon_info(world: &World, pick: Pick) -> IconInfo {
+    match pick {
+        Pick::Unit(i) => {
+            let unit = &world.units[i];
+            let stats = unit.stats();
+            let (letter, name) = (stats.letter.as_str(), stats.name.as_str());
+            IconInfo { sub: Sub::Unit(unit.kind), color: kind_color(unit.kind), letter, name, hp: (unit.hp, stats.hp), shield: (0, 0) }
+        }
+        Pick::Building(b) => {
+            let building = &world.buildings[b];
+            let stats = building.stats();
+            let (letter, name) = (stats.letter.as_str(), stats.name.as_str());
+            let (hp, shield) = ((building.hp, stats.hp), (building.shield, stats.max_shield()));
+            IconInfo { sub: Sub::Building(building.kind), color: building_color(building.kind), letter, name, hp, shield }
+        }
+    }
+}
+
+/// Several things selected: one icon each, units first, sorted by type. The active type (Tab) is bright.
+fn draw_icons(layout: &Layout, world: &World, ui: &Ui, view: &[Pick]) {
     let capacity = layout.icon_capacity();
-    for (k, &i) in view.iter().take(capacity).enumerate() {
-        let unit = &world.units[i];
+    for (k, &pick) in view.iter().take(capacity).enumerate() {
+        let info = icon_info(world, pick);
         let r = layout.icon_rect(k);
-        let active = ui.active_kind == Some(unit.kind);
-        let base = kind_color(unit.kind);
-        let fill = if active { base } else { Color::new(base.r * 0.4, base.g * 0.4, base.b * 0.4, 1.0) };
-        let frac = unit.hp as f32 / unit.stats().hp as f32;
+        let base = info.color;
+        let fill = if ui.active == Some(info.sub) { base } else { Color::new(base.r * 0.4, base.g * 0.4, base.b * 0.4, 1.0) };
+        let frac = info.hp.0 as f32 / info.hp.1.max(1) as f32;
         draw_rectangle(r.x, r.y, r.w, r.h, fill);
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, hp_color(frac));
-        draw_centered(unit.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
-        // small health bar at the bottom of the icon
-        draw_rectangle(r.x + 3.0, r.bottom() - 6.0, (r.w - 6.0) * frac, 3.0, hp_color(frac));
+        draw_centered(info.letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+        // small life bar at the bottom of the icon
+        draw_life(Rect::new(r.x + 3.0, r.bottom() - 6.0, r.w - 6.0, 3.0), info.hp, info.shield, BLACK, None);
     }
 
     // Tooltip above the icon under the mouse: name and health.
     let mouse = Vec2::from(mouse_position());
-    for (k, &i) in view.iter().take(capacity).enumerate() {
+    for (k, &pick) in view.iter().take(capacity).enumerate() {
         let r = layout.icon_rect(k);
         if r.contains(mouse) {
-            let unit = &world.units[i];
-            let text = format!("{}   HP {} / {}", unit.stats().name, unit.hp, unit.stats().hp);
+            let info = icon_info(world, pick);
+            let text = format!("{}   HP {} / {}", info.name, info.hp.0, info.hp.1);
             draw_tooltip(&[&text], r.x, layout.panel.y - 4.0);
         }
     }
@@ -612,8 +682,8 @@ fn draw_icons(layout: &Layout, world: &World, ui: &Ui, view: &[usize]) {
     if view.len() > capacity {
         text += &format!(" (+{} not shown)", view.len() - capacity);
     }
-    if let Some(kind) = ui.active_kind {
-        text += &format!("   active: {} (Tab switches)", kind.stats().name);
+    if let Some(sub) = ui.active {
+        text += &format!("   active: {} (Tab switches)", sub.name());
     }
     draw_text(&text, layout.summary.x, layout.summary.y + 16.0, 18.0, DIM);
 }
@@ -676,6 +746,24 @@ fn draw_tooltip(lines: &[&str], x: f32, bottom: f32) {
 }
 
 /// Green at full health, yellow from half, red below a quarter.
+/// The gray-blue of a shield – the part of the life bar behind the hit points.
+pub const SHIELD: Color = Color::new(0.50, 0.58, 0.70, 1.0);
+
+/// One life bar for hit points and shield (`(now, max)` each): the whole bar is both together, first the hit points
+/// in their colour (green, yellow, red), then what's left of the shield in gray-blue. Without a shield it's a plain
+/// health bar. `border`: a frame around it (the panel), or none (above a building).
+pub fn draw_life(bar: Rect, hp: (u32, u32), shield: (u32, u32), background: Color, border: Option<Color>) {
+    let total = (hp.1 + shield.1).max(1) as f32;
+    let hp_w = bar.w * hp.0 as f32 / total;
+    let shield_w = bar.w * shield.0 as f32 / total;
+    draw_rectangle(bar.x, bar.y, bar.w, bar.h, background);
+    draw_rectangle(bar.x, bar.y, hp_w, bar.h, hp_color(hp.0 as f32 / hp.1.max(1) as f32));
+    draw_rectangle(bar.x + hp_w, bar.y, shield_w, bar.h, SHIELD);
+    if let Some(border) = border {
+        draw_rectangle_lines(bar.x, bar.y, bar.w, bar.h, 1.0, border);
+    }
+}
+
 pub fn hp_color(frac: f32) -> Color {
     if frac > 0.5 {
         GREEN

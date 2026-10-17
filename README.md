@@ -37,17 +37,19 @@ Stand: **Konzept**, das erste Fenster läuft. Das ganze Design steht in [DESIGN.
 | `Cargo.toml` | Rust-Projekt: Name, Rust-Edition, Bibliotheken (`macroquad`, `serde` + `serde_json` für JSON, `libm` für `sin`/`cos`/`atan2`, die auf jedem PC gleich rechnen) |
 | `Cargo.lock` | Von `cargo` erzeugt: die genauen Versionen aller Bibliotheken, damit jeder Build gleich ist (gehört in git) |
 | `src\main.rs` | Start, Spielschleife mit festen Takten, Debug-Anzeige |
-| `src\sim\` | **Die Simulation**, deterministisch, zeichnet nichts – eine Datei pro Teil eines Takts: `mod.rs` (die `World`, die Reihenfolge eines Takts in `step`, kleine Helfer für alle), `orders.rs` (Befehle der Spieler), `spawning.rs` (Spawner, Wellen, Wiederkehr), `zombies.rs` (was sie bemerken, wohin sie laufen, wen sie schlagen), `units.rs` (laufen, ankommen, Türme), `commands.rs` (Befehle → Befehlsketten, Formationen), `combat.rs` (Ziele suchen, schießen), `buildings.rs` (Gebäude, Produktion, Einsturz), `terrain.rs` (wenn sich die Karte ändert), `tests.rs` |
+| `src\sim\` | **Die Simulation**, deterministisch, zeichnet nichts – eine Datei pro Teil eines Takts: `mod.rs` (die `World`, die Reihenfolge eines Takts in `step`, kleine Helfer für alle), `orders.rs` (Befehle der Spieler), `spawning.rs` (Walker beim Start, konstanter Spawn, Spawner, Wellen, Tote stehen auf), `zombies.rs` (was sie bemerken, wohin sie laufen, wen sie schlagen), `units.rs` (laufen, ankommen, Türme), `commands.rs` (Befehle → Befehlsketten, Formationen), `combat.rs` (Ziele suchen, drehen, zielen, nachladen, schießen), `buildings.rs` (Gebäude, Produktion, Einsturz), `terrain.rs` (wenn sich die Karte ändert), `tests.rs` |
 | `src\placement.rs` | **Alle Bauregeln an einem Ort:** wo ein Gebäude hin darf, worauf es gebaut werden darf (Tor auf Mauern), wie viel Abstand es zu anderen halten muss (Türme), was es dort kostet, wie eine gezogene Reihe aussieht |
-| `src\kinds.rs` | Einheiten- und Gebäudetypen und ihre Werte (Soldat, Scharfschütze, Medic; Kommandozentrum, Zelt, Mauer, Tor, Turm) |
+| `data\` | **Alle Spielwerte an einem Ort** (JSON): `units.json`, `buildings.json`, `zombies.json`, `colony.json`, `spawning.json`. Was jeder Wert heißt: `data\README.md` |
+| `src\data.rs` | Liest `data\` (vor jeder neuen Runde, sonst die eingebauten Werte) |
+| `src\kinds.rs` | Einheiten- und Gebäudetypen und was ihre Werte bedeuten (Soldat, Ranger, Scharfschütze, Medic; Kommandozentrum, Zelt, Mauer, Tor, Turm) |
 | `src\aggro.rs` | Bedrohungskarte: welche Einheit (in Hörweite) bzw. welches Gebäude ist von dieser Kachel aus das nächste (Luftlinie, für Zombies) |
-| `src\hunt.rs` | Jagdkarte: welche Einheit ist von hier **zu Fuß** die nächste – für die Jäger um Mauern herum, für den Ansturm der anderen um Wasser herum, aber durch Mauern hindurch |
+| `src\hunt.rs` | Jagdkarte: welche Einheit ist von hier **zu Fuß** die nächste – für die Lückensucher um Mauern herum, für den Ansturm der anderen um Wasser herum, aber durch Mauern hindurch |
 | `src\flow.rs` | Flow Field mit Sichtlinie: Wegweiser zu einem Ziel für beliebig viele Figuren (für Zombies auch durch Gebäude) |
 | `src\formation.rs` | Formationen wie in *Diplomacy is Not an Option*: Linie, Block, Kreis – ein Platz pro Einheit |
 | `src\vision.rs` | Sicht und Nebel: was Einheiten und Gebäude gerade sehen und was schon erkundet ist |
 | `src\grid.rs` | Räumliches Raster: wer steht in welcher Kachel (schnelle Nachbarsuche) |
 | `src\map.rs` | Die Karte: Kacheln mit Gelände (Gras, Berg, Wald, Baum, Wasser), wo Gebäude und Tore stehen, die Weltgrenze, Sichtlinie |
-| `src\mapgen\` | **Die Kartengeneratoren**, jeder mit eigenen Werten: `mod.rs` (Auswahl, Schieberegler, was alle teilen: Spawner, freie Basis, Wege in jede Ecke), `wild.rs` (Rauschen wie Factorio), `regions.rs` (Regionen mit Pässen wie TAB), `rings.rs` (Festungsringe), `canyons.rs` (Zellulärer Automat), `tools.rs` (Flüsse, Bäume, Wege freischneiden) |
+| `src\mapgen\` | **Die Kartengeneratoren**, jeder mit eigenen Werten: `mod.rs` (Auswahl, Schieberegler, was alle teilen: Spawner, freie Basis, Wege in jede Ecke), `wild.rs` (Rauschen wie Factorio), `regions.rs` (Regionen mit Pässen wie TAB), `rings.rs` (Festungsringe), `canyons.rs` (Zellulärer Automat), `ores.rs` (Erzfelder wie Factorio), `tools.rs` (Flüsse, Bäume, Wege freischneiden) |
 | `src\noise.rs` | Glattes Rauschen (Value Noise in mehreren Lagen) für die Generatoren |
 | `src\mapfile.rs` | Karten speichern und laden (Editor „Save map“, Startbildschirm „Custom maps“) als JSON unter `%APPDATA%\Last Bastion\maps\` |
 | `src\home.rs` | Der Startbildschirm: New game, Map editor, Custom maps, Settings – und die Seite zum Einstellen der Karte mit Vorschau |
@@ -95,8 +97,8 @@ Das Spiel wird in **Rust** geschrieben (DESIGN.md, Abschnitt 12.2) – Rust zu l
 
 ## Prototyp ausprobieren
 
-Zurzeit ist `dist\LastBastion.exe` der **Wegwerf-Prototyp** (DESIGN.md 12.2): 8 Soldaten und 4 Scharfschützen
-gegen eine Horde, die zum blauen Kommandozentrum in der Mitte läuft. Die Zombies kommen nur aus **Spawnern** – zu
+Zurzeit ist `dist\LastBastion.exe` der **Wegwerf-Prototyp** (DESIGN.md 12.2): 8 Soldaten, 4 Scharfschützen und
+4 Ranger gegen eine Horde, die zum blauen Kommandozentrum in der Mitte läuft. Die Zombies kommen nur aus **Spawnern** – zu
 Beginn 3 auf jeder Seite der Karte, im Editor lassen sich weitere setzen, umbenennen, verschieben und vergrößern, und
 für jeden einstellen, wie er Zombies schickt: dauernd (Getötete kommen wieder), alle X Sekunden N Stück, oder nur bei
 Wellen.
@@ -118,21 +120,43 @@ würfelt die Werte des Generators aus, „Defaults“ setzt sie zurück. Die let
 | **Canyons** | Zellulärer Automat wie bei Höhlen: Fels mit gewundenen Schluchten | Felsanteil, Glätten, Schluchtbreite, Material, Teiche, Bäume |
 | **Blank** | Nur Gras (und Bäume, wenn man will) – zum Selberbauen im Editor | Bäume |
 
-Für alle: **Kartengröße** (96–256, Standard 256 wie in TAB), freier Platz um die Basis, Spawner pro Seite. Danach sorgt
-jeder Generator dafür, dass **jede offene Stelle die Basis erreicht**: Ist etwas abgeschnitten (hinter einem Fluss, in
-einem Ring, in einer Höhle), wird der kürzeste Weg 2 Kacheln breit freigeschnitten – eine Furt, eine Lücke im Rücken.
-Winzige Löcher werden stattdessen Wald.
+Für alle: **Kartengröße** (96–256, Standard 256 wie in TAB), freier Platz um die Basis, Spawner pro Seite, wie viele
+**Zombies herumstreifen** und die **Erzfelder** (Anzahl, Größe, Reichtum). Danach sorgt jeder Generator dafür, dass
+**jede offene Stelle die Basis erreicht** – für die Zombies überall, für deine Einheiten **innerhalb der Weltgrenze**: Ist
+etwas abgeschnitten (hinter einem Fluss, in einem Ring, in einer Höhle), wird der Weg freigeschnitten, der am wenigsten
+Hindernis durchbricht (2 Kacheln breit) – eine Furt, eine Lücke im Rücken. Winzige Löcher werden stattdessen Wald.
 
-**Zombies sehen** Einheiten auf **13 Kacheln** (nicht durch Wald und Bäume), **hören** sie auf 3 Kacheln (auch hinter
-einem Baum), und wer **angeschossen** wird, stürmt 5 Sekunden lang los, auch ohne den Schützen zu sehen. Dann stürmen
+**Erz** (wie in Factorio): **Eisenerz** (rostbraun), **Kohle** (schwarz) und **Stein** (hellgrau) liegen als Felder auf
+dem Gras – man kann darüber laufen und darauf bauen (Minen kommen mit der Wirtschaft). Direkt neben der Basis liegt immer
+ein kleines Feld von jedem, weiter draußen werden sie größer und reicher. Holz kommt aus dem Wald.
+
+**Zombies sehen** Einheiten nur ein kleines Stück weit wie in TAB (Walker und Fat 5 Kacheln, Runner 6, nicht durch Wald
+und Bäume), **hören** sie auf 3 Kacheln (auch hinter einem Baum), und wer **angeschossen** wird, stürmt 5 Sekunden lang
+los, auch ohne den Schützen zu sehen. Vor allem lockt aber der **Lärm**: Jeder Schuss ist ein Stück weit zu hören
+(Ranger 1 Kachel, Soldat 3, Scharfschütze 10), und wer ihn hört, stürmt 20 s lang auf deine Einheiten los – durch Wald
+und Mauern hindurch gehört. Ranger sind leise, Scharfschützen holen die halbe Gegend. Dann stürmen
 sie auf die Einheit zu: um Wasser und Berge herum, aber **fast gerade durch Mauern** – die werden eingerissen, statt
 dass die ganze Horde die Lücke sucht. Ohne Einheit in Sicht gehen sie auf Gebäude in 5 Kacheln los, sonst zum
 Kommandozentrum (Gebäude im Weg umgehen sie nur, wenn der Umweg kurz ist). Einheiten können sterben, Gebäude
-einstürzen. Jeder 4. Zombie ist ein **Jäger** (dunkleres Gelbgrün): Er geht um Mauern herum durch Lücken auf Einheiten
-los, statt die Mauer einzureißen. Einheiten, Zombies und Gebäude sind kleine isometrische Klötze (Zombies die kleinsten).
+einstürzen. Wer **angeschossen** wird, sucht mit den 3 Zombies neben sich 10 s lang die **Lücke** in der Mauer, der Rest
+haut weiter drauf. **Walker** (dunkelgrau, langsam) liegen von Anfang an verstreut auf der Karte, **Runner** (hellgrau,
+schnell) kommen aus den Spawnern. **Fat** (gelblich braun, groß, 600 HP, Panzerung 2, haut mit 40 zu – TABs „Chubby“).
+Zu Beginn **streifen** viele Zombies über die Karte (Standard etwa 3.900): nahe der Basis nur Walker, weiter draußen
+auch Runner, am Rand auch Fat (`roaming` in `data\zombies.json`). Getötete Zombies kommen **nie wieder**; ab Tag 2 schickt der konstante Spawn neue
+(`data\spawning.json`). Tote Einheiten stehen nach 2–5 s als Walker auf, Zelte mit gebrochenem Schild werden infiziert.
+Einheiten, Zombies und Gebäude sind kleine isometrische Klötze (Zombies die kleinsten, Fat größer).
 
-**Sicht und Nebel** (wie in StarCraft 2): Einheiten und Gebäude sehen nur ein Stück weit (Soldat 10 Kacheln,
-Scharfschütze 13, Medic 10, Kommandozentrum 11, Zelt 5, Mauer und Tor 3, Turm 6). Wo noch nie jemand war, ist die Karte
+**Schießen wie in StarCraft** – jede Einheit hat dafür eigene Zeiten (`data\units.json`): Sie **dreht** sich erst zum
+Ziel (Ranger 0,25 s für eine halbe Drehung, Soldat 0,35, Scharfschütze 0,5), **zielt** dann (Ranger spannt den Bogen
+0,4 s, Scharfschütze 0,25, Soldat nur 0,1), schießt und **lädt nach**. Ein Schuss dauert Zielen + Nachladen, so bleibt
+die Feuerrate wie in TAB (Ranger 1 pro s, Soldat 2, Scharfschütze 0,45). Wechselt das Ziel, fängt das Zielen von vorne
+an – deshalb bleibt eine Einheit bei ihrem Ziel, solange es lebt und in Reichweite ist. Das kleine dunkle Stück an
+jedem Klotz zeigt, wohin die Einheit schaut. Schüsse bis zum Tod: Walker Ranger 4 / Soldat 2 / Scharfschütze 1,
+Runner 6 / 3 / 1. **Alle Werte** stehen in
+`data\` (siehe [data\README.md](data/README.md)).
+
+**Sicht und Nebel** (wie in StarCraft 2): Einheiten und Gebäude sehen nur ein Stück weit (Soldat 6 Kacheln,
+Ranger 8, Scharfschütze 9, Medic 10, Kommandozentrum 11, Zelt 5, Mauer und Tor 3, Turm 6). Wo noch nie jemand war, ist die Karte
 **schwarz**; was man schon gesehen hat, bleibt **abgedunkelt** sichtbar – nur die Zombies darin sieht man nicht. Ein
 Zombie, der aus der Sicht verschwindet, **verblasst** in knapp einer Sekunde, statt plötzlich weg zu sein. Auf der
 Minimap genauso (dort ohne Verblassen). Durch Wälder und Bäume kann niemand laufen, **sehen oder schießen** – eine
@@ -159,44 +183,51 @@ Alles im Spiel ist auf **Englisch** (auch die Kommentare im Code). Steuerung und
 
 | Taste | Was |
 |---|---|
-| Linke Maus (klicken / ziehen) | Einheit / alle im Rahmen auswählen, mit Shift dazu oder weg. Trifft der Klick nichts, bleibt die Auswahl |
-| Strg + Klick, Doppelklick | Alle Einheiten dieses Typs auf dem Bildschirm (mit Shift: dazu) |
-| Klick auf ein Symbol unten | Nur diese Einheit. Shift: diese weg. Strg: nur dieser Typ. Strg+Shift: dieser Typ weg |
+| Linke Maus (klicken / ziehen) | Einheit / Gebäude / alle im Rahmen auswählen, mit Shift dazu oder weg. Der Rahmen nimmt Gebäude nur, wenn keine Einheit drin ist. Trifft der Klick nichts, bleibt die Auswahl |
+| Strg + Klick, Doppelklick | Alle Einheiten (oder Gebäude) dieses Typs auf dem Bildschirm (mit Shift: dazu) |
+| Klick auf ein Symbol unten | Nur diese Einheit (dieses Gebäude). Shift: weg. Strg: nur dieser Typ. Strg+Shift: dieser Typ weg |
 | F2 | Alle Einheiten |
-| Tab / Shift+Tab | Nächster / voriger Typ in der Auswahl wird aktiv |
-| Rechte Maus | Alle laufen auf den angeklickten Punkt – auf einen Zombie: angreifen – auf eine eigene Einheit: ihr folgen – auf einen Turm: hineingehen |
+| Tab / Shift+Tab | Nächster / voriger Typ in der Auswahl wird aktiv – **auch Gebäude** (z. B. Soldaten + Kommandozentrum: Tab, dann Q baut einen Soldaten). Die Befehlskarte zeigt immer den aktiven Typ |
+| Rechte Maus | Alle laufen auf den angeklickten Punkt – auf einen Zombie: angreifen – auf eine eigene Einheit: ihr folgen – auf einen Turm: hineingehen. Ausgewählte Gebäude setzen dabei ihren Sammelpunkt |
 | **Rechte Maus ziehen** | **Formation** (wie in *Diplomacy is Not an Option*): die Einheiten stellen sich an der gezogenen Linie auf. Beim Ziehen sieht man schon, wo jede hinkommt. Nur beim Ziehen – ein Klick ist keine Formation |
-| X / C / V (oder Knöpfe unten auf der Befehlskarte) | Formation wählen: **Linie** (Reihen so breit wie gezogen) / **Block** (Quadrat, die Linie ist die Front) / **Kreis** (um den Startpunkt, gezogen = Radius). Soldaten vorne bzw. außen, Scharfschützen und Medics dahinter |
+| X / C / V (oder Knöpfe unten auf der Befehlskarte) | Formation wählen: **Linie** (Reihen so breit wie gezogen) / **Block** (Quadrat, die Linie ist die Front) / **Kreis** (um den Startpunkt, gezogen = Radius). Soldaten vorne bzw. außen, dann Ranger, Scharfschützen und Medics dahinter |
 | T + Linksklick | **Angriff / Attack-Move**: hinlaufen, unterwegs alles bekämpfen (auf einen Zombie: genau den). Auf eine eigene Einheit: Medics richten ihren grünen Strahl auf sie, alle anderen laufen per Attack-Move hin. **Ziehen** = in Formation |
 | P + Linksklick | **Patrouille**: hin und her, unterwegs wie Attack-Move. Ziehen = in Formation |
 | M + Linksklick | Hinlaufen ohne zu schießen (auf eine Einheit: folgen). Ziehen = in Formation |
 | S / H | Stopp (Kette löschen) / Halten (stehen bleiben, nur schießen, nicht wegschubsen lassen) |
 | **Shift** + Befehl | Befehl **hinten an die Kette hängen**. Mit Shift bleibt A/P/M aktiv, so setzt man mehrere Wegpunkte |
 | Rechtsklick / Esc bei A, P, M | Wartenden Befehl abbrechen |
-| Strg + 1–0 | Kontrollgruppe setzen |
-| Strg + Shift + 1–0 | Kontrollgruppe setzen und die Einheiten aus allen anderen Gruppen nehmen („stehlen“) |
+| Strg + 1–0 | Kontrollgruppe setzen – mit Einheiten **und Gebäuden** (z. B. Strg+5 aufs Kommandozentrum) |
+| Strg + Shift + 1–0 | Kontrollgruppe setzen und die Einheiten / Gebäude aus allen anderen Gruppen nehmen („stehlen“) |
 | Shift + 1–0 | Auswahl zur Gruppe dazu |
 | 1–0 (oder Klick auf die Gruppe) | Gruppe auswählen, zweimal schnell: Kamera springt hin |
 | Strg / Shift / Strg+Shift + Klick auf eine Gruppe | wie mit der Zahlentaste: Gruppe durch die Auswahl ersetzen / Auswahl dazu / stehlen |
-| **WASD**, Pfeiltasten, Maus am Fensterrand, Mausrad | Kamera schieben, zoomen. **Braucht die Auswahl eine dieser Tasten selbst, hat sie Vorrang** (z. B. S = Stopp bei Einheiten). **Ist ein Gebäude ausgewählt, bewegt WASD die Kamera gar nicht** |
+| **WASD**, Pfeiltasten, Maus am Fensterrand, Mausrad | Kamera schieben, zoomen. **WASD nur, solange nichts ausgewählt ist** – mit Einheiten oder einem Gebäude gehören die Tasten der Befehlskarte (S = Stopp, A = Ranger …). Pfeiltasten, Rand und Mausrad gehen immer |
 | Mittlere Maustaste ziehen | Karte anfassen und verschieben |
 | Strg + F5–F8 / F5–F8 | Kamera-Position merken / hinspringen |
 | Rücktaste | Kamera zur Basis |
 | Leertaste | Pause: Befehle gehen weiter und **sind sofort zu sehen** (Linien, Bauschlange, Sammelpunkte, neue Gebäude) – ausgeführt wird erst, wenn es weitergeht |
 | `+` / `-` | Tempo ×1 / ×2 / ×4 / ×8 |
-| Esc | **Spielmenü** (wenn kein Befehl und kein Editor-Werkzeug wartet und kein Spawner ausgewählt ist): Resume, Settings, Restart, New map, Quit. Hält alles an |
+| Esc | **Spielmenü** (wenn kein Befehl, kein Baumenü und kein Editor-Werkzeug wartet und kein Spawner ausgewählt ist): Resume, Settings, Restart, New map, Quit. Hält alles an |
 
-**Kommandozentrum** (anklicken – Gebäude werden immer einzeln ausgewählt):
+**Kommandozentrum** – Tasten im **Raster wie in StarCraft** (die Taste ist da, wo der Knopf sitzt):
+
+```
+Q Soldat    W Ranger    E Energie ▸   R Scharfschütze   T Medic
+A Spezial ▸ S Zelt      D Verteidigung ▸  F –           G Sammelpunkt
+```
 
 | Taste | Was |
 |---|---|
-| Q / W / E | Soldat (5 s) / Scharfschütze (8 s) / Medic (6 s) in die Bauschlange, mit Shift gleich 5. Höchstens 5 in der Schlange |
-| Klick auf ein Symbol der Bauschlange | Abbrechen |
-| R + Linksklick, oder Rechtsklick | **Sammelpunkt**: neue Einheiten laufen dorthin – auf eine Einheit: sie folgen ihr |
-| B | **Zelt** (2 × 2) aufs Raster stellen: grün = Platz frei, rot = besetzt |
-| V | **Mauer** (1 × 1) aufs Raster stellen |
-| G | **Tor** (3 × 1): durch die Mitte gehen deine Einheiten, Zombies nicht. **R** dreht es beim Platzieren. Darf **auf Mauern** gesetzt werden – die Mauern darunter verschwinden, das Tor wird billiger (lohnt sich trotzdem nicht: Mauern + Tor kosten mehr als das Tor allein) |
-| T | **Turm** (1 × 1). Zwischen zwei Türmen muss **1 Kachel frei** bleiben (auch über Eck) |
+| Q / W / R / T | Soldat (5 s) / Ranger (4 s) / Scharfschütze (8 s) / Medic (6 s) in die Bauschlange, mit Shift gleich 5. Höchstens 5 in der Schlange. Mehrere Kommandozentren ausgewählt: jede Einheit ins kürzeste |
+| Klick auf ein Symbol der Bauschlange | Abbrechen (wenn nur das Kommandozentrum ausgewählt ist) |
+| G + Linksklick, oder Rechtsklick | **Sammelpunkt**: neue Einheiten laufen dorthin – auf eine Einheit: sie folgen ihr |
+| S | **Zelt** (2 × 2) aufs Raster stellen: grün = Platz frei, rot = besetzt |
+| D | **Verteidigung** (Baumenü): **Q** Mauer, **W** Tor, **E** Turm. **Esc** zurück |
+| E / A | **Energie** / **Spezial** (Baumenüs) – noch leer, die Gebäude kommen mit der Wirtschaft |
+| D, Q | **Mauer** (1 × 1) |
+| D, W | **Tor** (3 × 1): durch die Mitte gehen deine Einheiten, Zombies nicht. **R** dreht es beim Platzieren. Darf **auf Mauern** gesetzt werden – die Mauern darunter verschwinden, das Tor wird billiger (lohnt sich trotzdem nicht: Mauern + Tor kosten mehr als das Tor allein) |
+| D, E | **Turm** (1 × 1). Zwischen zwei Türmen muss **1 Kachel frei** bleiben (auch über Eck) |
 | Beim Bauen: Linke Maus **ziehen** | Eine ganze Reihe von der Start-Kachel bis zur Maus. Mauern schräg gezogen wie in TAB **1 breit**, Ecke an Ecke (dicht – niemand kommt durch die Ecke); Türme genauso, aber mit einer Lücke dazwischen; Zelte als Treppe; ein Tor immer einzeln. Rote Plätze werden ausgelassen |
 | Beim Bauen | Das Gebäude **bleibt an der Maus** – gleich die nächste Reihe. **Rechtsklick oder Esc** legt es weg |
 
@@ -205,17 +236,19 @@ Mauer zu jedem Nachbarn – gerade oder schräg zur Ecke. Die Pfosten eines Tore
 Die Tür des Tores steht offen, solange eine deiner Einheiten nah dran ist.
 
 **Turm** (600 HP, 50 % mehr als die Mauer): **Rechtsklick** mit ausgewählten Einheiten auf den Turm – bis zu **4**
-Soldaten oder Scharfschützen gehen hinein (Medics bleiben draußen, sie haben nichts zu schießen). Drinnen schießen und
+Soldaten, Ranger oder Scharfschützen gehen hinein (Medics bleiben draußen, sie haben nichts zu schießen). Drinnen schießen und
 sehen sie **2 Kacheln weiter**, können nicht getroffen werden (die Zombies hauen auf den Turm) und sind nicht
 auswählbar, bleiben aber in ihren Kontrollgruppen. Auf dem Dach sitzt ein kleiner Block pro Einheit. Turm anklicken,
-**U** = alle raus, **R** oder Rechtsklick = Sammelpunkt: Beim Rauslassen kommen sie auf dieser Seite heraus und laufen
+**Q** = alle raus, **G** oder Rechtsklick = Sammelpunkt: Beim Rauslassen kommen sie auf dieser Seite heraus und laufen
 dorthin (ohne Sammelpunkt: Seite zur Basis). Fällt der Turm, stehen sie wieder auf dem Boden.
 
 **Nicht in der Nähe von Zombies bauen:** Auf dem Bauplatz und 4 Kacheln rundherum darf kein Zombie stehen – bei einer
 Mauer (1 × 1) also 9 × 9 Kacheln, bei einem Zelt (2 × 2) 10 × 10. Der Rahmen um das Gebäude an der Maus zeigt dieses
 Feld, rot heißt: ein Zombie ist drin. Auf eigene Einheiten kann man auch nicht bauen, und nicht hinter der Weltgrenze.
 
-Zelte machen noch nichts, versperren aber den Weg (300 HP). Mauern und Tore haben 400 HP, Türme 600. Das
+Zelte zahlen 12 Gold pro Spielstunde und haben 150 HP + 133 % davon als Schild (Schild weg = infiziert). **Leben und
+Schild sind ein Balken**: vorne die HP in ihrer Farbe, dahinter der Schild in Graublau; unten im Panel steht der Schild in
+Prozent. Mauern und Tore haben 400 HP, Türme 600. Das
 Kommandozentrum hat 1.500 HP.
 Kosten und Bauzeit für Gebäude gibt es noch nicht – sie stehen sofort.
 
@@ -242,30 +275,32 @@ speichern, neue Karte), **Terrain** (malen), **Entities** (Einheiten, Gebäude, 
 Zeitleiste). Darunter immer „View“. Die Abschnitte lassen sich mit einem Klick auf die Überschrift auf- und zuklappen
 ([-] / [+]); ist das Panel zu lang, scrollt das Mausrad darauf. **Gebäude** (Tab Entities oder über das
 Kommandozentrum) gehen im Editor **überall hin** – auf Wasser, hinter die Grenze, neben Zombies, auf Einheiten (die werden weggeschoben); nur
-nicht auf ein anderes Gebäude. Das Gelände darunter wird Gras.
+nicht auf ein anderes Gebäude. Das Gelände darunter bleibt, wie es ist (Wasser bleibt Wasser) und ist wieder zu sehen,
+wenn das Gebäude fällt. Durch die Tür eines Tores auf Wasser kommen Einheiten trotzdem nicht.
 
 | Taste / Knopf | Was |
 |---|---|
 | Game View / Editor Mode, oder F10 | Zwischen beiden wechseln |
 | Tab **Map**: Name (rename) | Name der Karte anklicken und tippen – er wird der Dateiname |
-| Save map | Speichert Gelände, Spawner, Gebäude, Einheiten, gesetzte Zombies, Zeitleiste und Respawn nach `%APPDATA%\Last Bastion\maps\<Name>.json`. Auf dem Startbildschirm unter „Custom maps“ spielen oder bearbeiten |
+| Save map | Speichert Gelände, Spawner, Gebäude, Einheiten, gesetzte Zombies und Zeitleiste nach `%APPDATA%\Last Bastion\maps\<Name>.json`. Auf dem Startbildschirm unter „Custom maps“ spielen oder bearbeiten |
 | New map... | Zur Karten-Einstellung, mit den Werten dieser Karte – „Open in the editor“ macht die neue Karte |
 | View: All / Player / Zombies | **Durch wessen Augen**: alles ohne Nebel / der Nebel des Spielers wie im Game View / was die Zombies sehen (dunkelrot = kein Zombie schaut hin). Im Koop teilen sich beide Spieler die Sicht, darum gibt es nur einen „Player“ |
 | Mountain / Forest / Tree / Water / Erase | **Gelände malen**: Werkzeug wählen, dann mit gedrückter linker Maus übers Feld ziehen – sofort, auch während das Spiel läuft. Erase macht wieder Gras. Gebäude werden nie übermalt |
+| Iron ore / Coal / Stone / No ore | **Erz malen** (nur auf Gras), genauso mit dem Pinsel. „No ore“ nimmt es weg. Wird gespeichert |
 | 1 / 3 / 5 / 9 / 15 / 25 / 41 | Pinselgröße in Kacheln – fürs Gelände und den Zombie-Pinsel |
 | + Spawner | Werkzeug: ein Klick setzt einen **Spawner** (6 × 6) und wählt ihn gleich aus |
 | Klick auf einen Spawner (ohne Werkzeug) | Auswählen: der **Rand leuchtet**. Rand (oder Ecke) ziehen = Größe ändern, Innenfläche ziehen = verschieben |
 | Name des Spawners (Feld im Panel) | Anklicken und tippen, Enter übernimmt, Esc bricht ab. Solange man tippt, tun die Tasten nichts anderes |
-| Constantly / Periodic / Off (Spawner ausgewählt) | Wie der Spawner von selbst Zombies schickt: **dauernd** (getötete Zombies kommen in einem solchen Spawner wieder, wenn Respawn an ist) / **alle X Sekunden N Stück** / **gar nicht** (nur Wellen und die Start-Horde) |
+| Constant / Periodic / Off (Spawner ausgewählt) | Wie der Spawner von selbst Zombies schickt: **constant** (macht beim konstanten Spawn der Runde mit, `data\spawning.json`) / **alle X Sekunden N Runner** / **gar nicht** (nur Wellen) |
 | − every … s + / − … zombies + | Bei „Periodic“: Abstand (1–120 s) und Anzahl (1–500) in Stufen. Ein Klick darauf stellt den Spawner auf „Periodic“ |
 | Remove spawner, Entf | Ausgewählten Spawner löschen. Esc oder Klick daneben: Auswahl weg |
 | Zombies: **Brush** | Werkzeug: Solange die linke Maus gedrückt ist, landen **jeden Takt** so viele Zombies auf der Pinselfläche (1–20 pro Takt, mit − / +). In der Pause kommt keiner – es ist pro Takt |
 | Zombies: **Drop** | Werkzeug: jeder Linksklick setzt auf einmal so viele Zombies (1–1.000, mit − / +) – auf der Pinselfläche, bei vielen etwas größer |
-| Mixed / Walker / Hunter | Welche Zombies Pinsel und Drop setzen: die übliche Mischung (jeder 4. ein Jäger) / nur Walker / nur Jäger |
-| Storm the CC / Wander | Ob sie zum Kommandozentrum stürmen oder **herumwandern**: in der Nähe stehen bleiben und langsam umherschlendern (höchstens 4 Kacheln weit). Sobald sie eine Einheit sehen, hören, angeschossen werden (oder als Jäger eine wittern), stürmen sie für immer los |
-| Waves: Small / One side / Two sides | **Wellen** aus den Spawnern: 150 Zombies aus einem zufälligen Spawner / 500 aus den Spawnern einer Seite / je 500 von zwei zufälligen Seiten |
+| Walker / Runner / Fat | Welche Zombies Pinsel und Drop setzen |
+| Storm the CC / Wander | Ob sie zum Kommandozentrum stürmen oder **herumwandern**: in der Nähe stehen bleiben und langsam umherschlendern (höchstens 4 Kacheln weit). Sobald sie eine Einheit sehen, hören, angeschossen werden, stürmen sie für immer los |
+| Waves: Small / One side / Two sides | **Wellen** aus den Spawnern: 150 Runner aus einem zufälligen Spawner / 500 aus den Spawnern einer Seite / je 500 von zwei zufälligen Seiten |
 | +1000 from all spawners | 1.000 Zombies verteilt auf alle Spawner (Belastungstest) |
-| Remove all / Respawn | Alle Zombies weg / kommen getötete Zombies wieder (in den Spawnern auf „Constantly“)? Ohne Spawner kommt gar keiner |
+| Remove all | Alle Zombies weg. Getötete Zombies kommen nie wieder |
 | Soldier / Sniper / Medic | Werkzeug: jeder Linksklick setzt eine Einheit an die Maus (nur innerhalb der Grenze) |
 | CC / Tent / Wall / Gate / Tower | Gebäude an die Maus hängen – ohne Spielregeln, Ziehen baut eine Reihe, R dreht das Tor |
 | Tab **Waves**: Zeitleiste | Wellen, die **von selbst** kommen, wie die Ereignisse in TAB („Tag 12, 6 Uhr“). „+ Add wave“: einen Tag nach der letzten. Pro Welle: − Zeit + (6 Stunden, mit Shift ein Tag), − Anzahl + (10–2.000), woher (1 Spawner / 1 / 2 / 3 / alle Seiten), x löscht. Vergangene Zeiten sind grau |
@@ -633,3 +668,136 @@ Mini-Runde im Koop über das Netzwerk (Schritt 5).
     Debug- und Release-Build kommen schon auf dieselbe Zahl. Wer die Simulation absichtlich ändert, trägt die neue Zahl
     aus der Fehlermeldung ein.
   - 69 Tests.
+- **2026-10-17:** **Walker und Runner, Infektion, Gold:**
+  - **Zwei Zombie-Typen:** **Walker** (dunkelgrau, 0,7 Kacheln/s, 15 HP, 4 Schaden) – neu, der schwächste und
+    langsamste. Die bisherigen Zombies heißen jetzt **Runner** (hellgrau) und sind schneller geworden: 2,0 statt
+    1,2 Kacheln/s (Soldaten laufen 3,0, Wegrennen geht also noch). Werte in `Breed::speed/hp/damage` (`sim/zombies.rs`).
+  - **Walker liegen von Anfang an auf der Karte verstreut** und wandern, bis sie eine Einheit bemerken: wenige nahe
+    am Kommandozentrum (keiner näher als 16 Kacheln), die meisten am Rand. Neuer Regler „Walkers“ in der
+    Karteneinstellung (pro 1.000 Kacheln, Standard 20 ≈ 1.300 auf 256er-Karten). Die alte Start-Horde (500 aus den
+    Spawnern) ist weg. **Alles aus Spawnern sind Runner** – Wellen und der Nachschub, auch für getötete Walker.
+  - **Kein Jäger mehr:** Statt jeden 4. Zombie zum Jäger zu machen, suchen **der angeschossene Zombie und die 3
+    nächsten um ihn herum** (bis 3 Kacheln) 10 s lang die Lücke zu deinen Einheiten. Der Rest haut weiter auf die
+    Mauer. Ist der Getroffene schon auf der Suche, holt er keine weiteren dazu – sonst schickte ein Soldat, der in die
+    Menge schießt, bald die ganze Horde zur Lücke. Gerechnet wird der Weg durch Lücken nur, solange einer sucht.
+  - **Tote Einheiten** bleiben liegen (flach, dunkel) und **stehen nach 2–5 s als Walker auf**.
+  - **Infektion wie in TAB:** Zelte haben einen **Schild** (200, blauer Balken über dem Lebensbalken) und 150 HP.
+    Zombies schlagen zuerst auf den Schild. Bricht er, ist das Zelt **infiziert** (wird kränklich grün) und seine
+    **6 Kolonisten kommen als Zombies heraus: 2–4 Runner, der Rest Walker**. Erst danach verliert es HP.
+    Mauern, Tore und Türme haben keine Kolonisten und damit keinen Schild.
+  - **Gold:** Jeder Kolonist zahlt 2 Gold pro Spielstunde (7,5 s), ein Zelt also 12. Oben neben der Uhr:
+    „Gold 120 (+12/h)“. Infizierte Zelte zahlen nichts. Ausgegeben wird noch nichts.
+  - Haken: Die Preise (Zelt 50, Mauer 10 …) passen nicht zu 12 Gold alle 7,5 s – ein Zelt hätte sich nach 30 s
+    bezahlt gemacht. Bevor Bauen Gold kostet, müssen Preise und Unterhalt hochskaliert werden (DESIGN.md 5.3).
+  - Alte Kartendateien laden weiter: „Hunter“ wird zum Runner, ein alter „Walker“ ist jetzt der neue, langsame.
+  - Gemessen: 256er-Karte mit 1.310 Walkern + 3.000 Runnern: 2,2 ms pro Takt, Welt erzeugen 51 ms.
+  - 74 Tests (neu: Walker langsamer als Runner und Spawner schicken Runner, Walker verstreut und meist am Rand, tote
+    Einheit steht nach 2–5 s als Walker auf, Zelt-Schild bricht → genau 6 Zombies mit 2–4 Runnern, Zelt zahlt
+    12 Gold pro Stunde und infiziert nichts mehr). Der Jäger-Test prüft jetzt: Mit Schuss finden ein paar die Lücke,
+    ohne Schuss sucht keiner. Die festgehaltene Prüfsumme ist neu (Simulation absichtlich geändert).
+- **2026-10-17:** **Kein Respawn mehr, konstanter Spawn nach Zeitplan, alle Werte in `data\`:**
+  - **Getötete Zombies bleiben tot.** Das Wiederbeleben war ein Überbleibsel aus dem Horden-Stresstest (damit immer
+    gleich viele da waren) – dann hätte Freiräumen zum Ausbreiten keinen Sinn. Weg sind: Schalter „Respawn“ im Editor,
+    `Order::SetRespawn`, das Feld in der Kartendatei (alte Dateien laden trotzdem) und dass Zombies an der Basis
+    „sterben“ und neu kommen.
+  - **Konstanter Spawn** (`data\spawning.json`) aus den Spawnern auf „Constant“: Tag 1 nichts, ab Tag 2 einzelne
+    Walker alle 30 s, bis Ende Tag 3 gleitend mehr (1–3 alle 10 s), ab Tag 4 Gruppen aus 4–5 Runnern alle 60 s, keine
+    Walker mehr, bis Tag 8 gleitend 8–10 alle 40 s, danach +1 Zombie pro Gruppe und Tag. Jede Gruppe kommt aus einem
+    zufälligen Spawner. F3 zeigt, was gerade kommt.
+  - **Ein Ordner für alle Werte: `data\`** (wie in DESIGN.md 12.4 geplant) – `units.json`, `buildings.json`,
+    `zombies.json`, `colony.json` (Startgold, Gold pro Kolonist, Start-Einheiten), `spawning.json`. Was jeder Wert
+    heißt, steht in `data\README.md`. Zeiten in Sekunden. Neu `src\data.rs` lädt sie: eingebaut in die Exe, und vor
+    jeder neuen Runde (Start, Restart, New map) frisch aus `data\`, falls der Ordner da ist – Wert ändern, Restart,
+    fertig. Eine kaputte Datei zeigt eine rote Zeile, die alten Werte bleiben.
+  - Im Code geblieben: Tageslänge, Größe der Figuren, wie die Menge sich schiebt, die Abstands-Tabelle der Bauregeln,
+    die Regler der Kartengeneratoren (die stehen in den Einstellungen).
+  - 78 Tests (neu: konstanter Spawn folgt den Abschnitten, der erste Walker kommt genau zu Beginn von Tag 2; die
+    eingebauten Daten sind vollständig; `data\` wird gefunden und gelesen; eine kaputte Datei nennt ihren Namen).
+    Der Spawner-Test prüft jetzt, dass Getötete tot bleiben. Neue Prüfsumme (im Testspiel kamen vorher Getötete wieder).
+- **2026-10-17:** **DESIGN.md gekürzt** (1166 → 859 Zeilen, ≈ 89 → 51 KB): nur noch der aktuelle und der geplante
+  Stand, kein Verlauf mehr (der steht hier unter „Stand“ und in git).
+  - Weg sind Datumsangaben, „ersetzt/vorher war …“, verworfene Varianten (Magic Box, Jäger-Zombies, Sichtweite 10)
+    und der Sprachvergleich Rust/C++/C#/C. Lange Sätze sind jetzt Stichpunkte.
+  - Genaue Prototyp-Zahlen (HP, Schaden, Tempo) stehen nicht mehr doppelt drin – nur noch der Verweis auf `data\`.
+  - Was schon gebaut ist, steht pro Abschnitt kurz unter *Prototype:*. Veraltetes korrigiert (Einstellungen ohne
+    `magic_box_*`, Medic gibt es schon, Angriffsbefehl auf T).
+  - Offene Fragen (14) enthalten nur noch die offenen (14, 17, 18, 21, 22, alte Nummern behalten); die Entscheidungen
+    stehen in ihren Abschnitten. Der Fahrplan (13) hat eine Spalte „Status“.
+  - **Abschnittsnummern unverändert**, weil der Code darauf verweist (z. B. `DESIGN.md 12.8`).
+- **2026-10-17:** **Ranger, Fat-Zombie, Drehen und Zielen wie in StarCraft, Werte aus TAB:**
+  - **Ranger** (grün): schnell (4 Kacheln/s), schwach (60 HP), Reichweite 6, Schaden 10 – wie TABs Ranger. Im
+    Kommandozentrum auf **A** (4 s), im Editor unter Units. Zu Beginn 4 dabei (`start_rangers` in `colony.json`).
+  - **Jede Einheit dreht und zielt** (`combat.rs`): erst zum Ziel drehen (`turn_around_seconds` = halbe Drehung), dann
+    nachladen abwarten (`cooldown_seconds`), dann zielen (`aim_seconds`: Ranger 0,4 s, Scharfschütze 0,25, Soldat
+    0,1), dann der Schuss. Neues Ziel → Zielen von vorn; darum behält eine Einheit ihr Ziel, solange es lebt und in
+    Reichweite ist (wie in SC2), statt jeden Takt zum nächstbesten zu springen. Beim Laufen dreht sie sich in
+    Laufrichtung, ohne darauf zu warten. Gezeichnet: ein dunkles Stück (Gewehr, Bogen) zeigt die Blickrichtung.
+  - **Werte aus TAB** (`data\units.json`, `data\zombies.json`): HP, Tempo, Reichweite, Sicht, Feuerrate der drei
+    Schützen; Walker 35 HP / 0,4 Kacheln/s / 6 Schaden, Runner 1,75 Kacheln/s / 10 Schaden. Abweichungen, damit deine
+    Schusszahlen stimmen (Ranger 4 / Soldat 2 / Scharfschütze 1 für Walker, 6 / 3 / 1 für Runner): Soldat 20 statt
+    15 Schaden, Runner 50 statt 45 HP. Ein Test prüft die Schusszahlen, falls jemand Werte ändert.
+  - **Fat** (TABs „Chubby“): 600 HP, 40 Schaden, 1,75 Kacheln/s, **größer** (Radius 0,45 statt 0,25 – er drängt
+    die anderen weiter weg und erreicht mehr). Erstmal nur im Editor (Pinsel/Drop), nicht im konstanten Spawn.
+  - **Zombies haben jetzt Panzerung** wie die Einheiten (Walker 0, Runner 1, Fat 2) und jeder eine eigene Größe
+    (`radius` in `zombies.json`; die feste Konstante `ZOMBIE_RADIUS` ist weg).
+  - Haken: Einheiten sehen mit den TAB-Werten weniger weit (Soldat 6, Ranger 8, Scharfschütze 9) als Zombies (13) –
+    Zombies bemerken dich also, bevor du sie siehst. Die Zombie-Sicht ist (noch) für alle gleich; in TAB liegt sie
+    bei 5–8, dort lockt vor allem der Lärm der Schüsse.
+  - „Ich kann auf Wasser bauen“: Im **Spiel** geht das nicht (geprüft: auf keiner der 1.502 Wasserkacheln einer Karte
+    passt ein Zelt). Im **Editor Mode** geht es absichtlich – das Gebäude kommt ohne Regeln hin und das Wasser darunter
+    wird Gras (dafür gibt es einen Test). Nicht geändert.
+  - 81 Tests (neu: Schusszahlen, Ranger dreht sich um und zielt vor dem ersten Pfeil und schießt dann genau alle
+    Zielen + Nachladen, Fat-Zombies halten mehr Abstand). Angepasst: Turm-Test mit 10 statt 20 Zombies (die stärkeren
+    Runner rissen den Turm sonst ein), Medic und Scharfschütze brauchen erst ein paar Takte zum Drehen. Neue Prüfsumme.
+- **2026-10-17:** **Zombie-Sicht wie TAB, Lärm, WASD, Editor ohne Gras:**
+  - **Zombie-Sicht pro Art** (`sight` in `zombies.json`): Walker 5, Runner 6, Fat 5 statt 13 für alle. Jede Art hat ihre
+    eigene „sieht hier jemand eine Einheit?“-Karte (`zombie_sight`, eine pro Art) – gerechnet von den wenigen Einheiten
+    aus, nicht von den tausenden Zombies.
+  - **Lärm wie in TAB** (`noise` in `units.json`): Jeder Schuss auf einen Zombie weckt alle Zombies im Umkreis (Ranger 1,
+    Soldat 3, Scharfschütze 10 Kacheln, Medic 0). Sie stürmen 20 s (`noise_seconds`) auf deine Einheiten los, wie ein
+    angeschossener Zombie. Wald und Mauern halten Lärm nicht auf. Das ist nur der lokale Teil von DESIGN.md 8.3 – der
+    Lärm, der sich wie Factorios Verschmutzung über die Karte ausbreitet, kommt mit Schritt 9 des Fahrplans.
+  - **WASD bewegt die Kamera nur noch, wenn nichts ausgewählt ist** – vorher ging das mit Einheiten für die Tasten, die
+    keine Befehle sind (W, A, D). Pfeiltasten, Rand und Mausrad gehen immer.
+  - **Editor: kein Gras mehr unter Gebäuden.** Das Gelände bleibt (Wasser bleibt Wasser). Damit ein Tor auf Wasser
+    keine Brücke wird, öffnet seine Tür nur auf Boden (`Map::blocks_unit`).
+  - Tests: 83 (neu: Runner sieht 5,2 Kacheln weit, Walker nicht 5,8; Scharfschützen-Schuss weckt einen Zombie 9 Kacheln
+    hinter ihm, ein Pfeil nicht). Angepasst: Der Mauer-Test („Zombies stürmen die Mauer am Wasser vorbei“) klappt jetzt
+    über den Lärm des Scharfschützen statt über die Sicht; Wanderer bemerken nur noch den Soldaten, den sie auch sehen.
+    Neue Prüfsumme.
+  - **Offen:** Soldaten-Schaden steht jetzt auf 15 (TAB). Damit braucht der Soldat 3 statt 2 Schuss für einen Walker –
+    der Test `shots_to_kill_walkers_and_runners` schlägt deshalb fehl. Beides zusammen (Ranger 4 Schuss, Soldat 2) geht
+    mit 15 Schaden nicht: Der Walker bräuchte 31–40 HP für den Ranger, aber höchstens 30 für den Soldaten.
+- **2026-10-17:** **Gebäude in der Auswahl, Baumenüs, Ein-Balken-Leben, Erz, bessere Karten, kein Ruckeln:**
+  - **Soldat bleibt bei 15 Schaden** (TAB): 3 Schuss für einen Walker, 4 für einen Runner. Der Test hält das fest.
+  - **Ruckeln bei Befehlen behoben:** Jeder Lauf-/Angriffsbefehl rechnete ein Flow Field über die ganze Karte (288 × 288)
+    – 95 ms im Debug-Build, 8 ms im Release. Jetzt: die Sichtlinien-„Anker“ werden erst gerechnet, wenn jemand auf der
+    Kachel steht (statt für alle 83.000), der kürzeste Weg mit einer Eimer-Warteschlange statt eines Heaps, Patrouille
+    teilt sich ein Feld für den Rückweg (vorher eins pro Einheit), und der Debug-Build ist leicht optimiert
+    (`Cargo.toml`). Ergebnis: 5,7 ms im Debug-Build, 2,2 ms im Release. Nebenbei laufen alle Tests in 2 statt 14 s.
+  - **Gebäude in Auswahl und Kontrollgruppen** wie in StarCraft: Shift-Klick nimmt ein Gebäude zur Auswahl dazu, der
+    Rahmen nimmt Gebäude, wenn keine Einheit drin ist, Strg+Zahl speichert auch Gebäude. **Tab** wechselt auch zu
+    Gebäuden – die Befehlskarte zeigt den aktiven Typ. Rechtsklick: Einheiten laufen, Gebäude setzen ihren Sammelpunkt.
+  - **Kommandozentrum im StarCraft-Raster:** Q Soldat, W Ranger, E Energie ▸, R Scharfschütze, T Medic, A Spezial ▸,
+    S Zelt, D Verteidigung ▸ (Q Mauer, W Tor, E Turm), G Sammelpunkt; Esc zurück. Energie und Spezial sind noch leer.
+    Der Turm genauso: Q raus, G Sammelpunkt. Einheiten behalten ihre Tasten (M, S, H, P, T).
+  - **Leben + Schild = ein Balken** (über dem Gebäude, im Panel, auf den Symbolen): HP in Farbe, Schild graublau dahinter.
+    Der Schild steht in `buildings.json` als `shield_percent` (Prozent der HP; Zelt 133 % = 199 statt 200), im Panel in %.
+  - **Herumstreifende Zombies** (`roaming` in `zombies.json`): näher an der Basis (ab 10 statt 16 Kacheln), gleichmäßiger
+    verteilt, deutlich mehr (Regler heißt jetzt „Roaming zombies“, Standard 60 statt 20 pro 1.000 Kacheln ≈ 3.900),
+    ab 35 % des Wegs zum Rand auch Runner, ab 80 % auch Fat.
+  - **Wege für die Einheiten repariert:** Die Generatoren verbanden jede offene Stelle mit der Basis – aber oft nur
+    **durch den Ring hinter der Weltgrenze**, wo deine Einheiten nicht hinkönnen (Tausende Kacheln pro Karte, darum
+    brauchte es den Erase-Pinsel). Jetzt zwei Durchgänge: erst die ganze Karte (Spawner), dann innerhalb der Grenze. Und
+    der Weg schneidet so wenig Hindernis wie möglich durch („0-1-BFS“) statt einfach den kürzesten.
+  - **Erz** (`mapgen/ores.rs`, wie Factorios „Spot Noise“): Eisenerz, Kohle, Stein als Felder auf Gras. Neben der Basis
+    immer eins von jedem, weiter draußen größer und reicher. Regler: Anzahl, Größe, Reichtum. Im Editor malbar, wird mit
+    der Karte gespeichert (alte Karten laden ohne Erz).
+  - **Generatoren dichter und natürlicher:** Wild mit mehr Wald (30 %) und Fels (13 %) bis nah an die Basis; Regionen und
+    Ringe mit dickeren Wänden aus Fels, Wald und etwas Wasser im Wechsel, lange Wände mit mehr Pässen, kleine Haine auch
+    in Wiesen; Canyons mit großen Felsmassen statt gleichmäßigem Brei; überall verschwinden winzige Krümel.
+  - Neues Werkzeug für mich (und dich): `cargo test dump_previews -- --ignored` mit `DUMP_DIR` schreibt von jedem
+    Generator ein Bild als PNG – so habe ich die Karten angeschaut.
+  - 85 Tests (neu: Einheiten und Zombies erreichen die Basis von überall – 30 Karten mit Standard- und Zufallswerten;
+    Erz liegt neben der Basis, nur auf Gras, draußen reicher, der Regler wirkt; herumstreifende Zombies nach Entfernung).
+    Angepasst: Alarm-Test (12 statt 16 Kacheln, Zombies sehen nur noch 6), Speichern prüft das Erz. Neue Prüfsumme.

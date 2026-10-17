@@ -1,9 +1,9 @@
 //! Tests of the simulation. Most of them play a little scene tick by tick and look at the result.
 
 use super::*;
-use super::zombies::{ALERT_TICKS, WANDER_RADIUS};
+use super::zombies::values;
+use crate::data;
 use crate::formation::{self, Formation};
-use crate::kinds::TOWER_SLOTS;
 use crate::map::Terrain;
 
 /// A little game of 600 ticks with a bit of everything, returns the checksum at the end.
@@ -19,7 +19,7 @@ fn scripted_game() -> u64 {
             50 => vec![
                 Order::SpawnWave { count: 300, from: WaveFrom::Sides(2) },
                 Order::SpawnZombiesAt { count: 50, point: base + vec2(6.0, -4.0) },
-                Order::PlaceZombies { center: base + vec2(-8.0, 8.0), radius: 3.0, count: 40, breed: Some(Breed::Hunter), wander: true },
+                Order::PlaceZombies { center: base + vec2(-8.0, 8.0), radius: 3.0, count: 40, breed: Breed::Walker, wander: true },
             ],
             100 => vec![
                 Order::Command { units: ids[0..3].to_vec(), command: Command::Patrol(base + vec2(6.0, -4.0)), queue: false, formation: None },
@@ -51,7 +51,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0x2e47_304e_ea00_38a9;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0x1661_580a_034c_8173;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -74,7 +74,7 @@ fn different_seed_gives_different_result() {
 /// The unit at the bottom right of the start formation, in a world without zombies.
 fn quiet_world() -> (World, u32) {
     let mut world = World::new(7);
-    world.step(&[Order::ClearZombies, Order::SetRespawn(false)]);
+    world.step(&[Order::ClearZombies]);
     let id = world.units.last().unwrap().id;
     (world, id)
 }
@@ -153,6 +153,7 @@ fn patrol_goes_back_and_forth() {
 #[test]
 fn attack_kills_target_and_finishes() {
     let (mut world, id) = quiet_world();
+    world.units.retain(|u| u.id == id); // nobody else steals the kill
     world.step(&[Order::SpawnZombiesAt { count: 1, point: world.base + vec2(9.0, -5.0) }]);
     let zombie = world.zombies[0].id;
     world.step(&[Order::Command { units: vec![id], command: Command::Attack(zombie), queue: false, formation: None }]);
@@ -318,29 +319,43 @@ fn zombies_break_through_walls() {
     assert_eq!(world.buildings[0].hp, world.buildings[0].stats().hp);
 }
 
-/// A unit inside walls with a gap: a few zombies (the hunters) find their way to it through the gap,
-/// the others hit the wall.
+/// A soldier inside walls with a gap, shooting: the zombie it hits and a few around it find the way through the gap,
+/// the others hit the wall. Without a shot nobody looks for the gap.
 #[test]
-fn hunters_find_the_gap_others_hit_the_wall() {
-    let (mut world, _) = quiet_world();
-    world.units.clear();
-    let fort = (world.base.x as i32 + 6, world.base.y as i32 - 6);
-    world.step(&wall_ring(fort, 2, &[(fort.0, fort.1 - 2)])); // gap at the top
-    let inside = vec2(fort.0 as f32 + 0.5, fort.1 as f32 + 0.5);
-    world.spawn_unit(UnitKind::Soldier, inside);
-    world.units[0].cooldown = u32::MAX; // doesn't shoot in the test, so the zombies stay
-    world.step(&[
-        Order::Command { units: vec![world.units[0].id], command: Command::Hold, queue: false, formation: None },
-        Order::SpawnZombiesAt { count: 40, point: inside + vec2(5.0, 0.0) },
-    ]);
-    let mut hurt = false;
-    for _ in 0..300 {
-        world.step(&[]);
-        hurt |= world.units.first().is_none_or(|u| u.hp < u.stats().hp);
-    }
-    assert!(hurt, "no hunter got through the gap");
-    let damaged = world.buildings.iter().filter(|b| b.kind == BuildingKind::Wall && b.hp < b.stats().hp).count();
+fn shot_zombies_find_the_gap_others_hit_the_wall() {
+    let run = |shoots: bool| {
+        let (mut world, _) = quiet_world();
+        world.units.clear();
+        let fort = (world.base.x as i32 + 6, world.base.y as i32 - 6);
+        world.step(&wall_ring(fort, 2, &[(fort.0, fort.1 - 2)])); // gap at the top
+        let inside = vec2(fort.0 as f32 + 0.5, fort.1 as f32 + 0.5);
+        world.spawn_unit(UnitKind::Soldier, inside);
+        if !shoots {
+            world.units[0].cooldown = u32::MAX;
+        }
+        world.step(&[
+            Order::Command { units: vec![world.units[0].id], command: Command::Hold, queue: false, formation: None },
+            Order::SpawnZombiesAt { count: 40, point: inside + vec2(5.0, 0.0) },
+        ]);
+        for zombie in &mut world.zombies {
+            zombie.hp = 100_000; // nobody dies, so the crowd stays the same
+        }
+        let mut hurt = false;
+        let mut most_seeking = 0;
+        for _ in 0..300 {
+            world.step(&[]);
+            hurt |= world.units.first().is_none_or(|u| u.hp < u.stats().hp);
+            most_seeking = most_seeking.max(world.zombies.iter().filter(|z| z.is_seeking()).count());
+        }
+        let damaged = world.buildings.iter().filter(|b| b.kind == BuildingKind::Wall && b.hp < b.stats().hp).count();
+        (hurt, damaged, most_seeking)
+    };
+    let (hurt, damaged, most_seeking) = run(true);
+    assert!(hurt, "no shot zombie got through the gap");
     assert!(damaged > 0, "all zombies ignored the wall");
+    assert!(most_seeking < 20, "{most_seeking} of 40 looked for the gap at once - should be only a few");
+    let (_, _, most_seeking) = run(false);
+    assert_eq!(most_seeking, 0, "zombies looked for the gap without a shot");
 }
 
 /// No zombie or unit stands on ground that is blocked for it.
@@ -606,8 +621,13 @@ fn idle_medic_beams_at_hurt_units_only() {
     assert!(world.beams.is_empty(), "beam at a healthy unit");
     let i = world.find_unit(id).unwrap();
     world.units[i].hp = 10;
-    world.step(&[]);
-    assert_eq!(world.beams.len(), 1);
+    // First it turns towards the hurt unit (`turn_around_seconds`), then the beam is on.
+    let mut ticks = 0;
+    while world.beams.is_empty() && ticks < 20 {
+        world.step(&[]);
+        ticks += 1;
+    }
+    assert_eq!(world.beams.len(), 1, "no beam after {ticks} ticks");
 }
 
 /// The command center builds a unit; it comes out and walks to the rally point.
@@ -667,10 +687,10 @@ fn bait(world: &mut World, kind: UnitKind, pos: Vec2) -> u32 {
 }
 
 /// The scene from the screenshot: a sniper behind a wall, water in front of it, zombies 8 tiles away on the
-/// other side – the command center lies behind the zombies. Before, they walked off to the command center
-/// (the sniper was beyond their 5 tiles). Now they see it, go around the water and storm the wall.
+/// other side – the command center lies behind the zombies. They don't see that far (6 tiles, TAB), but the sniper
+/// is loud: its first shot is heard 10 tiles around, they go around the water and storm the wall.
 #[test]
-fn zombies_see_units_and_storm_the_wall() {
+fn zombies_hear_the_shot_and_storm_the_wall() {
     let (mut world, _) = quiet_world();
     world.units.clear();
     let p = (world.base.x as i32 - 12, world.base.y as i32);
@@ -681,7 +701,9 @@ fn zombies_see_units_and_storm_the_wall() {
     world.step(&wall);
     let water = (p.1 - 3..=p.1 + 3).map(|y| (p.0 + 5, y)).collect();
     world.step(&[Order::PaintTerrain { terrain: Terrain::Water, tiles: water }]);
-    bait(&mut world, UnitKind::Sniper, vec2(p.0 as f32 + 0.5, p.1 as f32 + 0.5));
+    world.spawn_unit(UnitKind::Sniper, vec2(p.0 as f32 + 0.5, p.1 as f32 + 0.5));
+    let sniper = world.units.last().unwrap().id;
+    world.step(&[Order::Command { units: vec![sniper], command: Command::Hold, queue: false, formation: None }]);
     world.step(&[Order::SpawnZombiesAt { count: 20, point: vec2(p.0 as f32 + 8.5, p.1 as f32 + 0.5) }]);
     for _ in 0..400 {
         world.step(&[]);
@@ -690,8 +712,9 @@ fn zombies_see_units_and_storm_the_wall() {
     assert!(damaged > 0, "no zombie stormed the wall");
 }
 
-/// A hit zombie is alarmed. An alarmed zombie storms at units it can't see (16 tiles, it sees 13) and hits the
-/// tower they sit in – without the alarm the same zombie walks past to the command center.
+/// A hit zombie is alarmed. An alarmed zombie storms at units it can't see (12 tiles, a runner sees 6) and hits the
+/// tower they sit in – without the alarm the same zombie walks past to the command center. 12, not further: in its
+/// 5 s of alarm even a slow runner gets within sight, then it keeps coming because it sees the tower's units.
 #[test]
 fn an_alarmed_zombie_storms_unseen_units() {
     let (mut world, _) = quiet_world();
@@ -700,8 +723,12 @@ fn an_alarmed_zombie_storms_unseen_units() {
     world.spawn_zombie(p + vec2(6.0, 0.0));
     world.zombies[0].hp = 100_000;
     world.spawn_unit(UnitKind::Sniper, p);
-    for _ in 0..5 {
+    // The sniper first turns and aims (`data\units.json`) – then it shoots.
+    for _ in 0..40 {
         world.step(&[]);
+        if world.zombies[0].alert > 0 {
+            break;
+        }
     }
     assert!(!world.shots.is_empty() || world.zombies[0].alert > 0, "no shot fell");
     assert!(world.zombies[0].alert > 0, "being shot doesn't alarm");
@@ -714,9 +741,9 @@ fn an_alarmed_zombie_storms_unseen_units() {
         world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tower, tile: t, turned: false, editor: false }]);
         let tower = world.buildings.last().unwrap().id;
         let center = world.buildings.last().unwrap().center();
-        world.spawn_zombie(center + vec2(16.0, 0.0));
+        world.spawn_zombie(center + vec2(12.0, 0.0));
         if alarmed {
-            world.zombies[0].alert = ALERT_TICKS;
+            world.zombies[0].alert = values().alert;
         }
         world.spawn_unit(UnitKind::Sniper, center);
         let sniper = world.units.last_mut().unwrap();
@@ -733,15 +760,14 @@ fn an_alarmed_zombie_storms_unseen_units() {
 }
 
 /// A periodic spawner sends its zombies every few seconds, one that is off sends nothing by itself – and killed
-/// zombies only come back in spawners that send constantly.
+/// zombies never come back.
 #[test]
-fn spawners_send_constantly_periodically_or_not() {
+fn spawners_send_periodically_or_not_and_the_dead_stay_dead() {
     let (mut world, _) = quiet_world();
     world.units.clear();
     let ids: Vec<u32> = world.spawners.iter().map(|s| s.id).collect();
     let mut orders: Vec<Order> = ids.iter().map(|&spawner| Order::SetSpawnMode { spawner, mode: SpawnMode::Off }).collect();
     orders.push(Order::SetSpawnMode { spawner: ids[0], mode: SpawnMode::Periodic { every: 2, count: 7 } });
-    orders.push(Order::SetRespawn(true));
     world.step(&orders);
     for _ in 0..39 {
         world.step(&[]);
@@ -754,21 +780,43 @@ fn spawners_send_constantly_periodically_or_not() {
     }
     assert_eq!(world.zombies.len(), 14, "after 4 s: two batches");
 
-    // Killed: no spawner sends constantly – so they stay dead.
-    for z in &mut world.zombies {
-        z.hp = 0;
-    }
-    world.step(&[]);
-    assert!(world.zombies.is_empty());
-    // One spawner sends constantly: the killed come back there.
-    world.step(&[Order::SpawnZombiesAt { count: 5, point: world.base + vec2(20.0, 0.0) }]);
+    // Killed: they stay dead – even with spawners set to "constant".
     world.step(&[Order::SetSpawnMode { spawner: ids[0], mode: SpawnMode::Off }, Order::SetSpawnMode { spawner: ids[3], mode: SpawnMode::Constant }]);
     for z in &mut world.zombies {
         z.hp = 0;
     }
     world.step(&[]);
-    assert_eq!(world.zombies.len(), 5);
-    assert!(world.zombies.iter().all(|z| world.spawners[3].contains(z.pos) || world.spawners[3].contains(z.prev)));
+    assert!(world.zombies.is_empty());
+}
+
+/// The constant spawn as in `data\spawning.json`: nothing on day 1, from day 2 single walkers that come more and
+/// more often, from day 4 groups of 4–5 runners and no walkers anymore, and after the last stage the groups keep
+/// growing.
+#[test]
+fn constant_spawn_follows_the_stages() {
+    let at = |day: u64, hour: u64| (day - 1) * DAY_TICKS + hour * HOUR_TICKS;
+    assert_eq!(spawning::group_at(at(1, 23)), None, "something on day 1");
+    let early = spawning::group_at(at(2, 0)).unwrap();
+    assert_eq!((early.breed, early.min, early.max), (Breed::Walker, 1, 1));
+    let later = spawning::group_at(at(3, 12)).unwrap();
+    assert_eq!(later.breed, Breed::Walker);
+    assert!(later.every < early.every, "walkers don't come more often: {} vs {} ticks", later.every, early.every);
+    let runners = spawning::group_at(at(4, 0)).unwrap();
+    assert_eq!((runners.breed, runners.min, runners.max), (Breed::Runner, 4, 5));
+    let last = data::get().spawning.stages.last().unwrap();
+    let grown = spawning::group_at(at(last.day + 5, last.hour)).unwrap();
+    assert!(grown.min > last.group[0], "groups don't grow after the last stage");
+
+    // In the world: the first walker comes out of a "constant" spawner right at the start of day 2.
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.tick = at(2, 0) - 1;
+    world.step(&[]);
+    assert!(world.zombies.is_empty(), "too early");
+    world.step(&[]);
+    assert_eq!(world.zombies.len(), 1);
+    assert_eq!(world.zombies[0].breed, Breed::Walker);
+    assert!(world.spawners.iter().any(|s| s.mode == SpawnMode::Constant && s.contains(world.zombies[0].prev)));
 }
 
 /// Whatever water and mountains the map generation makes: every spawner has a way to the base.
@@ -879,8 +927,8 @@ fn orders_in_the_pause_are_the_same_as_with_the_next_tick() {
     assert_eq!(run(true), run(false));
 }
 
-/// In the editor a building goes anywhere – on water, outside the border, right next to zombies and onto a unit
-/// (who is pushed aside). Only not onto another building.
+/// In the editor a building goes anywhere – on water (which stays water under it), outside the border, right next
+/// to zombies and onto a unit (who is pushed aside). Only not onto another building.
 #[test]
 fn editor_builds_anywhere_but_on_buildings() {
     let (mut world, id) = quiet_world();
@@ -894,40 +942,95 @@ fn editor_builds_anywhere_but_on_buildings() {
     let before = world.buildings.len();
     world.step(&[place(water), place((4, 4)), place(unit_tile), place(world.buildings[0].tile)]);
     assert_eq!(world.buildings.len(), before + 3, "on the command center it must not go");
-    assert_eq!(world.map.terrain(water.0, water.1), Terrain::Grass, "the water under it becomes grass");
+    assert_eq!(world.map.terrain(water.0, water.1), Terrain::Water, "the water under it has to stay water");
     assert!(nobody_on_blocked_ground(&world), "the unit wasn't pushed aside");
     // The game's rules still apply without the editor.
     assert!(!world.can_place(BuildingKind::Wall, (3, 3), false));
 }
 
-/// The editor's zombies: only hunters when asked for, and wanderers stay near where they were put – until they
-/// see a unit, then they storm like everyone else.
+/// The editor's zombies: the breed asked for, and wanderers stay near where they were put – until they see a unit,
+/// then they storm like everyone else.
 #[test]
 fn placed_zombies_have_a_breed_and_wanderers_stay() {
     let (mut world, _) = quiet_world();
     world.units.clear();
     let home = world.base + vec2(12.0, -12.0);
     clear_ground(&mut world, (home.x as i32, home.y as i32), 8);
-    world.step(&[Order::PlaceZombies { center: home, radius: 2.0, count: 20, breed: Some(Breed::Hunter), wander: true }]);
+    world.step(&[Order::PlaceZombies { center: home, radius: 2.0, count: 20, breed: Breed::Runner, wander: true }]);
     assert_eq!(world.zombies.len(), 20);
-    assert!(world.zombies.iter().all(|z| z.is_hunter() && z.wander.is_some()));
+    assert!(world.zombies.iter().all(|z| z.breed == Breed::Runner && z.wander.is_some()));
     for _ in 0..400 {
         world.step(&[]);
     }
     assert_eq!(world.zombies.len(), 20, "a wanderer walked off to the base");
-    assert!(world.zombies.iter().all(|z| z.pos.distance(home) < 2.0 + WANDER_RADIUS * 1.5), "a wanderer strayed too far");
+    assert!(world.zombies.iter().all(|z| z.pos.distance(home) < 2.0 + values().wander_radius * 1.5), "a wanderer strayed too far");
     assert!(world.zombies.iter().any(|z| z.pos.distance(z.prev) > 0.0 || z.wander.unwrap().goal.is_some()), "nobody wanders");
 
-    // A soldier comes into sight: they notice it and storm.
-    world.spawn_unit(UnitKind::Soldier, home + vec2(-8.0, 0.0));
+    // A soldier (that doesn't shoot – no noise) appears in their middle: whoever sees it storms, whoever stands
+    // further away than a runner sees (6 tiles, TAB) keeps wandering.
+    world.spawn_unit(UnitKind::Soldier, home);
     world.units[0].cooldown = u32::MAX;
     world.step(&[]);
     world.step(&[]);
-    assert!(world.zombies.iter().all(|z| z.wander.is_none()), "still wandering with a soldier in sight");
+    let sight = Breed::Runner.stats().sight;
+    let near: Vec<&Zombie> = world.zombies.iter().filter(|z| z.pos.distance(home) < sight - 1.0).collect();
+    assert!(!near.is_empty());
+    assert!(near.iter().all(|z| z.wander.is_none()), "still wandering with a soldier in sight");
+    let far = world.zombies.iter().filter(|z| z.pos.distance(home) > sight + 1.0);
+    assert!(far.into_iter().all(|z| z.wander.is_some()), "noticed a soldier it can't see");
+}
+
+/// Every breed sees as far as `data\zombies.json` says: a runner 5.2 tiles from a soldier sees it (6 tiles), a
+/// walker 5.8 tiles away doesn't (5). Seen is counted from the middle of the zombie's tile, so not exactly 5.5.
+#[test]
+fn zombies_see_as_far_as_their_breed() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(12.0, -12.0);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 8);
+    bait(&mut world, UnitKind::Soldier, p);
+    world.spawn_zombie_as(p + vec2(5.2, 0.0), Breed::Runner, true);
+    world.spawn_zombie_as(p + vec2(-5.8, 0.0), Breed::Walker, true);
+    for z in &mut world.zombies {
+        z.speed = 0.0; // stay where they are
+    }
+    world.step(&[]);
+    world.step(&[]);
+    assert!(world.zombies[0].wander.is_none(), "the runner didn't see the soldier");
+    assert!(world.zombies[1].wander.is_some(), "the walker saw further than 5 tiles");
+}
+
+/// Noise like in TAB: a shot wakes every zombie within the shooter's `noise`. A wanderer 9 tiles behind the shooter
+/// (too far to see it) hears a sniper (10) – but not a ranger (1).
+#[test]
+fn loud_shots_wake_zombies_quiet_ones_dont() {
+    let woken = |kind: UnitKind| {
+        let (mut world, _) = quiet_world();
+        world.units.clear();
+        let p = world.base + vec2(12.0, -12.0);
+        clear_ground(&mut world, (p.x as i32, p.y as i32), 10);
+        world.spawn_unit(kind, p);
+        // The target: right in front, standing still and too tough to die. Behind: the wanderer.
+        world.spawn_zombie_as(p + vec2(5.0, 0.0), Breed::Walker, false);
+        world.spawn_zombie_as(p + vec2(-9.0, 0.0), Breed::Walker, true);
+        for z in &mut world.zombies {
+            z.speed = 0.0;
+            z.hp = 100_000;
+        }
+        let mut shot = false;
+        for _ in 0..60 {
+            world.step(&[]);
+            shot |= !world.shots.is_empty();
+        }
+        assert!(shot, "{kind:?} never shot");
+        world.zombies[1].wander.is_none()
+    };
+    assert!(woken(UnitKind::Sniper), "the sniper's shot wasn't heard 9 tiles away");
+    assert!(!woken(UnitKind::Ranger), "the ranger's arrow was heard 9 tiles away");
 }
 
 /// A diamond of walls touching only at the corners (dragged diagonally) is closed: no zombie gets through a
-/// corner, not even a hunter – they can only tear it down.
+/// corner, not even one looking for a gap – they can only tear it down.
 #[test]
 fn diagonal_walls_are_closed() {
     let (mut world, _) = quiet_world();
@@ -947,7 +1050,10 @@ fn diagonal_walls_are_closed() {
     let inside = vec2(c.0 as f32 + 0.5, c.1 as f32 + 0.5);
     let id = bait(&mut world, UnitKind::Soldier, inside);
     world.step(&[Order::SpawnZombiesAt { count: 40, point: inside + vec2(6.0, 0.0) }]);
-    let diamond = |p: Vec2| (p.x.floor() as i32 - c.0).abs() + (p.y.floor() as i32 - c.1).abs() < r;
+    for zombie in &mut world.zombies {
+        zombie.seek = u32::MAX; // all of them look for a gap the whole time
+    }
+    let diamond =|p: Vec2| (p.x.floor() as i32 - c.0).abs() + (p.y.floor() as i32 - c.1).abs() < r;
     for _ in 0..400 {
         world.step(&[]);
         assert!(world.zombies.iter().all(|z| !diamond(z.pos)), "a zombie slipped through a corner");
@@ -1010,7 +1116,7 @@ fn tower_holds_four_and_protects_them() {
     for _ in 0..200 {
         world.step(&[]);
     }
-    assert_eq!(world.garrison(tower).len(), TOWER_SLOTS);
+    assert_eq!(world.garrison(tower).len(), data::get().buildings.tower_slots);
     let outside: Vec<&Unit> = world.units.iter().filter(|u| !u.is_inside()).collect();
     assert_eq!(outside.len(), 1);
     assert_eq!(outside[0].order_name(), "Idle", "the fifth should give up, the tower is full");
@@ -1022,11 +1128,12 @@ fn tower_holds_four_and_protects_them() {
     }
     let b = world.find_building(tower).unwrap();
     let center = world.buildings[b].center();
-    world.step(&[Order::SpawnZombiesAt { count: 20, point: center + vec2(1.2, 0.0) }]);
+    // 10, not 20: runners hit for 10 now (TAB) – 20 of them would bring the tower (600 HP) down within the 5 s.
+    world.step(&[Order::SpawnZombiesAt { count: 10, point: center + vec2(1.2, 0.0) }]);
     for _ in 0..100 {
         world.step(&[]);
     }
-    assert!(world.units.iter().all(|u| u.hp == u.stats().hp), "a unit in the tower was hit");
+    assert!(world.units.iter().all(|u| u.hp == u.stats().hp), "a unit in the tower was hit: {:?}", world.units.iter().map(|u| (u.hp, u.inside, u.pos)).collect::<Vec<_>>());
     let b = world.find_building(tower).unwrap();
     assert!(world.buildings[b].hp < world.buildings[b].stats().hp, "the tower wasn't hit");
 
@@ -1040,7 +1147,7 @@ fn tower_holds_four_and_protects_them() {
     for _ in 0..100 {
         world.step(&[]);
     }
-    assert_eq!(world.garrison(tower).len(), TOWER_SLOTS);
+    assert_eq!(world.garrison(tower).len(), data::get().buildings.tower_slots);
     let b = world.find_building(tower).unwrap();
     world.buildings[b].hp = 0;
     world.step(&[]);
@@ -1093,14 +1200,203 @@ fn zombies_pile_up_instead_of_merging() {
         world.step(&[]);
     }
     let zombies: Vec<Vec2> = world.zombies.iter().map(|z| z.pos).collect();
-    // Pairs that stand more than half inside each other (closer than one radius). Before: over 100.
+    // Pairs that stand more than half inside each other (closer than one radius – all of them are runners).
+    // Before: over 100.
+    let radius = Breed::Runner.stats().radius;
     let mut merged = 0;
     for (i, p) in zombies.iter().enumerate() {
-        merged += zombies[i + 1..].iter().filter(|q| p.distance(**q) < ZOMBIE_RADIUS).count();
+        merged += zombies[i + 1..].iter().filter(|q| p.distance(**q) < radius).count();
     }
     assert!(merged <= 5, "{merged} pairs of zombies inside each other");
     // The pile in front of the gap is wide – before, they squeezed together on the line to the gap.
     let in_front = |p: &&Vec2| p.x > world.base.x + 12.0 && p.x < world.base.x + 16.0;
     let widest = zombies.iter().filter(in_front).map(|p| (p.y - world.base.y).abs()).fold(0.0, f32::max);
     assert!(widest > 2.0, "pile only {widest} tiles to each side");
+}
+
+/// Walkers are slower and weaker than runners, and the spawners send runners.
+#[test]
+fn walkers_are_slow_and_spawners_send_runners() {
+    assert!(Breed::Walker.stats().speed < Breed::Runner.stats().speed);
+    assert!(Breed::Walker.stats().hp < Breed::Runner.stats().hp);
+    assert!(Breed::Walker.stats().damage < Breed::Runner.stats().damage);
+    let (mut world, _) = quiet_world();
+    world.step(&[Order::SpawnZombies { count: 30 }]);
+    assert_eq!(world.zombies.len(), 30);
+    assert!(world.zombies.iter().all(|z| z.breed == Breed::Runner));
+}
+
+/// A new round: zombies roam the map, all of them wandering, none right at the base, more further out. Near the
+/// base only walkers, further out runners too, at the edge also fat ones (`roaming` in `data\zombies.json`).
+#[test]
+fn roamers_are_scattered_by_distance() {
+    let world = World::new(3);
+    let roaming = &values().roaming;
+    assert!(world.zombies.len() > 500, "only {} zombies", world.zombies.len());
+    assert!(world.zombies.iter().all(|z| z.wander.is_some()));
+    let half = world.map.play_area().size / 2.0;
+    let out = |z: &Zombie| (z.pos.distance(world.base) / half).min(1.0);
+    assert!(world.zombies.iter().all(|z| z.pos.distance(world.base) >= roaming.keep_out), "a zombie right at the base");
+    let near = world.zombies.iter().filter(|z| out(z) < 0.25).count();
+    let far = world.zombies.len() - near;
+    assert!(near > 0 && far > near * 4, "near {near}, far {far}");
+    for z in &world.zombies {
+        match z.breed {
+            Breed::Runner => assert!(out(z) >= roaming.runners_from, "a runner too close: {}", out(z)),
+            Breed::Fat => assert!(out(z) >= roaming.fat_from, "a fat one too close: {}", out(z)),
+            Breed::Walker => {}
+        }
+    }
+    for breed in Breed::ALL {
+        assert!(world.zombies.iter().any(|z| z.breed == breed), "no {breed:?} roams");
+    }
+}
+
+/// A unit that dies lies there for 2–5 s, then gets up as a walker where it fell.
+#[test]
+fn dead_units_rise_as_walkers() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(10.5, -10.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 3);
+    world.spawn_unit(UnitKind::Soldier, p);
+    world.units[0].hp = 0;
+    world.step(&[]);
+    assert!(world.units.is_empty());
+    assert_eq!(world.corpses.len(), 1);
+    let mut rose_after = None;
+    for ticks in 1..=120 {
+        world.step(&[]);
+        if !world.zombies.is_empty() {
+            rose_after = Some(ticks);
+            break;
+        }
+    }
+    let ticks = rose_after.expect("never got up");
+    assert!((40..=100).contains(&ticks), "got up after {ticks} ticks");
+    assert!(world.corpses.is_empty());
+    assert_eq!(world.zombies[0].breed, Breed::Walker);
+    assert!(world.zombies[0].pos.distance(p) < 1.0);
+}
+
+/// Zombies hit a tent's shield first. When it breaks, the tent is infected: exactly its 6 colonists come out as
+/// zombies – 2 to 4 runners, the rest walkers – and only after that does it lose hit points.
+#[test]
+fn a_tent_whose_shield_breaks_lets_out_six_zombies() {
+    let mut runners_seen = Vec::new();
+    for seed in 0..12 {
+        let mut world = World::new(seed);
+        world.step(&[Order::ClearZombies]);
+        world.units.clear();
+        let t = (world.base.x as i32 + 8, world.base.y as i32 - 8);
+        clear_ground(&mut world, t, 6);
+        world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: t, turned: false, editor: false }]);
+        let b = world.buildings.len() - 1;
+        world.buildings[b].shield = 7; // two hits of a runner
+        world.step(&[Order::SpawnZombiesAt { count: 1, point: vec2(t.0 as f32 - 0.6, t.1 as f32 + 1.0) }]);
+        while world.zombies.len() == 1 && world.tick < 400 {
+            world.step(&[]);
+            let tent = &world.buildings[b];
+            if !tent.infected {
+                assert_eq!(tent.hp, tent.stats().hp, "hit points down before the shield broke");
+            }
+        }
+        let tent = &world.buildings[b];
+        assert!(tent.infected, "seed {seed}: the shield never broke");
+        assert_eq!(world.zombies.len(), 1 + 6, "seed {seed}");
+        let runners = world.zombies[1..].iter().filter(|z| z.breed == Breed::Runner).count();
+        assert!((2..=4).contains(&runners), "seed {seed}: {runners} runners");
+        assert!(world.zombies[1..].iter().all(|z| z.pos.distance(tent.center()) < 3.0), "came out far from the tent");
+        runners_seen.push(runners);
+    }
+    runners_seen.dedup();
+    assert!(runners_seen.len() > 1, "always the same number of runners");
+}
+
+/// Every hour of the round (7.5 s) a tent pays 2 gold per colonist – 12. An infected tent pays nothing.
+#[test]
+fn tents_pay_gold_every_hour() {
+    let (mut world, _) = quiet_world();
+    let t = (world.base.x as i32 + 8, world.base.y as i32 - 8);
+    clear_ground(&mut world, t, 6);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: t, turned: false, editor: false }]);
+    assert_eq!(world.income(), 12);
+    let start = world.gold;
+    // In any 2 hours in a row the clock passes exactly two full hours.
+    for _ in 0..2 * HOUR_TICKS {
+        world.step(&[]);
+    }
+    assert_eq!(world.gold - start, 24);
+
+    let b = world.buildings.len() - 1;
+    let shield = world.buildings[b].shield;
+    assert!(world.buildings[b].take_damage(shield), "breaking the shield doesn't infect");
+    assert_eq!(world.income(), 0);
+    let start = world.gold;
+    for _ in 0..2 * HOUR_TICKS {
+        world.step(&[]);
+    }
+    assert_eq!(world.gold, start, "an infected tent still pays");
+}
+
+/// How many shots a unit needs for a zombie – as decided on 2026-10-17 (soldier with TAB's 15 damage, so 3 for a
+/// walker and 4 for a runner). If a value in `data\` changes, this test says whether they still hold.
+#[test]
+fn shots_to_kill_walkers_and_runners() {
+    let shots = |kind: UnitKind, breed: Breed| {
+        let damage = kind.stats().damage.saturating_sub(breed.stats().armor).max(1);
+        breed.stats().hp.div_ceil(damage)
+    };
+    use UnitKind::*;
+    assert_eq!([shots(Ranger, Breed::Walker), shots(Soldier, Breed::Walker), shots(Sniper, Breed::Walker)], [4, 3, 1]);
+    assert_eq!([shots(Ranger, Breed::Runner), shots(Soldier, Breed::Runner), shots(Sniper, Breed::Runner)], [6, 4, 1]);
+}
+
+/// A ranger with its back to a zombie: first it turns around, then it draws the bow – only then the first arrow.
+/// After that one arrow every `aim + cooldown` ticks.
+#[test]
+fn units_turn_and_aim_before_they_shoot() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(8.5, -8.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 6);
+    world.spawn_unit(UnitKind::Ranger, p);
+    // Right behind it (it faces +x +y), standing still and too tough to die.
+    world.spawn_zombie_as(p - vec2(3.0, 3.0), Breed::Walker, false);
+    world.zombies[0].speed = 0.0;
+    world.zombies[0].hp = 100_000;
+    let stats = UnitKind::Ranger.stats();
+    let mut shots = Vec::new();
+    for tick in 1..=80u32 {
+        world.step(&[]);
+        if !world.shots.is_empty() {
+            shots.push(tick);
+        }
+    }
+    // The tick it finishes turning already counts as the first tick of aiming.
+    let first = stats.turn_around + stats.aim;
+    assert_eq!(shots.first(), Some(&first), "turn {} + aim {} ticks: {shots:?}", stats.turn_around, stats.aim);
+    assert!(shots.windows(2).all(|w| w[1] - w[0] == stats.shot_ticks()), "not every {} ticks: {shots:?}", stats.shot_ticks());
+}
+
+/// Fat zombies are big: they keep further apart from each other than runners – and they're the toughest.
+#[test]
+fn fat_zombies_are_big_and_tough() {
+    let (fat, runner) = (Breed::Fat.stats(), Breed::Runner.stats());
+    assert!(fat.radius > runner.radius && fat.hp > runner.hp && fat.armor > runner.armor);
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let home = world.base + vec2(12.0, -12.0);
+    clear_ground(&mut world, (home.x as i32, home.y as i32), 8);
+    world.step(&[Order::PlaceZombies { center: home, radius: 1.0, count: 12, breed: Breed::Fat, wander: true }]);
+    for _ in 0..60 {
+        world.step(&[]);
+    }
+    let zombies: Vec<Vec2> = world.zombies.iter().map(|z| z.pos).collect();
+    // No two fat ones more than half inside each other – with runners' bodies they would stand much closer.
+    let mut merged = 0;
+    for (i, p) in zombies.iter().enumerate() {
+        merged += zombies[i + 1..].iter().filter(|q| p.distance(**q) < fat.radius * 1.5).count();
+    }
+    assert!(merged <= 1, "{merged} pairs of fat zombies inside each other");
 }

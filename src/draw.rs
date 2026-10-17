@@ -6,21 +6,31 @@ use std::collections::HashMap;
 
 use macroquad::prelude::*;
 
-use crate::hud::hp_color;
+use crate::hud::{draw_life, hp_color};
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::{Region, Terrain};
-use crate::sim::{Building, Mark, World};
+use crate::map::{Ore, Region, Terrain};
+use crate::sim::{Breed, Building, Mark, World};
 use crate::vision::Vision;
 
 // `pub`, because the minimap (hud.rs) uses the same colours.
 pub const GROUND: Color = Color::new(0.20, 0.25, 0.18, 1.0);
+/// Zombies on the minimap and in the editor's markings – on the map each breed has its own grey (`breed_color`).
 pub const ZOMBIE: Color = Color::new(0.55, 0.75, 0.35, 1.0);
-/// A zombie is a small box (placeholder skin like the units): edge on the ground and height, in tiles.
-const ZOMBIE_SIZE: f32 = 0.28;
+/// A zombie is a box (placeholder skin like the units): its edge on the ground is this many times its `radius` …
+const ZOMBIE_SIZE: f32 = 1.12;
+/// … and a normal one (radius 0.25) is this tall, in tile widths – a bigger one a bit taller.
 const ZOMBIE_HEIGHT: f32 = 0.4;
-/// Hunter zombies (walk around walls to get at units) a bit darker and more yellow.
-const HUNTER: Color = Color::new(0.62, 0.66, 0.22, 1.0);
+/// Walkers dark grey, runners light grey, fat ones a sickly yellowish brown.
+const WALKER: Color = Color::new(0.30, 0.30, 0.32, 1.0);
+const RUNNER: Color = Color::new(0.74, 0.74, 0.76, 1.0);
+const FAT: Color = Color::new(0.58, 0.52, 0.34, 1.0);
+/// What a unit holds (rifle, bow): a thin bar sticking out where it faces – so you see it turn.
+const WEAPON: Color = Color::new(0.15, 0.15, 0.17, 1.0);
+/// What an infected building turns towards.
+const INFECTED: Color = Color::new(0.30, 0.42, 0.18, 1.0);
+/// A fallen unit lies flat on the ground until it rises.
+const CORPSE_HEIGHT: f32 = 0.06;
 const HOLD_RING: Color = ORANGE;
 const SHOT: Color = Color::new(1.0, 0.9, 0.4, 0.8);
 const BEAM: Color = Color::new(0.35, 1.0, 0.45, 0.9);
@@ -132,11 +142,19 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     for y in lo..hi {
         for x in lo..hi {
             let terrain = world.map.terrain(x, y);
-            if terrain == Terrain::Grass {
+            let deposit = world.map.deposit(x, y);
+            if terrain == Terrain::Grass && deposit.is_none() {
                 continue;
             }
             let corner = vec2(x as f32, y as f32);
             if !on_screen(camera.world_to_screen(corner + 0.5), 40.0) {
+                continue;
+            }
+            // Ore on grass: the tile in the ore's colour, a smaller lighter diamond in the middle as a "lump".
+            if let Some(deposit) = deposit {
+                let color = ore_color(deposit.ore);
+                draw_diamond(camera, corner, Vec2::ONE, color);
+                draw_diamond(camera, corner + 0.3, Vec2::splat(0.4), lighten(color));
                 continue;
             }
             if terrain == Terrain::Tree {
@@ -211,12 +229,20 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             continue;
         }
         let p = lerp(zombie.prev, zombie.pos, alpha);
-        let color = if zombie.is_hunter() { HUNTER } else { ZOMBIE };
-        let ground = rect(p - Vec2::splat(ZOMBIE_SIZE / 2.0), Vec2::splat(ZOMBIE_SIZE));
-        things.push((p.x + p.y, Prism(ground, 0.0, ZOMBIE_HEIGHT, Color { a: visible, ..color })));
+        let color = breed_color(zombie.breed);
+        let size = zombie.radius * ZOMBIE_SIZE;
+        let height = ZOMBIE_HEIGHT * (0.5 + 2.0 * zombie.radius);
+        let ground = rect(p - Vec2::splat(size / 2.0), Vec2::splat(size));
+        things.push((p.x + p.y, Prism(ground, 0.0, height, Color { a: visible, ..color })));
     }
     for building in &world.buildings {
         building_parts(world, building, &mut things);
+    }
+    // Fallen units: flat and darker, a bit bigger than standing – they lie there.
+    for corpse in world.corpses.iter().filter(|c| area.contains(c.pos)) {
+        let (size, _) = unit_shape(corpse.kind);
+        let ground = rect(corpse.pos - Vec2::splat(size * 0.7), Vec2::splat(size * 1.4));
+        things.push((corpse.pos.x + corpse.pos.y, Prism(ground, 0.0, CORPSE_HEIGHT, mix(kind_color(corpse.kind), WALKER, 0.6))));
     }
     // Units in a tower aren't drawn – they show up on the tower's roof (`building_parts`).
     for unit in world.units.iter().filter(|u| !u.is_inside()) {
@@ -225,8 +251,17 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         // Selected ones a bit lighter.
         let color = if selected.contains(&unit.id) { lighten(color) } else { color };
         let (size, height) = unit_shape(unit.kind);
-        let ground = rect(p - Vec2::splat(size / 2.0), Vec2::splat(size));
+        // The block turned the way the unit faces, and its weapon sticking out in front, at chest height.
+        // (Drawing may use the normal `cos`/`sin` – only the simulation has to compute the same on every PC.)
+        let facing = vec2(unit.facing.cos(), unit.facing.sin());
+        let ground = bar(p - facing * size / 2.0, p + facing * size / 2.0, size);
         things.push((p.x + p.y, Prism(ground, 0.0, height, color)));
+        if !unit.stats().heals {
+            let tip = p + facing * (size / 2.0 + 0.2);
+            let middle = (p + tip) / 2.0;
+            let weapon = bar(p, tip, 0.07);
+            things.push((middle.x + middle.y, Prism(weapon, height * 0.5, height * 0.62, WEAPON)));
+        }
     }
     things.sort_by(|a, b| a.0.total_cmp(&b.0));
 
@@ -262,20 +297,20 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         draw_rectangle(feet.x - w / 2.0, y, w * frac, 3.0, hp_color(frac));
     }
 
-    // --- Health bars above damaged buildings, above the roof ---
+    // --- Life bars above damaged buildings, above the roof: hit points and shield in one bar (`hud::draw_life`) ---
     for building in &world.buildings {
-        let max = building.stats().hp;
-        if building.hp == max && !view.always_bars {
+        let stats = building.stats();
+        let hurt = building.hp < stats.hp || building.shield < stats.max_shield();
+        if !hurt && !view.always_bars {
             continue;
         }
-        let frac = building.hp as f32 / max as f32;
         // Above the middle: from there up to the top corner of the diamond, then the height of the building.
         let (fw, fh) = building.footprint();
         let middle = camera.world_to_screen(building.center());
-        let lift = ((fw + fh) as f32 * TILE_H / 4.0 + (building.stats().height + 0.15) * TILE_W) * camera.zoom;
+        let lift = ((fw + fh) as f32 * TILE_H / 4.0 + (stats.height + 0.15) * TILE_W) * camera.zoom;
         let w = fw.max(fh) as f32 * 0.5 * TILE_W * camera.zoom;
-        draw_rectangle(middle.x - w / 2.0, middle.y - lift, w, 4.0, BLACK);
-        draw_rectangle(middle.x - w / 2.0, middle.y - lift, w * frac, 4.0, hp_color(frac));
+        let bar = Rect::new(middle.x - w / 2.0, middle.y - lift, w, 4.0);
+        draw_life(bar, (building.hp, stats.hp), (building.shield, stats.max_shield()), BLACK, None);
     }
 
     // --- Spawner names on top of everything, so they can always be read ---
@@ -382,6 +417,8 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
         things.push((middle.x + middle.y, Prism(ground, bottom, top, color)));
     };
     let color = building_color(building.kind);
+    // Infected: the colour turns sickly – like the dark-green rot on TAB's infected buildings.
+    let color = if building.infected { mix(color, INFECTED, 0.6) } else { color };
     let height = building.stats().height;
     // Pieces of wall look like a wall – also those of a tower or a gate.
     let (wall_height, wall_color) = (BuildingKind::Wall.stats().height, building_color(BuildingKind::Wall));
@@ -460,6 +497,7 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
 pub fn unit_shape(kind: UnitKind) -> (f32, f32) {
     match kind {
         UnitKind::Soldier => (0.45, 0.55),
+        UnitKind::Ranger => (0.34, 0.55),
         UnitKind::Sniper => (0.36, 0.65),
         UnitKind::Medic => (0.42, 0.50),
     }
@@ -511,6 +549,15 @@ pub fn terrain_color(terrain: Terrain) -> Color {
     }
 }
 
+/// The colour of an ore patch – on the map, on the minimap and in the previews.
+pub fn ore_color(ore: Ore) -> Color {
+    match ore {
+        Ore::Iron => Color::new(0.55, 0.33, 0.24, 1.0),
+        Ore::Coal => Color::new(0.10, 0.10, 0.11, 1.0),
+        Ore::Stone => Color::new(0.62, 0.60, 0.54, 1.0),
+    }
+}
+
 /// The colour of a building type – on the map, on the minimap and in the selection.
 pub fn building_color(kind: BuildingKind) -> Color {
     match kind {
@@ -526,14 +573,30 @@ pub fn building_color(kind: BuildingKind) -> Color {
 pub fn kind_color(kind: UnitKind) -> Color {
     match kind {
         UnitKind::Soldier => Color::new(0.35, 0.60, 0.95, 1.0),
+        // Green like a hunter in the woods.
+        UnitKind::Ranger => Color::new(0.40, 0.80, 0.50, 1.0),
         UnitKind::Sniper => Color::new(0.75, 0.50, 0.95, 1.0),
         // White like StarCraft's medic (DESIGN.md 6).
         UnitKind::Medic => Color::new(0.92, 0.92, 0.90, 1.0),
     }
 }
 
+/// The colour of a zombie breed on the map.
+fn breed_color(breed: Breed) -> Color {
+    match breed {
+        Breed::Walker => WALKER,
+        Breed::Runner => RUNNER,
+        Breed::Fat => FAT,
+    }
+}
+
 fn lighten(c: Color) -> Color {
-    Color::new(c.r + (1.0 - c.r) * 0.5, c.g + (1.0 - c.g) * 0.5, c.b + (1.0 - c.b) * 0.5, c.a)
+    mix(c, WHITE, 0.5)
+}
+
+/// `share` of the way from colour `a` to colour `b` (0: `a`, 1: `b`). Keeps the transparency of `a`.
+fn mix(a: Color, b: Color, share: f32) -> Color {
+    Color::new(a.r + (b.r - a.r) * share, a.g + (b.g - a.g) * share, a.b + (b.b - a.b) * share, a.a)
 }
 
 /// The colour of a kind of command: move green, attack red, patrol yellow, heal light green.

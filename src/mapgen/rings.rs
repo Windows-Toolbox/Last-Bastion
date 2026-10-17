@@ -31,14 +31,14 @@ impl Default for Params {
     fn default() -> Params {
         Params {
             rings: 3.0,
-            thickness: 3.0,
+            thickness: 7.0,
             openings: 3.0,
             opening_width: 6.0,
-            wobble: 6.0,
+            wobble: 10.0,
             square: 0.3,
             material: 2.0,
-            clutter: 0.3,
-            trees: 0.015,
+            clutter: 0.5,
+            trees: 0.02,
         }
     }
 }
@@ -82,9 +82,9 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
     for ring in 0..count {
         let mut dirs: Vec<Vec2> = Vec::new();
         for _ in 0..p.openings.round() as usize {
-            let mut best = random_direction(rng);
+            let mut best = tools::random_direction(rng);
             for _ in 0..40 {
-                let dir = random_direction(rng);
+                let dir = tools::random_direction(rng);
                 let apart = |others: &[Vec2], min_dot: f32| others.iter().all(|o| o.dot(dir) < min_dot);
                 let inner_ok = ring == 0 || apart(&openings[ring - 1], 0.93);
                 if inner_ok && apart(&dirs, 0.5) {
@@ -97,6 +97,7 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
         openings.push(dirs);
     }
     let materials: Vec<Terrain> = (0..count).map(|_| tools::material(p.material, rng)).collect();
+    let mix = Noise::new(rng.next_u64() as u32);
 
     let (bump, clutter) = (Noise::new(rng.next_u64() as u32), Noise::new(rng.next_u64() as u32));
     let wet = Noise::new(rng.next_u64() as u32);
@@ -114,7 +115,7 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
             // In an opening? Within half its width of the line from the base out in its direction.
             let open = openings[ring].iter().any(|dir| d.dot(*dir) > 0.0 && (d.x * dir.y - d.y * dir.x).abs() < p.opening_width / 2.0);
             if !open {
-                terrain = materials[ring];
+                terrain = tools::material_at(p.material, materials[ring], &mix, x, y);
             }
         }
         // Clutter between the rings: patches of forest, a few ponds – but not right next to a ring, so its
@@ -128,17 +129,6 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
         }
         tiles.set(x, y, terrain);
     }
+    tools::remove_specks(tiles, 5);
     tools::scatter_trees(tiles, rng, p.trees);
-}
-
-/// A random direction: a random point in the square -1 … 1, but only if it lies in the circle (otherwise the
-/// corners would be twice as likely), shortened to length 1. No angles, so no `sin`/`cos`.
-fn random_direction(rng: &mut Rng) -> Vec2 {
-    loop {
-        let v = vec2(rng.unit_f32() * 2.0 - 1.0, rng.unit_f32() * 2.0 - 1.0);
-        let len = v.length();
-        if len > 0.1 && len <= 1.0 {
-            return v / len;
-        }
-    }
 }

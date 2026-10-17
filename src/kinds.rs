@@ -1,20 +1,28 @@
-//! Unit and building types and their values (DESIGN.md 6, 7.2). In the prototype they are constants in the code –
-//! later they come from JSON files in `data\` (DESIGN.md 12.4).
+//! Unit and building types (DESIGN.md 6, 7.2). Their values are in `data\units.json` and `data\buildings.json`
+//! (loaded by `data.rs`) – here only what a value means.
 
 use serde::{Deserialize, Serialize};
+
+use crate::data;
 
 /// The order here is also the order in the selection panel and for Tab.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub enum UnitKind {
+    /// Tough, short range – in front in a formation.
     Soldier,
+    /// Like TAB's ranger: fast, weak, long wind-up (drawing the bow) before every arrow.
+    Ranger,
     Sniper,
+    /// Like StarCraft's medic: no attack. For now its beam is only shown – healing comes later.
     Medic,
 }
 
+/// The values of a unit type – one block in `data\units.json`.
+#[derive(Deserialize)]
 pub struct Stats {
-    pub name: &'static str,
+    pub name: String,
     /// One or two letters for the icon in the selection panel.
-    pub letter: &'static str,
+    pub letter: String,
     pub hp: u32,
     /// Subtracted from every hit (at least 1 damage always gets through).
     pub armor: u32,
@@ -23,168 +31,95 @@ pub struct Stats {
     pub range: f32,
     /// How far it sees, in tiles – at least as far as it shoots (forests and trees block the view).
     pub sight: f32,
-    /// Ticks between two shots (20 ticks = 1 s).
+    /// Ticks for turning around once (180°) – like StarCraft's turn rate. A unit only aims once it faces its target.
+    /// In the file in seconds (`turn_around_seconds`).
+    #[serde(rename = "turn_around_seconds", deserialize_with = "data::seconds")]
+    pub turn_around: u32,
+    /// Ticks of wind-up before every shot (drawing the bow, raising the rifle) – like StarCraft's "damage point".
+    /// Facing the target, the unit aims this long, then it shoots. Another target: aiming starts over.
+    /// In the file in seconds (`aim_seconds`).
+    #[serde(rename = "aim_seconds", deserialize_with = "data::seconds")]
+    pub aim: u32,
+    /// Ticks of reloading after a shot, before it can aim again. One shot takes `aim + cooldown`. In the file in
+    /// seconds (`cooldown_seconds`); 0 for the medic – its beam is on every tick, so it looks continuous.
+    #[serde(rename = "cooldown_seconds", deserialize_with = "data::seconds")]
     pub cooldown: u32,
     /// Tiles per second.
     pub speed: f32,
-    /// Build time in a building, in ticks (20 ticks = 1 s).
+    /// Build time in a building, in ticks. In the file in seconds (`build_seconds`).
+    #[serde(rename = "build_seconds", deserialize_with = "data::seconds")]
     pub build_time: u32,
+    /// How loud a shot is, like in TAB: every zombie this many tiles around the shooter hears it and comes
+    /// (`noise_seconds` in `data\zombies.json`). Ranger quiet, sniper loud. Not blocked by forests or walls.
+    pub noise: f32,
     /// Medic: doesn't shoot at zombies – its "shot" is a beam at your own units (DESIGN.md 6).
     pub heals: bool,
 }
 
-const SOLDIER: Stats = Stats {
-    name: "Soldier",
-    letter: "S",
-    hp: 100,
-    armor: 1,
-    damage: 10,
-    range: 6.0,
-    sight: 10.0,
-    cooldown: 10,
-    speed: 3.0,
-    build_time: 100,
-    heals: false,
-};
-
-const SNIPER: Stats = Stats {
-    name: "Sniper",
-    letter: "Sn",
-    hp: 60,
-    armor: 0,
-    damage: 35,
-    range: 10.0,
-    sight: 13.0,
-    cooldown: 40,
-    speed: 2.6,
-    build_time: 160,
-    heals: false,
-};
-
-/// Like StarCraft's medic: no attack. For now its beam is only shown – healing comes later.
-const MEDIC: Stats = Stats {
-    name: "Medic",
-    letter: "M",
-    hp: 60,
-    armor: 1,
-    damage: 0,
-    range: 4.0,
-    sight: 10.0,
-    cooldown: 0, // the beam is on every tick, so it looks continuous
-    speed: 2.9,
-    build_time: 120,
-    heals: true,
-};
-
 impl UnitKind {
     pub fn stats(self) -> &'static Stats {
-        match self {
-            UnitKind::Soldier => &SOLDIER,
-            UnitKind::Sniper => &SNIPER,
-            UnitKind::Medic => &MEDIC,
-        }
+        data::get().unit(self)
+    }
+
+    /// All types, in the order of the selection panel.
+    pub const ALL: [UnitKind; 4] = [UnitKind::Soldier, UnitKind::Ranger, UnitKind::Sniper, UnitKind::Medic];
+}
+
+impl Stats {
+    /// Ticks from the start of aiming to the next start of aiming – one shot.
+    pub fn shot_ticks(&self) -> u32 {
+        self.aim + self.cooldown
     }
 }
 
-/// Buildings. The order doesn't matter, buildings are always selected one at a time.
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+/// Buildings. The order here is the order in the selection panel and for Tab (after the units).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub enum BuildingKind {
     CommandCenter,
     Tent,
     Wall,
     /// 3 × 1, can be turned: two posts and a door in the middle that lets your units through, but not zombies.
     Gate,
-    /// 1 × 1 watchtower: up to `TOWER_SLOTS` units can go in and shoot from up there (DESIGN.md 6).
+    /// 1 × 1 watchtower: up to `tower_slots` units can go in and shoot from up there (DESIGN.md 6).
     Tower,
 }
 
-/// How many units fit into a tower (DESIGN.md 6: "can put in 4 ranged units").
-pub const TOWER_SLOTS: usize = 4;
-/// Units in a tower shoot and see this many tiles further – they stand higher up.
-pub const TOWER_BONUS: f32 = 2.0;
-
+/// The values of a building type – one block in `data\buildings.json`.
+#[derive(Deserialize)]
 pub struct BuildingStats {
-    pub name: &'static str,
-    pub letter: &'static str,
+    pub name: String,
+    pub letter: String,
     /// Width (along x) and depth (along y) in tiles, not turned.
     pub size: (i32, i32),
     pub hp: u32,
-    /// How tall the building is drawn (in tile widths).
-    pub height: f32,
-    /// How far it sees, in tiles, counted from its middle.
-    pub sight: f32,
-    /// Walls, gates and towers join up into one line on screen (only the look – `draw.rs`).
-    pub joins: bool,
+    /// Infection like in TAB (DESIGN.md 6): zombies first hit the shield. When it breaks, the building is infected –
+    /// its colonists come out as zombies – and only then do the hit points go down. Given in percent of `hp`
+    /// (`max_shield`). 0: no shield. Without colonists a shield is just extra life – nobody can get infected.
+    pub shield_percent: u32,
+    /// How many colonists live in it. Each pays `gold_per_colonist_per_hour` (`data\colony.json`) – until the
+    /// building is infected.
+    pub colonists: u32,
     /// Price, first guess. Only shown for now – nothing is paid until the economy comes (DESIGN.md 5), and which
     /// resources (wood, stone …) is decided then. Built over other buildings it gets cheaper (`placement.rs`).
     pub cost: u32,
+    /// How far it sees, in tiles, counted from its middle.
+    pub sight: f32,
+    /// How tall the building is drawn (in tile widths) – only the look.
+    pub height: f32,
+    /// Walls, gates and towers join up into one line on screen (only the look – `draw.rs`).
+    pub joins: bool,
 }
 
-const COMMAND_CENTER: BuildingStats = BuildingStats {
-    name: "Command Center",
-    letter: "CC",
-    size: (3, 3),
-    hp: 1500,
-    height: 0.9,
-    sight: 11.0,
-    joins: false,
-    cost: 0,
-};
-
-const TENT: BuildingStats = BuildingStats {
-    name: "Tent",
-    letter: "T",
-    size: (2, 2),
-    hp: 300,
-    height: 0.45,
-    sight: 5.0,
-    joins: false,
-    cost: 50,
-};
-
-const WALL: BuildingStats = BuildingStats {
-    name: "Wall",
-    letter: "W",
-    size: (1, 1),
-    hp: 400,
-    height: 0.55,
-    sight: 3.0,
-    joins: true,
-    cost: 10,
-};
-
-const GATE: BuildingStats = BuildingStats {
-    name: "Gate",
-    letter: "G",
-    size: (3, 1),
-    hp: 400,
-    height: 0.6,
-    sight: 3.0,
-    joins: true,
-    cost: 40,
-};
-
-/// 50 % more HP than a wall, and costs more (DESIGN.md 6).
-const TOWER: BuildingStats = BuildingStats {
-    name: "Tower",
-    letter: "Tw",
-    size: (1, 1),
-    hp: 600,
-    height: 1.2,
-    sight: 6.0,
-    joins: true,
-    cost: 30,
-};
+impl BuildingStats {
+    /// The full shield in points: `shield_percent` of the hit points.
+    pub fn max_shield(&self) -> u32 {
+        self.hp * self.shield_percent / 100
+    }
+}
 
 impl BuildingKind {
     pub fn stats(self) -> &'static BuildingStats {
-        match self {
-            BuildingKind::CommandCenter => &COMMAND_CENTER,
-            BuildingKind::Tent => &TENT,
-            BuildingKind::Wall => &WALL,
-            BuildingKind::Gate => &GATE,
-            BuildingKind::Tower => &TOWER,
-        }
+        data::get().building(self)
     }
 
     /// Width and depth in tiles – turned, the two swap (only the gate isn't square).

@@ -8,3 +8,11 @@ libm = "0.2.16"
 macroquad = "0.4.16"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+
+# The debug build (`cargo run`) a bit optimized, the libraries fully: without it, one command (a flow field over the
+# whole map) took ~20 ms there – a visible hitch. Still quick to build, and overflow checks stay on.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

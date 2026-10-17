@@ -8,6 +8,7 @@
 
 mod aggro;
 mod cursor;
+mod data;
 mod draw;
 mod editor;
 mod flow;
@@ -81,6 +82,7 @@ enum Screen {
 async fn main() {
     // `--seed 12345` skips the home screen and starts that map right away (with the last setup) – to repeat a map
     // or a bug, and for the checksum (README).
+    data::reload();
     let mut screen = match seed_argument() {
         Some(seed) => {
             let setup = home::load_setup();
@@ -99,13 +101,17 @@ async fn main() {
                 match home.frame(random_seed) {
                     HomeAction::Nothing => {}
                     HomeAction::Start { seed, setup, editor } => {
+                        data::reload();
                         let world = World::generate(seed, &setup);
                         next = Some(Screen::Game(Box::new(Game::new(world, home.settings.clone(), Source::Generated { seed, setup }, editor))));
                     }
-                    HomeAction::Open { file, editor } => match file.to_world() {
-                        Ok(world) => next = Some(Screen::Game(Box::new(Game::new(world, home.settings.clone(), Source::File(file), editor)))),
-                        Err(e) => eprintln!("Could not open the map: {e}"),
-                    },
+                    HomeAction::Open { file, editor } => {
+                        data::reload();
+                        match file.to_world() {
+                            Ok(world) => next = Some(Screen::Game(Box::new(Game::new(world, home.settings.clone(), Source::File(file), editor)))),
+                            Err(e) => eprintln!("Could not open the map: {e}"),
+                        }
+                    }
                     HomeAction::Quit => break,
                 }
                 apply_settings(&home.settings, &before);
@@ -212,8 +218,10 @@ impl Game {
         }
     }
 
-    /// The same map again from the start: generated anew, or loaded again from its file.
+    /// The same map again from the start: generated anew, or loaded again from its file. The values in `data\` are
+    /// read anew first – change a number, "Restart", and it counts.
     fn restart(&mut self) {
+        data::reload();
         let world = match &self.source {
             Source::Generated { seed, setup } => World::generate(*seed, setup),
             Source::File(file) => file.to_world().unwrap_or_else(|_| World::generate(random_seed(), &MapSetup::default())),
@@ -224,6 +232,7 @@ impl Game {
     /// A new map with the same setup and a new seed. (A saved map has no setup – then the last one of the setup
     /// screen.)
     fn new_map(&mut self) {
+        data::reload();
         let seed = random_seed();
         let setup = match &self.source {
             Source::Generated { setup, .. } => setup.clone(),
@@ -350,6 +359,12 @@ impl Game {
         self.minimap.refresh(&world.map, &Extras { fog, spawners: &[], base: false, shade_ring: false }, dt);
         hud::draw(&Layout::new(), world, &self.camera, &self.ui, &self.minimap);
         hud::draw_clock(world);
+        // A broken file in `data\`: the game runs on with the old values – but you have to see it.
+        if let Some(problem) = data::problem() {
+            let text = format!("data\\ not loaded, old values in use - {problem}");
+            draw_rectangle(8.0, 40.0, measure_text(&text, None, 18, 1.0).width + 16.0, 26.0, Color::new(0.4, 0.05, 0.05, 0.9));
+            draw_text(&text, 16.0, 58.0, 18.0, WHITE);
+        }
         self.ui.editor.draw(world);
         self.avg_draw_ms = smooth(self.avg_draw_ms, draw_start.elapsed().as_secs_f64() * 1000.0);
 
@@ -373,28 +388,27 @@ impl Game {
             format!("Seed {}   map {} x {}", world.seed, world.map.size, world.map.size),
             format!("Checksum now  {:016x}", world.checksum()),
             format!("Checksum tick {CHECK_TICK}  {check}"),
+            match world.spawn_group() {
+                Some(g) => format!("Spawn: {}-{} {:?}s every {:.1} s", g.min, g.max, g.breed, g.every as f32 * TICK),
+                None => "Spawn: nothing yet (from the first stage in data\\spawning.json)".to_owned(),
+            },
             String::new(),
-            format!(
-                "Respawn {}   edge scrolling {}   mouse confined {}",
-                on_off(world.respawn),
-                on_off(ui.settings.edge_scroll),
-                on_off(ui.settings.confine_mouse),
-            ),
+            format!("Edge scrolling {}   mouse confined {}", on_off(ui.settings.edge_scroll), on_off(ui.settings.confine_mouse)),
             String::new(),
             "Select: click / box, Shift: add or remove".to_owned(),
             "  Ctrl-click, double click: all of this type".to_owned(),
-            "  F2: all   Tab: active type".to_owned(),
+            "  F2: all   Tab: active type (buildings too)".to_owned(),
             "Right click: move / attack zombie / follow".to_owned(),
             "  right drag: move in formation (X line, C box, V circle)".to_owned(),
             "M S H P T (or buttons), Shift: queue, T/P/M + drag: formation".to_owned(),
-            "Click the command center: Q soldier, W sniper, E medic,".to_owned(),
-            "  R rally (or right click), B tent, V wall (drag), G gate (R turns),".to_owned(),
-            "  T tower (not within 4 tiles of a zombie). Right click / Esc: stop building".to_owned(),
-            "Right click a tower with units: they go in. Tower selected: U unload".to_owned(),
+            "Command center (grid): Q soldier, W ranger, R sniper, T medic,".to_owned(),
+            "  S tent, D defense (Q wall, W gate - R turns, E tower), G rally".to_owned(),
+            "  (not within 4 tiles of a zombie). Right click / Esc: stop building".to_owned(),
+            "Right click a tower with units: they go in. Tower selected: Q unload".to_owned(),
             "Medic: T + click on a unit = beam at it".to_owned(),
-            "Groups: Ctrl+number set, Shift+number add,".to_owned(),
+            "Groups (units and buildings): Ctrl+number set, Shift+number add,".to_owned(),
             "  Ctrl+Shift+number steal, number select (2x: go)".to_owned(),
-            "Camera: WASD (if free), arrows, edge, wheel, minimap,".to_owned(),
+            "Camera: WASD (nothing selected), arrows, edge, wheel, minimap,".to_owned(),
             "  Ctrl+F5-F8 save, F5-F8 jump, Backspace: base".to_owned(),
             "  middle mouse drag: move the map".to_owned(),
             "Space pause   +/- speed   F3 this overlay".to_owned(),

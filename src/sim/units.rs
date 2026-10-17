@@ -2,13 +2,15 @@
 //! Whom they shoot at is in `combat.rs`, how a command becomes a queue in `commands.rs`.
 
 use std::collections::VecDeque;
+use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
 use macroquad::math::Vec2;
 
-use super::combat::Target;
+use super::combat::{Aim, Target};
 use super::commands::{Task, Waypoint};
-use super::{clear_line, push_apart, slide, World, TICK, UNIT_RADIUS, ZOMBIE_RADIUS};
-use crate::kinds::{Stats, UnitKind, TOWER_BONUS};
+use super::{clear_line, push_apart, slide, World, TICK, UNIT_RADIUS};
+use crate::data;
+use crate::kinds::{Stats, UnitKind};
 
 /// Whoever follows a unit stops at this distance.
 const FOLLOW_DISTANCE: f32 = 1.5;
@@ -32,7 +34,15 @@ pub struct Unit {
     pub(super) queue: VecDeque<Task>,
     /// Did the unit walk towards a target this tick? (Being pushed doesn't count.)
     pub(super) moving: bool,
+    /// Where it looks: an angle in radians, 0 = along +x (on screen to the lower right), counted towards +y.
+    /// It turns at its `turn_around` speed – when walking, towards where it goes; when shooting, towards the target.
+    pub facing: f32,
+    /// Ticks left until the weapon is reloaded (`combat.rs`).
     pub(super) cooldown: u32,
+    /// Ticks it has aimed at `aim_at` so far – at `aim` (`data\units.json`) it shoots.
+    pub(super) aim: u32,
+    /// Whom it is aiming at – kept from tick to tick (`combat.rs`).
+    pub(super) aim_at: Option<Aim>,
     /// In a tower (its `id`): it stands in the middle of it, can't be hit, shoots and sees further, isn't drawn.
     pub inside: Option<u32>,
 }
@@ -48,11 +58,11 @@ impl Unit {
 
     /// Range and sight – in a tower both are longer.
     pub fn range(&self) -> f32 {
-        self.stats().range + if self.is_inside() { TOWER_BONUS } else { 0.0 }
+        self.stats().range + if self.is_inside() { data::get().buildings.tower_bonus } else { 0.0 }
     }
 
     pub fn sight(&self) -> f32 {
-        self.stats().sight + if self.is_inside() { TOWER_BONUS } else { 0.0 }
+        self.stats().sight + if self.is_inside() { data::get().buildings.tower_bonus } else { 0.0 }
     }
 
     pub fn is_holding(&self) -> bool {
@@ -72,6 +82,35 @@ impl Unit {
             Some(Task::Enter { .. }) => "Enter tower",
             Some(Task::Hold) => "Hold",
         }
+    }
+
+    /// Turns towards `dir` – at most as far as it can in one tick (180° take `turn_around` ticks). Returns whether it
+    /// faces that way now. `atan2` from `libm`, so it's the same on every PC (DESIGN.md 12.8).
+    pub(super) fn turn_toward(&mut self, dir: Vec2) -> bool {
+        if dir == Vec2::ZERO {
+            return true; // standing right on it: any way is the right one
+        }
+        let want = libm::atan2f(dir.y, dir.x);
+        // The shorter way round: between -180° and +180°.
+        let mut off = want - self.facing;
+        if off > PI {
+            off -= TAU;
+        } else if off < -PI {
+            off += TAU;
+        }
+        let turn_around = self.stats().turn_around;
+        let step = if turn_around == 0 { PI } else { PI / turn_around as f32 };
+        if off.abs() <= step {
+            self.facing = want;
+            return true;
+        }
+        self.facing += step * off.signum();
+        if self.facing > PI {
+            self.facing -= TAU;
+        } else if self.facing < -PI {
+            self.facing += TAU;
+        }
+        false
     }
 
     /// How many commands are in the queue in total.
@@ -113,7 +152,10 @@ impl World {
             kills: 0,
             queue: VecDeque::new(),
             moving: false,
+            facing: FRAC_PI_4, // along +x and +y: straight down on screen, towards the player
             cooldown: 0,
+            aim: 0,
+            aim_at: None,
             inside: None,
         });
     }
@@ -134,6 +176,11 @@ impl World {
             unit.prev = unit.pos;
             unit.pos = slide(unit.pos, intent.velocity, |x, y| map.blocks_unit(x, y));
             unit.moving = intent.walking;
+            // Walking turns it towards where it goes – it doesn't wait for that, like most units in StarCraft.
+            // (Shooting turns it towards the target – `combat.rs`.)
+            if intent.walking {
+                unit.turn_toward(unit.pos - unit.prev);
+            }
         }
 
         // 4. Arrived? Then the command is done and the next one in the queue is up. At a tower: climb in.
@@ -202,12 +249,15 @@ impl World {
     fn intent(&self, i: usize) -> Intent {
         let unit = &self.units[i];
         let stats = unit.stats();
-        // What it would aim at all by itself: soldiers the nearest zombie, medics the nearest hurt unit.
-        let nearby = if stats.heals {
-            self.nearest_hurt_ally(i, unit.range()).map(Target::Ally)
-        } else {
-            self.nearest_zombie(unit.pos, unit.range()).map(Target::Zombie)
-        };
+        // What it would aim at all by itself: what it's already aiming at (`combat.rs`), otherwise – soldiers – the
+        // nearest zombie or – medics – the nearest hurt unit.
+        let nearby = self.kept_target(i).or_else(|| {
+            if stats.heals {
+                self.nearest_hurt_ally(i, unit.range()).map(Target::Ally)
+            } else {
+                self.nearest_zombie(unit.pos, unit.range()).map(Target::Zombie)
+            }
+        });
         // In a tower: stand still and shoot from up there.
         if unit.is_inside() {
             return Intent { velocity: Vec2::ZERO, walking: false, target: nearby };
@@ -327,7 +377,8 @@ impl World {
         for dy in -1..=1 {
             for dx in -1..=1 {
                 for &z in self.grid.cell(cx + dx, cy + dy) {
-                    push += push_apart(pos, self.zombies[z as usize].pos, UNIT_RADIUS + ZOMBIE_RADIUS) * 0.5;
+                    let zombie = &self.zombies[z as usize];
+                    push += push_apart(pos, zombie.pos, UNIT_RADIUS + zombie.radius) * 0.5;
                 }
             }
         }

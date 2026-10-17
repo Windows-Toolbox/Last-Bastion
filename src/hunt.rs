@@ -3,8 +3,8 @@
 //! you. Not here: the way leads around the water.
 //!
 //! There are two of them, and they differ in what a building is (`Through`):
-//! - for the **hunters** (DESIGN.md 8.1) buildings are walls – whoever is walled in can only be reached through
-//!   the gap,
+//! - for the few zombies **looking for a gap** (shot, or next to one that was – DESIGN.md 8.1) buildings are walls –
+//!   whoever is walled in can only be reached through the gap,
 //! - for the **charge** of all the other zombies a building only costs a little extra: their way goes around
 //!   water and mountains, but straight through walls – so they storm the wall instead of looking for the gap.
 //!
@@ -24,7 +24,7 @@ const UNSEEN: u16 = u16::MAX;
 /// What a building tile is on the way to a unit.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Through {
-    /// A wall: no way through (hunters).
+    /// A wall: no way through (looking for a gap).
     Never,
     /// Passable, a step onto it costs this much instead of 1 (charge: tear it down on the way).
     Cost(u16),
@@ -115,7 +115,7 @@ impl HuntMap {
     }
 
     /// What a step onto this tile costs – `None` if you can't go there at all (solid terrain, off the map,
-    /// for hunters also buildings).
+    /// when looking for a gap also buildings).
     fn cost(&self, map: &Map, x: i32, y: i32) -> Option<u16> {
         if !map.is_blocked(x, y) {
             return Some(1);

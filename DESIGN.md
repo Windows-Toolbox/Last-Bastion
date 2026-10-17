@@ -513,32 +513,17 @@ spawner has a mode (editor): **constantly** (killed zombies come back in one of 
 **periodically** (every 1–120 s, 1–500 zombies) or **off** (only waves). Later the nests (8.4) and the wave directions
 (8.2) can simply become spawners.
 
-**Map generators (prototype, 2026-10-16):** the first noise generator was replaced, because it read as "noise soup":
-a square hole cut around the base, rivers as thin noise contours (they broke up, made loops, ended at the hole), blobs
-without chokepoints. Now there are **five generators** (`src\mapgen\`), each with its own values on the setup screen
-(sliders, a help text per value, "Random values", "Defaults"):
+**Noise terrain (prototype, 2026-10-16):** the map comes from value noise (`src\noise.rs`, several octaves): a height
+map makes **lakes** (lowest share) and **mountain ranges** (highest share), a moisture map **forests**, 0–2 thin bands
+of further noise make winding **rivers** (step 4: chokepoints), single trees are scattered, denser near forests. The
+shares (water 3–12 %, mountains 3–10 %, forest 8–22 %), the feature size and the number of rivers are rolled per map,
+so maps differ in character, not just layout. Nothing within 14 tiles of the base. If water or mountains cut a spawner
+off from the base, a 3-tile **ford** is cleared in a straight line. Forests and trees block walking and **sight**;
+mountains and water only walking.
 
-| Generator | Idea | Values |
-|---|---|---|
-| **Wild** | Factorio-like noise, repaired: domain warping (organic shapes), ridged noise (mountain ridges = walls with gaps), rivers as real paths from edge to edge that bend around the base, everything fades out smoothly before the base | feature size, wobble, lakes %, mountains %, ridges, forest %, trees, rivers, river width, river bends |
-| **Regions** | TAB-like: a Voronoi split into regions (meadow, woods, rocky, lake), walls between them with **passes** – the obvious places to wall off (step 4) | regions, border wobble, wall thickness, passes per border, pass width, wall material, share of woods / rocky / lake regions, trees |
-| **Rings** | Fortress: rings around the base, each with a few openings that never line up with the next ring's – the way in zigzags, every ring is a fallback line | rings, thickness, openings, opening width, wobble, round ↔ square, material, clutter, trees |
-| **Canyons** | Cellular automaton (cave generator, 4-5 rule): solid rock with winding canyons | rock %, smoothing, canyon width, material, ponds, trees |
-| **Blank** | Only grass – for maps built by hand in the editor | trees |
-
-Common values: **map size** (96–256 inside the border, default 256 like TAB's survival maps; 9.2), free radius around
-the base, spawners per side. After any generator: spawners cleared, the base cleared (a circle), and
-**every open place connected to the base** – a cut-off area gets the shortest 2-tile path through whatever is in the
-way (a ford, a gap in a ridge); holes under 24 tiles become forest. This replaces the old straight ford for spawners.
-Same seed + same values = same map on every PC: the generators use only `+ − × ÷` and `sqrt` (no `sin`/`cos`/`powf`,
-which may differ in the last bit between CPUs) and `BTreeMap` instead of `HashMap` (12.8). Forests and trees block
-walking and **sight**; mountains and water only walking. Resource patches, nests and POIs (steps 2, 3, 5, 6) are still
-missing – they need the economy first.
-
-**Seed (prototype, 2026-10-16):** the setup screen starts with a truly random seed (the OS random generator via
-Rust's `RandomState`, mixed with the clock), which can be typed over or rolled anew; "New map" in the Esc menu rolls a
-new one with the same values; `--seed N` on the command line skips the home screen and starts that map with the last
-values (12.6); "Restart" keeps seed and values. In co-op the host draws it and sends it along (12.8).
+**Seed (prototype, 2026-10-16):** every start and "New map" draws a truly random seed (the OS random generator via
+Rust's `RandomState`, mixed with the clock); `--seed N` on the command line starts a given map (12.6); "Restart" keeps
+the seed. In co-op the host draws it and sends it along (12.8).
 
 ### 9.2 Map sizes (first guess)
 
@@ -560,11 +545,6 @@ values (12.6); "Restart" keeps seed and values. In co-op the host draws it and s
 ## 10. Home screen and meta progression
 
 ### 10.1 Home screen (TAB-like)
-
-*Prototype, 2026-10-16 – a first version:* New game / Map editor → a **setup screen** (generator, seed, values, live
-preview of the map with spawners and base) → start, or open in the editor. Custom maps (saved in the editor) can be
-played or edited. Settings, Quit; Continue and Research are shown as "coming later". The regions world map and the
-score % below need a full round first (step 10).
 
 - A **world map** split into **regions** (each a biome with its own threats).
 - Pick a region → **round setup screen**:
@@ -797,11 +777,6 @@ What macroquad can't do with the window (checked in the miniquad 0.4 source, 202
 
 **Data layout:** no ECS library at first – plain `Vec`s of structs plus IDs (e.g. the `slotmap` crate, so a dead
 zombie's ID can't point at a new one). If that gets messy, `hecs` or `bevy_ecs` can come later.
-Looked at again on 2026-10-16 (a proposal for `bevy_ecs` + bitmask grid): still no ECS library. The prototype runs
-10,000 zombies in 2.1 ms per tick, so there's nothing to gain yet, and bevy's parallel scheduler would have to be
-tamed for lockstep (12.8). Taken from it instead: the simulation is split into one file per system (`src\sim\`),
-`World::step` is the fixed schedule, and the map flags become a bitmask per tile. ECS gets another look when the
-economy comes – many building kinds with very different parts (stock, power, colonists, infection).
 
 **Toolbox connection:** the windows-toolbox page starts `dist\LastBastion.exe` from this repo (12.7) – with Rust:
 `cargo build --release`, then copy `target\release\last_bastion.exe` there (a small build script later).
@@ -904,15 +879,6 @@ medic per click. All in-game text and
 code comments are in English. Every cheat that changes the game is an
 order like any other, so it stays deterministic (12.8).
 
-**Editor like TAB's (2026-10-16):** the panel has **tabs** – **Map** (name, *Save map* as JSON under
-`%APPDATA%\Last Bastion\maps\`, *New map…* back to the setup screen), **Terrain** (painting, brushes 1–41),
-**Entities** (units, buildings without the rules incl. a command centre, zombie brush/drop, spawners), **Waves** (send now,
-and a **timeline**: waves at day + hour like TAB's events, each with count and origin – one spawner or 1–4 sides).
-The round has a **clock** (day + hour, 1 day = 3 min, question 18) shown at the top. A saved map holds terrain,
-spawners, buildings, units, placed zombies, the timeline and respawn – not the state of a running round (that would be
-a save game, 11.5). Not taken over from TAB's editor (for now): story scripting and rule overrides (`ApplyRules`),
-localisation tables, the checksum file, themes, win/lose conditions (step 10).
-
 ### 12.7 Repository and toolbox
 
 The game has **its own git repository**, completely separate from the windows-toolbox (decided 2026-10-15). It doesn't
@@ -970,15 +936,9 @@ Rules for the simulation code from step 1 on (drawing, sound and UI may do what 
 - Animations are only drawing. The simulation decides on which tick a shot hits, and the animation is drawn to match.
 - Never iterate over a `HashMap`/`HashSet` in the simulation: Rust shuffles their order on purpose. Use `Vec`,
   `BTreeMap` or `IndexMap` instead.
-- Floats (decided 2026-10-16): the simulation stays on `f32`, with a rule. `+ - * /` and `sqrt` are rounded exactly
-  by IEEE 754 – bit for bit the same on Intel, AMD, ARM, Windows and Linux, and Rust never reorders them or fuses
-  them into FMA by itself (no fast-math). So in the simulation (and everything it calls) only `+ - * /`, `sqrt`,
-  `abs`, `floor`, `min`/`max`; no `mul_add`. `sin`, `cos`, `atan2` & co. only from the **`libm` crate** (pure Rust,
-  built from those operations): Rust's own `f32::sin` asks the C runtime of the system, and on Windows that's
-  `ucrtbase.dll` – updated by Windows Update and taking a different path on CPUs with FMA3, so even the same `.exe`
-  isn't safe. A test compares the checksum of a scripted game with a number written down (`sim/tests.rs`); run on
-  another PC or on Linux it shows whether the floats really match there. Fixed-point numbers (the `fixed` crate,
-  `I32F32` – `I16F16` overflows on squared distances across a 256 map) only if a desync shows up anyway.
+- Floats are fine as long as everyone plays the same `.exe` on x86-64 ❓. `sin`, `cos` & co. can differ between
+  systems → lookup tables or a pure-Rust implementation (the `libm` crate) ❓. Fixed-point numbers would be the safe
+  way, but more work.
 - Orders from the player only reach the simulation through the order list for a tick – also in singleplayer. Then
   singleplayer and co-op run the same code.
 - **Desync check:** every few seconds each PC sends a checksum of its game state to the host. Different checksum =
@@ -1033,7 +993,7 @@ Riskiest and most fun-critical first. Each step should end in something playable
 These lock everything after them in. The rest of the ❓ in this document can wait for playtesting.
 
 - [x] **Language** (open question 1) – Rust (2026-10-15).
-- [ ] **Library** (open question 17) – macroquad 0.4 is in use since 2026-10-15 (first window opens); still to
+- [x] **Library** (open question 17) – macroquad 0.4 is in use since 2026-10-15 (first window opens); still to
   test with the throwaway prototype (12.2).
 - [x] **Learn the basics** – learned along the way while building the game, every piece of code is explained
   (README, rules for Claude). The Rust book and Rustlings stay as a reference (2026-10-15).
@@ -1061,10 +1021,10 @@ These lock everything after them in. The rest of the ❓ in this document can wa
 | **5. Co-op mini round** | The mini round for 2 players over the network (direct IP / LAN): host and join, orders per tick, desync check (12.8) | Two PCs play the mini round to the end without a desync |
 | **6. Machines and production chains** | Drill → colony stock → smelter → workshop, with power | A small chain runs by itself |
 | **7. Houses, gold, upkeep** | Houses consume and pay gold, units cost upkeep, downgrade | Economy and army are linked |
-| **8. Map generation** | Noise terrain, patches, nests, POIs, fog of war. *2026-10-16: five generators with their own values (9.1), fog of war done; patches, nests, POIs missing* | Two seeds feel different |
+| **8. Map generation** | Noise terrain, patches, nests, POIs, fog of war | Two seeds feel different |
 | **9. Noise and creep** | Noise attracts waves, nests spread creep | Expanding is a real decision |
 | **10. Full round** | Timeline from section 4, days to choose, final wave, win/lose, save and load (11.5) | A 40-day round (≈ 2 h) can be played start to finish |
-| **11. Home screen and meta** | Regions, round setup, score %, research. *2026-10-16: first home screen + map setup (10.1)* | The "one more round" feeling |
+| **11. Home screen and meta** | Regions, round setup, score %, research | The "one more round" feeling |
 | **12. Polish** | Sounds, effects, alerts, balancing, tutorial, settings menu (11.4) | Someone else can play it without help |
 
 ---

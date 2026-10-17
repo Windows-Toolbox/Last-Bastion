@@ -4,7 +4,7 @@
 use macroquad::math::{vec2, Vec2};
 
 use super::buildings::NO_BUILDING;
-use super::zombies::{BUILDING_DETOUR, ZOMBIE_AGGRO};
+use super::zombies::{values, BUILDING_DETOUR};
 use super::World;
 use crate::flow::{FlowField, Walker};
 use crate::kinds::BuildingKind;
@@ -28,7 +28,7 @@ impl World {
             for (x, y) in building.tiles() {
                 self.building_at[(y * size + x) as usize] = b as u32;
             }
-            self.building_aggro.stamp(b, building.corner(), building.far_corner(), ZOMBIE_AGGRO);
+            self.building_aggro.stamp(b, building.corner(), building.far_corner(), values().notice_buildings);
         }
         let goals = match self.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter) {
             Some(cc) => cc.tiles(),

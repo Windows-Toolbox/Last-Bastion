@@ -1,0 +1,66 @@
+{
+  "command_center": {
+    "name": "Command Center",
+    "letter": "CC",
+    "size": [3, 3],
+    "hp": 1500,
+    "shield_percent": 0,
+    "colonists": 0,
+    "cost": 0,
+    "sight": 11.0,
+    "height": 0.9,
+    "joins": false
+  },
+  "tent": {
+    "name": "Tent",
+    "letter": "T",
+    "size": [2, 2],
+    "hp": 150,
+    "shield_percent": 133,
+    "colonists": 6,
+    "cost": 50,
+    "sight": 5.0,
+    "height": 0.45,
+    "joins": false
+  },
+  "wall": {
+    "name": "Wall",
+    "letter": "W",
+    "size": [1, 1],
+    "hp": 400,
+    "shield_percent": 0,
+    "colonists": 0,
+    "cost": 10,
+    "sight": 3.0,
+    "height": 0.55,
+    "joins": true
+  },
+  "gate": {
+    "name": "Gate",
+    "letter": "G",
+    "size": [3, 1],
+    "hp": 400,
+    "shield_percent": 0,
+    "colonists": 0,
+    "cost": 40,
+    "sight": 3.0,
+    "height": 0.6,
+    "joins": true
+  },
+  "tower": {
+    "name": "Tower",
+    "letter": "Tw",
+    "size": [1, 1],
+    "hp": 600,
+    "shield_percent": 0,
+    "colonists": 0,
+    "cost": 30,
+    "sight": 6.0,
+    "height": 1.2,
+    "joins": true
+  },
+  "tower_slots": 4,
+  "tower_bonus": 2.0,
+  "zombie_free_radius": 4,
+  "replace_refund_percent": 50
+}

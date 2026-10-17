@@ -35,16 +35,17 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Params {
+        // Denser than before (2026-10-17): TAB's maps are full of forest and rock – that's what makes chokepoints.
         Params {
-            scale: 32.0,
-            wobble: 14.0,
-            water: 0.06,
-            mountains: 0.08,
-            ridges: 0.6,
-            forest: 0.16,
-            trees: 0.015,
+            scale: 36.0,
+            wobble: 16.0,
+            water: 0.07,
+            mountains: 0.13,
+            ridges: 0.7,
+            forest: 0.30,
+            trees: 0.02,
             rivers: 1.0,
-            river_width: 2.0,
+            river_width: 3.0,
             meander: 0.5,
         }
     }
@@ -87,7 +88,8 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
     let (mut h, mut r, mut m) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
     for (x, y) in tiles.all() {
         let w = warp.apply(x as f32, y as f32);
-        let fade = ctx.fade(x, y, 14.0);
+        // Only a short fade: forest and rock right outside the free space, like a clearing in TAB.
+        let fade = ctx.fade(x, y, 6.0);
         let height_here = height.fractal(w.x, w.y, p.scale, 5);
         // Ridged noise: 1 where the noise crosses its middle – that's a thin winding line, a ridge.
         let ridge = 1.0 - (rock_ridge.fractal(w.x, w.y, p.scale * 1.6, 4) - 0.5).abs() * 2.0;
@@ -116,5 +118,6 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
     for _ in 0..p.rivers.round() as u32 {
         tools::river(tiles, rng, ctx, p.river_width, p.meander);
     }
+    tools::remove_specks(tiles, 6);
     tools::scatter_trees(tiles, rng, p.trees);
 }

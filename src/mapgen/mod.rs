@@ -4,8 +4,9 @@
 //! differ in the last bit between CPUs. Only `+ - * /` and `sqrt` (both exactly defined by IEEE 754).
 //!
 //! Every generator only paints terrain. What all of them share comes afterwards, here in `generate`:
-//! the spawners in the ring outside the world border, the free space around the base, and a way from every open
-//! place to the base (`tools::connect_pockets`) – so no zombie and no unit is ever stuck in a closed-off hole.
+//! the spawners in the ring outside the world border, the free space around the base, a way from every open
+//! place to the base (`tools::connect_pockets`) – so no zombie and no unit is ever stuck in a closed-off hole –
+//! and the ore patches (`ores.rs`).
 //!
 //! The generators:
 //! - **Wild** (`wild.rs`): noise like in Factorio – lakes, mountain ridges, forests, winding rivers.
@@ -16,6 +17,7 @@
 //! - **Blank**: only grass (and trees if you like) – to build a map by hand in the editor.
 
 mod canyons;
+mod ores;
 mod regions;
 mod rings;
 mod tools;
@@ -134,11 +136,27 @@ pub struct Common {
     /// Radius around the base where nothing grows (tiles).
     pub base_clear: f32,
     pub spawners_per_side: f32,
+    /// Zombies roaming the map at the start, per 1,000 tiles (`World::scatter_roamers`). Not used by the generator
+    /// itself (they're no terrain), but by `World::generate`. Before 2026-10-17 it was "walkers" with 20 – the new name
+    /// means old saved setups start with the new default instead of the old, much lower number.
+    pub roamers: f32,
+    /// Ore patches per 10,000 tiles (besides the three in the start area), their size and richness (`ores.rs`).
+    pub ore_patches: f32,
+    pub ore_size: f32,
+    pub ore_richness: f32,
 }
 
 impl Default for Common {
     fn default() -> Common {
-        Common { size: 256.0, base_clear: 14.0, spawners_per_side: 3.0 }
+        Common {
+            size: 256.0,
+            base_clear: 14.0,
+            spawners_per_side: 3.0,
+            roamers: 60.0,
+            ore_patches: 5.0,
+            ore_size: 5.0,
+            ore_richness: 1.0,
+        }
     }
 }
 
@@ -170,7 +188,43 @@ impl Common {
                 max: 6.0,
                 step: 1.0,
                 show: Show::Number,
-                help: "Where the zombies come from: this many on each side, in the ring outside the border.",
+                help: "Where the waves come from: this many on each side, in the ring outside the border.",
+            },
+            Field {
+                label: "Roaming zombies",
+                value: &mut self.roamers,
+                min: 0.0,
+                max: 150.0,
+                step: 5.0,
+                show: Show::Number,
+                help: "Zombies wandering the map from the start, per 1,000 tiles. Fewer near the base, more further out: walkers everywhere, runners further out, fat ones at the edge. 60 on 256 tiles: about 3,900.",
+            },
+            Field {
+                label: "Ore patches",
+                value: &mut self.ore_patches,
+                min: 0.0,
+                max: 15.0,
+                step: 1.0,
+                show: Show::Number,
+                help: "Patches of iron ore, coal and stone per 10,000 tiles - plus one of each right next to the base. 5 on 256 tiles: about 33.",
+            },
+            Field {
+                label: "Ore patch size",
+                value: &mut self.ore_size,
+                min: 2.0,
+                max: 12.0,
+                step: 1.0,
+                show: Show::Tiles,
+                help: "Radius of a patch near the base. Further out they get bigger.",
+            },
+            Field {
+                label: "Ore richness",
+                value: &mut self.ore_richness,
+                min: 0.25,
+                max: 3.0,
+                step: 0.25,
+                show: Show::Percent,
+                help: "How much ore a patch holds. Further out up to 3 times as much.",
             },
         ]
     }
@@ -306,9 +360,18 @@ pub fn generate(seed: u64, setup: &MapSetup) -> Generated {
         tiles.clear_rect(s.min, s.size);
     }
     tiles.clear_circle(ctx.center, ctx.keep_out);
-    tools::connect_pockets(&mut tiles, center, MIN_POCKET);
+    // Inside the world border: what `Map::in_play` will say.
+    let (lo, hi) = (BORDER as i32, size as i32 - BORDER as i32);
+    tools::connect_pockets(&mut tiles, center, MIN_POCKET, |x, y| x >= lo && y >= lo && x < hi && y < hi);
 
-    Generated { map: Map::from_terrain(size, BORDER, tiles.into_terrain()), spawners }
+    let c = &setup.common;
+    let ore = ores::OreSettings { per_10k: c.ore_patches, size: c.ore_size, richness: c.ore_richness };
+    let deposits = ores::place(&tiles, &mut rng, &ctx, (lo, hi), &ore);
+    let mut map = Map::from_terrain(size, BORDER, tiles.into_terrain());
+    for (x, y, deposit) in deposits {
+        map.set_deposit(x, y, Some(deposit));
+    }
+    Generated { map, spawners }
 }
 
 /// What every generator needs to know besides its own values: where the base is and how much room it keeps.
@@ -447,5 +510,139 @@ mod tests {
             }
         }
     }
-}
 
+    /// Every open tile reaches the base: for the zombies anywhere on the map, for your units **inside the world border**
+    /// (they can't leave it) – every generator, default values and rolled ones, full size. Before 2026-10-17 thousands of
+    /// tiles per map were only connected through the ring outside the border.
+    #[test]
+    fn units_and_zombies_reach_the_base_from_everywhere() {
+        for generator in Generator::ALL {
+            for seed in 1..=6u64 {
+                let mut s = MapSetup { generator, ..MapSetup::default() };
+                if seed > 3 {
+                    s.randomize_generator(&mut Rng::new(seed * 77));
+                }
+                let g = generate(seed, &s);
+                let map = &g.map;
+                for units in [false, true] {
+                    let open = |x: i32, y: i32| if units { !map.blocks_unit(x, y) } else { !map.is_solid(x, y) };
+                    let seen = flood_from_base(map, &open);
+                    let n = map.size as i32;
+                    let cut = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).filter(|&(x, y)| open(x, y) && !seen[(y * n + x) as usize]).count();
+                    assert_eq!(cut, 0, "{generator:?} seed {seed}: {cut} tiles cut off for the {}", if units { "units" } else { "zombies" });
+                    if !units {
+                        for sp in &g.spawners {
+                            assert!(seen[(sp.min.1 * n + sp.min.0) as usize], "{generator:?} seed {seed}: spawner {} cut off", sp.name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tiles reachable from the base with straight steps over `open` tiles.
+    fn flood_from_base(map: &Map, open: &dyn Fn(i32, i32) -> bool) -> Vec<bool> {
+        let n = map.size as i32;
+        let mut seen = vec![false; map.size * map.size];
+        let c = n / 2;
+        let mut stack = vec![(c, c)];
+        seen[(c * n + c) as usize] = true;
+        while let Some((x, y)) = stack.pop() {
+            for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
+                if nx >= 0 && ny >= 0 && nx < n && ny < n && open(nx, ny) && !seen[(ny * n + nx) as usize] {
+                    seen[(ny * n + nx) as usize] = true;
+                    stack.push((nx, ny));
+                }
+            }
+        }
+        seen
+    }
+
+    /// Ore: one patch of each kind right next to the base on every map, all of it on grass inside the world border,
+    /// patches further out richer – and the slider for patches really changes how many there are.
+    #[test]
+    fn ore_patches_start_near_the_base_and_get_richer_further_out() {
+        use crate::map::Ore;
+        for generator in Generator::ALL {
+            for seed in 1..=3u64 {
+                let s = MapSetup { generator, ..MapSetup::default() };
+                let map = generate(seed, &s).map;
+                let base = vec2(map.size as f32 / 2.0, map.size as f32 / 2.0);
+                let deposits: Vec<_> = (0..map.size as i32)
+                    .flat_map(|y| (0..map.size as i32).map(move |x| (x, y)))
+                    .filter_map(|(x, y)| map.deposit(x, y).map(|d| (x, y, d)))
+                    .collect();
+                let near = s.common.base_clear + 4.0 + 2.0 + 10.0 + 4.0 * 1.5;
+                for ore in Ore::ALL {
+                    let close = deposits.iter().any(|&(x, y, d)| d.ore == ore && vec2(x as f32 + 0.5, y as f32 + 0.5).distance(base) < near);
+                    assert!(close, "{generator:?} seed {seed}: no {ore:?} near the base");
+                }
+                for &(x, y, _) in &deposits {
+                    assert!(map.in_play(x, y) && map.terrain(x, y) == Terrain::Grass, "{generator:?} seed {seed}: ore at ({x}, {y})");
+                }
+                // The richest tile near the base against the richest far out.
+                let richest = |far: bool| {
+                    deposits
+                        .iter()
+                        .filter(|&&(x, y, _)| (vec2(x as f32, y as f32).distance(base) > 90.0) == far)
+                        .map(|&(_, _, d)| d.amount)
+                        .max()
+                        .unwrap_or(0)
+                };
+                assert!(richest(true) > richest(false), "{generator:?} seed {seed}: far patches not richer");
+            }
+        }
+        let count = |patches: f32| {
+            let mut s = MapSetup::default();
+            s.common.ore_patches = patches;
+            let map = generate(2, &s).map;
+            (0..map.size as i32).flat_map(|y| (0..map.size as i32).map(move |x| (x, y))).filter(|&(x, y)| map.deposit(x, y).is_some()).count()
+        };
+        assert!(count(10.0) > count(2.0) * 2, "the slider doesn't change the ore");
+    }
+
+    /// Not a real test – a tool: writes a picture of every generator (2 seeds) as PNG into the folder `DUMP_DIR`,
+    /// one pixel per tile, twice as big. That's how the generators were tuned on 2026-10-17:
+    /// `$env:DUMP_DIR = "C:\temp\maps"; cargo test dump_previews -- --ignored`
+    #[test]
+    #[ignore]
+    fn dump_previews() {
+        use macroquad::color::Color;
+        let out = std::env::var("DUMP_DIR").expect("set DUMP_DIR to a folder");
+        for generator in Generator::ALL {
+            for seed in [1u64, 2] {
+                let s = MapSetup { generator, ..MapSetup::default() };
+                let g = generate(seed, &s);
+                let map = &g.map;
+                let (n, scale) = (map.size, 2);
+                let w = n * scale;
+                let mut bytes = vec![0u8; w * w * 4];
+                for y in 0..n {
+                    for x in 0..n {
+                        let (xi, yi) = (x as i32, y as i32);
+                        let mut c = match map.deposit(xi, yi) {
+                            Some(d) => crate::draw::ore_color(d.ore),
+                            None => crate::draw::terrain_color(map.terrain(xi, yi)),
+                        };
+                        if !map.in_play(xi, yi) {
+                            c = Color::new(c.r * 0.6, c.g * 0.6, c.b * 0.6, 1.0);
+                        }
+                        let spawner = g.spawners.iter().any(|sp| xi >= sp.min.0 && xi < sp.min.0 + sp.size.0 && yi >= sp.min.1 && yi < sp.min.1 + sp.size.1);
+                        if spawner {
+                            c = Color::new(0.85, 0.25, 0.55, 1.0);
+                        }
+                        let px = [(c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, 255];
+                        for dy in 0..scale {
+                            for dx in 0..scale {
+                                let i = ((y * scale + dy) * w + x * scale + dx) * 4;
+                                bytes[i..i + 4].copy_from_slice(&px);
+                            }
+                        }
+                    }
+                }
+                let image = macroquad::texture::Image { bytes, width: w as u16, height: w as u16 };
+                image.export_png(&format!("{out}/{generator:?}_{seed}.png"));
+            }
+        }
+    }
+}

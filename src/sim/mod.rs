@@ -8,7 +8,7 @@
 //!
 //! One file per part of the game – each one is an `impl World` block, like `placement.rs`:
 //! - `orders.rs`: the players' orders – the first part of every tick.
-//! - `spawning.rs`: spawners, waves, killed zombies coming back.
+//! - `spawning.rs`: walkers at the start, the constant spawn, spawners, waves, dead units rising.
 //! - `zombies.rs`: what a zombie notices, where it walks, whom it hits.
 //! - `units.rs`: your units – walking, arriving, pushing, climbing into towers.
 //! - `commands.rs`: commands as the player gives them, and the units' command queues.
@@ -32,6 +32,7 @@ mod tests;
 use macroquad::math::{vec2, Vec2};
 
 use crate::aggro::AggroMap;
+use crate::data;
 use crate::flow::FlowField;
 use crate::grid::SpatialGrid;
 use crate::hunt::{HuntMap, Through};
@@ -45,7 +46,7 @@ use crate::vision::Vision;
 pub use buildings::{Building, Rally, MAX_PRODUCTION};
 pub use commands::{Command, Mark};
 pub use orders::Order;
-pub use spawning::{SpawnMode, Spawner, TimedWave, WaveFrom};
+pub use spawning::{Corpse, SpawnMode, Spawner, TimedWave, WaveFrom};
 pub use units::Unit;
 pub use zombies::{Breed, Zombie};
 
@@ -59,13 +60,9 @@ pub const DAY_TICKS: u64 = 3 * 60 * 20;
 /// One hour of such a day (a day has 24, like in TAB's "32d 12h").
 pub const HOUR_TICKS: u64 = DAY_TICKS / 24;
 
-const START_ZOMBIES: usize = 500;
-const START_SOLDIERS: usize = 8;
-const START_SNIPERS: usize = 4;
-
-/// How big units and zombies are (radius in tiles) – here, because both sides need both.
+/// How big units are (radius in tiles) – here, because the zombies need it too. Zombies: per breed (`radius` in
+/// `data\zombies.json`).
 pub const UNIT_RADIUS: f32 = 0.35;
-const ZOMBIE_RADIUS: f32 = 0.25;
 
 pub struct World {
     pub map: Map,
@@ -73,6 +70,10 @@ pub struct World {
     pub zombies: Vec<Zombie>,
     pub units: Vec<Unit>,
     pub buildings: Vec<Building>,
+    /// Your fallen units – they rise as walkers (`spawning.rs`).
+    pub corpses: Vec<Corpse>,
+    /// The colony's gold: the tents pay it every hour (`buildings.rs`). Nothing costs gold yet (DESIGN.md 13, step 4).
+    pub gold: u32,
     /// Where the zombies come from.
     pub spawners: Vec<Spawner>,
     /// What your units and buildings see right now, and what they have ever seen (fog of war).
@@ -83,7 +84,8 @@ pub struct World {
     pub beams: Vec<(Vec2, Vec2)>,
     pub tick: u64,
     pub seed: u64,
-    pub respawn: bool,
+    /// The tick the constant spawn sends its next group (`spawning.rs`).
+    next_group: u64,
     /// The timeline of waves (editor) – each comes by itself when the clock reaches it.
     pub waves: Vec<TimedWave>,
     rng: Rng,
@@ -94,13 +96,14 @@ pub struct World {
     aggro: AggroMap,
     /// For every tile the nearest building (straight line) – new when the buildings change.
     building_aggro: AggroMap,
-    /// For every tile the nearest unit on foot, around obstacles – for the hunters.
+    /// For every tile the nearest unit on foot, around obstacles – for the zombies looking for a gap.
     hunt: HuntMap,
     /// The same, but straight through buildings – the way of the storming zombies.
     charge: HuntMap,
     /// Per tile: would a zombie standing here see one of your units? Seeing goes both ways, so it's computed
-    /// from the few units looking out, not from the thousands of zombies.
-    zombie_sight: Vision,
+    /// from the few units looking out, not from the thousands of zombies. One per breed (`Breed::index`) – they see
+    /// differently far.
+    zombie_sight: Vec<Vision>,
     /// Per tile: index of the building in `buildings`, or `NO_BUILDING`.
     building_at: Vec<u32>,
     /// Was something built or painted this tick? Then everything that depends on the map is recomputed
@@ -114,7 +117,7 @@ pub struct World {
 
 impl World {
     /// A new round: the map from `setup` (same seed + same values = same map, `mapgen`), its spawners, the
-    /// command center on the base, the start units and the start horde.
+    /// command center on the base, the start units and the walkers scattered over the map.
     pub fn generate(seed: u64, setup: &MapSetup) -> World {
         let generated = mapgen::generate(seed, setup);
         let mut world = World::empty(seed, generated.map);
@@ -126,13 +129,19 @@ impl World {
         world.add_building(BuildingKind::CommandCenter, (center - 1, center - 1), false);
         world.refresh_map();
 
-        // Two rows of 6 below the base: soldiers in front, the rest of the soldiers and the snipers behind.
-        for i in 0..START_SOLDIERS + START_SNIPERS {
-            let kind = if i < START_SOLDIERS { UnitKind::Soldier } else { UnitKind::Sniper };
+        // Rows of 6 below the base: soldiers in front, then the snipers, then the rangers (`data\colony.json`).
+        let colony = &data::get().colony;
+        let start = [
+            (UnitKind::Soldier, colony.start_soldiers),
+            (UnitKind::Sniper, colony.start_snipers),
+            (UnitKind::Ranger, colony.start_rangers),
+        ];
+        let kinds = start.into_iter().flat_map(|(kind, count)| std::iter::repeat_n(kind, count));
+        for (i, kind) in kinds.enumerate() {
             let pos = world.base + vec2((i % 6) as f32 - 2.5, (i / 6) as f32 + 2.5);
             world.spawn_unit(kind, pos);
         }
-        world.apply(&Order::SpawnZombies { count: START_ZOMBIES });
+        world.scatter_roamers(setup.common.roamers);
         world.update_vision();
         world
     }
@@ -160,7 +169,7 @@ impl World {
             building_aggro: AggroMap::new(size),
             hunt: HuntMap::new(size, Through::Never),
             charge: HuntMap::new(size, Through::Cost(CHARGE_THROUGH)),
-            zombie_sight: Vision::new(size),
+            zombie_sight: Breed::ALL.iter().map(|_| Vision::new(size)).collect(),
             building_at: vec![NO_BUILDING; size * size],
             vision: Vision::new(size),
             map,
@@ -168,12 +177,14 @@ impl World {
             zombies: Vec::new(),
             units: Vec::new(),
             buildings: Vec::new(),
+            corpses: Vec::new(),
+            gold: data::get().colony.start_gold,
             spawners: Vec::new(),
             shots: Vec::new(),
             beams: Vec::new(),
             tick: 0,
             seed,
-            respawn: true,
+            next_group: 0,
             waves: Vec::new(),
             // Not `Rng::new(seed)`: the map generator already uses that one – this way the two don't repeat each other.
             rng: Rng::new(seed ^ 0x5157_4F52_4C44),
@@ -197,7 +208,7 @@ impl World {
 
     /// A zombie as placed in the editor (loading a map file).
     pub fn add_zombie(&mut self, pos: Vec2, breed: Breed, wander: bool) {
-        self.spawn_zombie_as(pos, Some(breed), wander);
+        self.spawn_zombie_as(pos, breed, wander);
     }
 
     /// Everything that depends on the map and on what stands on it, computed anew – after loading a map file.
@@ -227,22 +238,21 @@ impl World {
         self.apply_orders(orders); // orders.rs
         self.fire_timed_waves(); // spawning.rs
         self.update_spawners(); // spawning.rs
-        self.move_zombies(); // zombies.rs
+        self.raise_corpses(); // spawning.rs
+        self.move_zombies(); // zombies.rs, infected buildings in buildings.rs
         self.update_units(); // units.rs, shooting in combat.rs
-        self.update_buildings(); // buildings.rs
+        self.update_buildings(); // buildings.rs, gold too
         self.remove_dead();
         self.update_vision();
         self.tick += 1;
     }
 
-    /// Clean up at the end of the tick: dead units disappear, destroyed buildings fall (`buildings.rs`), killed
-    /// zombies (and those at the base) start again in a spawner or disappear too (`spawning.rs`).
+    /// Clean up at the end of the tick: dead units lie down and disappear, destroyed buildings fall (`buildings.rs`),
+    /// killed zombies are gone for good.
     fn remove_dead(&mut self) {
+        self.lay_down_dead_units();
         self.units.retain(|u| u.hp > 0);
         self.remove_destroyed_buildings();
-        if self.respawn {
-            self.respawn_zombies();
-        }
         self.zombies.retain(|z| z.is_alive());
     }
 
@@ -260,11 +270,19 @@ impl World {
         for u in &self.units {
             mix(u.pos.x.to_bits());
             mix(u.pos.y.to_bits());
+            mix(u.facing.to_bits()); // decides when it can shoot
             mix(u.hp);
         }
         for b in &self.buildings {
             mix(b.hp);
+            mix(b.shield);
         }
+        for c in &self.corpses {
+            mix(c.pos.x.to_bits());
+            mix(c.pos.y.to_bits());
+            mix(c.rise_in);
+        }
+        mix(self.gold);
         hash
     }
 }
@@ -284,7 +302,7 @@ fn push_apart(pos: Vec2, other: Vec2, min_dist: f32) -> Vec2 {
 /// Can you get from `from` to `to` in a straight line without touching a blocked tile? Tile by tile
 /// (`Map::line_is_clear`), so not through the corner between two diagonal wall pieces either.
 fn clear_line(map: &Map, from: Vec2, to: Vec2) -> bool {
-    map.line_is_clear(from, to, |x, y| map.is_blocked(x, y))
+    Map::line_is_clear(from, to, |x, y| map.is_blocked(x, y))
 }
 
 /// Moves by `velocity`, but not into `blocked` tiles: check x and y separately,

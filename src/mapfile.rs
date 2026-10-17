@@ -3,7 +3,7 @@
 //! readable, and you can change it by hand.
 //!
 //! What's in it: the terrain (one letter per tile, one line of text per row – you can almost see the map in the
-//! file), the spawners, buildings, units, the zombies placed in the editor, the timeline of waves. Not in it: what
+//! file), the ore deposits, the spawners, buildings, units, the zombies placed in the editor, the timeline of waves. Not in it: what
 //! happens during a round (hit points, commands, the tick) – that would be a save game (DESIGN.md 11.5, later).
 
 use std::fs;
@@ -13,7 +13,7 @@ use macroquad::math::vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::{Map, Terrain};
+use crate::map::{Deposit, Map, Ore, Terrain};
 use crate::settings;
 use crate::sim::{Breed, SpawnMode, TimedWave, World};
 
@@ -29,12 +29,21 @@ pub struct MapFile {
     pub border: usize,
     /// One string per row, one letter per tile (`letter`).
     pub terrain: Vec<String>,
+    /// Every tile with ore on it. `default`: files from before 2026-10-17 have none.
+    #[serde(default)]
+    pub deposits: Vec<DepositData>,
     pub spawners: Vec<SpawnerData>,
     pub buildings: Vec<BuildingData>,
     pub units: Vec<UnitData>,
     pub zombies: Vec<ZombieData>,
     pub waves: Vec<TimedWave>,
-    pub respawn: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct DepositData {
+    pub tile: (i32, i32),
+    pub ore: Ore,
+    pub amount: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -99,6 +108,7 @@ impl MapFile {
             size: world.map.size,
             border: world.map.border,
             terrain,
+            deposits: world.map.all_deposits().map(|(x, y, d)| DepositData { tile: (x, y), ore: d.ore, amount: d.amount }).collect(),
             spawners: world
                 .spawners
                 .iter()
@@ -112,7 +122,6 @@ impl MapFile {
                 .map(|z| ZombieData { pos: (z.pos.x, z.pos.y), breed: z.breed, wander: world.is_wanderer(z) })
                 .collect(),
             waves: world.waves.clone(),
-            respawn: world.respawn,
         }
     }
 
@@ -132,7 +141,11 @@ impl MapFile {
                 _ => return Err(format!("row {y} of the terrain is broken")),
             }
         }
-        let mut world = World::empty(self.seed, Map::from_terrain(self.size, self.border, terrain));
+        let mut map = Map::from_terrain(self.size, self.border, terrain);
+        for d in &self.deposits {
+            map.set_deposit(d.tile.0, d.tile.1, Some(Deposit { ore: d.ore, amount: d.amount }));
+        }
+        let mut world = World::empty(self.seed, map);
         for s in &self.spawners {
             world.add_spawner(s.name.clone(), s.min, s.size, s.mode);
         }
@@ -146,7 +159,6 @@ impl MapFile {
             world.add_zombie(vec2(z.pos.0, z.pos.1), z.breed, z.wander);
         }
         world.waves = self.waves.clone();
-        world.respawn = self.respawn;
         world.settle();
         Ok(world)
     }
@@ -212,9 +224,11 @@ mod tests {
             Order::PaintTerrain { terrain: Terrain::Water, tiles: vec![(c + 20, c + 20), (c + 21, c + 20)] },
             Order::PlaceBuilding { kind: BuildingKind::Wall, tile: (c + 6, c), turned: false, editor: true },
             Order::AddTimedWave(TimedWave { at: 1234, count: 300, from: WaveFrom::Sides(2) }),
-            Order::SetRespawn(false),
+            Order::PaintOre { ore: Some(crate::map::Ore::Coal), tiles: vec![(c + 3, c + 9)] },
         ]);
         let file = MapFile::from_world(&world, "Test: map?");
+        assert!(file.deposits.len() > 20, "the generated ore isn't saved");
+        assert!(file.deposits.iter().any(|d| d.tile == (c + 3, c + 9) && d.ore == crate::map::Ore::Coal), "the painted ore isn't saved");
         let text = serde_json::to_string(&file).unwrap();
         let back: MapFile = serde_json::from_str(&text).unwrap();
         assert_eq!(back, file);
@@ -226,7 +240,6 @@ mod tests {
         assert_eq!(loaded.units.len(), world.units.len());
         assert_eq!(loaded.zombies.len(), world.zombies.len());
         assert_eq!(loaded.waves, world.waves);
-        assert!(!loaded.respawn);
         assert_eq!(MapFile::from_world(&loaded, "Test: map?"), file, "saving the loaded map gives the same file");
         assert_eq!(file_stem("Test: map?"), "Test_ map_");
     }

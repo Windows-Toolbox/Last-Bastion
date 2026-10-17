@@ -16,7 +16,7 @@
 use macroquad::prelude::*;
 
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::Terrain;
+use crate::map::{Ore, Terrain};
 use crate::mapfile::MapFile;
 use crate::sim::{day_and_hour, Breed, Order, SpawnMode, TimedWave, WaveFrom, World, DAY_TICKS, HOUR_TICKS};
 use crate::widgets::type_into;
@@ -72,6 +72,8 @@ pub enum Sight {
 pub enum Tool {
     /// Paint this terrain (hold and drag). `Grass` = rubber.
     Paint(Terrain),
+    /// Paint ore on grass (hold and drag). `None` = take the ore away.
+    Ore(Option<Ore>),
     /// Zombie brush: while the left mouse button is held, every tick a few zombies on the brush area.
     ZombieBrush,
     /// A whole crowd of zombies at once at the click.
@@ -90,12 +92,14 @@ impl Tool {
         match self {
             Tool::Paint(Terrain::Grass) => "Erase",
             Tool::Paint(terrain) => terrain.name(),
+            Tool::Ore(Some(ore)) => ore.name(),
+            Tool::Ore(None) => "No ore",
             Tool::ZombieBrush => "Brush",
             Tool::ZombieDrop => "Drop",
-            Tool::Unit(kind) => kind.stats().name,
+            Tool::Unit(kind) => &kind.stats().name,
             Tool::Spawner => "+ Spawner",
             Tool::Building(BuildingKind::CommandCenter) => "CC",
-            Tool::Building(kind) => kind.stats().name,
+            Tool::Building(kind) => &kind.stats().name,
         }
     }
 }
@@ -156,8 +160,6 @@ pub enum EditorButton {
     EdgeZombies,
     Wave(Wave),
     ClearZombies,
-    /// Do killed zombies come back in a spawner?
-    Respawn,
     /// Only shows the clock of the round.
     Clock,
     /// A new wave at the end of the timeline.
@@ -189,8 +191,8 @@ pub enum EditorButton {
     RemoveSpawner,
 
     // --- Zombies ---
-    /// Which zombies the brush and drop place: `None` the usual mix, or only this breed.
-    Breed(Option<Breed>),
+    /// Which zombies the brush and drop place.
+    Breed(Breed),
     /// Placed zombies wander around there (true) or storm the command center (false).
     Wander(bool),
     /// Zombies per tick of the brush one step less (-1) or more (+1) …
@@ -281,8 +283,8 @@ pub struct Editor {
     scroll: f32,
     /// Whose view the editor shows (stays when switching back and forth).
     sight: Sight,
-    /// What the zombie brush and drop place: breed (`None`: the usual mix), wandering or storming, how many.
-    pub breed: Option<Breed>,
+    /// What the zombie brush and drop place: breed, wandering or storming, how many.
+    pub breed: Breed,
     pub wander: bool,
     /// Zombies per tick of the brush.
     pub rate: u32,
@@ -311,7 +313,7 @@ impl Editor {
             wave_count: 0,
             scroll: 0.0,
             sight: Sight::All,
-            breed: None,
+            breed: Breed::Walker,
             wander: false,
             rate: 2,
             drop: 100,
@@ -484,7 +486,6 @@ impl Editor {
             EditorButton::EdgeZombies => orders.push(Order::SpawnZombies { count: 1000 }),
             EditorButton::Wave(wave) => orders.push(wave.order()),
             EditorButton::ClearZombies => orders.push(Order::ClearZombies),
-            EditorButton::Respawn => orders.push(Order::SetRespawn(!world.respawn)),
             EditorButton::AddTimed => {
                 // A day after the last wave (or after now), on the full hour.
                 let last = world.waves.iter().map(|w| w.at).max().unwrap_or(0).max(world.tick);
@@ -567,7 +568,6 @@ impl Editor {
                 EditorButton::Tool(Tool::Building(kind)) => self.placing == Some(kind),
                 EditorButton::Tool(tool) => self.tool == Some(tool),
                 EditorButton::Brush(size) => self.brush == size,
-                EditorButton::Respawn => world.respawn,
                 EditorButton::SpawnerName => self.name_edit.is_some(),
                 EditorButton::MapName => self.map_name_edit.is_some(),
                 EditorButton::Sends(sends) => spawn_mode(world, self.spawner).is_some_and(|mode| sends_of(mode) == sends),
@@ -640,6 +640,9 @@ impl Editor {
                 Row::Heading("Paint - hold and drag"),
                 buttons(&[B::Tool(Tool::Paint(Terrain::Mountain)), B::Tool(Tool::Paint(Terrain::Forest)), B::Tool(Tool::Paint(Terrain::Tree))]),
                 buttons(&[B::Tool(Tool::Paint(Terrain::Water)), B::Tool(Tool::Paint(Terrain::Grass))]),
+                Row::Heading("Ore - only on grass"),
+                buttons(&[B::Tool(Tool::Ore(Some(Ore::Iron))), B::Tool(Tool::Ore(Some(Ore::Coal))), B::Tool(Tool::Ore(Some(Ore::Stone)))]),
+                buttons(&[B::Tool(Tool::Ore(None))]),
                 Row::Heading("Brush size - terrain and zombies"),
                 buttons(&[B::Brush(1), B::Brush(3), B::Brush(5), B::Brush(9)]),
                 buttons(&[B::Brush(15), B::Brush(25), B::Brush(41)]),
@@ -647,7 +650,8 @@ impl Editor {
             Tab::Entities => {
                 let mut rows = vec![
                     Row::Heading(UNITS),
-                    buttons(&[B::Tool(Tool::Unit(UnitKind::Soldier)), B::Tool(Tool::Unit(UnitKind::Sniper)), B::Tool(Tool::Unit(UnitKind::Medic))]),
+                    buttons(&[B::Tool(Tool::Unit(UnitKind::Soldier)), B::Tool(Tool::Unit(UnitKind::Ranger))]),
+                    buttons(&[B::Tool(Tool::Unit(UnitKind::Sniper)), B::Tool(Tool::Unit(UnitKind::Medic))]),
                     Row::Heading("Buildings - no rules, R turns"),
                     buttons(&[
                         B::Tool(Tool::Building(BuildingKind::CommandCenter)),
@@ -657,7 +661,7 @@ impl Editor {
                     buttons(&[B::Tool(Tool::Building(BuildingKind::Gate)), B::Tool(Tool::Building(BuildingKind::Tower))]),
                     Row::Heading("Zombies - brush: hold, drop: click"),
                     buttons(&[B::Tool(Tool::ZombieBrush), B::Tool(Tool::ZombieDrop)]),
-                    buttons(&[B::Breed(None), B::Breed(Some(Breed::Walker)), B::Breed(Some(Breed::Hunter))]),
+                    buttons(&[B::Breed(Breed::Walker), B::Breed(Breed::Runner), B::Breed(Breed::Fat)]),
                     buttons(&[B::Wander(false), B::Wander(true)]),
                     buttons(&[B::Rate(-1), B::Show(Value::Rate), B::Rate(1)]),
                     buttons(&[B::Drop(-1), B::Show(Value::Drop), B::Drop(1)]),
@@ -682,7 +686,7 @@ impl Editor {
                     Row::Heading("Send now - from the spawners"),
                     buttons(&[B::Wave(Wave::Small), B::Wave(Wave::Side), B::Wave(Wave::TwoSides)]),
                     buttons(&[B::EdgeZombies]),
-                    buttons(&[B::ClearZombies, B::Respawn]),
+                    buttons(&[B::ClearZombies]),
                     Row::Heading("Timeline - comes by itself"),
                     buttons(&[B::Clock]),
                 ];
@@ -836,7 +840,7 @@ impl Editor {
                     _ => "-".to_owned(),
                 }
             }
-            _ => label(button, world.respawn),
+            _ => label(button),
         }
     }
 }
@@ -892,7 +896,7 @@ fn spawner_name(world: &World, spawner: Option<u32>) -> Option<String> {
 const UNITS: &str = "Units - click inside the border";
 
 /// The text on a button (except the ones that show a value).
-fn label(button: EditorButton, respawn: bool) -> String {
+fn label(button: EditorButton) -> String {
     match button {
         EditorButton::Mode(Mode::Game) => "Game View".to_owned(),
         EditorButton::Mode(Mode::Editor) => "Editor Mode".to_owned(),
@@ -912,19 +916,18 @@ fn label(button: EditorButton, respawn: bool) -> String {
         EditorButton::Wave(Wave::Side) => "One side".to_owned(),
         EditorButton::Wave(Wave::TwoSides) => "Two sides".to_owned(),
         EditorButton::ClearZombies => "Remove all".to_owned(),
-        EditorButton::Respawn => format!("Respawn: {}", if respawn { "on" } else { "off" }),
         EditorButton::AddTimed => "+ Add wave".to_owned(),
         EditorButton::TimedTime(_, dir) | EditorButton::TimedCount(_, dir) => if dir < 0 { "-" } else { "+" }.to_owned(),
         EditorButton::TimedRemove(_) => "x".to_owned(),
-        EditorButton::Sends(Sends::Constant) => "Constantly".to_owned(),
+        EditorButton::Sends(Sends::Constant) => "Constant".to_owned(),
         EditorButton::Sends(Sends::Periodic) => "Periodic".to_owned(),
         EditorButton::Sends(Sends::Off) => "Off".to_owned(),
         EditorButton::Every(dir) | EditorButton::Count(dir) | EditorButton::Rate(dir) | EditorButton::Drop(dir) => {
             if dir < 0 { "-" } else { "+" }.to_owned()
         }
-        EditorButton::Breed(None) => "Mixed".to_owned(),
-        EditorButton::Breed(Some(Breed::Walker)) => "Walker".to_owned(),
-        EditorButton::Breed(Some(Breed::Hunter)) => "Hunter".to_owned(),
+        EditorButton::Breed(Breed::Walker) => "Walker".to_owned(),
+        EditorButton::Breed(Breed::Runner) => "Runner".to_owned(),
+        EditorButton::Breed(Breed::Fat) => "Fat".to_owned(),
         EditorButton::Wander(false) => "Storm the CC".to_owned(),
         EditorButton::Wander(true) => "Wander".to_owned(),
         EditorButton::RemoveSpawner => "Remove spawner (Del)".to_owned(),

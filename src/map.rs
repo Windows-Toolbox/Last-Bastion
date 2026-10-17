@@ -6,6 +6,7 @@
 //! game view you can't see it – that's where the zombies come from. The editor shows the whole map.
 
 use macroquad::math::{vec2, Vec2};
+use serde::{Deserialize, Serialize};
 
 
 /// Width of the ring outside the world border, in tiles. (How big the playing field is, is chosen per map –
@@ -69,6 +70,34 @@ impl Terrain {
     }
 }
 
+/// What can lie in the ground (DESIGN.md 5.1): ore patches like in Factorio. They lie **on grass** – you walk and
+/// build on them; later a drill or quarry on top gets the ore out (DESIGN.md 5). Wood comes from forests.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Ore {
+    Iron,
+    Coal,
+    Stone,
+}
+
+impl Ore {
+    pub const ALL: [Ore; 3] = [Ore::Iron, Ore::Coal, Ore::Stone];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Ore::Iron => "Iron ore",
+            Ore::Coal => "Coal",
+            Ore::Stone => "Stone",
+        }
+    }
+}
+
+/// One tile of an ore patch: which ore and how much of it (units of ore – the middle of a patch has the most).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Deposit {
+    pub ore: Ore,
+    pub amount: u32,
+}
+
 /// A square piece of the map in world coordinates: from `min`, `size` tiles wide and high.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Region {
@@ -104,13 +133,15 @@ pub struct Map {
     /// Counts every change of the terrain – whoever keeps a picture of the map (the minimap) sees from it
     /// whether the picture is still right.
     pub revision: u32,
+    /// Per tile: an ore deposit lying on it (`None`: nothing). Only ever on grass.
+    deposits: Vec<Option<Deposit>>,
 }
 
 impl Map {
     /// A map from finished terrain (`mapgen` makes it, or a saved map file): `size` × `size` tiles, row by row.
     pub fn from_terrain(size: usize, border: usize, terrain: Vec<Terrain>) -> Map {
         assert_eq!(terrain.len(), size * size, "terrain doesn't fit the size");
-        let mut map = Map { size, border, terrain, flags: vec![0; size * size], revision: 0 };
+        let mut map = Map { size, border, terrain, flags: vec![0; size * size], revision: 0, deposits: vec![None; size * size] };
         for i in 0..size * size {
             let (x, y) = ((i % size) as i32, (i / size) as i32);
             let outside = if map.in_play(x, y) { 0 } else { OUTSIDE };
@@ -153,11 +184,11 @@ impl Map {
     }
 
     /// Blocked for your units: like `is_blocked`, plus everything outside the world border – but a gate's door
-    /// lets them through.
+    /// lets them through. Not onto solid terrain, though: in the editor a gate can stand on water.
     pub fn blocks_unit(&self, x: i32, y: i32) -> bool {
         let flags = self.flags(x, y);
-        let blocked = (flags & (SOLID | BUILT)) != 0 && (flags & DOOR) == 0;
-        blocked || (flags & OUTSIDE) != 0
+        let closed_building = (flags & BUILT) != 0 && (flags & DOOR) == 0;
+        (flags & (SOLID | OUTSIDE)) != 0 || closed_building
     }
 
     /// Is there a building on this tile?
@@ -194,7 +225,7 @@ impl Map {
     /// Can you see from `from` to `to` – is there no forest or tree **between** them? The tiles of the two
     /// points themselves don't count: you can see the edge of a forest, just not into it.
     pub fn clear_sight(&self, from: Vec2, to: Vec2) -> bool {
-        self.line_is_clear(from, to, |x, y| self.blocks_sight(x, y))
+        Map::line_is_clear(from, to, |x, y| self.blocks_sight(x, y))
     }
 
     /// Is none of the tiles **between** `from` and `to` `blocked`? (The tiles of the two points themselves
@@ -203,7 +234,8 @@ impl Map {
     /// Walks along the line tile by tile, exactly through the tiles the line touches (a "grid walk" like in
     /// old ray casting games): every step goes into the neighbour tile whose border the line crosses next –
     /// never diagonally. So a line can't slip through the corner between two diagonal wall pieces either.
-    pub fn line_is_clear(&self, from: Vec2, to: Vec2, blocked: impl Fn(i32, i32) -> bool) -> bool {
+    /// Needs nothing of the map itself (`blocked` says what blocks) – so a flow field can use it with what it kept.
+    pub fn line_is_clear(from: Vec2, to: Vec2, blocked: impl Fn(i32, i32) -> bool) -> bool {
         let (mut x, mut y) = (from.x.floor() as i32, from.y.floor() as i32);
         let (end_x, end_y) = (to.x.floor() as i32, to.y.floor() as i32);
         let d = to - from;
@@ -239,12 +271,38 @@ impl Map {
         true
     }
 
-    /// Changes the terrain of one tile (editor). Tiles with a building stay as they are.
+    /// The ore deposit on a tile, if there is one.
+    pub fn deposit(&self, x: i32, y: i32) -> Option<Deposit> {
+        self.index(x, y).and_then(|i| self.deposits[i])
+    }
+
+    /// Puts ore on a tile – or takes it away (`None`). Only on grass: on anything else nothing happens.
     /// Returns whether anything changed.
+    pub fn set_deposit(&mut self, x: i32, y: i32, deposit: Option<Deposit>) -> bool {
+        match self.index(x, y) {
+            Some(i) if self.terrain[i] == Terrain::Grass && self.deposits[i] != deposit => {
+                self.deposits[i] = deposit;
+                self.revision += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Every tile with ore on it: (x, y, deposit) – for saving.
+    pub fn all_deposits(&self) -> impl Iterator<Item = (i32, i32, Deposit)> + '_ {
+        self.deposits.iter().enumerate().filter_map(|(i, d)| d.map(|d| ((i % self.size) as i32, (i / self.size) as i32, d)))
+    }
+
+    /// Changes the terrain of one tile (editor). Tiles with a building stay as they are. Anything but grass takes the
+    /// ore away with it. Returns whether anything changed.
     pub fn set_terrain(&mut self, x: i32, y: i32, terrain: Terrain) -> bool {
         match self.index(x, y) {
             Some(i) if (self.flags[i] & BUILT) == 0 && self.terrain[i] != terrain => {
                 self.terrain[i] = terrain;
+                if terrain != Terrain::Grass {
+                    self.deposits[i] = None;
+                }
                 // Swap the terrain bits, keep the others (outside the border stays outside).
                 self.flags[i] = (self.flags[i] & !(SOLID | BLOCKS_SIGHT)) | terrain.flags();
                 self.revision += 1;

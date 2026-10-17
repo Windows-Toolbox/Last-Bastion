@@ -7,7 +7,7 @@
 
 use macroquad::prelude::*;
 
-use crate::draw::{terrain_color, UNEXPLORED};
+use crate::draw::{ore_color, terrain_color, UNEXPLORED};
 use crate::map::{Map, Region};
 use crate::vision::Vision;
 
@@ -64,7 +64,10 @@ impl MapPicture {
         let rgba = |c: Color| [(c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, 255];
         for y in 0..n as i32 {
             for x in 0..n as i32 {
-                let mut c = terrain_color(map.terrain(x, y));
+                let mut c = match map.deposit(x, y) {
+                    Some(deposit) => ore_color(deposit.ore),
+                    None => terrain_color(map.terrain(x, y)),
+                };
                 if extras.fog.is_some_and(|fog| !fog.is_explored(x, y)) {
                     c = UNEXPLORED;
                 } else if extras.shade_ring && !map.in_play(x, y) {

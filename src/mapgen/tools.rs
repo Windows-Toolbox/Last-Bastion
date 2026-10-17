@@ -78,6 +78,18 @@ impl Tiles {
     }
 }
 
+/// A random direction: a random point in the square -1 … 1, but only if it lies in the circle (otherwise the
+/// corners would be twice as likely), shortened to length 1. No angles, so no `sin`/`cos`.
+pub fn random_direction(rng: &mut Rng) -> Vec2 {
+    loop {
+        let v = vec2(rng.unit_f32() * 2.0 - 1.0, rng.unit_f32() * 2.0 - 1.0);
+        let len = v.length();
+        if len > 0.1 && len <= 1.0 {
+            return v / len;
+        }
+    }
+}
+
 /// 0 below `lo`, 1 above `hi`, and an "S" in between (smooth at both ends).
 pub fn smoothstep(lo: f32, hi: f32, v: f32) -> f32 {
     let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
@@ -104,6 +116,53 @@ pub fn material(choice: f32, rng: &mut Rng) -> Terrain {
             5..=8 => Terrain::Forest,
             _ => Terrain::Water,
         },
+    }
+}
+
+/// Like `material`, but for "mixed" (2) per tile from a noise: patches of rock and forest along the same wall, now
+/// and then a bit of water – a wall that looks grown, not painted with one brush. The others stay one material.
+pub fn material_at(choice: f32, fixed: Terrain, mix: &Noise, x: i32, y: i32) -> Terrain {
+    if choice.round() as i32 != 2 {
+        return fixed;
+    }
+    let v = mix.fractal(x as f32, y as f32, 18.0, 3);
+    if v < 0.28 {
+        Terrain::Water
+    } else if v < 0.55 {
+        Terrain::Mountain
+    } else {
+        Terrain::Forest
+    }
+}
+
+/// Blobs of rock, forest or water smaller than `max` tiles become grass again – crumbs that only get in the way.
+/// Single trees stay (they are meant to be single).
+pub fn remove_specks(tiles: &mut Tiles, max: usize) {
+    let n = tiles.size;
+    let mut seen = vec![false; (n * n) as usize];
+    for (x, y) in tiles.all() {
+        let t = tiles.get(x, y);
+        if seen[(y * n + x) as usize] || !t.is_solid() || t == Terrain::Tree {
+            continue;
+        }
+        // All connected tiles of the same terrain.
+        let mut blob = vec![(x, y)];
+        let mut stack = vec![(x, y)];
+        seen[(y * n + x) as usize] = true;
+        while let Some((bx, by)) = stack.pop() {
+            for (nx, ny) in [(bx + 1, by), (bx - 1, by), (bx, by + 1), (bx, by - 1)] {
+                if tiles.inside(nx, ny) && !seen[(ny * n + nx) as usize] && tiles.get(nx, ny) == t {
+                    seen[(ny * n + nx) as usize] = true;
+                    stack.push((nx, ny));
+                    blob.push((nx, ny));
+                }
+            }
+        }
+        if blob.len() < max {
+            for (bx, by) in blob {
+                tiles.set(bx, by, Terrain::Grass);
+            }
+        }
     }
 }
 
@@ -206,27 +265,42 @@ pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meande
     }
 }
 
-/// Makes sure every open place (grass) can be reached from `from` on foot: an open place that is cut off – by a lake,
-/// a wall of rock, the ring of a fortress – gets the shortest possible path through whatever is in the way, 2 tiles
-/// wide. Those paths are natural chokepoints (a ford through a river, a gap in a ridge). Open places smaller than
-/// `min_pocket` tiles are filled with forest instead.
+/// Makes sure every open place (grass) can be reached from `from` on foot, in two passes:
+/// 1. **Everywhere**, the ring outside the border too – the spawners' way into the playing field.
+/// 2. **Inside** the world border (`inside`), only through tiles inside it – that's where your units walk. Before
+///    2026-10-17 there was only pass 1, and many places inside were only connected through the ring outside the
+///    border: zombies got there, your units didn't (thousands of tiles per map). In this order, because pass 2 only
+///    opens tiles – it can't cut off what pass 1 connected; the other way round, pass 1's ways sometimes opened new
+///    little pockets inside. For the same reason pass 2 never fills a small pocket (it could be the zombies' only way
+///    in) – it connects it; the small pockets that are closed off completely were already filled in pass 1.
+///
+/// A cut-off place gets the way that cuts through **as few blocked tiles as possible** (and uses open ground for the
+/// rest), 2 tiles wide where it cuts. Those cuts are natural chokepoints (a ford through a river, a gap in a ridge).
+/// Open places smaller than `min_pocket` tiles are filled with forest instead.
 ///
 /// Walking counts only straight steps (4 neighbours): stricter than the units, who also go diagonally – so whatever
 /// is connected here is certainly connected in the game.
-pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize) {
+pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, inside: impl Fn(i32, i32) -> bool) {
+    connect_area(tiles, from, min_pocket, &|_, _| true);
+    connect_area(tiles, from, 0, &inside);
+}
+
+/// One pass of `connect_pockets`: everything open within `area` reachable from `from`, ways only within `area`.
+fn connect_area(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, area: &dyn Fn(i32, i32) -> bool) {
     let n = tiles.size;
     let index = |x: i32, y: i32| (y * n + x) as usize;
+    let open = |tiles: &Tiles, x: i32, y: i32| tiles.inside(x, y) && area(x, y) && !tiles.get(x, y).is_solid();
     let mut reached = vec![false; (n * n) as usize];
-    flood(tiles, from, &mut reached);
+    flood(tiles, from, &mut reached, &open);
     let mut pocket_seen = vec![false; (n * n) as usize];
     for (x, y) in tiles.all() {
         let i = index(x, y);
-        if reached[i] || pocket_seen[i] || tiles.get(x, y).is_solid() {
+        if reached[i] || pocket_seen[i] || !open(tiles, x, y) {
             continue;
         }
         // A new open place that isn't connected. Which tiles belong to it?
         let mut pocket = vec![false; (n * n) as usize];
-        let cells = flood(tiles, (x, y), &mut pocket);
+        let cells = flood(tiles, (x, y), &mut pocket, &open);
         for &(px, py) in &cells {
             pocket_seen[index(px, py)] = true;
         }
@@ -236,11 +310,17 @@ pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize) {
             }
             continue;
         }
-        // From all of its tiles at once, through anything, until a reached tile turns up: that's the shortest way.
+        // From all of its tiles at once until a reached tile turns up – the way that cuts the fewest blocked tiles.
+        // "0-1 BFS": a step onto open ground costs 0 and goes to the front of the queue, a step through a blocked tile
+        // costs 1 and goes to the back. So the queue always takes the cheapest way first, like Dijkstra, but without
+        // sorting.
+        let mut cost = vec![u32::MAX; (n * n) as usize];
         let mut came_from: Vec<u32> = vec![u32::MAX; (n * n) as usize];
-        let mut queue: VecDeque<(i32, i32)> = cells.iter().copied().collect();
+        let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
         for &(px, py) in &cells {
+            cost[index(px, py)] = 0;
             came_from[index(px, py)] = index(px, py) as u32;
+            queue.push_back((px, py));
         }
         let mut found = None;
         while let Some((cx, cy)) = queue.pop_front() {
@@ -248,23 +328,38 @@ pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize) {
                 found = Some((cx, cy));
                 break;
             }
+            let here = cost[index(cx, cy)];
             for (nx, ny) in [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)] {
-                if tiles.inside(nx, ny) && came_from[index(nx, ny)] == u32::MAX {
+                if !tiles.inside(nx, ny) || !area(nx, ny) {
+                    continue;
+                }
+                let step = if open(tiles, nx, ny) { 0 } else { 1 };
+                if here + step < cost[index(nx, ny)] {
+                    cost[index(nx, ny)] = here + step;
                     came_from[index(nx, ny)] = index(cx, cy) as u32;
-                    queue.push_back((nx, ny));
+                    if step == 0 {
+                        queue.push_front((nx, ny));
+                    } else {
+                        queue.push_back((nx, ny));
+                    }
                 }
             }
         }
         let Some(mut at) = found else {
             continue;
         };
-        // Walk back and clear the way, 2 tiles wide (a 1-tile path would be too easy to miss and to block).
+        // Walk back and clear the blocked tiles of the way, 2 tiles wide (a 1-tile cut would be too easy to miss and
+        // to block) – but never out of the area.
         let mut path = Vec::new();
         loop {
-            for tile in [at, (at.0 + 1, at.1), (at.0, at.1 + 1)] {
-                tiles.set(tile.0, tile.1, Terrain::Grass);
-                path.push(tile);
+            if tiles.get(at.0, at.1).is_solid() {
+                for tile in [at, (at.0 + 1, at.1), (at.0, at.1 + 1)] {
+                    if tiles.inside(tile.0, tile.1) && area(tile.0, tile.1) {
+                        tiles.set(tile.0, tile.1, Terrain::Grass);
+                    }
+                }
             }
+            path.push(at);
             let prev = came_from[index(at.0, at.1)] as i32;
             let prev = (prev % n, prev / n);
             if prev == at {
@@ -272,21 +367,19 @@ pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize) {
             }
             at = prev;
         }
-        // Now the path, this pocket and whatever else the path opened belong to the reached part. (Flooding from
+        // Now the way, this pocket and whatever else the way opened belong to the reached part. (Flooding from
         // `from` again wouldn't do: it is marked already, so the flood would stop right there.)
         for (px, py) in path {
-            if tiles.inside(px, py) {
-                flood(tiles, (px, py), &mut reached);
-            }
+            flood(tiles, (px, py), &mut reached, &open);
         }
     }
 }
 
-/// Marks every open tile reachable from `start` (straight steps) in `seen` and returns the newly marked ones.
-fn flood(tiles: &Tiles, start: (i32, i32), seen: &mut [bool]) -> Vec<(i32, i32)> {
+/// Marks every `open` tile reachable from `start` (straight steps) in `seen` and returns the newly marked ones.
+fn flood(tiles: &Tiles, start: (i32, i32), seen: &mut [bool], open: &dyn Fn(&Tiles, i32, i32) -> bool) -> Vec<(i32, i32)> {
     let n = tiles.size;
     let mut found = Vec::new();
-    if tiles.get(start.0, start.1).is_solid() || seen[(start.1 * n + start.0) as usize] {
+    if !open(tiles, start.0, start.1) || seen[(start.1 * n + start.0) as usize] {
         return found;
     }
     let mut stack = vec![start];
@@ -294,7 +387,7 @@ fn flood(tiles: &Tiles, start: (i32, i32), seen: &mut [bool]) -> Vec<(i32, i32)>
     while let Some((x, y)) = stack.pop() {
         found.push((x, y));
         for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
-            if tiles.inside(nx, ny) && !tiles.get(nx, ny).is_solid() && !seen[(ny * n + nx) as usize] {
+            if open(tiles, nx, ny) && !seen[(ny * n + nx) as usize] {
                 seen[(ny * n + nx) as usize] = true;
                 stack.push((nx, ny));
             }
@@ -320,9 +413,9 @@ mod tests {
                 }
             }
         }
-        connect_pockets(&mut tiles, (10, 10), 5);
+        connect_pockets(&mut tiles, (10, 10), 5, |_, _| true);
         let mut seen = vec![false; 1600];
-        flood(&tiles, (10, 10), &mut seen);
+        flood(&tiles, (10, 10), &mut seen, &|t: &Tiles, x, y| t.inside(x, y) && !t.get(x, y).is_solid());
         assert!(seen[30 * 40 + 30], "the room is connected");
         assert_eq!(tiles.get(5, 5), Terrain::Forest, "the hole is filled");
         // The path is short: only a few wall tiles were opened.

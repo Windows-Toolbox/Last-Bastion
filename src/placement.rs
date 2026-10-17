@@ -1,19 +1,25 @@
 //! All placement rules in one file – where a building may go, what it may be built on, how far apart it has to stay
 //! from others, what it costs there, and how a dragged line is laid out. To change a rule, change it here.
-//! (The values of the buildings themselves – size, HP, cost – stay in `kinds.rs`.)
+//! The values (size, HP, cost of the buildings, how far zombies have to keep off a site, the refund for replaced
+//! buildings) are in `data\buildings.json`.
 
 use macroquad::math::{vec2, Vec2};
 
+use crate::data;
 use crate::kinds::BuildingKind;
 use crate::sim::{World, UNIT_RADIUS};
 
 /// No zombie may be this many tiles around a building site (plus the site itself) – you can't build
-/// right next to the horde.
-pub const BUILD_CLEARANCE: i32 = 4;
+/// right next to the horde. `zombie_free_radius` in `data\buildings.json`.
+pub fn build_clearance() -> i32 {
+    data::get().buildings.zombie_free_radius
+}
 
 /// How many percent of its cost a building that gets built over gives back to the new one. Has to stay under 100,
-/// otherwise "first walls, then the gate on top" would be cheaper than the gate alone.
-pub const REPLACE_REFUND: u32 = 50;
+/// otherwise "first walls, then the gate on top" would be cheaper than the gate alone (a test checks that).
+fn replace_refund() -> u32 {
+    data::get().buildings.replace_refund_percent
+}
 
 /// How many free tiles have to lie between a new `kind` and an `other` that already stands (0 = may touch).
 /// Counted in all 8 directions: 1 means not even corner to corner. Always counts both ways – (Tower, Tent) is enough
@@ -79,7 +85,7 @@ impl World {
     /// - every tile inside the world border, on grass, and free – or under a building it may replace (`replaces`),
     /// - far enough from other buildings (`gap`),
     /// - none of your units standing on it (buildings don't push anyone away),
-    /// - no zombie on the site or within `BUILD_CLEARANCE` tiles around it (`build_zone`).
+    /// - no zombie on the site or within `build_clearance` tiles around it (`build_zone`).
     pub fn can_place(&self, kind: BuildingKind, tile: (i32, i32), turned: bool) -> bool {
         let site = Site::new(kind, tile, turned);
         let ground = site.tiles().all(|(x, y)| {
@@ -113,7 +119,7 @@ impl World {
         self.buildings.iter().filter(|b| self.is_replaceable(kind, site, b.kind, b.tile, b.turned)).map(|b| b.id).collect()
     }
 
-    /// What the building costs here: its price, minus `REPLACE_REFUND` percent of every building it replaces.
+    /// What the building costs here: its price, minus `replace_refund` percent of every building it replaces.
     /// Nothing is paid yet – the economy comes later (DESIGN.md 5).
     pub fn build_cost(&self, kind: BuildingKind, tile: (i32, i32), turned: bool) -> u32 {
         let site = Site::new(kind, tile, turned);
@@ -121,17 +127,17 @@ impl World {
             .buildings
             .iter()
             .filter(|b| self.is_replaceable(kind, site, b.kind, b.tile, b.turned))
-            .map(|b| b.stats().cost * REPLACE_REFUND / 100)
+            .map(|b| b.stats().cost * replace_refund() / 100)
             .sum();
         kind.stats().cost.saturating_sub(refund)
     }
 
-    /// The area that has to be free of zombies for a building: the site plus `BUILD_CLEARANCE` tiles on every
+    /// The area that has to be free of zombies for a building: the site plus `build_clearance` tiles on every
     /// side, as (top left corner, bottom right corner). A wall (1 × 1) needs 9 × 9 tiles, a tent (2 × 2) 10 × 10.
     pub fn build_zone(kind: BuildingKind, tile: (i32, i32), turned: bool) -> (Vec2, Vec2) {
         let (w, h) = kind.footprint(turned);
-        let min = vec2((tile.0 - BUILD_CLEARANCE) as f32, (tile.1 - BUILD_CLEARANCE) as f32);
-        let max = min + vec2((w + 2 * BUILD_CLEARANCE) as f32, (h + 2 * BUILD_CLEARANCE) as f32);
+        let min = vec2((tile.0 - build_clearance()) as f32, (tile.1 - build_clearance()) as f32);
+        let max = min + vec2((w + 2 * build_clearance()) as f32, (h + 2 * build_clearance()) as f32);
         (min, max)
     }
 
@@ -289,7 +295,7 @@ mod tests {
     fn gate_on_walls_is_not_worth_it() {
         let (wall, gate) = (BuildingKind::Wall.stats().cost, BuildingKind::Gate.stats().cost);
         for walls in 1..=3 {
-            let discounted = gate.saturating_sub(walls * wall * REPLACE_REFUND / 100);
+            let discounted = gate.saturating_sub(walls * wall * replace_refund() / 100);
             assert!(discounted < gate, "no discount for {walls} walls");
             assert!(walls * wall + discounted > gate, "{walls} walls + gate on top is cheaper than the gate alone");
         }

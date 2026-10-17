@@ -1,10 +1,18 @@
 //! Combat of your units: whom they aim at (the nearest zombie in sight, for medics the nearest hurt unit) and
 //! shooting. Zombies hitting back is part of their walking (`zombies.rs`).
+//!
+//! A shot goes like in StarCraft, with the times from `data\units.json`:
+//! 1. **turn** to face the target (`turn_around_seconds` for 180°),
+//! 2. wait until the weapon is **reloaded** (`cooldown_seconds`, counted from the last shot),
+//! 3. **aim** – draw the bow, raise the rifle (`aim_seconds`),
+//! 4. shoot – and the reloading starts.
+//!
+//! Another target, or none, and the aiming starts over. That's why a unit keeps its target (`kept_target`) instead of
+//! jumping to whichever zombie is a bit closer right now.
 
 use macroquad::math::Vec2;
 
 use super::units::Intent;
-use super::zombies::ALERT_TICKS;
 use super::World;
 
 /// What a unit aims at this tick: a zombie (shoot) or – medics – one of its own (beam).
@@ -15,40 +23,97 @@ pub(super) enum Target {
     Ally(usize),
 }
 
+/// What a unit has been aiming at – by `id`, because it's kept from tick to tick and the indices change when the
+/// dead are taken out of the lists.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Aim {
+    Zombie(u32),
+    Ally(u32),
+}
+
 impl World {
-    /// Shoot – or, for medics, beam – at what each unit aimed at this tick (`intent`). Whose weapon is still
-    /// cooling down only counts down.
+    /// Turn, reload, aim, shoot (see the top of the file) – or, for medics, beam – at what each unit wants to aim at
+    /// this tick (`intent`).
     pub(super) fn shoot(&mut self, intents: &[Intent]) {
         for (i, intent) in intents.iter().enumerate() {
-            if self.units[i].cooldown > 0 {
-                self.units[i].cooldown -= 1;
+            // Reloading goes on whatever the unit does – walking, turning, nothing.
+            self.units[i].cooldown = self.units[i].cooldown.saturating_sub(1);
+            let (aim, to) = match intent.target {
+                Some(Target::Zombie(z)) if self.zombies[z].is_alive() => {
+                    (Aim::Zombie(self.zombies[z].id), self.zombies[z].pos)
+                }
+                Some(Target::Ally(a)) => (Aim::Ally(self.units[a].id), self.units[a].pos),
+                // No target (or already finished off by another unit this tick): stop aiming.
+                _ => {
+                    let unit = &mut self.units[i];
+                    unit.aim_at = None;
+                    unit.aim = 0;
+                    continue;
+                }
+            };
+            let unit = &mut self.units[i];
+            let stats = unit.stats();
+            if unit.aim_at != Some(aim) {
+                unit.aim_at = Some(aim);
+                unit.aim = 0; // a new target: aiming starts over
+            }
+            // 1. Turn. Not facing it yet: no aiming.
+            if !unit.turn_toward(to - unit.pos) {
+                unit.aim = 0;
                 continue;
             }
+            // 2. Reload.
+            if unit.cooldown > 0 {
+                continue;
+            }
+            // 3. Aim.
+            if unit.aim < stats.aim {
+                unit.aim += 1;
+                continue;
+            }
+            // 4. Shoot.
+            unit.aim = 0;
+            unit.cooldown = stats.cooldown;
             match intent.target {
                 Some(Target::Zombie(z)) => {
-                    if !self.zombies[z].is_alive() {
-                        continue; // already finished off by another unit this tick
-                    }
-                    let unit = &mut self.units[i];
-                    let stats = unit.stats();
-                    self.shots.push((unit.pos, self.zombies[z].pos));
-                    unit.cooldown = stats.cooldown;
+                    self.shots.push((unit.pos, to));
                     let zombie = &mut self.zombies[z];
-                    zombie.hp = zombie.hp.saturating_sub(stats.damage);
-                    zombie.alert = ALERT_TICKS; // whoever survives the shot comes for you
+                    let damage = stats.damage.saturating_sub(zombie.breed.stats().armor).max(1);
+                    zombie.hp = zombie.hp.saturating_sub(damage);
                     if !zombie.is_alive() {
                         unit.kills += 1;
                     }
+                    // Whoever survives the shot comes for you – it and a few around it through the gap, if there
+                    // is one (`zombies.rs`). The ones around it noticed even if it fell.
+                    let from = unit.pos;
+                    self.start_seeking(z);
+                    // And everyone who heard the shot comes too (TAB's noise).
+                    self.make_noise(from, stats.noise);
                 }
-                Some(Target::Ally(a)) => {
-                    // For now only the beam – healing comes later.
-                    let to = self.units[a].pos;
-                    let unit = &mut self.units[i];
-                    self.beams.push((unit.pos, to));
-                    unit.cooldown = unit.stats().cooldown;
-                }
+                // For now only the beam – healing comes later.
+                Some(Target::Ally(_)) => self.beams.push((unit.pos, to)),
                 None => {}
             }
+        }
+    }
+
+    /// The target the unit has been aiming at, if it's still worth it: alive, in range and in sight (and for medics
+    /// still hurt). Like in StarCraft a unit keeps its target – jumping to one that is a bit closer would start the
+    /// aiming over, and a ranger in front of a crowd would never get an arrow off.
+    pub(super) fn kept_target(&self, i: usize) -> Option<Target> {
+        let unit = &self.units[i];
+        match unit.aim_at? {
+            Aim::Zombie(id) => self
+                .find_zombie(id)
+                .filter(|&z| self.in_shot(unit.pos, self.zombies[z].pos, unit.range()))
+                .map(Target::Zombie),
+            Aim::Ally(id) => self
+                .find_unit(id)
+                .filter(|&a| {
+                    let other = &self.units[a];
+                    other.hp < other.stats().hp && !other.is_inside() && self.in_shot(unit.pos, other.pos, unit.range())
+                })
+                .map(Target::Ally),
         }
     }
 

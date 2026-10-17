@@ -1,0 +1,7 @@
+{
+  "start_gold": 0,
+  "gold_per_colonist_per_hour": 2,
+  "start_soldiers": 8,
+  "start_snipers": 4,
+  "start_rangers": 4
+}

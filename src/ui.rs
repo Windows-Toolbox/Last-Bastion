@@ -1,20 +1,62 @@
 //! Input: mouse and keyboard → selection, camera and orders – like in StarCraft 2 (DESIGN.md 7.1, 11.2).
 //! The simulation is never changed directly here – only through the order list (DESIGN.md 12.8).
-//! Selection and control groups remember the units' `id`, because units can die.
+//! Selection and control groups remember the `id`s of units and buildings, because both can die. Like in StarCraft a
+//! selection can hold units and buildings together; Tab switches which type is "in front" (`Sub`).
 
 use macroquad::prelude::*;
 
 use crate::cursor::Cursor;
-use crate::draw::{draw_diamond, mark_color, terrain_color, SpawnerShape, ZOMBIE};
+use crate::draw::{draw_diamond, mark_color, ore_color, terrain_color, SpawnerShape, ZOMBIE};
 use crate::editor::{Editor, Sight, Tool};
 use crate::formation::{self, Formation, Shape, MIN_DRAG};
-use crate::hud::{Button, HudHit, Layout, COMMAND_CENTER_BUTTONS, TOWER_BUTTONS, UNIT_BUTTONS};
+use crate::hud::{Button, HudHit, Layout, Submenu, COMMAND_CENTER_BUTTONS, DEFENSE_BUTTONS, TOWER_BUTTONS, UNIT_BUTTONS};
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
 use crate::map::{Region, Terrain};
 use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
 use crate::sim::{Command, Mark, Order, Rally, Spawner, World};
+
+/// One entry of the selection, as an index into the world's list of units or buildings.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Pick {
+    Unit(usize),
+    Building(usize),
+}
+
+/// A type in the selection – what Tab switches between (StarCraft's subgroups). Units come first (in `UnitKind`
+/// order), then buildings. The command card shows the buttons of the active one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Sub {
+    Unit(UnitKind),
+    Building(BuildingKind),
+}
+
+impl Sub {
+    pub fn name(self) -> &'static str {
+        match self {
+            Sub::Unit(kind) => &kind.stats().name,
+            Sub::Building(kind) => &kind.stats().name,
+        }
+    }
+}
+
+/// A control group: units and buildings (their `id`s).
+#[derive(Clone, Default, PartialEq)]
+pub struct Group {
+    pub units: Vec<u32>,
+    pub buildings: Vec<u32>,
+}
+
+impl Group {
+    pub fn is_empty(&self) -> bool {
+        self.units.is_empty() && self.buildings.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.units.len() + self.buildings.len()
+    }
+}
 
 /// This close to the window edge (pixels) the mouse moves the camera.
 const EDGE: f32 = 8.0;
@@ -33,7 +75,7 @@ const GROUP_KEYS: [KeyCode; 10] = [
     KeyCode::Key9,
     KeyCode::Key0,
 ];
-/// Camera with WASD – but only as long as the selection doesn't need the key itself.
+/// Camera with WASD – but only while nothing is selected (`move_camera`).
 const WASD: [(KeyCode, Vec2); 4] = [
     (KeyCode::W, Vec2::new(0.0, -1.0)),
     (KeyCode::A, Vec2::new(-1.0, 0.0)),
@@ -103,10 +145,12 @@ impl SpawnerDrag {
 pub struct Ui {
     /// The selected units (their `id`).
     pub selected: Vec<u32>,
-    /// Or one selected building (its `id`) – never both at once.
-    pub selected_building: Option<u32>,
-    /// The Tab subgroup: which type of the selection is "in front" right now.
-    pub active_kind: Option<UnitKind>,
+    /// The selected buildings (their `id`) – alone or together with units.
+    pub selected_buildings: Vec<u32>,
+    /// The Tab subgroup: which type of the selection is "in front" right now – its buttons are on the card.
+    pub active: Option<Sub>,
+    /// The build menu of the command center that is open (D, E, A) – `None`: its main buttons.
+    pub submenu: Option<Submenu>,
     pub paused: bool,
     pub speed: u32,
     /// The player's settings (menu → settings, DESIGN.md 11.4).
@@ -145,11 +189,12 @@ pub struct Ui {
     /// quickly, the line in between is painted too, so the stroke has no holes.
     paint_last: Option<(i32, i32)>,
     /// Control groups: index 0 belongs to key 1, …, index 9 to key 0.
-    pub groups: [Vec<u32>; 10],
+    pub groups: [Group; 10],
     /// Which group key was pressed last, and when – for the double press.
     last_group: Option<(usize, f64)>,
-    /// Which unit was clicked last, and when – for the double click.
+    /// Which unit was clicked last, and when – for the double click. The same for buildings.
     last_click: Option<(u32, f64)>,
+    last_building_click: Option<(u32, f64)>,
     bookmarks: [Option<Vec2>; 4],
     /// Where the left mouse button was pressed on the map (for the selection box).
     drag_start: Option<Vec2>,
@@ -163,8 +208,9 @@ impl Ui {
     pub fn new(settings: Settings) -> Ui {
         Ui {
             selected: Vec::new(),
-            selected_building: None,
-            active_kind: None,
+            selected_buildings: Vec::new(),
+            active: None,
+            submenu: None,
             paused: false,
             speed: 1,
             settings,
@@ -187,6 +233,7 @@ impl Ui {
             groups: Default::default(),
             last_group: None,
             last_click: None,
+            last_building_click: None,
             bookmarks: [None; 4],
             drag_start: None,
             minimap_drag: false,
@@ -194,11 +241,35 @@ impl Ui {
         }
     }
 
-    /// The selection as indices into `world.units`, sorted by type (like the panel at the bottom).
-    pub fn selection_view(&self, world: &World) -> Vec<usize> {
-        let mut view: Vec<usize> = self.selected.iter().filter_map(|&id| world.find_unit(id)).collect();
-        view.sort_by_key(|&i| (world.units[i].kind, world.units[i].id));
-        view
+    /// The selection as it's shown in the panel at the bottom: first the units, then the buildings, each sorted
+    /// by type.
+    pub fn selection_view(&self, world: &World) -> Vec<Pick> {
+        let mut units: Vec<usize> = self.selected.iter().filter_map(|&id| world.find_unit(id)).collect();
+        units.sort_by_key(|&i| (world.units[i].kind, world.units[i].id));
+        let mut buildings: Vec<usize> = self.selected_buildings.iter().filter_map(|&id| world.find_building(id)).collect();
+        buildings.sort_by_key(|&b| (world.buildings[b].kind, world.buildings[b].id));
+        units.into_iter().map(Pick::Unit).chain(buildings.into_iter().map(Pick::Building)).collect()
+    }
+
+    /// Is anything selected at all?
+    fn has_selection(&self) -> bool {
+        !self.selected.is_empty() || !self.selected_buildings.is_empty()
+    }
+
+    /// The selected buildings of the active type (indices) – the ones the command card speaks for.
+    fn active_buildings(&self, world: &World) -> Vec<usize> {
+        let Some(Sub::Building(kind)) = self.active else {
+            return Vec::new();
+        };
+        self.selected_buildings.iter().filter_map(|&id| world.find_building(id)).filter(|&b| world.buildings[b].kind == kind).collect()
+    }
+
+    /// The only selected thing, if it is one building – then the panel shows it in full (production queue …).
+    pub fn single_building(&self, world: &World) -> Option<usize> {
+        match self.selection_view(world).as_slice() {
+            [Pick::Building(b)] => Some(*b),
+            _ => None,
+        }
     }
 
     /// What the camera may show: in the game view only the playing field inside the world border,
@@ -242,7 +313,11 @@ impl Ui {
     /// Does Esc have something to do here – cancel, put away, deselect the spawner, stop typing?
     /// Then it doesn't open the menu.
     pub fn is_busy(&self) -> bool {
-        self.is_waiting() || self.form_drag.is_some() || self.editor.spawner.is_some() || self.editor.is_typing()
+        self.is_waiting()
+            || self.form_drag.is_some()
+            || self.submenu.is_some()
+            || self.editor.spawner.is_some()
+            || self.editor.is_typing()
     }
 
     /// The spawners as the editor shows them – a dragged one with the size it has right now, a renamed one with
@@ -272,21 +347,30 @@ impl Ui {
 
     /// Which buttons the command card shows right now – and which keys are taken by them.
     pub fn card(&self, world: &World) -> Vec<Button> {
-        if let Some(b) = self.selected_building.and_then(|id| world.find_building(id)) {
-            return match world.buildings[b].kind {
-                BuildingKind::CommandCenter => COMMAND_CENTER_BUTTONS.to_vec(),
-                BuildingKind::Tower => TOWER_BUTTONS.to_vec(),
-                BuildingKind::Tent | BuildingKind::Wall | BuildingKind::Gate => Vec::new(),
-            };
+        if !self.has_selection() || self.selection_view(world).is_empty() {
+            return Vec::new();
         }
-        if self.selected.is_empty() { Vec::new() } else { UNIT_BUTTONS.to_vec() }
+        match self.active {
+            Some(Sub::Unit(_)) => UNIT_BUTTONS.to_vec(),
+            Some(Sub::Building(BuildingKind::CommandCenter)) => match self.submenu {
+                None => COMMAND_CENTER_BUTTONS.to_vec(),
+                Some(Submenu::Defense) => DEFENSE_BUTTONS.to_vec(),
+                Some(Submenu::Energy | Submenu::Special) => vec![Button::Back],
+            },
+            Some(Sub::Building(BuildingKind::Tower)) => TOWER_BUTTONS.to_vec(),
+            _ => Vec::new(),
+        }
     }
 
-    /// Selecting units means: no building selected anymore (and vice versa).
-    fn select_units(&mut self, ids: Vec<u32>) {
-        self.selected = ids;
-        self.selected_building = None;
+    /// A new selection: these units and buildings, nothing on the mouse anymore.
+    fn set_selection(&mut self, units: Vec<u32>, buildings: Vec<u32>) {
+        self.selected = units;
+        self.selected_buildings = buildings;
         self.placing = None;
+    }
+
+    fn select_units(&mut self, ids: Vec<u32>) {
+        self.set_selection(ids, Vec::new());
     }
 
     /// Every frame, even with the menu open: query the real mouse, confine or release it.
@@ -323,12 +407,12 @@ impl Ui {
         let card = self.card(world);
         self.mouse_buttons(world, camera, orders, &layout, mouse, shift, ctrl);
         if !typing {
-            self.command_keys(orders, &card, shift);
+            self.command_keys(world, orders, &card, shift);
             self.selection_keys(world, camera, shift, ctrl);
             self.other_keys();
         }
-        self.move_camera(world, camera, mouse, &card, dt, !typing);
-        self.fix_active_kind(world);
+        self.move_camera(world, camera, mouse, dt, !typing);
+        self.fix_active(world);
         self.update_hover(world, camera, &layout, mouse);
         // Whatever moved the camera (minimap, bookmark, group, mode switch): it stops at the edge of the view.
         camera.keep_inside(self.view_area(world));
@@ -346,10 +430,12 @@ impl Ui {
     fn forget_dead(&mut self, world: &World) {
         self.selected.retain(|&id| world.find_unit(id).is_some_and(|i| !world.units[i].is_inside()));
         for group in &mut self.groups {
-            group.retain(|&id| world.find_unit(id).is_some());
+            group.units.retain(|&id| world.find_unit(id).is_some());
+            group.buildings.retain(|&id| world.find_building(id).is_some());
         }
-        if self.selected_building.is_some_and(|id| world.find_building(id).is_none()) {
-            self.selected_building = None;
+        let before = self.selected_buildings.len();
+        self.selected_buildings.retain(|&id| world.find_building(id).is_some());
+        if self.selected_buildings.len() < before {
             self.targeting = None;
             self.placing = None;
         }
@@ -375,7 +461,8 @@ impl Ui {
         ctrl: bool,
     ) {
         let view = self.selection_view(world);
-        let building = self.selected_building.and_then(|id| world.find_building(id));
+        // The production queue is only shown (and clickable) when one building alone is selected.
+        let building = self.single_building(world);
         let queue = building.map_or(0, |b| world.buildings[b].production.len());
         // The editor panel lies on top of the map: there it counts like the bottom panel (not the map).
         let on_editor = self.editor.contains(mouse);
@@ -405,7 +492,7 @@ impl Ui {
                     self.targeting = None;
                     self.placing = place;
                     self.turned = false;
-                    self.selected_building = None;
+                    self.selected_buildings.clear();
                 }
             } else if let (Some(tool), None) = (self.editor.tool, hit) {
                 self.use_tool(tool, world, orders, point);
@@ -413,7 +500,8 @@ impl Ui {
                 // Building on the mouse: the line starts here. It's built on release.
                 self.place_start = Some(placement_tile(kind, self.turned, point));
             } else if let (Some(Button::Rally), None | Some(HudHit::Minimap(_))) = (self.targeting, hit) {
-                self.set_rally(world, camera, orders, mouse, point, hit.is_none());
+                let rallying = self.rally_buildings(world, true);
+                self.set_rally(&rallying, world, camera, orders, mouse, point, hit.is_none());
                 self.targeting = None;
             } else if let (Some(button), None | Some(HudHit::Minimap(_))) = (self.targeting, hit) {
                 // If a command (T, P, M) waits for its target, the click gives it – on the map or on the minimap.
@@ -448,11 +536,11 @@ impl Ui {
                     Some(HudHit::Group(g)) => self.group_action(g, world, camera, shift, ctrl),
                     Some(HudHit::Icon(k)) => self.click_icon(world, view[k], shift, ctrl),
                     Some(HudHit::Queue(index)) => {
-                        if let Some(id) = self.selected_building {
-                            orders.push(Order::CancelTrain { building: id, index });
+                        if let Some(b) = building {
+                            orders.push(Order::CancelTrain { building: world.buildings[b].id, index });
                         }
                     }
-                    Some(HudHit::Button(button)) => self.press(button, orders, shift),
+                    Some(HudHit::Button(button)) => self.press(button, world, orders, shift),
                     Some(HudHit::Panel) => {}
                 }
             }
@@ -463,11 +551,11 @@ impl Ui {
                     camera.center = p;
                 }
             }
-            // Painting terrain: every frame the mouse is on another tile, paint the way there.
-            if let (Some(Tool::Paint(terrain)), Some(last), None) = (self.editor.tool, self.paint_last, hit) {
+            // Painting terrain or ore: every frame the mouse is on another tile, paint the way there.
+            if let (Some(tool @ (Tool::Paint(_) | Tool::Ore(_))), Some(last), None) = (self.editor.tool, self.paint_last, hit) {
                 let now = tile_of(point);
                 if now != last {
-                    self.paint(terrain, last, now, orders);
+                    self.paint(tool, last, now, orders);
                 }
             }
             // The zombie brush follows the mouse – but only while it's held on the map.
@@ -521,11 +609,14 @@ impl Ui {
                 self.form_drag = None;
                 return;
             }
-            // Building selected: right click sets the rally point (like in StarCraft).
-            if self.selected_building.is_some() {
+            // Selected buildings set their rally point (like in StarCraft) – selected units still get their command.
+            let rallying = self.rally_buildings(world, false);
+            if !rallying.is_empty() {
                 if let None | Some(HudHit::Minimap(_)) = hit {
-                    self.set_rally(world, camera, orders, mouse, point, hit.is_none());
+                    self.set_rally(&rallying, world, camera, orders, mouse, point, hit.is_none());
                 }
+            }
+            if self.selected.is_empty() {
                 return;
             }
             match hit {
@@ -594,9 +685,9 @@ impl Ui {
     /// Left click on the map with an editor tool in hand.
     fn use_tool(&mut self, tool: Tool, world: &World, orders: &mut Vec<Order>, point: Vec2) {
         match tool {
-            Tool::Paint(terrain) => {
+            Tool::Paint(_) | Tool::Ore(_) => {
                 let tile = tile_of(point);
-                self.paint(terrain, tile, tile, orders);
+                self.paint(tool, tile, tile, orders);
             }
             Tool::ZombieDrop => orders.push(self.editor.zombie_order(point, self.editor.drop)),
             // The brush places its zombies tick by tick while the button is held (`brush_order`).
@@ -616,28 +707,46 @@ impl Ui {
     }
 
     /// Paints with the brush along the line from `from` to `to` – one order for the whole stroke.
-    fn paint(&mut self, terrain: Terrain, from: (i32, i32), to: (i32, i32), orders: &mut Vec<Order>) {
+    /// `tool`: terrain or ore – anything else doesn't paint.
+    fn paint(&mut self, tool: Tool, from: (i32, i32), to: (i32, i32), orders: &mut Vec<Order>) {
         let mut tiles: Vec<(i32, i32)> = grid_line(from, to).into_iter().flat_map(|t| self.editor.brush_tiles(t)).collect();
         tiles.sort();
         tiles.dedup(); // neighbouring brush squares overlap
-        orders.push(Order::PaintTerrain { terrain, tiles });
+        match tool {
+            Tool::Paint(terrain) => orders.push(Order::PaintTerrain { terrain, tiles }),
+            Tool::Ore(ore) => orders.push(Order::PaintOre { ore, tiles }),
+            _ => {}
+        }
         self.paint_last = Some(to);
     }
 
-    /// Rally point of the selected building: on a unit (follow) or on a point.
-    fn set_rally(&mut self, world: &World, camera: &Camera, orders: &mut Vec<Order>, mouse: Vec2, point: Vec2, on_field: bool) {
-        let (Some(building), Some(b)) = (self.selected_building, self.selected_building.and_then(|id| world.find_building(id)))
-        else {
-            return;
-        };
-        if !matches!(world.buildings[b].kind, BuildingKind::CommandCenter | BuildingKind::Tower) {
+    /// The selected buildings that have a rally point (command center, tower) – `active`: only those of the active
+    /// type (the Rally button), otherwise all of them (right click).
+    fn rally_buildings(&self, world: &World, active: bool) -> Vec<u32> {
+        let picked = if active { self.active_buildings(world) } else { self.selection_view(world).iter().filter_map(|p| match p {
+            Pick::Building(b) => Some(*b),
+            Pick::Unit(_) => None,
+        }).collect() };
+        picked
+            .into_iter()
+            .filter(|&b| matches!(world.buildings[b].kind, BuildingKind::CommandCenter | BuildingKind::Tower))
+            .map(|b| world.buildings[b].id)
+            .collect()
+    }
+
+    /// Rally point of these buildings: on a unit (follow) or on a point.
+    #[allow(clippy::too_many_arguments)]
+    fn set_rally(&mut self, buildings: &[u32], world: &World, camera: &Camera, orders: &mut Vec<Order>, mouse: Vec2, point: Vec2, on_field: bool) {
+        if buildings.is_empty() {
             return;
         }
         let rally = match unit_under_mouse(world, camera, mouse).filter(|_| on_field) {
             Some(i) => Rally::Unit(world.units[i].id),
             None => Rally::Point(point),
         };
-        orders.push(Order::SetRally { building, rally });
+        for &building in buildings {
+            orders.push(Order::SetRally { building, rally });
+        }
         self.marker = Some((point, 0.6, Mark::Move));
     }
 
@@ -678,7 +787,7 @@ impl Ui {
 
     /// A button of the command card – by key or by click. T, P, M, R wait for a target, B and V for a spot.
     /// The formation buttons only choose the shape – a command that is waiting keeps waiting.
-    fn press(&mut self, button: Button, orders: &mut Vec<Order>, shift: bool) {
+    fn press(&mut self, button: Button, world: &World, orders: &mut Vec<Order>, shift: bool) {
         if let Some(shape) = button.formation() {
             self.formation = shape;
             return;
@@ -686,36 +795,57 @@ impl Ui {
         self.targeting = None;
         self.placing = None;
         self.editor.tool = None;
-        let building = self.selected_building;
-        match (button, building) {
-            (Button::Stop, _) => orders.push(Order::Stop { units: self.selected.clone() }),
-            (Button::Hold, _) => {
+        let buildings = self.active_buildings(world);
+        match button {
+            Button::Stop => orders.push(Order::Stop { units: self.selected.clone() }),
+            Button::Hold => {
                 let units = self.selected.clone();
                 orders.push(Order::Command { units, command: Command::Hold, queue: shift, formation: None });
             }
-            (Button::Move | Button::Patrol | Button::Attack | Button::Rally, _) => self.targeting = Some(button),
-            (Button::PlaceTent | Button::PlaceWall | Button::PlaceGate | Button::PlaceTower, _) => {
+            Button::Move | Button::Patrol | Button::Attack | Button::Rally => self.targeting = Some(button),
+            Button::PlaceTent | Button::PlaceWall | Button::PlaceGate | Button::PlaceTower => {
                 self.placing = button.places();
             }
-            (Button::Unload, Some(building)) => orders.push(Order::Unload { building }),
-            (Button::Unload, None) => {}
-            // With Shift 5 at once into the queue, like in StarCraft.
-            (Button::TrainSoldier | Button::TrainSniper | Button::TrainMedic, Some(building)) => {
+            Button::Open(menu) => self.submenu = Some(menu),
+            Button::Back => self.submenu = None,
+            Button::Unload => {
+                for b in buildings {
+                    orders.push(Order::Unload { building: world.buildings[b].id });
+                }
+            }
+            // With Shift 5 at once, like in StarCraft. Several command centers selected: each unit goes to the one
+            // with the shortest queue.
+            Button::TrainSoldier | Button::TrainRanger | Button::TrainSniper | Button::TrainMedic => {
                 let Some(kind) = button.trains() else {
                     return;
                 };
+                let mut queued: Vec<(usize, u32)> =
+                    buildings.iter().map(|&b| (world.buildings[b].production.len(), world.buildings[b].id)).collect();
                 for _ in 0..if shift { 5 } else { 1 } {
-                    orders.push(Order::Train { building, kind });
+                    let Some(shortest) = queued.iter_mut().min_by_key(|(len, _)| *len) else {
+                        return;
+                    };
+                    orders.push(Order::Train { building: shortest.1, kind });
+                    shortest.0 += 1;
                 }
             }
-            (Button::TrainSoldier | Button::TrainSniper | Button::TrainMedic, None) => {}
-            (Button::FormLine | Button::FormBox | Button::FormCircle, _) => {} // handled above
+            Button::FormLine | Button::FormBox | Button::FormCircle => {} // handled above
         }
     }
 
     /// Keys of the command card. Only the buttons that are visible right now react.
-    fn command_keys(&mut self, orders: &mut Vec<Order>, card: &[Button], shift: bool) {
-        if is_key_pressed(KeyCode::Escape) || card.is_empty() {
+    fn command_keys(&mut self, world: &World, orders: &mut Vec<Order>, card: &[Button], shift: bool) {
+        // Esc: first the waiting command or the building on the mouse, then the build menu (back to the main buttons).
+        if is_key_pressed(KeyCode::Escape) {
+            if self.targeting.is_some() || self.placing.is_some() {
+                self.targeting = None;
+                self.placing = None;
+            } else {
+                self.submenu = None;
+            }
+            return;
+        }
+        if card.is_empty() {
             self.targeting = None;
             self.placing = None;
             return;
@@ -727,21 +857,42 @@ impl Ui {
         }
         for &button in card {
             if is_key_pressed(button.key()) {
-                self.press(button, orders, shift);
+                self.press(button, world, orders, shift);
+                break; // the card may change (a build menu opens) – one button per key press
             }
         }
     }
 
     /// Click on an icon in the selection panel (like in StarCraft):
     /// only this unit / Shift: this one out / Ctrl: only this type / Ctrl+Shift: this type out.
-    fn click_icon(&mut self, world: &World, i: usize, shift: bool, ctrl: bool) {
-        let (id, kind) = (world.units[i].id, world.units[i].kind);
-        let is_kind = |other: u32| world.find_unit(other).is_some_and(|j| world.units[j].kind == kind);
-        match (shift, ctrl) {
-            (false, false) => self.select_units(vec![id]),
-            (true, false) => self.selected.retain(|&other| other != id),
-            (false, true) => self.selected.retain(|&other| is_kind(other)),
-            (true, true) => self.selected.retain(|&other| !is_kind(other)),
+    fn click_icon(&mut self, world: &World, pick: Pick, shift: bool, ctrl: bool) {
+        match pick {
+            Pick::Unit(i) => {
+                let (id, kind) = (world.units[i].id, world.units[i].kind);
+                let is_kind = |other: u32| world.find_unit(other).is_some_and(|j| world.units[j].kind == kind);
+                match (shift, ctrl) {
+                    (false, false) => self.select_units(vec![id]),
+                    (true, false) => self.selected.retain(|&other| other != id),
+                    (false, true) => {
+                        self.selected.retain(|&other| is_kind(other));
+                        self.selected_buildings.clear();
+                    }
+                    (true, true) => self.selected.retain(|&other| !is_kind(other)),
+                }
+            }
+            Pick::Building(b) => {
+                let (id, kind) = (world.buildings[b].id, world.buildings[b].kind);
+                let is_kind = |other: u32| world.find_building(other).is_some_and(|j| world.buildings[j].kind == kind);
+                match (shift, ctrl) {
+                    (false, false) => self.set_selection(Vec::new(), vec![id]),
+                    (true, false) => self.selected_buildings.retain(|&other| other != id),
+                    (false, true) => {
+                        self.selected_buildings.retain(|&other| is_kind(other));
+                        self.selected.clear();
+                    }
+                    (true, true) => self.selected_buildings.retain(|&other| !is_kind(other)),
+                }
+            }
         }
     }
 
@@ -764,16 +915,26 @@ impl Ui {
                 .filter(|unit| !unit.is_inside() && rect.contains(camera.world_to_screen(unit.pos)))
                 .map(|unit| unit.id)
                 .collect();
-            self.add_or_replace(found, shift);
+            if !found.is_empty() {
+                self.add_or_replace(found, shift);
+                return;
+            }
+            // No unit in the box: the buildings in it (like in StarCraft – units always win).
+            let buildings: Vec<u32> = world
+                .buildings
+                .iter()
+                .filter(|b| rect.contains(camera.world_to_screen(b.center())))
+                .map(|b| b.id)
+                .collect();
+            self.add_or_replace_buildings(buildings, shift);
             return;
         }
 
         let Some(i) = unit_under_mouse(world, camera, end) else {
-            // No unit, but a building: select that (buildings always one at a time).
+            // No unit, but a building: select it. Shift: add or take out. Ctrl or double click: all of its type on
+            // the screen.
             if let Some(b) = building_under_mouse(world, camera, end) {
-                self.selected.clear();
-                self.selected_building = Some(world.buildings[b].id);
-                self.targeting = None;
+                self.click_building(world, camera, layout, b, shift, ctrl);
             }
             return;
         };
@@ -791,7 +952,6 @@ impl Ui {
                 .collect();
             self.add_or_replace(same_kind, shift);
         } else if shift {
-            self.selected_building = None;
             match self.selected.iter().position(|&s| s == id) {
                 Some(already) => {
                     self.selected.remove(already);
@@ -807,14 +967,56 @@ impl Ui {
         if found.is_empty() {
             return;
         }
-        self.selected_building = None;
         if !shift {
-            self.selected.clear();
+            self.set_selection(Vec::new(), Vec::new());
         }
         for id in found {
             if !self.selected.contains(&id) {
                 self.selected.push(id);
             }
+        }
+    }
+
+    /// The same for buildings.
+    fn add_or_replace_buildings(&mut self, found: Vec<u32>, shift: bool) {
+        if found.is_empty() {
+            return;
+        }
+        if !shift {
+            self.set_selection(Vec::new(), Vec::new());
+        }
+        for id in found {
+            if !self.selected_buildings.contains(&id) {
+                self.selected_buildings.push(id);
+            }
+        }
+    }
+
+    /// A click on a building: select it alone – Shift: add it or take it out again – Ctrl or double click: all
+    /// buildings of its type on the screen.
+    fn click_building(&mut self, world: &World, camera: &Camera, layout: &Layout, b: usize, shift: bool, ctrl: bool) {
+        let (id, kind) = (world.buildings[b].id, world.buildings[b].kind);
+        let now = get_time();
+        let double = matches!(self.last_building_click, Some((last, time)) if last == id && now - time < DOUBLE_TAP);
+        self.last_building_click = Some((id, now));
+        self.targeting = None;
+        if ctrl || double {
+            let same_kind: Vec<u32> = world
+                .buildings
+                .iter()
+                .filter(|other| other.kind == kind && layout.in_game_view(camera.world_to_screen(other.center())))
+                .map(|other| other.id)
+                .collect();
+            self.add_or_replace_buildings(same_kind, shift);
+        } else if shift {
+            match self.selected_buildings.iter().position(|&s| s == id) {
+                Some(already) => {
+                    self.selected_buildings.remove(already);
+                }
+                None => self.selected_buildings.push(id),
+            }
+        } else {
+            self.set_selection(Vec::new(), vec![id]);
         }
     }
 
@@ -833,10 +1035,11 @@ impl Ui {
 
         // Tab: to the next type in the selection, Shift+Tab: to the previous one.
         if is_key_pressed(KeyCode::Tab) {
-            let kinds = self.kinds_in_selection(world);
-            if let Some(pos) = kinds.iter().position(|&k| Some(k) == self.active_kind) {
-                let next = (if shift { pos + kinds.len() - 1 } else { pos + 1 }) % kinds.len();
-                self.active_kind = Some(kinds[next]);
+            let subs = self.subs_in_selection(world);
+            if let Some(pos) = subs.iter().position(|&k| Some(k) == self.active) {
+                let next = (if shift { pos + subs.len() - 1 } else { pos + 1 }) % subs.len();
+                self.active = Some(subs[next]);
+                self.submenu = None;
             }
         }
 
@@ -857,27 +1060,35 @@ impl Ui {
 
     /// A control group – by number key or by click on the panel, with the same modifier keys.
     fn group_action(&mut self, g: usize, world: &World, camera: &mut Camera, shift: bool, ctrl: bool) {
-        // Groups only hold units: with a building in the selection there's nothing to save.
-        if (ctrl || shift) && self.selected.is_empty() {
+        // Nothing selected: nothing to save.
+        if (ctrl || shift) && !self.has_selection() {
             return;
         }
+        let selection = Group { units: self.selected.clone(), buildings: self.selected_buildings.clone() };
         match (ctrl, shift) {
             // Ctrl: set the group anew.
-            (true, false) => self.groups[g] = self.selected.clone(),
-            // Ctrl+Shift: set anew and take the units out of all other groups ("steal").
+            (true, false) => self.groups[g] = selection,
+            // Ctrl+Shift: set anew and take the units and buildings out of all other groups ("steal").
             (true, true) => {
                 for (other, group) in self.groups.iter_mut().enumerate() {
                     if other != g {
-                        group.retain(|id| !self.selected.contains(id));
+                        group.units.retain(|id| !selection.units.contains(id));
+                        group.buildings.retain(|id| !selection.buildings.contains(id));
                     }
                 }
-                self.groups[g] = self.selected.clone();
+                self.groups[g] = selection;
             }
             // Shift: add the selection to the group.
             (false, true) => {
-                for &id in &self.selected {
-                    if !self.groups[g].contains(&id) {
-                        self.groups[g].push(id);
+                let group = &mut self.groups[g];
+                for id in selection.units {
+                    if !group.units.contains(&id) {
+                        group.units.push(id);
+                    }
+                }
+                for id in selection.buildings {
+                    if !group.buildings.contains(&id) {
+                        group.buildings.push(id);
                     }
                 }
             }
@@ -893,29 +1104,41 @@ impl Ui {
         let now = get_time();
         let double = matches!(self.last_group, Some((last, time)) if last == g && now - time < DOUBLE_TAP);
         // Units in a tower stay in the group, but aren't selected.
-        let group: Vec<u32> =
-            self.groups[g].iter().copied().filter(|&id| world.find_unit(id).is_some_and(|i| !world.units[i].is_inside())).collect();
-        self.select_units(group);
+        let units: Vec<u32> =
+            self.groups[g].units.iter().copied().filter(|&id| world.find_unit(id).is_some_and(|i| !world.units[i].is_inside())).collect();
+        let buildings = self.groups[g].buildings.clone();
+        self.set_selection(units, buildings);
         if double {
-            if let Some(center) = center_of(world, &self.selected) {
+            if let Some(center) = center_of(world, &self.selected, &self.selected_buildings) {
                 camera.center = center;
             }
         }
         self.last_group = Some((g, now));
     }
 
-    /// The types in the selection, without duplicates, in a fixed order.
-    fn kinds_in_selection(&self, world: &World) -> Vec<UnitKind> {
-        let mut kinds: Vec<UnitKind> = self.selection_view(world).iter().map(|&i| world.units[i].kind).collect();
-        kinds.dedup(); // works because `selection_view` is sorted by type
-        kinds
+    /// The types in the selection, without duplicates, in a fixed order (units first).
+    fn subs_in_selection(&self, world: &World) -> Vec<Sub> {
+        let mut subs: Vec<Sub> = self
+            .selection_view(world)
+            .iter()
+            .map(|pick| match *pick {
+                Pick::Unit(i) => Sub::Unit(world.units[i].kind),
+                Pick::Building(b) => Sub::Building(world.buildings[b].kind),
+            })
+            .collect();
+        subs.dedup(); // works because `selection_view` is sorted by type
+        subs
     }
 
-    /// If the active type isn't in the selection anymore, the first type becomes active.
-    fn fix_active_kind(&mut self, world: &World) {
-        let kinds = self.kinds_in_selection(world);
-        if !self.active_kind.is_some_and(|k| kinds.contains(&k)) {
-            self.active_kind = kinds.first().copied();
+    /// If the active type isn't in the selection anymore, the first type becomes active. A build menu only stays
+    /// open while a command center is active.
+    fn fix_active(&mut self, world: &World) {
+        let subs = self.subs_in_selection(world);
+        if !self.active.is_some_and(|k| subs.contains(&k)) {
+            self.active = subs.first().copied();
+        }
+        if self.active != Some(Sub::Building(BuildingKind::CommandCenter)) {
+            self.submenu = None;
         }
     }
 
@@ -948,15 +1171,15 @@ impl Ui {
 
     /// Camera: arrow keys, mouse at the window edge, mouse wheel. `keys`: may the keyboard move it (not while
     /// a name is being typed)?
-    fn move_camera(&mut self, world: &World, camera: &mut Camera, mouse: Vec2, card: &[Button], dt: f32, keys: bool) {
+    fn move_camera(&mut self, world: &World, camera: &mut Camera, mouse: Vec2, dt: f32, keys: bool) {
         let mut pan = Vec2::ZERO;
-        // WASD – unless the selection needs the key itself (e.g. S = stop for units).
+        // WASD only while nothing is selected – units and buildings have their hotkeys right there (S = stop,
+        // Q, W, E …), and a key that sometimes moves the camera and sometimes doesn't is a trap.
         // Ctrl held: not either (Ctrl+S, Ctrl+A … should never move the camera).
-        // A building selected: not at all – its keys (Q, W, E, R …) sit right next to them.
         let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
-        let building = self.selected_building.is_some();
+        let selected = self.has_selection();
         for (key, dir) in WASD {
-            if keys && is_key_down(key) && !ctrl && !building && !card.iter().any(|b| b.key() == key) {
+            if keys && is_key_down(key) && !ctrl && !selected {
                 pan += dir;
             }
         }
@@ -1068,7 +1291,7 @@ impl Ui {
         if let Some(b) = self.hover_building.and_then(|id| world.find_building(id)) {
             outline(b, WHITE);
         }
-        if let Some(b) = self.selected_building.and_then(|id| world.find_building(id)) {
+        for b in self.selected_buildings.iter().filter_map(|&id| world.find_building(id)) {
             outline(b, GREEN);
             let building = &world.buildings[b];
             let target = match building.rally {
@@ -1138,10 +1361,12 @@ impl Ui {
         // Editor tool on the mouse: the brush in the colour of the terrain, or the name of what gets spawned.
         if let Some(tool) = self.editor.tool.filter(|_| !self.editor.contains(mouse)) {
             match tool {
-                Tool::Paint(terrain) => {
-                    let color = match terrain {
-                        Terrain::Grass => Color::new(1.0, 1.0, 1.0, 0.25),
-                        _ => Color { a: 0.6, ..terrain_color(terrain) },
+                Tool::Paint(_) | Tool::Ore(_) => {
+                    let color = match tool {
+                        Tool::Paint(Terrain::Grass) | Tool::Ore(None) => Color::new(1.0, 1.0, 1.0, 0.25),
+                        Tool::Paint(terrain) => Color { a: 0.6, ..terrain_color(terrain) },
+                        Tool::Ore(Some(ore)) => Color { a: 0.6, ..ore_color(ore) },
+                        _ => WHITE,
                     };
                     for (x, y) in self.editor.brush_tiles(tile_of(camera.screen_to_world(mouse))) {
                         draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, color);
@@ -1172,7 +1397,13 @@ impl Ui {
         if let Some(drag) = dragged {
             let to = camera.screen_to_world(mouse);
             let units: Vec<(Vec2, UnitKind)> =
-                self.selection_view(world).iter().map(|&i| (world.units[i].pos, world.units[i].kind)).collect();
+                self.selection_view(world)
+                    .iter()
+                    .filter_map(|pick| match *pick {
+                        Pick::Unit(i) => Some((world.units[i].pos, world.units[i].kind)),
+                        Pick::Building(_) => None,
+                    })
+                    .collect();
             let color = mark_color(button_mark(drag.button));
             let (a, b) = (camera.world_to_screen(drag.from), camera.world_to_screen(to));
             draw_line(a.x, a.y, b.x, b.y, 2.0, Color { a: 0.6, ..color });
@@ -1292,8 +1523,10 @@ fn tile_of(p: Vec2) -> (i32, i32) {
 }
 
 /// The middle of a group of units (by their `id`) – `None` if none of them is alive anymore.
-fn center_of(world: &World, ids: &[u32]) -> Option<Vec2> {
-    let positions: Vec<Vec2> = ids.iter().filter_map(|&id| world.find_unit(id)).map(|i| world.units[i].pos).collect();
+fn center_of(world: &World, units: &[u32], buildings: &[u32]) -> Option<Vec2> {
+    let units = units.iter().filter_map(|&id| world.find_unit(id)).map(|i| world.units[i].pos);
+    let buildings = buildings.iter().filter_map(|&id| world.find_building(id)).map(|b| world.buildings[b].center());
+    let positions: Vec<Vec2> = units.chain(buildings).collect();
     if positions.is_empty() {
         return None;
     }

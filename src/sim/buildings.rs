@@ -7,8 +7,10 @@ use macroquad::math::{vec2, Vec2};
 
 use super::commands::Command;
 use super::terrain::free_point_near;
-use super::World;
-use crate::kinds::{BuildingKind, BuildingStats, UnitKind, TOWER_SLOTS};
+use super::zombies::Breed;
+use super::{World, HOUR_TICKS};
+use crate::data;
+use crate::kinds::{BuildingKind, BuildingStats, UnitKind};
 
 /// This many units fit into a building's production queue (like in StarCraft).
 pub const MAX_PRODUCTION: usize = 5;
@@ -23,6 +25,10 @@ pub struct Building {
     /// Turned by 90°: width and depth swap (only matters for the gate).
     pub turned: bool,
     pub hp: u32,
+    /// What's left of the shield – zombies hit it first (`BuildingStats::max_shield`).
+    pub shield: u32,
+    /// The shield broke: its colonists came out as zombies, it pays no more gold.
+    pub infected: bool,
     /// Production queue: in front the unit currently being built.
     pub production: VecDeque<UnitKind>,
     /// How many ticks the front unit has been built for.
@@ -67,6 +73,25 @@ impl Building {
         let (w, h) = self.footprint();
         let (x0, y0) = self.tile;
         (y0..y0 + h).flat_map(|y| (x0..x0 + w).map(move |x| (x, y))).collect()
+    }
+
+    /// A zombie hits it: first the shield, once that is gone the hit points. `true` if this hit broke the shield –
+    /// then the building is infected now (`World::infect` lets the zombies out). What's left over of a hit that
+    /// breaks the shield is lost, like in TAB a hit only ever goes to one of the two.
+    pub fn take_damage(&mut self, damage: u32) -> bool {
+        if self.shield == 0 {
+            self.hp = self.hp.saturating_sub(damage);
+            return false;
+        }
+        self.shield = self.shield.saturating_sub(damage);
+        let broke = self.shield == 0 && self.stats().colonists > 0;
+        self.infected |= broke;
+        broke
+    }
+
+    /// Gold per hour: every colonist pays – as long as the building isn't infected.
+    pub fn income(&self) -> u32 {
+        if self.infected { 0 } else { self.stats().colonists * data::get().colony.gold_per_colonist_per_hour }
     }
 }
 
@@ -113,6 +138,8 @@ impl World {
             tile,
             turned,
             hp: kind.stats().hp,
+            shield: kind.stats().max_shield(),
+            infected: false,
             production: VecDeque::new(),
             progress: 0,
             rally: None,
@@ -160,8 +187,46 @@ impl World {
         }
     }
 
-    /// Continue the production queues. Finished units come out next to the building.
+    /// Building `b` has just been infected: its colonists come out as zombies right next to it (DESIGN.md 6). For a
+    /// tent with 6: 2–4 runners, the rest walkers. Not wandering – they go for the next target right away.
+    pub(super) fn infect(&mut self, b: usize) {
+        let colonists = self.buildings[b].stats().colonists;
+        let runners = colonists.min(2 + self.rng.below(3));
+        // Free tiles in the ring around the building – for zombies, so not on walls or water.
+        let building = &self.buildings[b];
+        let (w, h) = building.footprint();
+        let (x0, y0) = building.tile;
+        let mut ring = Vec::new();
+        for y in y0 - 1..=y0 + h {
+            for x in x0 - 1..=x0 + w {
+                let on_ring = x == x0 - 1 || x == x0 + w || y == y0 - 1 || y == y0 + h;
+                if on_ring && !self.map.is_blocked(x, y) {
+                    ring.push((x, y));
+                }
+            }
+        }
+        if ring.is_empty() {
+            return; // walled in all around: they can't get out
+        }
+        for i in 0..colonists {
+            let (x, y) = ring[self.rng.below(ring.len() as u32) as usize];
+            let pos = vec2(x as f32 + self.rng.unit_f32(), y as f32 + self.rng.unit_f32());
+            let breed = if i < runners { Breed::Runner } else { Breed::Walker };
+            self.spawn_zombie_as(pos, breed, false);
+        }
+    }
+
+    /// Gold per hour of all buildings together – what the HUD shows next to the gold.
+    pub fn income(&self) -> u32 {
+        self.buildings.iter().map(|b| b.income()).sum()
+    }
+
+    /// Every full hour of the round each building pays its gold (colonists × `gold_per_colonist_per_hour`, `datalony.json`).
+    /// Then continue the production queues. Finished units come out next to the building.
     pub(super) fn update_buildings(&mut self) {
+        if (self.tick + 1) % HOUR_TICKS == 0 {
+            self.gold += self.income();
+        }
         for b in 0..self.buildings.len() {
             let Some(&kind) = self.buildings[b].production.front() else {
                 continue;
@@ -222,6 +287,6 @@ impl World {
     /// Is this building a tower with a free spot?
     pub(super) fn has_room(&self, b: usize) -> bool {
         let building = &self.buildings[b];
-        building.kind == BuildingKind::Tower && self.garrison(building.id).len() < TOWER_SLOTS
+        building.kind == BuildingKind::Tower && self.garrison(building.id).len() < data::get().buildings.tower_slots
     }
 }

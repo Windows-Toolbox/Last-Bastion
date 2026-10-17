@@ -38,16 +38,16 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Params {
         Params {
-            regions: 18.0,
-            wobble: 10.0,
-            wall: 3.0,
+            regions: 16.0,
+            wobble: 14.0,
+            wall: 5.0,
             passes: 1.0,
             pass_width: 5.0,
             material: 2.0,
-            woods: 0.3,
-            rocky: 0.15,
+            woods: 0.35,
+            rocky: 0.2,
             lakes: 0.1,
-            trees: 0.015,
+            trees: 0.02,
         }
     }
 }
@@ -62,7 +62,7 @@ impl Params {
             Field { label: "Wall thickness", value: &mut self.wall, min: 1.0, max: 8.0, step: 1.0, show: Show::Tiles,
                 help: "How thick the walls between the regions are." },
             Field { label: "Passes per border", value: &mut self.passes, min: 1.0, max: 4.0, step: 1.0, show: Show::Number,
-                help: "Openings in every wall between two regions." },
+                help: "Openings in every wall between two regions - long walls get one more per 100 tiles." },
             Field { label: "Pass width", value: &mut self.pass_width, min: 2.0, max: 14.0, step: 1.0, show: Show::Tiles,
                 help: "How wide a pass is - narrow passes are easy to wall off." },
             Field { label: "Walls of", value: &mut self.material, min: 0.0, max: 3.0, step: 1.0, show: Show::Choice(MATERIALS),
@@ -164,6 +164,9 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
         }
         let v = detail.fractal(x as f32, y as f32, 12.0, 3);
         let terrain = match kinds[region[i] as usize] {
+            // Even a meadow has a few groves and rocks – but the base's own region stays open.
+            Kind::Meadow if region[i] != 0 && v > 0.74 => Terrain::Forest,
+            Kind::Meadow if region[i] != 0 && v < 0.2 => Terrain::Mountain,
             Kind::Meadow => continue,
             Kind::Woods if v > 0.42 => Terrain::Forest,
             Kind::Rocky if v > 0.62 => Terrain::Mountain,
@@ -174,11 +177,12 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
         tiles.set(x, y, terrain);
     }
 
-    // The walls, each border its own material.
+    // The walls: each border its own material – "mixed" changes along the wall (rock, forest, a bit of water).
+    let mix = Noise::new(rng.next_u64() as u32);
     for cells in borders.values() {
-        let terrain = tools::material(p.material, rng);
+        let fixed = tools::material(p.material, rng);
         for &(x, y) in cells {
-            tiles.set(x, y, terrain);
+            tiles.set(x, y, tools::material_at(p.material, fixed, &mix, x, y));
         }
     }
     // The passes: on every border a few random spots where its wall is cleared. Only borders long enough to be a
@@ -187,7 +191,10 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
         if cells.len() < 6 {
             continue;
         }
-        for _ in 0..p.passes.round() as u32 {
+        // Long walls get more passes: one more per 100 tiles of wall (counted along it – the cells are about
+        // `wall` deep).
+        let length = cells.len() as f32 / p.wall.max(1.0);
+        for _ in 0..p.passes.round() as u32 + (length / 100.0) as u32 {
             let (x, y) = cells[rng.below(cells.len() as u32) as usize];
             let center = vec2(x as f32 + 0.5, y as f32 + 0.5);
             // The spot may lie anywhere across the wall: a circle this big is still `pass_width` wide where it
@@ -202,5 +209,6 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
             }
         }
     }
+    tools::remove_specks(tiles, 5);
     tools::scatter_trees(tiles, rng, p.trees);
 }

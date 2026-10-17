@@ -10,7 +10,10 @@ use super::zombies::Breed;
 use super::World;
 use crate::formation::Formation;
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::Terrain;
+use crate::map::{Deposit, Ore, Terrain};
+
+/// How much ore the editor's brush puts on a tile – about the middle of a patch near the base (`mapgen/ores.rs`).
+const PAINTED_ORE: u32 = 1000;
 
 /// The players' orders. They only reach the simulation through the order list of a tick.
 /// Units are named by their `id`, not by their index in the list.
@@ -26,13 +29,13 @@ pub enum Order {
     // --- Developer tools (DESIGN.md 12.6) – these are orders too, so it stays deterministic ---
     /// Zombies at random spots in random spawners.
     SpawnZombies { count: usize },
-    /// Zombies as a crowd around a point (the usual mix, storming). Only the tests use it – it only exists in the
-    /// test build (`#[cfg(test)]`); the editor has `PlaceZombies`.
+    /// Runners as a crowd around a point, storming. Only the tests use it – it only exists in the test build
+    /// (`#[cfg(test)]`); the editor has `PlaceZombies`.
     #[cfg(test)]
     SpawnZombiesAt { count: usize, point: Vec2 },
-    /// Editor brush: `count` zombies at random spots within `radius` of `center` – of one breed (`None`: the usual
-    /// mix), storming the command center or wandering around there.
-    PlaceZombies { center: Vec2, radius: f32, count: usize, breed: Option<Breed>, wander: bool },
+    /// Editor brush: `count` zombies of one breed at random spots within `radius` of `center`, storming the command
+    /// center or wandering around there.
+    PlaceZombies { center: Vec2, radius: f32, count: usize, breed: Breed, wander: bool },
     /// A wave of `count` zombies from the spawners.
     SpawnWave { count: usize, from: WaveFrom },
     /// A wave onto the timeline, change one (`index` in `World::waves`), take one off.
@@ -41,13 +44,13 @@ pub enum Order {
     RemoveTimedWave { index: usize },
     /// All zombies gone.
     ClearZombies,
-    /// Do killed zombies come back at the edge (on) or stay gone (off)?
-    SetRespawn(bool),
     /// A new unit at a point (only inside the world border).
     SpawnUnit { kind: UnitKind, point: Vec2 },
     /// Editor: these tiles get this terrain (grass = erase). Tiles with buildings stay as they are,
     /// whoever stands on new solid ground is pushed out.
     PaintTerrain { terrain: Terrain, tiles: Vec<(i32, i32)> },
+    /// Editor: ore on these tiles (only where there's grass) – `None` takes it away.
+    PaintOre { ore: Option<Ore>, tiles: Vec<(i32, i32)> },
     /// A new spawner centred on this tile (named "Spawner" + its number).
     PlaceSpawner { center: (i32, i32) },
     /// Move a spawner or change its size – it always stays on the map and at least 1 × 1.
@@ -98,7 +101,7 @@ impl World {
             }
             Order::SpawnZombies { count } => {
                 let all: Vec<usize> = (0..self.spawners.len()).collect();
-                self.spawn_from(&all, *count);
+                self.spawn_from(&all, *count, Breed::Runner);
             }
             #[cfg(test)]
             Order::SpawnZombiesAt { count, point } => self.spawn_cluster(*count, *point),
@@ -119,7 +122,7 @@ impl World {
             Order::SpawnWave { count, from: WaveFrom::OneSpawner } => {
                 if !self.spawners.is_empty() {
                     let s = self.rng.below(self.spawners.len() as u32) as usize;
-                    self.spawn_from(&[s], *count);
+                    self.spawn_from(&[s], *count, Breed::Runner);
                 }
             }
             Order::SpawnWave { count, from: WaveFrom::Sides(sides) } => {
@@ -130,7 +133,7 @@ impl World {
                 for _ in 0..(*sides).min(left.len() as u32) {
                     let side = left.remove(self.rng.below(left.len() as u32) as usize);
                     let on_side: Vec<usize> = (0..self.spawners.len()).filter(|&s| self.spawners[s].side(size) == side).collect();
-                    self.spawn_from(&on_side, *count);
+                    self.spawn_from(&on_side, *count, Breed::Runner);
                 }
             }
             Order::AddTimedWave(wave) => self.waves.push(*wave),
@@ -145,7 +148,6 @@ impl World {
                 }
             }
             Order::ClearZombies => self.zombies.clear(),
-            Order::SetRespawn(on) => self.respawn = *on,
             Order::SpawnUnit { kind, point } => {
                 if !self.map.blocks_unit(point.x.floor() as i32, point.y.floor() as i32) {
                     self.spawn_unit(*kind, *point);
@@ -156,6 +158,13 @@ impl World {
                     if self.map.set_terrain(x, y, *terrain) {
                         self.map_changed = true;
                     }
+                }
+            }
+            Order::PaintOre { ore, tiles } => {
+                // Ore doesn't change who may walk where – nothing to recompute.
+                let deposit = ore.map(|ore| Deposit { ore, amount: PAINTED_ORE });
+                for &(x, y) in tiles {
+                    self.map.set_deposit(x, y, deposit);
                 }
             }
             Order::PlaceSpawner { center } => {
@@ -193,13 +202,8 @@ impl World {
             Order::PlaceBuilding { kind, tile, turned, editor: true } => {
                 if self.can_place_anywhere(*kind, *tile, *turned) {
                     self.replace_buildings(*kind, *tile, *turned);
-                    // Terrain under it becomes grass; whoever stands there is pushed out (`push_out_of_terrain`).
-                    let (w, h) = kind.footprint(*turned);
-                    for y in tile.1..tile.1 + h {
-                        for x in tile.0..tile.0 + w {
-                            self.map.set_terrain(x, y, Terrain::Grass);
-                        }
-                    }
+                    // The terrain under it stays as it is (water stays water) – it shows again when the building
+                    // falls. Whoever stands there is pushed out (`push_out_of_terrain`).
                     self.add_building(*kind, *tile, *turned);
                 }
             }
