@@ -1,13 +1,13 @@
 //! All placement rules in one file – where a building may go, what it may be built on, how far apart it has to stay
-//! from others, what it costs there, and how a dragged line is laid out. To change a rule, change it here.
-//! The values (size, HP, cost of the buildings, how far zombies have to keep off a site, the refund for replaced
-//! buildings) are in `data\buildings.json`.
+//! from others, what it costs there (gold and workers), and how a dragged line is laid out. To change a rule, change
+//! it here. The values (size, HP, cost of the buildings, how far zombies have to keep off a site, the refund for
+//! replaced buildings) are in `data\buildings.json`.
 
 use macroquad::math::{vec2, Vec2};
 
 use crate::data;
 use crate::kinds::BuildingKind;
-use crate::sim::{World, UNIT_RADIUS};
+use crate::sim::World;
 
 /// No zombie may be this many tiles around a building site (plus the site itself) – you can't build
 /// right next to the horde. `zombie_free_radius` in `data\buildings.json`.
@@ -84,21 +84,17 @@ impl World {
     /// Can a building go here?
     /// - every tile inside the world border, on grass, and free – or under a building it may replace (`replaces`),
     /// - far enough from other buildings (`gap`),
-    /// - none of your units standing on it (buildings don't push anyone away),
     /// - no zombie on the site or within `build_clearance` tiles around it (`build_zone`).
+    ///
+    /// Your units may stand on it, like in StarCraft: the new building pushes them off to the nearest free spot
+    /// (`push_out_of_terrain`).
     pub fn can_place(&self, kind: BuildingKind, tile: (i32, i32), turned: bool) -> bool {
         let site = Site::new(kind, tile, turned);
         let ground = site.tiles().all(|(x, y)| {
             self.map.is_buildable(x, y)
                 || (self.map.in_play(x, y) && !self.map.is_solid(x, y) && self.replaceable_at(kind, site, (x, y)))
         });
-        if !ground || !self.far_enough(kind, site) {
-            return false;
-        }
-        let min = vec2(site.x as f32, site.y as f32) - Vec2::splat(UNIT_RADIUS);
-        let max = vec2((site.x + site.w) as f32, (site.y + site.h) as f32) + Vec2::splat(UNIT_RADIUS);
-        let on_site = |p: Vec2| p.x > min.x && p.y > min.y && p.x < max.x && p.y < max.y;
-        !self.units.iter().any(|u| !u.is_inside() && on_site(u.pos)) && !self.zombies_in_build_zone(kind, tile, turned)
+        ground && self.far_enough(kind, site) && !self.zombies_in_build_zone(kind, tile, turned)
     }
 
     /// Editor: can a building go here without the rules of the game? Only on the map and not onto another building
@@ -130,6 +126,20 @@ impl World {
             .map(|b| b.stats().cost * replace_refund() / 100)
             .sum();
         kind.stats().cost.saturating_sub(refund)
+    }
+
+    /// How many free workers the building needs here (`World::workers`): its `worker_cost`, minus those of every
+    /// building it replaces – they go away with it, so their workers are free again. All of them, not a share like
+    /// the gold.
+    pub fn build_workers(&self, kind: BuildingKind, tile: (i32, i32), turned: bool) -> u32 {
+        let site = Site::new(kind, tile, turned);
+        let freed: u32 = self
+            .buildings
+            .iter()
+            .filter(|b| self.is_replaceable(kind, site, b.kind, b.tile, b.turned))
+            .map(|b| b.stats().worker_cost)
+            .sum();
+        kind.stats().worker_cost.saturating_sub(freed)
     }
 
     /// The area that has to be free of zombies for a building: the site plus `build_clearance` tiles on every

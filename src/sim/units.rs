@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
-use macroquad::math::Vec2;
+use macroquad::math::{vec2, Vec2};
 
 use super::combat::{Aim, Target};
 use super::commands::{Task, Waypoint};
@@ -322,10 +322,9 @@ impl World {
             }
             None => Vec2::ZERO,
         };
-        // Whoever holds can't be pushed away.
-        if !unit.is_holding() {
-            velocity += self.unit_separation(i) * step;
-        }
+        // Everyone can be pushed – holding too: "hold" only means it doesn't walk by itself. Before, holding units
+        // stood like walls and a crowd squeezed into a corner never came apart again.
+        velocity += self.unit_separation(i) * step;
         Intent { velocity, walking: walk_to.is_some(), target }
     }
 
@@ -380,7 +379,16 @@ impl World {
         let pos = self.units[me].pos;
         let mut push = Vec2::ZERO;
         for (i, other) in self.units.iter().enumerate() {
-            if i != me && !other.is_inside() {
+            if i == me || other.is_inside() {
+                continue;
+            }
+            if other.pos == pos {
+                // Exactly on top of each other (e.g. pushed off a new building onto the same spot): there's no
+                // "away" to push in. The later one in the list steps aside – the same on every PC.
+                if i < me {
+                    push += vec2(1.0, 0.0);
+                }
+            } else {
                 push += push_apart(pos, other.pos, UNIT_RADIUS * 2.0);
             }
         }

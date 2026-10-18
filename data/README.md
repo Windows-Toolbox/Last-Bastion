@@ -28,6 +28,7 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 |---|---|
 | `name`, `letter` | Name im Spiel, 1–2 Buchstaben fürs Symbol |
 | `cost` | Preis in Gold. Bezahlt, sobald sie in die Bauschlange kommt; Abbrechen gibt alles zurück (wie StarCraft) |
+| `worker_cost` | **Arbeiter**, die sie braucht – ab der Bauschlange, solange sie lebt (stirbt sie, sind sie wieder frei) |
 | `hp` | Lebenspunkte |
 | `armor` | Wird von jedem Zombie-Treffer abgezogen (mindestens 1 Schaden kommt immer durch) |
 | `damage` | Schaden pro Schuss |
@@ -53,6 +54,8 @@ Ein Block pro Typ: `command_center`, `barracks` (die Kaserne – nur sie bildet 
 | `hp` | Lebenspunkte |
 | `shield_percent` | Schild in **Prozent der HP** (Zelt: 133 % von 150 = 199). Zombies schlagen erst darauf. Bricht er, ist das Gebäude **infiziert** und seine Kolonisten kommen als Zombies heraus. Ohne Kolonisten ist er nur zusätzliches Leben. 0 = kein Schild. Im Spiel ein Balken mit den HP: der Schild graublau dahinter |
 | `colonists` | Kolonisten darin: zahlen Gold und werden bei der Infektion zu Zombies (2–4 Runner, Rest Walker) |
+| `workers` | **Arbeiter**, die es gibt (Zelt, Kommandozentrum) – infiziert keine |
+| `worker_cost` | Arbeiter, die es braucht, solange es steht. Nicht genug frei: kann nicht gebaut werden (im Editor egal) |
 | `cost` | Preis in Gold, bezahlt beim Platzieren (im Editor kostenlos) |
 | `repair_cost` | Gold für eine **volle** Reparatur (von 0 auf volle HP + Schild); eine kleinere kostet ihren Anteil. Bezahlt beim Start. Später kommen Holz, Stein … dazu |
 | `sight` | Sichtweite ab der Mitte |

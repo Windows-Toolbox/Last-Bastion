@@ -61,10 +61,71 @@ impl Group {
     }
 }
 
+/// What a line of buildings would really build (`Ui::affordable`).
+struct LinePlan {
+    /// The pieces that get built (their top left tiles).
+    built: Vec<(i32, i32)>,
+    /// What they cost together: gold and workers.
+    cost: u32,
+    workers: u32,
+    /// Some fit, but there wasn't enough of this for them.
+    short: Option<Short>,
+}
+
+/// What ran out.
+#[derive(Clone, Copy)]
+enum Short {
+    Gold,
+    Workers,
+}
+
+impl Short {
+    fn alert(self) -> &'static str {
+        match self {
+            Short::Gold => "Not enough gold",
+            Short::Workers => "Not enough workers - build tents",
+        }
+    }
+}
+
 /// This close to the window edge (pixels) the mouse moves the camera.
 const EDGE: f32 = 8.0;
 /// The same key or unit twice within this time (seconds) counts as a double press.
 const DOUBLE_TAP: f64 = 0.4;
+/// A held key counts as pressed again after this many seconds …
+const REPEAT_DELAY: f64 = 0.4;
+/// … and from then on every this many seconds – about Windows' own key repeat (≈ 30 per second at most), which
+/// StarCraft 2 uses to queue many units by holding a key.
+const REPEAT_EVERY: f64 = 0.04;
+
+/// Holding a key presses it again and again, like typing "aaaa" by holding A. macroquad's `is_key_pressed` only
+/// reports the first press (it leaves out Windows' repeats), so the repeat is counted here – only for the buttons
+/// that want it (training units): a held Q mustn't open the build menu and then press Q in it too.
+#[derive(Default)]
+struct KeyRepeat {
+    /// The key that was pressed last, and when it counts as pressed the next time.
+    held: Option<(KeyCode, f64)>,
+}
+
+impl KeyRepeat {
+    /// Was `key` pressed this frame – the first time, or again because it's held long enough?
+    fn pressed(&mut self, key: KeyCode) -> bool {
+        let now = get_time();
+        if is_key_pressed(key) {
+            self.held = Some((key, now + REPEAT_DELAY));
+            return true;
+        }
+        match self.held {
+            Some((held, next)) if held == key && is_key_down(key) && now >= next => {
+                // `max`: after a slow frame not several presses to catch up – one per frame at most.
+                self.held = Some((key, (next + REPEAT_EVERY).max(now)));
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// The keys of the control groups, in keyboard order: 1 … 9, then 0.
 const GROUP_KEYS: [KeyCode; 10] = [
     KeyCode::Key1,
@@ -219,6 +280,8 @@ pub struct Ui {
     minimap_drag: bool,
     /// Marker after a command: world position, seconds left, kind (for the colour).
     marker: Option<(Vec2, f32, Mark)>,
+    /// A held key of the command card presses its button again and again (training units).
+    repeat: KeyRepeat,
 }
 
 impl Ui {
@@ -262,6 +325,7 @@ impl Ui {
             drag_start: None,
             minimap_drag: false,
             marker: None,
+            repeat: KeyRepeat::default(),
         }
     }
 
@@ -330,26 +394,37 @@ impl Ui {
     }
 
     /// The pieces of a building line that would really be built: those that fit and – by the rules – that the gold
-    /// pays for, one after the other. Returns them with what they cost together, and whether some fit but were too
-    /// expensive. `world.gold` is only read: the simulation pays when the orders arrive (`orders.rs`).
-    fn affordable(&self, world: &World, kind: BuildingKind, tiles: &[(i32, i32)]) -> (Vec<(i32, i32)>, u32, bool) {
+    /// and the free workers pay for, one after the other. `world` is only read: the simulation pays when the orders
+    /// arrive (`orders.rs`).
+    fn affordable(&self, world: &World, kind: BuildingKind, tiles: &[(i32, i32)]) -> LinePlan {
         let free = self.rule_free();
-        let (mut left, mut cost, mut short) = (world.gold, 0, false);
-        let mut built = Vec::new();
+        let (mut gold, mut workers) = (world.gold, world.free_workers());
+        let mut plan = LinePlan { built: Vec::new(), cost: 0, workers: 0, short: None };
         for &tile in tiles {
             if !self.fits(world, kind, tile) {
                 continue;
             }
-            let price = if free { 0 } else { world.build_cost(kind, tile, self.turned) };
-            if price > left {
-                short = true;
+            let (price, needs) = if free {
+                (0, 0)
+            } else {
+                (world.build_cost(kind, tile, self.turned), world.build_workers(kind, tile, self.turned))
+            };
+            // `get_or_insert`: only the first thing that runs out is remembered.
+            if price > gold {
+                plan.short.get_or_insert(Short::Gold);
                 continue;
             }
-            left -= price;
-            cost += price;
-            built.push(tile);
+            if needs > workers {
+                plan.short.get_or_insert(Short::Workers);
+                continue;
+            }
+            gold -= price;
+            workers -= needs;
+            plan.cost += price;
+            plan.workers += needs;
+            plan.built.push(tile);
         }
-        (built, cost, short)
+        plan
     }
 
     /// A short message in the middle at the top, for a few seconds.
@@ -697,12 +772,12 @@ impl Ui {
                 // the mouse for the next line, until right click or Esc. In the editor without the rules of the game.
                 let end = placement_tile(kind, self.turned, camera.screen_to_world(mouse));
                 let (turned, editor) = (self.turned, self.rule_free());
-                let (tiles, _, short) = self.affordable(world, kind, &placement_line(kind, start, end));
-                for tile in tiles {
+                let plan = self.affordable(world, kind, &placement_line(kind, start, end));
+                for tile in plan.built {
                     orders.push(Order::PlaceBuilding { kind, tile, turned, editor });
                 }
-                if short {
-                    self.alert("Not enough gold");
+                if let Some(short) = plan.short {
+                    self.alert(short.alert());
                 }
             }
             if let Some(start) = self.drag_start.take() {
@@ -968,7 +1043,8 @@ impl Ui {
                 }
             }
             // With Shift 5 at once, like in StarCraft. Several barracks selected: each unit goes to the one
-            // with the shortest queue. Only as many as the gold pays for (the simulation pays, `orders.rs`).
+            // with the shortest queue. Only as many as the gold and the free workers pay for (the simulation pays,
+            // `orders.rs`). Holding the key presses it again and again (`KeyRepeat`).
             Button::TrainSoldier | Button::TrainRanger | Button::TrainSniper | Button::TrainMedic => {
                 let Some(kind) = button.trains() else {
                     return;
@@ -979,10 +1055,15 @@ impl Ui {
                 }
                 let mut queued: Vec<(usize, u32)> =
                     buildings.iter().map(|&b| (world.buildings[b].production.len(), world.buildings[b].id)).collect();
-                let mut gold = world.gold;
+                let (mut gold, mut workers) = (world.gold, world.free_workers());
+                let stats = kind.stats();
                 for _ in 0..if shift { 5 } else { 1 } {
-                    if gold < kind.stats().cost {
-                        self.alert("Not enough gold");
+                    if gold < stats.cost {
+                        self.alert(Short::Gold.alert());
+                        return;
+                    }
+                    if workers < stats.worker_cost {
+                        self.alert(Short::Workers.alert());
                         return;
                     }
                     let Some(shortest) = queued.iter_mut().min_by_key(|(len, _)| *len) else {
@@ -990,7 +1071,8 @@ impl Ui {
                     };
                     orders.push(Order::Train { building: shortest.1, kind });
                     shortest.0 += 1;
-                    gold -= kind.stats().cost;
+                    gold -= stats.cost;
+                    workers -= stats.worker_cost;
                 }
             }
             Button::FormLine | Button::FormBox | Button::FormCircle => {} // handled above
@@ -1055,7 +1137,8 @@ impl Ui {
             return;
         }
         for &button in card {
-            if is_key_pressed(button.key()) {
+            let pressed = if button.trains().is_some() { self.repeat.pressed(button.key()) } else { is_key_pressed(button.key()) };
+            if pressed {
                 self.press(button, world, orders, shift);
                 break; // the card may change (a build menu opens) – one button per key press
             }
@@ -1547,10 +1630,10 @@ impl Ui {
                 None => vec![here],
             };
             let (w, h) = kind.footprint(turned);
-            // Green: it will be built – red: no room there, or the gold doesn't reach that far.
-            let (built, cost, short) = self.affordable(world, kind, &tiles);
+            // Green: it will be built – red: no room there, or the gold or the workers don't reach that far.
+            let plan = self.affordable(world, kind, &tiles);
             for tile in tiles {
-                let color = if built.contains(&tile) {
+                let color = if plan.built.contains(&tile) {
                     Color::new(0.3, 0.9, 0.3, 0.45)
                 } else {
                     Color::new(0.9, 0.2, 0.2, 0.45)
@@ -1564,17 +1647,22 @@ impl Ui {
             }
             // On walls the gate is cheaper – the text says so, so it doesn't look like a mistake.
             let on_walls = world.replaced_by(kind, here, turned).len();
-            let mut text = if free { "Free (editor)".to_owned() } else { format!("Cost {cost}") };
+            let mut text = if free { "Free (editor)".to_owned() } else { format!("Cost {}", plan.cost) };
+            if plan.workers > 0 {
+                text += &format!(", {} worker{}", plan.workers, if plan.workers == 1 { "" } else { "s" });
+            }
             if on_walls > 0 && self.place_start.is_none() && !free {
                 text += &format!(" (on {on_walls} wall{})", if on_walls == 1 { "" } else { "s" });
             }
-            if short {
-                text += &format!(" - not enough gold ({})", world.gold);
+            match plan.short {
+                Some(Short::Gold) => text += &format!(" - not enough gold ({})", world.gold),
+                Some(Short::Workers) => text += &format!(" - not enough workers ({} free)", world.free_workers()),
+                None => {}
             }
             if kind == BuildingKind::Gate {
                 text += "   R: turn";
             }
-            let color = if short { Color::new(1.0, 0.45, 0.4, 1.0) } else { WHITE };
+            let color = if plan.short.is_some() { Color::new(1.0, 0.45, 0.4, 1.0) } else { WHITE };
             draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, color);
         }
         // Editor tool on the mouse: the brush in the colour of the terrain, or the name of what gets spawned.

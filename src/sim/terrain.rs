@@ -41,8 +41,9 @@ impl World {
         self.to_base = FlowField::to_area(&self.map, &goals, self.base, zombie);
     }
 
-    /// Whoever now stands on painted terrain moves to the nearest free spot. (Nobody can stand on a new
-    /// building: `can_place` doesn't allow that in the first place.)
+    /// Whoever now stands on painted terrain or a new building moves to the nearest free spot – you may build on
+    /// your own units, like in StarCraft they get out of the way (zombies can't be that close: `can_place`). Several
+    /// pushed onto the same tile push each other apart afterwards (`unit_separation`).
     pub(super) fn push_out_of_terrain(&mut self) {
         let map = &self.map;
         for zombie in &mut self.zombies {

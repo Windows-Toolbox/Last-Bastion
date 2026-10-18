@@ -337,6 +337,15 @@ impl Button {
         }
     }
 
+    /// How many workers the button takes – the unit it trains or the building it places (0: none).
+    pub fn workers(self) -> u32 {
+        match (self.trains(), self.places()) {
+            (Some(kind), _) => kind.stats().worker_cost,
+            (_, Some(kind)) => kind.stats().worker_cost,
+            _ => 0,
+        }
+    }
+
     /// Which building this button puts on the grid – `None` for all other buttons.
     pub fn places(self) -> Option<BuildingKind> {
         match self {
@@ -359,9 +368,9 @@ impl Button {
             Button::FormLine => "Formation: rows along the line you drag with the right mouse button. Soldiers in front.",
             Button::FormBox => "Formation: a square block, the dragged line is its front. Soldiers in front.",
             Button::FormCircle => "Formation: a ring around where you start dragging, the drag is the radius. Soldiers outside.",
-            Button::TrainSoldier => "Tough, short range, aims quickly, loud. Build time: 5 s. Shift: 5 at once.",
-            Button::TrainRanger => "Fast and weak, draws the bow a while before every arrow, quiet. Build time: 4 s. Shift: 5 at once.",
-            Button::TrainSniper => "Long range, one big shot - very loud. Build time: 8 s. Shift: 5 at once.",
+            Button::TrainSoldier => "Tough, short range, aims quickly, loud. Build time: 5 s. Shift: 5 at once, hold the key: more.",
+            Button::TrainRanger => "Fast and weak, draws the bow a while before every arrow, quiet. Build time: 4 s. Shift: 5 at once, hold the key: more.",
+            Button::TrainSniper => "Long range, one big shot - very loud. Build time: 8 s. Shift: 5 at once, hold the key: more.",
             Button::TrainMedic => "No attack. Beams at hurt units nearby (healing comes later). Build time: 6 s.",
             Button::Rally => "Where new units go (tower: where units go when unloaded). On a unit: follow it. Also with right click.",
             Button::Open(Submenu::Colonists) => "Houses for your colonists: the tent - later the stone house.",
@@ -372,7 +381,7 @@ impl Button {
             Button::Open(Submenu::Defense) => "Wall, gate, tower - later mines, trip wires, ballista and machine gun towers.",
             Button::Open(Submenu::Wonders) => "The most expensive buildings, with very strong buffs - none designed yet.",
             Button::Back => "Back to the main buttons (B or Esc).",
-            Button::PlaceTent => "Tent (2 x 2). 6 colonists pay gold; shield down = infected. Drag: a line. Right click / Esc: stop building.",
+            Button::PlaceTent => "Tent (2 x 2). 6 colonists pay gold, 2 workers for your buildings and units; shield down = infected. Drag: a line. Right click / Esc: stop building.",
             Button::PlaceBarracks => "Barracks (3 x 3, 800 HP). Trains soldiers, rangers, snipers and medics - the only building that does. Right click / Esc: stop building.",
             Button::PlaceWall => "Wall (1 x 1, 400 HP). Zombies have to tear it down. Drag: a line, diagonal too. Right click / Esc: stop building.",
             Button::PlaceGate => "Gate (3 x 1, 400 HP). Your units walk through the middle, zombies don't. Can go on walls (cheaper there, but walls + gate still cost more than the gate alone). R: turn. Right click / Esc: stop building.",
@@ -853,6 +862,13 @@ fn draw_building(layout: &Layout, world: &World, building: &Building) {
         cells.push(("Colonists", stats.colonists.to_string()));
         cells.push(("Gold/h", format!("+{}", building.income())));
     }
+    // What it gives (infected: nothing) or takes.
+    if stats.workers > 0 {
+        cells.push(("Workers", format!("+{}", if building.infected { 0 } else { stats.workers })));
+    }
+    if stats.worker_cost > 0 {
+        cells.push(("Workers", format!("-{}", stats.worker_cost)));
+    }
     cells.push(("Sight", format!("{}", stats.sight)));
     let (w, h) = stats.size;
     cells.push(("Size", format!("{w} x {h}")));
@@ -1001,6 +1017,7 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
     }
 
     let mut hovered = None;
+    let free_workers = world.free_workers();
     for &button in card {
         let r = layout.button_rect(button.slot());
         let hover = r.contains(mouse);
@@ -1021,10 +1038,10 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
         } else {
             BOX_BG
         };
-        // Too expensive right now: the name dims and the price turns red (like StarCraft's missing minerals).
-        // Planned: everything dim – the button only shows where it will be.
+        // Too expensive right now – gold or workers: the name dims and the price turns red (like StarCraft's missing
+        // minerals or supply). Planned: everything dim – the button only shows where it will be.
         let cost = shown_cost(button, world, ui);
-        let affordable = cost.is_none_or(|cost| cost <= world.gold);
+        let affordable = cost.is_none_or(|cost| cost <= world.gold) && button.workers() <= free_workers;
         // Repair with nothing to repair: dim like a planned button.
         let idle = button == Button::Repair && cost.is_none();
         let text = if planned || idle || !affordable { DIM } else { GLOW };
@@ -1046,7 +1063,11 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
     // Tooltip above the command card, like in StarCraft – with the price.
     if let Some(button) = hovered {
         let title = match (shown_cost(button, world, ui), button) {
-            (Some(cost), _) => format!("{} ({}) - {cost} gold", button.title(), button.key_label()),
+            (Some(cost), _) => match button.workers() {
+                0 => format!("{} ({}) - {cost} gold", button.title(), button.key_label()),
+                1 => format!("{} ({}) - {cost} gold, 1 worker", button.title(), button.key_label()),
+                n => format!("{} ({}) - {cost} gold, {n} workers", button.title(), button.key_label()),
+            },
             (None, Button::Repair) => {
                 let plan = world.repair_plan(ui.selected_building_indices(world));
                 format!("{} ({}) - {}", button.title(), button.key_label(), nothing_to_repair(&plan))
@@ -1109,11 +1130,14 @@ fn draw_stock(layout: &Layout, world: &World) {
     let (right_x, right_w) = (left_x + left_w + 8.0, r.right() - 10.0 - (left_x + left_w + 8.0));
     let mut tooltip: Option<[&str; 2]> = None;
 
-    // People: colonists (real), the rest later.
+    // People: colonists and workers (real), the rest later.
     let colonists: u32 = world.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().colonists).sum();
+    let (used, workers) = world.workers();
+    let workers_help = "Free / all. Tents (and the command center) give them, every unit and most buildings take some \
+        as long as they live or stand. None free: nothing new. An infected tent gives none.";
     let people: [(&str, Option<String>, &str); 4] = [
         ("Colonists", Some(colonists.to_string()), "The colonists living in your houses - each pays gold every hour."),
-        ("Workers", None, "Colonists working in buildings - comes with the economy."),
+        ("Workers", Some(format!("{}/{workers}", workers.saturating_sub(used))), workers_help),
         ("Food", None, "Feeds the houses - comes with the economy."),
         ("Energy", None, "Powers houses, machines and towers - comes with the economy."),
     ];

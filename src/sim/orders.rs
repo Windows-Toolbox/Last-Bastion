@@ -77,15 +77,17 @@ pub enum Order {
 
     // --- Buildings ---
     /// Build a building, `tile` = top left tile, `turned` by 90° (gate). Invalid spots are ignored (`can_place`),
-    /// so is a building you can't pay for (`build_cost`).
+    /// so is a building you can't pay for (`build_cost`) or that there aren't enough free workers for
+    /// (`build_workers`).
     /// `editor`: without the rules of the game and for free – anywhere on the map that no other building takes
     /// (`can_place_anywhere`).
     PlaceBuilding { kind: BuildingKind, tile: (i32, i32), turned: bool, editor: bool },
     /// Everyone out of this tower.
     Unload { building: u32 },
-    /// Put a unit at the end of a building's production queue – paid right away, if there's enough gold.
+    /// Put a unit at the end of a building's production queue – paid right away, if there's enough gold and a free
+    /// worker for it.
     Train { building: u32, kind: UnitKind },
-    /// Take an entry out of the production queue (`index`: position in the queue). Its gold comes back.
+    /// Take an entry out of the production queue (`index`: position in the queue). Its gold and its worker come back.
     CancelTrain { building: u32, index: usize },
     SetRally { building: u32, rally: Rally },
     /// Repair these buildings – each one only if it may be repaired now and the gold is still enough for it
@@ -220,7 +222,8 @@ impl World {
             Order::PlaceBuilding { kind, tile, turned, editor: false } => {
                 // The price is worked out before building: built over walls, the gate gets part of theirs back.
                 let cost = self.build_cost(*kind, *tile, *turned);
-                if self.can_place(*kind, *tile, *turned) && self.gold >= cost {
+                let workers = self.build_workers(*kind, *tile, *turned) <= self.free_workers();
+                if self.can_place(*kind, *tile, *turned) && self.gold >= cost && workers {
                     self.gold -= cost;
                     self.score.gold_spent += cost;
                     self.score.buildings_built += 1;
@@ -265,12 +268,14 @@ impl World {
             Order::Train { building, kind } => {
                 if let Some(b) = self.find_building(*building) {
                     let cost = kind.stats().cost;
+                    // Before `&mut self.buildings[b]`: while that borrow lives, `self` can't be read as a whole.
+                    let workers = kind.stats().worker_cost <= self.free_workers();
                     // Two different fields of `self` at the same time – `buildings` and `gold`: the compiler allows
                     // that, because it can see they don't overlap.
                     let building = &mut self.buildings[b];
                     // Only the barracks trains units (`BuildingKind::trains`).
                     let room = building.kind.trains() && building.production.len() < MAX_PRODUCTION;
-                    if room && self.gold >= cost {
+                    if room && self.gold >= cost && workers {
                         building.production.push_back(*kind);
                         self.gold -= cost;
                         self.score.gold_spent += cost;
@@ -291,7 +296,8 @@ impl World {
                         if *index == 0 {
                             building.progress = 0; // the front one had been started – from the beginning
                         }
-                        // The gold comes back in full, like in StarCraft.
+                        // The gold comes back in full, like in StarCraft – the worker too (`workers` counts the
+                        // queue, so it's free again by itself).
                         let cost = kind.stats().cost;
                         self.gold += cost;
                         self.score.gold_spent = self.score.gold_spent.saturating_sub(cost);

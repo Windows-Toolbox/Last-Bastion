@@ -25,6 +25,9 @@ pub struct Stats {
     pub letter: String,
     /// Gold, paid when it goes into the production queue – back in full if it's cancelled (like in StarCraft).
     pub cost: u32,
+    /// Workers it takes from the colony (`World::workers`) – like its gold when it goes into the production queue, but
+    /// they come back when it dies (or is cancelled). DESIGN.md 5.6.
+    pub worker_cost: u32,
     pub hp: u32,
     /// Subtracted from every hit (at least 1 damage always gets through).
     pub armor: u32,
@@ -105,6 +108,11 @@ pub struct BuildingStats {
     /// How many colonists live in it. Each pays `gold_per_colonist_per_hour` (`data\colony.json`) – until the
     /// building is infected.
     pub colonists: u32,
+    /// Workers it gives the colony, like in TAB – the houses and the command center (`World::workers`). Infected: none.
+    pub workers: u32,
+    /// Workers it takes from the colony for as long as it stands. Not enough free workers: it can't be built
+    /// (DESIGN.md 5.6).
+    pub worker_cost: u32,
     /// Price in gold, paid when it's placed (first guess). Wood, stone … come with the economy (DESIGN.md 5). Built
     /// over other buildings it gets cheaper (`placement.rs`). The editor places buildings for free.
     pub cost: u32,

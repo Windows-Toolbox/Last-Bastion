@@ -203,17 +203,22 @@ Colonists exist twice: as a **resource** (a number) and as **people walking arou
 
 #### Colonists as a resource (open question 24, 2026-10-15)
 
-- Houses give colonists (5.3). The bottom bar shows them next to the gold (11.1).
-- **Buildings need colonists to run** (like TAB's workers). If there aren't enough, buildings are **switched off**
-  until there are (2026-10-15):
+- Houses give **colonists** – they pay gold (5.3) – and **workers**, like TAB (2026-10-19: a tent 6 colonists and
+  2 workers). The command center gives some workers too (the founders, enough for the start units and a little more).
+  The bottom bar shows colonists and free/all workers next to the gold (11.1).
+- **Every other building and every unit takes workers** for as long as it stands or lives (`worker_cost` in
+  `data\`, 2026-10-19). No free workers → **nothing new** can be built or trained. Walls take none for now – a wall
+  line would eat all of them.
+- **Later, when workers get lost** (an infected house) and there are fewer than in use, buildings are **switched
+  off** until there are enough again (2026-10-15):
   - **Gathering buildings first** (lumber camp, quarry, drill …), **spread over the resources**: one of each kind in
     turn, so no single resource drops to zero while the others keep running.
   - **Farms and power generators come last** (2026-10-15). Switching off food or power would leave houses unsupplied
     → less gold, maybe fewer colonists → even more buildings switched off: a downward spiral like in TAB.
   - In between: production and defence ❓ (order still open).
-- **Units need colonists too:** training a unit takes colonists from the colony – **1 per infantry unit, more for
-  vehicles** (2026-10-15, exact numbers in the data files). They're gone for as long as the unit lives.
-- → More houses = more colonists = more buildings and a bigger army. Houses are the bottleneck, as in TAB.
+- **Units take workers too:** **1 per infantry unit, more for vehicles** (2026-10-15, exact numbers in the data
+  files). Taken when it goes into the production queue (back if cancelled), gone for as long as the unit lives.
+- → More houses = more workers = more buildings and a bigger army. Houses are the bottleneck, as in TAB.
 
 #### The people walking around (decoration)
 
@@ -263,7 +268,9 @@ Costs and stats live in `data\buildings.json` (12.4).
 **In the prototype:** command center, tent, barracks (the only building that trains), wall, gate (3 × 1, door for
 your units), tower (up to 4 units, +2 range and sight, can't be hit). Placement rules all in `src/placement.rs`:
 drag a line (walls diagonal, 1 wide like TAB), gate over walls (walls refund 50 %, never a saving), 1 free tile between
-towers, no zombie within 4 tiles. No build time yet. Repair (F) on every building, cures infected ones.
+towers, no zombie within 4 tiles. Your own units may stand on the site – they're pushed off to the nearest free
+spot (like StarCraft). Costs gold and workers (5.6). No build time yet. Repair (F) on every building, cures infected
+ones.
 
 ---
 
@@ -276,6 +283,9 @@ Pillar 2. The heart is still the TAB side (open question 13).
 - Box/click select, double click = all of that type on screen, Shift = add/remove. Control groups 1–0.
 - **Attack-move**, move, stop, hold, patrol, **follow** (move onto an own unit). Shift queues every command;
   letting go of Shift takes a waiting command off the mouse, pressing Shift again brings it back.
+- **Hold** only means "don't walk by yourself": holding units can still be pushed, and a squeezed crowd pushes itself
+  apart (2026-10-19 – before they stood like walls).
+- **Holding a training key** presses it again and again, like StarCraft with Windows' key repeat (2026-10-19).
 - **Smart-casting:** an ability key uses the best-suited unit of the selection, not all.
 - **Smart targeting:** fire is spread over different zombies, no overkill (StarCraft 2). *In since 2026-10-17 – without
   it 160 soldiers fired like 15.*

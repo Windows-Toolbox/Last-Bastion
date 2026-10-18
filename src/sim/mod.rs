@@ -77,6 +77,10 @@ pub struct World {
     pub corpses: Vec<Corpse>,
     /// The colony's gold: the tents pay it every hour (`buildings.rs`), units and buildings cost it (`orders.rs`).
     pub gold: u32,
+    /// Tests: workers that come from no building (`workers` in `buildings.rs`) – like the gold of `World::new`, so
+    /// tests that build and train don't depend on how many workers things take.
+    #[cfg(test)]
+    pub extra_workers: u32,
     /// How many days the round lasts – the final wave comes on the last one (DESIGN.md 4.1). 0: no set length (old map
     /// files).
     pub days: u32,
@@ -164,13 +168,14 @@ impl World {
 
     /// For the tests: the default "Wild" map, but at the old size of 128 tiles – smaller is faster, and the tests
     /// were written for it. With plenty of gold, so tests that build and train don't depend on the prices – the
-    /// tests about gold set it themselves.
+    /// tests about gold set it themselves. Plenty of workers too, for the same reason.
     #[cfg(test)]
     pub fn new(seed: u64) -> World {
         let mut setup = MapSetup::default();
         setup.common.size = 128.0;
         let mut world = World::generate(seed, &setup);
         world.gold = 100_000;
+        world.extra_workers = 100_000;
         world
     }
 
@@ -198,6 +203,8 @@ impl World {
             buildings: Vec::new(),
             corpses: Vec::new(),
             gold: data::get().colony.start_gold,
+            #[cfg(test)]
+            extra_workers: 0,
             days: 0,
             constant: data::get().spawning.constant.clone(),
             outcome: None,

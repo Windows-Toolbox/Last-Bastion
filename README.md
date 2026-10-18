@@ -81,7 +81,7 @@
 
 - **Start:** 8 Soldaten, 4 Scharfschützen, 4 Ranger, ein Kommandozentrum, 300 Gold.
 - **Länge:** 10 Tage ≈ 30 Minuten (3–80 wählbar, 1 Tag = 3 Minuten).
-- **Ziel:** Zelte bauen (bringen Gold), Kaserne bauen (nur sie bildet aus), Einheiten, Mauern, Türme kaufen.
+- **Ziel:** Zelte bauen (bringen Gold und Arbeiter), Kaserne bauen (nur sie bildet aus), Einheiten, Mauern, Türme kaufen.
 - **Gewonnen**, wenn die **Schlusswelle** am letzten Tag tot ist; **verloren**, wenn das Kommandozentrum fällt →
   Endbildschirm (Restart, „Look at the map“, Main menu).
 - **Eine Runde = eine Datei** (wie TAB) unter `%APPDATA%\Last Bastion\maps\`. **Restart** liest sie neu (Änderungen aus
@@ -139,7 +139,8 @@
 - **Kontrollgruppen** 1–0 untereinander.
 - **Auswahl:** eine Sache = Bild, Name, Lebensbalken (HP + Schild in einem), Text, Werte in Kästchen; mehrere = Symbole.
 - **Befehlskarte** 5 × 3 mit Tooltips, Preis rot, wenn das Gold nicht reicht.
-- **Vorräte:** Kolonisten, Gold (+ pro Stunde); Arbeiter, Nahrung, Energie, Holz, Stein, Eisen, Öl noch grau.
+- **Vorräte:** Kolonisten, **Arbeiter** (frei/alle), Gold (+ pro Stunde); Nahrung, Energie, Holz, Stein, Eisen, Öl
+  noch grau.
 
 ### Steuerung (wie StarCraft 2)
 
@@ -153,7 +154,7 @@
 | Rechte Maus | Laufen / Zombie angreifen / Einheit folgen / in den Turm. Gebäude: Sammelpunkt |
 | Rechte Maus **ziehen** | Formation (X Linie, C Block, V Kreis) |
 | T / P / M + Linksklick | Angriff (Attack-Move) / Patrouille / Laufen – ziehen = in Formation |
-| S / H | Stopp / Halten |
+| S / H | Stopp / Halten (läuft nicht von selbst, lässt sich aber schieben) |
 | F / X | Ausgewählte Gebäude reparieren / alle reparieren (X nur ohne ausgewählte Einheiten) |
 | **Shift** + Befehl | Hinten an die Befehlskette hängen. Shift loslassen = Befehl weg von der Maus, wieder drücken = zurück |
 | Strg / Shift / Strg+Shift + 1–0 | Gruppe setzen / dazu / „stehlen“ – auch mit Gebäuden. 1–0: auswählen, zweimal: Kamera hin |
@@ -180,15 +181,19 @@
 | **Y** Wunder | – | | | | | | |
 
 - **Kaserne:** Q Soldat (100 Gold), W Ranger (60), R Scharfschütze (200), T Medic (120), G Sammelpunkt. Shift = 5 auf
-  einmal, höchstens 5 in der Schlange, Klick auf die Schlange bricht ab (Gold zurück).
+  einmal, **Taste halten = immer wieder** (wie SC2), höchstens 5 in der Schlange, Klick auf die Schlange bricht ab
+  (Gold und Arbeiter zurück).
 - **Preise:** Zelt 100, Kaserne 150, Mauer 10, Tor 40, Turm 100. Gebäude stehen sofort (noch keine Bauzeit).
+- **Arbeiter** (wie TAB): Zelt gibt 2, Kommandozentrum 24. Kaserne braucht 4, Tor und Turm 1, jede Einheit 1, Mauer 0
+  – solange sie steht oder lebt. Keine freien Arbeiter = nichts Neues. Werte: `worker_cost` / `workers` in `data\`.
 - **Ziehen** baut eine Reihe (Mauern schräg 1 breit wie TAB, Türme mit Lücke). Das Gebäude bleibt an der Maus –
   Rechtsklick/Esc legt es weg.
-- **Regeln:** nicht auf Einheiten, nicht hinter der Grenze, kein Zombie auf dem Platz + 4 Kacheln drumherum.
+- **Regeln:** nicht hinter der Grenze, kein Zombie auf dem Platz + 4 Kacheln drumherum. **Auf eigenen Einheiten
+  erlaubt** – sie werden zur Seite geschoben.
 - **Tor** (3 × 1, R dreht): Einheiten gehen durch, Zombies nicht. Darf auf Mauern (wird billiger).
 - **Turm:** bis zu 4 Einheiten per Rechtsklick hinein – schießen und sehen 2 Kacheln weiter, unverwundbar. Q = raus,
   G = Sammelpunkt. 1 Kachel Abstand zum nächsten Turm.
-- **Zelt:** 6 Kolonisten, 6 Gold pro Spielstunde, Schild weg = infiziert.
+- **Zelt:** 6 Kolonisten (6 Gold pro Spielstunde), 2 Arbeiter, Schild weg = infiziert (dann keine Arbeiter).
 - **Reparieren (F)** bei jedem Gebäude, für alle ausgewählten: kostet den fehlenden Anteil von `repair_cost`
   (`data\buildings.json`, z. B. Mauer 5, Zelt 50, Kommandozentrum 300 für eine volle Reparatur), sofort bezahlt; die
   HP kommen über bis zu 10 s zurück. Ein infiziertes Gebäude ist danach geheilt (zu, zahlt wieder Gold).
@@ -276,3 +281,11 @@ Die ausführliche alte Fassung steht in git (`git show a4e7199:README.md` – di
   - Zum Testen eine graue Figur, eingefärbt in der Farbe der Art, per Programm gemalt (`examples\test_sprites.rs`).
   - Zombies drehen sich in die Laufrichtung; ein Schlag = ein Angriffs-Durchlauf. Animationen laufen in Spielzeit.
   - `build.ps1` kopiert `assets\` nach `dist\`.
+- **2026-10-19 – Arbeiter, Taste halten, Schieben**
+  - **Arbeiter** wie TAB: Zelte (2) und Kommandozentrum (24) geben sie, Kaserne, Tor, Turm und jede Einheit brauchen
+    welche. Ohne freie Arbeiter wird nichts gebaut oder ausgebildet. Werden jedes Mal aus Gebäuden und Einheiten
+    gezählt (`World::workers`), nicht gespeichert – Kartendateien bleiben gleich.
+  - Ausbilden: **Taste gedrückt halten** wiederholt sie (0,4 s Verzögerung, dann 25 pro Sekunde, `KeyRepeat` in `ui.rs`).
+  - **Bauen auf eigenen Einheiten** erlaubt, sie werden weggeschoben. **Halten** lässt sich jetzt schieben, ein
+    Haufen in der Ecke drückt sich auseinander.
+  - Zwei neue Tests (Weggeschoben, Arbeiter); Balance-Bot: bei 11 Zelten 42 Einheiten, dann reichen die Arbeiter nicht.

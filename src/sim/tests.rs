@@ -462,13 +462,77 @@ fn towers_keep_a_gap() {
     assert!(world.can_place(BuildingKind::Wall, (x + 1, y), false));
 }
 
-/// Buildings don't push anyone away: on a unit you can't build.
+/// Like in StarCraft you may build on your own units: they're pushed off the site. Four holding units exactly on
+/// top of each other in the middle of a barracks site – afterwards none stands on it, and they push each other apart
+/// even though they hold (before, holding units couldn't be pushed at all).
 #[test]
-fn no_building_on_units() {
-    let (world, id) = quiet_world();
-    let unit = &world.units[world.find_unit(id).unwrap()];
-    let tile = (unit.pos.x.floor() as i32, unit.pos.y.floor() as i32);
-    assert!(!world.can_place(BuildingKind::Wall, tile, false));
+fn building_pushes_units_aside() {
+    let (mut world, _) = quiet_world();
+    let tile = (world.base.x as i32 - 7, world.base.y as i32 - 8);
+    let ground = (tile.1 - 2..tile.1 + 5).flat_map(|y| (tile.0 - 2..tile.0 + 5).map(move |x| (x, y))).collect();
+    world.apply_orders(&[Order::PaintTerrain { terrain: Terrain::Grass, tiles: ground }]);
+    let middle = vec2(tile.0 as f32 + 1.5, tile.1 as f32 + 1.5);
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        world.spawn_unit(UnitKind::Soldier, middle);
+        ids.push(world.units.last().unwrap().id);
+    }
+    assert!(world.can_place(BuildingKind::Barracks, tile, false), "units on the site must not stop the building");
+    world.step(&[
+        Order::Command { units: ids.clone(), command: Command::Hold, queue: false, formation: None },
+        Order::PlaceBuilding { kind: BuildingKind::Barracks, tile, turned: false, editor: false },
+    ]);
+    assert_eq!(world.buildings.last().unwrap().kind, BuildingKind::Barracks, "not built");
+    for _ in 0..60 {
+        world.step(&[]);
+    }
+    let spots: Vec<Vec2> = ids.iter().map(|&id| world.units[world.find_unit(id).unwrap()].pos).collect();
+    for (k, p) in spots.iter().enumerate() {
+        assert!(!world.map.blocks_unit(p.x.floor() as i32, p.y.floor() as i32), "still on the barracks: {p:?}");
+        for q in &spots[k + 1..] {
+            assert!(p.distance(*q) > 0.5, "still on top of each other: {p:?} {q:?}");
+        }
+    }
+}
+
+/// Workers like in TAB: tents give them, the barracks and every unit take some. Not enough free: nothing is built
+/// or trained. A cancelled unit and a dead one give theirs back.
+#[test]
+fn workers_limit_building_and_training() {
+    let (mut world, _) = quiet_world();
+    world.extra_workers = 0;
+    let (barracks, tent, ranger) = (BuildingKind::Barracks.stats(), BuildingKind::Tent.stats(), UnitKind::Ranger.stats());
+    assert!(barracks.worker_cost > 1 && tent.workers > 0 && ranger.worker_cost == 1);
+    // Use the free workers up until one is missing for the barracks.
+    while world.free_workers() >= barracks.worker_cost {
+        world.spawn_unit(UnitKind::Ranger, world.base + vec2(0.0, 4.0));
+    }
+    let tile = (world.base.x as i32 - 7, world.base.y as i32 - 8);
+    let ground = (tile.1 - 2..tile.1 + 5).flat_map(|y| (tile.0 - 2..tile.0 + 5).map(move |x| (x, y))).collect();
+    let place = Order::PlaceBuilding { kind: BuildingKind::Barracks, tile, turned: false, editor: false };
+    world.step(&[Order::PaintTerrain { terrain: Terrain::Grass, tiles: ground }, place.clone()]);
+    assert!(!world.buildings.iter().any(|b| b.kind == BuildingKind::Barracks), "built without enough workers");
+
+    // Tents bring more (one is missing: one tent is enough): now the barracks goes up.
+    let tent_tile = (world.base.x as i32 + 5, world.base.y as i32 - 5);
+    let free = world.free_workers();
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: tent_tile, turned: false, editor: false }]);
+    assert_eq!(world.free_workers(), free + tent.workers);
+    world.step(&[place]);
+    let id = world.buildings.iter().find(|b| b.kind == BuildingKind::Barracks).expect("no barracks").id;
+
+    // Training: as many as there are free workers, the rest is ignored.
+    let free = world.free_workers() as usize;
+    assert!(free < MAX_PRODUCTION, "the test wants fewer free workers than the queue has room");
+    world.step(&vec![Order::Train { building: id, kind: UnitKind::Ranger }; free + 2]);
+    let b = world.find_building(id).unwrap();
+    assert_eq!(world.buildings[b].production.len(), free);
+    assert_eq!(world.free_workers(), 0);
+    world.step(&[Order::CancelTrain { building: id, index: free - 1 }]);
+    assert_eq!(world.free_workers(), 1, "a cancelled unit gives its worker back");
+    world.units[0].hp = 0;
+    world.step(&[]);
+    assert_eq!(world.free_workers(), 2, "a dead unit gives its worker back");
 }
 
 /// The editor never paints over buildings – the command center stays.

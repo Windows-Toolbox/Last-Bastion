@@ -290,6 +290,29 @@ impl World {
         self.buildings.iter().map(|b| b.income()).sum()
     }
 
+    /// Workers like in TAB (DESIGN.md 5.6): houses and the command center give them (`workers`), every other building
+    /// and every unit takes some (`worker_cost`) – for as long as it stands or lives. Units in a production queue
+    /// already count: they take them when they go in, like their gold. Infected buildings give none.
+    /// Counted anew every time instead of kept in a number – that way they can't get out of step with what stands on
+    /// the map, and map files don't need them. Returns (in use, all there are).
+    pub fn workers(&self) -> (u32, u32) {
+        let buildings = self.buildings.iter().map(|b| b.stats().worker_cost);
+        let queued = self.buildings.iter().flat_map(|b| b.production.iter().map(|kind| kind.stats().worker_cost));
+        let units = self.units.iter().map(|u| u.stats().worker_cost);
+        let used = buildings.chain(queued).chain(units).sum();
+        let all: u32 = self.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().workers).sum();
+        #[cfg(test)]
+        let all = all + self.extra_workers;
+        (used, all)
+    }
+
+    /// Workers nobody uses – what a new building or unit may take. 0 if more are in use than there are (a house was
+    /// infected): then nothing new until it's repaired or another house stands.
+    pub fn free_workers(&self) -> u32 {
+        let (used, all) = self.workers();
+        all.saturating_sub(used)
+    }
+
     /// Every full hour of the round each building pays its gold (colonists × `gold_per_colonist_per_hour`,
     /// `data\colony.json`). Then repairs go on, and the production queues. Finished units come out next to the
     /// building.
