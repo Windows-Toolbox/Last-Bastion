@@ -136,6 +136,8 @@ pub struct BreedStats {
     pub sight: f32,
     /// How big it is (tiles): zombies, units and buildings keep this far from its middle.
     pub radius: f32,
+    /// Its picture: a sprite in `assets\` (`sprites.rs`), e.g. `"test/figure"`. Missing: a box.
+    pub sprite: Option<String>,
 }
 
 /// `data\colony.json`
@@ -277,7 +279,7 @@ pub fn problem() -> Option<String> {
 /// Read the folder `data\` anew, if there is one (where the game was started, else next to the exe). Called before
 /// every new round. Broken: the old values stay, `problem` tells why.
 pub fn reload() {
-    let Some(folder) = folder() else {
+    let Some(folder) = folder("data") else {
         return; // no folder: the built-in values
     };
     let read = || -> Result<GameData, String> {
@@ -300,10 +302,10 @@ pub fn reload() {
     }
 }
 
-/// `data\` in the folder the game was started in, otherwise next to the exe.
-fn folder() -> Option<PathBuf> {
-    let here = std::env::current_dir().ok().map(|d| d.join("data"));
-    let exe = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("data")));
+/// The folder `name` (`data\`, `assets\`) in the folder the game was started in, otherwise next to the exe.
+pub fn folder(name: &str) -> Option<PathBuf> {
+    let here = std::env::current_dir().ok().map(|d| d.join(name));
+    let exe = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(name)));
     [here, exe].into_iter().flatten().find(|d| d.is_dir())
 }
 
@@ -332,7 +334,7 @@ mod tests {
     /// built-in ones – so the other tests running at the same time see the same values.
     #[test]
     fn reload_reads_the_folder() {
-        assert!(folder().is_some(), "no data folder found");
+        assert!(folder("data").is_some(), "no data folder found");
         reload();
         assert_eq!(problem(), None);
     }

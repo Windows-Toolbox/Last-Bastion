@@ -5,7 +5,8 @@
     "armor": 0,
     "damage": 6,
     "sight": 5.0,
-    "radius": 0.25
+    "radius": 0.25,
+    "sprite": "test/figure"
   },
   "runner": {
     "speed": 1.75,
@@ -13,7 +14,8 @@
     "armor": 1,
     "damage": 10,
     "sight": 6.0,
-    "radius": 0.25
+    "radius": 0.25,
+    "sprite": "test/figure"
   },
   "fat": {
     "speed": 1.75,
@@ -21,7 +23,8 @@
     "armor": 2,
     "damage": 40,
     "sight": 5.0,
-    "radius": 0.45
+    "radius": 0.45,
+    "sprite": "test/fat"
   },
   "hit_every_seconds": 1.0,
   "hearing": 3.0,

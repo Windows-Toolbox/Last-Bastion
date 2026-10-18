@@ -22,6 +22,7 @@ use crate::overlay::{self, Action, Overlay, Switch};
 use crate::picture::{Extras, MapPicture};
 use crate::settings::Settings;
 use crate::sim::{day_and_hour, Order, Outcome, TimedWave, WaveFrom, World, TICK};
+use crate::sprites::Sprites;
 use crate::ui::Ui;
 use crate::vision::Vision;
 use crate::widgets::{button, Column};
@@ -68,8 +69,10 @@ pub struct Game {
     // someone looks at it, and at most once per tick – with thousands of zombies it's not cheap.
     zombie_view: Vision,
     zombie_view_tick: Option<u64>,
-    // Zombies that leave your sight fade out instead of vanishing.
-    fades: draw::Fades,
+    // Zombies that leave your sight fade out instead of vanishing, and turn the way they walk.
+    looks: draw::Looks,
+    /// The pictures of zombies and units – read again on "Restart" (`restart`).
+    sprites: Sprites,
     /// The picture on the minimap – painted only when the map or the fog changed (`picture.rs`).
     minimap: MapPicture,
     /// The end screen was put away ("Look at the map") – the round stays over.
@@ -116,7 +119,8 @@ impl Game {
             avg_tick_ms: 0.0,
             avg_draw_ms: 0.0,
             zombie_view_tick: None,
-            fades: draw::Fades::default(),
+            looks: draw::Looks::default(),
+            sprites: Sprites::default(),
             minimap: MapPicture::new(),
             end_hidden: false,
             leaving: None,
@@ -290,6 +294,7 @@ impl Game {
     /// (and the values in `data\` too). The editor: back to the map as it was saved ("Revert to saved").
     fn restart(&mut self) {
         data::reload();
+        self.sprites = Sprites::default(); // changed pictures count too
         if let Some(file) = self.path.as_ref().and_then(|path| MapFile::load(path).ok()) {
             self.file = file;
         }
@@ -323,7 +328,7 @@ impl Game {
         self.accumulator = 0.0;
         self.checksum_at_check = None;
         self.zombie_view_tick = None;
-        self.fades = draw::Fades::default(); // the new world numbers its zombies from 1 again
+        self.looks = draw::Looks::default(); // the new world numbers its zombies from 1 again
         self.end_hidden = false;
     }
 
@@ -365,7 +370,7 @@ impl Game {
         self.orders.clear();
         self.accumulator = 0.0;
         self.zombie_view_tick = None;
-        self.fades = draw::Fades::default();
+        self.looks = draw::Looks::default();
     }
 
     /// Editor: writes the map into its file – named after the map. Renamed: the file gets the new name (one map = one
@@ -483,7 +488,8 @@ impl Game {
         let draw_start = Instant::now();
         clear_background(Color::from_rgba(20, 22, 28, 255));
         let alpha = (self.accumulator / TICK).min(1.0);
-        self.fades.update(world, dt);
+        self.looks.update(world, dt);
+        self.sprites.load_missing();
         let fog = match self.ui.sight() {
             Sight::All => Fog::Off,
             Sight::Player => Fog::Player,
@@ -503,7 +509,8 @@ impl Game {
                 || is_key_down(KeyCode::RightShift),
             always_bars: self.ui.settings.always_health_bars,
             fog,
-            fades: &self.fades,
+            looks: &self.looks,
+            sprites: &self.sprites,
             spawners: self.ui.spawner_shapes(world, &self.camera),
         };
         draw::draw_world(world, &self.camera, &view, &self.ui.selected, alpha);
@@ -513,10 +520,15 @@ impl Game {
         self.minimap.refresh(&world.map, &Extras { fog, spawners: &[], base: false, shade_ring: false }, dt);
         hud::draw(&Layout::new(), world, &self.camera, &self.ui, &self.minimap);
         // A broken file in `data\`: the game runs on with the old values – but you have to see it.
-        if let Some(problem) = data::problem() {
-            let text = format!("data\\ not loaded, old values in use - {problem}");
-            draw_rectangle(8.0, 40.0, measure_text(&text, None, 18, 1.0).width + 16.0, 26.0, Color::new(0.4, 0.05, 0.05, 0.9));
-            draw_text(&text, 16.0, 58.0, 18.0, WHITE);
+        // The same for a picture in `assets\`: that kind stays a box.
+        let problems = [
+            data::problem().map(|p| format!("data\\ not loaded, old values in use - {p}")),
+            self.sprites.problem().map(|p| format!("Picture not loaded, drawn as a box - {p}")),
+        ];
+        for (row, text) in problems.into_iter().flatten().enumerate() {
+            let y = 40.0 + row as f32 * 30.0;
+            draw_rectangle(8.0, y, measure_text(&text, None, 18, 1.0).width + 16.0, 26.0, Color::new(0.4, 0.05, 0.05, 0.9));
+            draw_text(&text, 16.0, y + 18.0, 18.0, WHITE);
         }
         self.ui.editor.draw(world);
         self.draw_round_over();

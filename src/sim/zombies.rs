@@ -113,6 +113,12 @@ impl Zombie {
         self.speed
     }
 
+    /// Right after a hit: how far it is through the pause until the next one (0 = it just hit, towards 1 = ready
+    /// again). For the picture: one swing of the attack animation per hit. `None`: it hasn't hit for a while.
+    pub fn since_hit(&self) -> Option<f32> {
+        (self.cooldown > 0).then(|| 1.0 - self.cooldown as f32 / values().hit_cooldown as f32)
+    }
+
     /// Is it looking for a gap right now (shot, or standing next to one that was)?
     pub fn is_seeking(&self) -> bool {
         self.seek > 0

@@ -56,6 +56,8 @@ pub struct Stats {
     pub noise: f32,
     /// Medic: doesn't shoot at zombies – its "shot" is a beam at your own units (DESIGN.md 6).
     pub heals: bool,
+    /// Its picture: a sprite in `assets\` (`sprites.rs`), e.g. `"test/figure"`. Missing: a box.
+    pub sprite: Option<String>,
 }
 
 impl UnitKind {

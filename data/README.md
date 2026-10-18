@@ -40,6 +40,7 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 | `build_seconds` | Ausbildungszeit in der Kaserne |
 | `noise` | **Lärm** wie in TAB: Jeder Zombie so viele Kacheln um den Schützen hört den Schuss und stürmt los (`noise_seconds` in `zombies.json`). Ranger 1, Soldat 3, Scharfschütze 10. Wald und Mauern halten den Lärm nicht auf |
 | `heals` | `true` = schießt nicht, sondern richtet den Strahl auf eigene Einheiten (Medic) |
+| `sprite` | Nur die Optik: ihr Bild in `assets\` (`"test/figure"` = `assets\test\figure.json`, siehe `assets\README.md`). Weglassen = Kästchen |
 
 ## `buildings.json` – Gebäude
 
@@ -80,6 +81,7 @@ Dazu für alle:
 | `damage` | Schaden pro Treffer |
 | `sight` | So weit sieht er Einheiten (nicht durch Wald und Bäume). TAB: Walker 5, Runner 6, Fat 5 |
 | `radius` | Wie groß er ist (Kacheln): so weit halten andere Zombies und Einheiten Abstand, und so viel weiter reicht er |
+| `sprite` | Nur die Optik: sein Bild in `assets\`, wie bei den Einheiten. Weglassen = Kästchen |
 
 Dazu für alle:
 

@@ -30,6 +30,7 @@ mod placement;
 mod rng;
 mod settings;
 mod sim;
+mod sprites;
 mod ui;
 mod vision;
 mod widgets;

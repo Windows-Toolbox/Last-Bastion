@@ -14,7 +14,8 @@
     "speed": 2.4,
     "build_seconds": 5.0,
     "noise": 3.0,
-    "heals": false
+    "heals": false,
+    "sprite": "test/figure"
   },
   "ranger": {
     "name": "Ranger",
@@ -31,7 +32,8 @@
     "speed": 4.0,
     "build_seconds": 4.0,
     "noise": 1.0,
-    "heals": false
+    "heals": false,
+    "sprite": "test/figure"
   },
   "sniper": {
     "name": "Sniper",
@@ -48,7 +50,8 @@
     "speed": 1.8,
     "build_seconds": 8.0,
     "noise": 10.0,
-    "heals": false
+    "heals": false,
+    "sprite": "test/figure"
   },
   "medic": {
     "name": "Medic",
@@ -65,6 +68,7 @@
     "speed": 2.9,
     "build_seconds": 6.0,
     "noise": 0.0,
-    "heals": true
+    "heals": true,
+    "sprite": "test/figure"
   }
 }

@@ -540,6 +540,8 @@ brass and dark wood until the real art (12.3). Later: noise/creep overlay on the
   shaders, colour grading, own particles. The HUD is custom-made.
 - **The hard part is the art:** animations × directions per unit, usually Blender + a render script. Where the
   pictures come from is open (question 22). Placeholder shapes until then.
+- *In the prototype:* sprite sheets in `assets\` (one row per direction, idle/walk/attack side by side, feet as
+  anchor, mipmaps), named per kind in `data\`; a generated grey test figure. Buildings, corpses, deaths: still shapes.
 - Performance is decided by the horde, not by units or colonists.
 
 ### 12.4 Data-driven from the start

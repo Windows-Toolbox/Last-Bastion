@@ -36,6 +36,8 @@
 | `Cargo.toml` / `Cargo.lock` | Rust-Projekt und Bibliotheken (`macroquad`, `serde`/`serde_json`, `libm`) / ihre genauen Versionen |
 | `build.ps1` | Baut beide Programme nach `dist\LastBastion.exe` und `dist\LastBastionEditor.exe` |
 | `data\` | **Alle Spielwerte** als JSON (Einheiten, Gebäude, Zombies, Kolonie, Spawn) – erklärt in `data\README.md` |
+| `assets\` | **Bilder** (Sprite-Sheets) der Zombies und Einheiten – erklärt in `assets\README.md` |
+| `examples\test_sprites.rs` | Malt das graue Testbild `assets\test\figure.png` (`cargo run --release --example test_sprites`) |
 | `src\main.rs`, `src\bin\editor.rs` | Die zwei Programme (je ein paar Zeilen) |
 | `src\lib.rs`, `src\app.rs` | Liste aller Module / Fenster, Bildschirm-Wechsel, Kommandozeile |
 | `src\game.rs` | Eine Karte auf dem Bildschirm: Takte, Zeichnen, Endbildschirm, Edit/Test im Editor |
@@ -51,7 +53,8 @@
 | `src\ui.rs`, `cursor.rs` | Maus und Tastatur → Auswahl, Gruppen, Kamera, Befehle / echte Windows-Maus |
 | `src\hud.rs` | Die Leiste unten wie in TAB (Minimap, Uhr, Gruppen, Auswahl, Befehlskarte, Vorräte) |
 | `src\editor.rs` | Das Panel des Editors |
-| `src\draw.rs`, `picture.rs`, `iso.rs` | Zeichnen (Platzhalter) / Kartenbild für Minimap und Vorschau / isometrische Kamera |
+| `src\draw.rs`, `sprites.rs` | Zeichnen (Bilder, sonst Platzhalter) / Sprite-Sheets laden, Richtung und Animation wählen |
+| `src\picture.rs`, `iso.rs` | Kartenbild für Minimap und Vorschau / isometrische Kamera |
 | `src\noise.rs`, `rng.rs` | Rauschen für die Generatoren / eigener Zufallsgenerator |
 
 ## Anbindung an die Windows-Toolbox
@@ -266,3 +269,10 @@ Die ausführliche alte Fassung steht in git (`git show a4e7199:README.md` – di
 - **2026-10-18 – Alles reparieren**
   - X / Knopf „Repair all“: alle Gebäude, bei zu wenig Gold die billigsten zuerst. F nimmt dieselbe Regel.
   - Neu: keine Reparatur mit einem Zombie in der Bauzone (`can_repair` in `placement.rs`, Platz für Creep schon da).
+- **2026-10-18 – Bilder (Sprite-Sheets)**
+  - Zombies und Einheiten können Bilder haben wie in TAB: ein PNG mit einer Zeile pro Richtung (16), Stehen/Laufen/
+    Angreifen nebeneinander, Füße als Ankerpunkt. Beschrieben per JSON in `assets\`, zugeordnet mit `"sprite"` in
+    `data\`. Neue Datei `src\sprites.rs`, Erklärung in `assets\README.md`.
+  - Zum Testen eine graue Figur, eingefärbt in der Farbe der Art, per Programm gemalt (`examples\test_sprites.rs`).
+  - Zombies drehen sich in die Laufrichtung; ein Schlag = ein Angriffs-Durchlauf. Animationen laufen in Spielzeit.
+  - `build.ps1` kopiert `assets\` nach `dist\`.

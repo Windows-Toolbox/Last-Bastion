@@ -1,0 +1,11 @@
+{
+  "image": "figure.png",
+  "frame": [96, 128],
+  "feet": [48, 108],
+  "pixels_per_tile": 75,
+  "directions": 16,
+  "tint": true,
+  "idle": { "at": [0, 0], "frames": 4, "fps": 2 },
+  "walk": { "at": [4, 0], "frames": 6, "tiles": 1.0 },
+  "attack": { "at": [10, 0], "frames": 4, "fps": 6 }
+}

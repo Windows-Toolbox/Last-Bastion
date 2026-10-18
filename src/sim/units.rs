@@ -69,6 +69,16 @@ impl Unit {
         matches!(self.queue.front(), Some(Task::Hold))
     }
 
+    /// Did it walk this tick (being pushed doesn't count)? For the picture: the walk animation.
+    pub fn is_walking(&self) -> bool {
+        self.moving
+    }
+
+    /// Has it a target it turns to, aims at or shoots? For the picture: the attack animation.
+    pub fn is_aiming(&self) -> bool {
+        self.aim_at.is_some()
+    }
+
     /// Does it pick its targets by itself right now – standing, holding, attack-move, patrol, in a tower? (Moving,
     /// following, going into a tower: it doesn't shoot. Attack or beam at one in particular: that one is its target.)
     pub(super) fn picks_targets(&self) -> bool {

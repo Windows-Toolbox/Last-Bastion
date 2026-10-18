@@ -10,4 +10,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } # hält an, wenn der Build fehls
 New-Item -ItemType Directory -Force dist | Out-Null # legt den Ordner dist an, falls er fehlt.
 Copy-Item target\release\last_bastion.exe dist\LastBastion.exe -Force # kopiert das Spiel dorthin und benennt es dabei um.
 Copy-Item target\release\editor.exe dist\LastBastionEditor.exe -Force # der Editor daneben – der Knopf „Map editor" im Spiel sucht ihn dort.
+# Die Bilder (assets\) sind nicht in die Exe eingebaut – sie werden später zu groß. Erst löschen, damit in dist\ kein
+# altes Bild liegen bleibt, das es im Projekt nicht mehr gibt; dann neu kopieren.
+if (Test-Path dist\assets) { Remove-Item dist\assets -Recurse -Force }
+Copy-Item assets dist\assets -Recurse
 Write-Host "Fertig: dist\LastBastion.exe und dist\LastBastionEditor.exe"

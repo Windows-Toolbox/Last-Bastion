@@ -1,8 +1,10 @@
 //! Drawing. Only reads the world, never changes it.
-//! Placeholder graphics for now: diamonds for the ground, small boxes for zombies and units, blocks and joined-up
-//! walls for buildings (DESIGN.md 12.3). In the game view the fog of war lies over everything nobody sees.
+//! Zombies and units are pictures (`sprites.rs`) where their kind has one, otherwise small boxes. Placeholder graphics
+//! for the rest: diamonds for the ground, blocks and joined-up walls for buildings (DESIGN.md 12.3). In the game view
+//! the fog of war lies over everything nobody sees.
 
 use std::collections::HashMap;
+use std::f32::consts::{PI, TAU};
 
 use macroquad::prelude::*;
 
@@ -10,7 +12,8 @@ use crate::hud::{draw_life, hp_color};
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
 use crate::map::{Ore, Region, Terrain};
-use crate::sim::{Breed, Building, Mark, World};
+use crate::sim::{Breed, Building, Mark, TICK, World};
+use crate::sprites::{Pose, Sprite, Sprites};
 use crate::vision::Vision;
 
 // `pub`, because the minimap (hud.rs) uses the same colours.
@@ -69,8 +72,10 @@ pub struct View<'a> {
     pub always_bars: bool,
     /// Whose eyes: fog of war like in the game, the zombies' view, or none (editor).
     pub fog: Fog<'a>,
-    /// In the player's view: how visible each zombie still is (fading out after leaving sight).
-    pub fades: &'a Fades,
+    /// What the picture remembers about each zombie: how visible it still is, which way it faces.
+    pub looks: &'a Looks,
+    /// The pictures of zombies and units.
+    pub sprites: &'a Sprites,
     /// The spawners to show (only in editor mode) – with the size they have while being dragged.
     pub spawners: Vec<SpawnerShape>,
 }
@@ -78,35 +83,57 @@ pub struct View<'a> {
 /// How long a zombie takes to fade out after it leaves your sight (seconds).
 const FADE_TIME: f32 = 0.8;
 
-/// How visible every zombie still is in the player's view (1 = seen right now, falling to 0 once nobody sees it any
-/// more) – so they fade out instead of vanishing at once. Only for the picture, not part of the simulation, so a
-/// `HashMap` is fine here (DESIGN.md 12.8 only forbids it in the simulation).
+/// A zombie turns this fast towards where it walks (radians per second) – so it doesn't flicker between directions
+/// when the crowd jostles it.
+const ZOMBIE_TURN: f32 = TAU;
+/// It counts as walking when it moved at least this share of its speed in the last tick – being pushed a little
+/// doesn't count.
+const WALKING: f32 = 0.25;
+
+/// What the picture remembers about every zombie from frame to frame. Only for the picture, not part of the
+/// simulation, so a `HashMap` is fine here (DESIGN.md 12.8 only forbids it in the simulation).
 #[derive(Default)]
-pub struct Fades {
-    alpha: HashMap<u32, f32>,
+pub struct Looks {
+    zombies: HashMap<u32, Look>,
 }
 
-impl Fades {
-    /// Once per frame: seen zombies are fully there, the others fade by `dt` (seconds). Gone or faded: forgotten.
+#[derive(Clone, Copy, Default)]
+pub struct Look {
+    /// How visible it still is in the player's view: 1 = seen right now, falling to 0 once nobody sees it any more –
+    /// so it fades out instead of vanishing at once.
+    pub alpha: f32,
+    /// Which way it faces (radians, like `Unit::facing`): turning towards where it walks, kept while it stands.
+    pub facing: f32,
+    pub walking: bool,
+}
+
+impl Looks {
+    /// Once per frame (`dt` seconds): seen zombies are fully there, the others fade; walking ones turn. Gone: forgotten.
     pub fn update(&mut self, world: &World, dt: f32) {
-        let mut next = HashMap::with_capacity(self.alpha.len());
+        let mut next = HashMap::with_capacity(world.zombies.len());
         for zombie in &world.zombies {
-            let alpha = if world.vision.sees(zombie.pos) {
-                1.0
-            } else {
-                self.alpha.get(&zombie.id).copied().unwrap_or(0.0) - dt / FADE_TIME
-            };
-            if alpha > 0.0 {
-                next.insert(zombie.id, alpha);
-            }
+            // A new one: not seen yet, and facing a way of its own – so a horde standing still doesn't all look the
+            // same way.
+            let new = Look { facing: zombie.id as f32 * 2.4, ..Look::default() };
+            let old = self.zombies.get(&zombie.id).copied().unwrap_or(new);
+            let alpha = if world.vision.sees(zombie.pos) { 1.0 } else { (old.alpha - dt / FADE_TIME).max(0.0) };
+            let step = zombie.pos - zombie.prev;
+            let walking = step.length() > zombie.speed() * TICK * WALKING;
+            let facing = if walking { turn(old.facing, step.y.atan2(step.x), ZOMBIE_TURN * dt) } else { old.facing };
+            next.insert(zombie.id, Look { alpha, facing, walking });
         }
-        self.alpha = next;
+        self.zombies = next;
     }
 
-    /// How visible this zombie is (0 = not at all).
-    pub fn alpha(&self, id: u32) -> f32 {
-        self.alpha.get(&id).copied().unwrap_or(0.0)
+    pub fn get(&self, id: u32) -> Look {
+        self.zombies.get(&id).copied().unwrap_or_default()
     }
+}
+
+/// From the angle `from` towards `to` by at most `max` (radians) – the short way round.
+fn turn(from: f32, to: f32, max: f32) -> f32 {
+    let diff = (to - from + PI).rem_euclid(TAU) - PI;
+    (from + diff.clamp(-max, max)).rem_euclid(TAU)
 }
 
 /// What lies over the map, depending on whose eyes you look through (`editor::Sight`).
@@ -224,28 +251,45 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
 
     // --- Sort figures and buildings by depth: whoever stands further back is drawn first ---
-    let mut things: Vec<(f32, Prism)> = Vec::with_capacity(world.zombies.len() + world.units.len());
+    let mut things: Vec<(f32, Thing)> = Vec::with_capacity(world.zombies.len() + world.units.len());
+    // Game time (seconds) for the animations: stands still while paused, runs faster at higher speed.
+    let time = (world.tick as f32 + alpha) * TICK;
     for zombie in world.zombies.iter().filter(|z| area.contains(z.pos)) {
+        let look = view.looks.get(zombie.id);
         // In the player's view only the ones you see – and those still fading out.
-        let visible = if matches!(view.fog, Fog::Player) { view.fades.alpha(zombie.id) } else { 1.0 };
+        let visible = if matches!(view.fog, Fog::Player) { look.alpha } else { 1.0 };
         if visible <= 0.0 {
             continue;
         }
         let p = lerp(zombie.prev, zombie.pos, alpha);
         let color = breed_color(zombie.breed);
+        if let Some(sprite) = view.sprites.get(zombie.breed.stats().sprite.as_deref()) {
+            let pose = match zombie.since_hit() {
+                Some(share) => Pose::Attack(Some(share)),
+                None if look.walking => Pose::Walk(zombie.speed()),
+                None => Pose::Idle,
+            };
+            let color = Color { a: visible, ..if sprite.tinted() { color } else { WHITE } };
+            let figure = Figure { sprite, at: p, facing: look.facing, pose, clock: clock(time, zombie.id), color };
+            things.push((p.x + p.y, Thing::Figure(figure)));
+            continue;
+        }
         let size = zombie.radius * ZOMBIE_SIZE;
         let height = ZOMBIE_HEIGHT * (0.5 + 2.0 * zombie.radius);
         let ground = rect(p - Vec2::splat(size / 2.0), Vec2::splat(size));
-        things.push((p.x + p.y, Prism(ground, 0.0, height, Color { a: visible, ..color })));
+        things.push((p.x + p.y, Thing::Body(Prism(ground, 0.0, height, Color { a: visible, ..color }))));
     }
+    let mut parts = Vec::new();
     for building in &world.buildings {
-        building_parts(world, building, &mut things);
+        building_parts(world, building, &mut parts);
     }
+    things.extend(parts.into_iter().map(|(depth, part)| (depth, Thing::Body(part))));
     // Fallen units: flat and darker, a bit bigger than standing – they lie there.
     for corpse in world.corpses.iter().filter(|c| area.contains(c.pos)) {
         let (size, _) = unit_shape(corpse.kind);
         let ground = rect(corpse.pos - Vec2::splat(size * 0.7), Vec2::splat(size * 1.4));
-        things.push((corpse.pos.x + corpse.pos.y, Prism(ground, 0.0, CORPSE_HEIGHT, mix(kind_color(corpse.kind), WALKER, 0.6))));
+        let body = Prism(ground, 0.0, CORPSE_HEIGHT, mix(kind_color(corpse.kind), WALKER, 0.6));
+        things.push((corpse.pos.x + corpse.pos.y, Thing::Body(body)));
     }
     // Units in a tower aren't drawn – they show up on the tower's roof (`building_parts`).
     for unit in world.units.iter().filter(|u| !u.is_inside()) {
@@ -253,23 +297,39 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         let color = kind_color(unit.kind);
         // Selected ones a bit lighter.
         let color = if selected.contains(&unit.id) { lighten(color) } else { color };
+        if let Some(sprite) = view.sprites.get(unit.stats().sprite.as_deref()) {
+            let pose = if unit.is_aiming() {
+                Pose::Attack(None)
+            } else if unit.is_walking() {
+                Pose::Walk(unit.stats().speed)
+            } else {
+                Pose::Idle
+            };
+            let color = if sprite.tinted() { color } else { WHITE };
+            let figure = Figure { sprite, at: p, facing: unit.facing, pose, clock: clock(time, unit.id), color };
+            things.push((p.x + p.y, Thing::Figure(figure)));
+            continue;
+        }
         let (size, height) = unit_shape(unit.kind);
         // The block turned the way the unit faces, and its weapon sticking out in front, at chest height.
         // (Drawing may use the normal `cos`/`sin` – only the simulation has to compute the same on every PC.)
         let facing = vec2(unit.facing.cos(), unit.facing.sin());
         let ground = bar(p - facing * size / 2.0, p + facing * size / 2.0, size);
-        things.push((p.x + p.y, Prism(ground, 0.0, height, color)));
+        things.push((p.x + p.y, Thing::Body(Prism(ground, 0.0, height, color))));
         if !unit.stats().heals {
             let tip = p + facing * (size / 2.0 + 0.2);
             let middle = (p + tip) / 2.0;
             let weapon = bar(p, tip, 0.07);
-            things.push((middle.x + middle.y, Prism(weapon, height * 0.5, height * 0.62, WEAPON)));
+            things.push((middle.x + middle.y, Thing::Body(Prism(weapon, height * 0.5, height * 0.62, WEAPON))));
         }
     }
     things.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    for &(_, Prism(ground, bottom, top, color)) in &things {
-        draw_prism(camera, ground, bottom, top, color);
+    for (_, thing) in &things {
+        match thing {
+            Thing::Body(Prism(ground, bottom, top, color)) => draw_prism(camera, *ground, *bottom, *top, *color),
+            Thing::Figure(f) => f.sprite.draw(camera, f.at, f.facing, f.pose, f.clock, f.color),
+        }
     }
 
     // --- Shots and medic beams of this tick ---
@@ -402,6 +462,28 @@ fn draw_spawner(camera: &Camera, spawner: &SpawnerShape) {
 /// from height `bottom` to `top` (in tile widths), colour. Drawn sorted by depth.
 #[derive(Clone, Copy)]
 struct Prism([Vec2; 4], f32, f32, Color);
+
+/// One thing in the depth order: a body (placeholder) or a picture.
+/// `<'a>`: a `Figure` borrows its sprite from `Sprites` – the list mustn't outlive them.
+enum Thing<'a> {
+    Body(Prism),
+    Figure(Figure<'a>),
+}
+
+/// A zombie or unit as a picture – what `Sprite::draw` needs.
+struct Figure<'a> {
+    sprite: &'a Sprite,
+    at: Vec2,
+    facing: f32,
+    pose: Pose,
+    clock: f32,
+    color: Color,
+}
+
+/// `time` shifted a bit for every figure (by its `id`, 0–10 s), so a crowd doesn't move in step.
+fn clock(time: f32, id: u32) -> f32 {
+    time + (id as f32 * 0.618_034).fract() * 10.0
+}
 
 /// The 4 corners of a rectangle on the ground, in order around it.
 fn rect(min: Vec2, size: Vec2) -> [Vec2; 4] {
