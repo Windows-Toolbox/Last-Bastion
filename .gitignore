@@ -2,8 +2,9 @@
 /dist/
 
 # --- Build output: C# / .NET ---
-bin/
-obj/
+# Only in the main folder (`/`): `src/bin/` holds the source of the map editor and has to stay in git.
+/bin/
+/obj/
 *.user
 
 # --- Build output: Rust ---

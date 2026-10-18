@@ -8,6 +8,7 @@ use super::commands::Command;
 use super::spawning::{SpawnMode, TimedWave, WaveFrom, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
+use crate::data::Stage;
 use crate::formation::Formation;
 use crate::kinds::{BuildingKind, UnitKind};
 use crate::map::{Deposit, Ore, Terrain};
@@ -59,18 +60,37 @@ pub enum Order {
     /// Constantly / periodically / off. Periodic starts counting from 0 again.
     SetSpawnMode { spawner: u32, mode: SpawnMode },
     RemoveSpawner { spawner: u32 },
+    /// Editor eraser: everything on these tiles goes – buildings standing on one of them, units, zombies, the dead.
+    RemoveAt { tiles: Vec<(i32, i32)> },
+
+    // --- The round (editor) ---
+    /// The round lasts this many days (at least 1) – the final waves move to the new last day.
+    SetDays { days: u32 },
+    /// The colony's gold right now – in the editor that's the gold the map starts with.
+    SetGold { gold: u32 },
+    /// The constant spawn: a stage onto it, change one (`index` in `World::constant.stages`), take one off – the
+    /// stages stay in order of time. And how much bigger every group gets per day after the last stage.
+    AddStage(Stage),
+    SetStage { index: usize, stage: Stage },
+    RemoveStage { index: usize },
+    SetExtraPerDay { extra: f32 },
 
     // --- Buildings ---
-    /// Build a building, `tile` = top left tile, `turned` by 90° (gate). Invalid spots are ignored (`can_place`).
-    /// `editor`: without the rules of the game – anywhere on the map that no other building takes (`can_place_anywhere`).
+    /// Build a building, `tile` = top left tile, `turned` by 90° (gate). Invalid spots are ignored (`can_place`),
+    /// so is a building you can't pay for (`build_cost`).
+    /// `editor`: without the rules of the game and for free – anywhere on the map that no other building takes
+    /// (`can_place_anywhere`).
     PlaceBuilding { kind: BuildingKind, tile: (i32, i32), turned: bool, editor: bool },
     /// Everyone out of this tower.
     Unload { building: u32 },
-    /// Put a unit at the end of a building's production queue.
+    /// Put a unit at the end of a building's production queue – paid right away, if there's enough gold.
     Train { building: u32, kind: UnitKind },
-    /// Take an entry out of the production queue (`index`: position in the queue).
+    /// Take an entry out of the production queue (`index`: position in the queue). Its gold comes back.
     CancelTrain { building: u32, index: usize },
     SetRally { building: u32, rally: Rally },
+    /// Repair these buildings – each one only if it may be repaired now and the gold is still enough for it
+    /// (`start_repair`), in this order.
+    Repair { buildings: Vec<u32> },
 }
 
 impl World {
@@ -101,7 +121,7 @@ impl World {
             }
             Order::SpawnZombies { count } => {
                 let all: Vec<usize> = (0..self.spawners.len()).collect();
-                self.spawn_from(&all, *count, Breed::Runner);
+                self.spawn_from(&all, *count, Breed::Runner, false);
             }
             #[cfg(test)]
             Order::SpawnZombiesAt { count, point } => self.spawn_cluster(*count, *point),
@@ -119,23 +139,7 @@ impl World {
                     }
                 }
             }
-            Order::SpawnWave { count, from: WaveFrom::OneSpawner } => {
-                if !self.spawners.is_empty() {
-                    let s = self.rng.below(self.spawners.len() as u32) as usize;
-                    self.spawn_from(&[s], *count, Breed::Runner);
-                }
-            }
-            Order::SpawnWave { count, from: WaveFrom::Sides(sides) } => {
-                // `sides` different sides at random – only sides that have spawners at all.
-                let size = self.map.size;
-                let mut left: Vec<u32> =
-                    (0..4).filter(|&side| self.spawners.iter().any(|s| s.side(size) == side)).collect();
-                for _ in 0..(*sides).min(left.len() as u32) {
-                    let side = left.remove(self.rng.below(left.len() as u32) as usize);
-                    let on_side: Vec<usize> = (0..self.spawners.len()).filter(|&s| self.spawners[s].side(size) == side).collect();
-                    self.spawn_from(&on_side, *count, Breed::Runner);
-                }
-            }
+            Order::SpawnWave { count, from } => self.send_wave(*count, *from, Breed::Runner, false),
             Order::AddTimedWave(wave) => self.waves.push(*wave),
             Order::SetTimedWave { index, wave } => {
                 if let Some(w) = self.waves.get_mut(*index) {
@@ -193,8 +197,33 @@ impl World {
                 }
             }
             Order::RemoveSpawner { spawner } => self.spawners.retain(|s| s.id != *spawner),
+            Order::RemoveAt { tiles } => self.remove_at(tiles),
+            Order::SetDays { days } => self.set_days(*days),
+            Order::SetGold { gold } => self.gold = *gold,
+            Order::AddStage(stage) => {
+                self.constant.stages.push(*stage);
+                self.constant_spawn_changed();
+            }
+            Order::SetStage { index, stage } => {
+                if let Some(s) = self.constant.stages.get_mut(*index) {
+                    *s = *stage;
+                    self.constant_spawn_changed();
+                }
+            }
+            Order::RemoveStage { index } => {
+                if *index < self.constant.stages.len() {
+                    self.constant.stages.remove(*index);
+                    self.constant_spawn_changed();
+                }
+            }
+            Order::SetExtraPerDay { extra } => self.constant.extra_per_day = extra.max(0.0),
             Order::PlaceBuilding { kind, tile, turned, editor: false } => {
-                if self.can_place(*kind, *tile, *turned) {
+                // The price is worked out before building: built over walls, the gate gets part of theirs back.
+                let cost = self.build_cost(*kind, *tile, *turned);
+                if self.can_place(*kind, *tile, *turned) && self.gold >= cost {
+                    self.gold -= cost;
+                    self.score.gold_spent += cost;
+                    self.score.buildings_built += 1;
                     self.replace_buildings(*kind, *tile, *turned);
                     self.add_building(*kind, *tile, *turned);
                 }
@@ -235,18 +264,37 @@ impl World {
             }
             Order::Train { building, kind } => {
                 if let Some(b) = self.find_building(*building) {
+                    let cost = kind.stats().cost;
+                    // Two different fields of `self` at the same time – `buildings` and `gold`: the compiler allows
+                    // that, because it can see they don't overlap.
                     let building = &mut self.buildings[b];
-                    // For testing, the command center builds what the barracks will build later.
-                    if building.kind == BuildingKind::CommandCenter && building.production.len() < MAX_PRODUCTION {
+                    // Only the barracks trains units (`BuildingKind::trains`).
+                    let room = building.kind.trains() && building.production.len() < MAX_PRODUCTION;
+                    if room && self.gold >= cost {
                         building.production.push_back(*kind);
+                        self.gold -= cost;
+                        self.score.gold_spent += cost;
+                    }
+                }
+            }
+            Order::Repair { buildings } => {
+                for &id in buildings {
+                    if let Some(b) = self.find_building(id) {
+                        self.start_repair(b);
                     }
                 }
             }
             Order::CancelTrain { building, index } => {
                 if let Some(b) = self.find_building(*building) {
                     let building = &mut self.buildings[b];
-                    if building.production.remove(*index).is_some() && *index == 0 {
-                        building.progress = 0; // the front one had been started – from the beginning
+                    if let Some(kind) = building.production.remove(*index) {
+                        if *index == 0 {
+                            building.progress = 0; // the front one had been started – from the beginning
+                        }
+                        // The gold comes back in full, like in StarCraft.
+                        let cost = kind.stats().cost;
+                        self.gold += cost;
+                        self.score.gold_spent = self.score.gold_spent.saturating_sub(cost);
                     }
                 }
             }
@@ -256,5 +304,28 @@ impl World {
                 }
             }
         }
+    }
+
+    /// The editor's eraser: everything on these tiles goes – every building that stands on at least one of them,
+    /// units (also those that were in a tower that goes), zombies and the dead lying there. Like the terrain brush it
+    /// gets all the tiles of a stroke at once.
+    fn remove_at(&mut self, tiles: &[(i32, i32)]) {
+        let n = self.map.size as i32;
+        // One yes/no per tile of the map: is it under the eraser? Quicker to ask than searching the list every time.
+        let mut hit = vec![false; self.map.size * self.map.size];
+        for &(x, y) in tiles {
+            if x >= 0 && y >= 0 && x < n && y < n {
+                hit[(y * n + x) as usize] = true;
+            }
+        }
+        let on_tile = |x: i32, y: i32| x >= 0 && y >= 0 && x < n && y < n && hit[(y * n + x) as usize];
+        let on = |p: Vec2| on_tile(p.x.floor() as i32, p.y.floor() as i32);
+        let gone: Vec<u32> = self.buildings.iter().filter(|b| b.tiles().into_iter().any(|(x, y)| on_tile(x, y))).map(|b| b.id).collect();
+        for id in gone {
+            self.take_down(id);
+        }
+        self.units.retain(|u| !on(u.pos));
+        self.zombies.retain(|z| !on(z.pos));
+        self.corpses.retain(|c| !on(c.pos));
     }
 }

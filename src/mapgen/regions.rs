@@ -154,12 +154,12 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
     }
 
     // Inside the regions: forest, rocks or a lake from noise – but not too close to the border, so the passes
-    // stay open on both sides.
+    // stay open on both sides, and a few tiles away from the ways in (`lanes.rs`).
     let (detail, lake) = (Noise::new(rng.next_u64() as u32), Noise::new(rng.next_u64() as u32));
     for (x, y) in tiles.all() {
         let i = (y * size + x) as usize;
         let inner = to_border[i] - p.wall - 3.0;
-        if inner <= 0.0 {
+        if inner <= 0.0 || ctx.fade(x, y, 6.0) < 0.5 {
             continue;
         }
         let v = detail.fractal(x as f32, y as f32, 12.0, 3);

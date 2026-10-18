@@ -118,8 +118,9 @@ impl FlowField {
                 None
             } else {
                 match walker {
-                    // Not open, but no solid terrain either: a building. Zombies may go through.
-                    Walker::Zombie { .. } if !map.is_solid(x, y) => Some(STRAIGHT * (1 + detour)),
+                    // Not open, but no solid terrain either: a building. Zombies may tear their way through. (An
+                    // infected one is open anyway – its walls are broken.)
+                    Walker::Zombie { .. } if map.can_tear_down(x, y) => Some(STRAIGHT * (1 + detour)),
                     _ => None,
                 }
             }

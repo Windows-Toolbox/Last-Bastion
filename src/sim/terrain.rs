@@ -18,7 +18,8 @@ const PUSH_MARGIN: f32 = 0.3;
 impl World {
     /// After changes to the map or the buildings: recompute the tile index, the buildings' threat map and
     /// the zombies' path. The zombies walk towards the command center; if there is none anymore, towards the
-    /// base tile. To them buildings in the way are only a detour price, not a wall.
+    /// base tile. To them buildings in the way are only a detour price, not a wall – except infected ones: those
+    /// are theirs, not a target (left out of the threat map) and not something to tear down (`Map::can_tear_down`).
     pub(super) fn refresh_map(&mut self) {
         self.map_changed = false;
         self.building_at.fill(NO_BUILDING);
@@ -28,7 +29,9 @@ impl World {
             for (x, y) in building.tiles() {
                 self.building_at[(y * size + x) as usize] = b as u32;
             }
-            self.building_aggro.stamp(b, building.corner(), building.far_corner(), values().notice_buildings);
+            if !building.infected {
+                self.building_aggro.stamp(b, building.corner(), building.far_corner(), values().notice_buildings);
+            }
         }
         let goals = match self.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter) {
             Some(cc) => cc.tiles(),

@@ -49,6 +49,19 @@ impl Cursor {
     }
 }
 
+/// Borderless: once per frame, keep our window one pixel taller than the screen (the extra row sticks out at the top).
+///
+/// Why: a window exactly as big as the screen is taken for real ("exclusive") fullscreen – Windows and the graphics
+/// driver then show it past the desktop compositor. As soon as any window pops up over it (a screenshot tool, a
+/// notification), they switch back to the compositor – the game blinks and seems to "jump out". One pixel more and they
+/// leave it alone (the trick of browsers and many games). miniquad sets the exact size when it goes borderless – so
+/// this checks every frame, not only once.
+pub fn keep_borderless_composed() {
+    if let Some(window) = win::our_foreground_window() {
+        win::grow_if_exactly_screen(window);
+    }
+}
+
 /// When the `Cursor` is dropped (end of the game), always release the mouse.
 impl Drop for Cursor {
     fn drop(&mut self) {
@@ -88,6 +101,10 @@ mod win {
         fn ScreenToClient(window: Hwnd, point: *mut Point) -> i32;
         fn GetCursorPos(point: *mut Point) -> i32;
         fn ClipCursor(rect: *const Rect) -> i32;
+        fn GetWindowRect(window: Hwnd, rect: *mut Rect) -> i32;
+        fn GetWindowLongW(window: Hwnd, index: i32) -> i32;
+        fn GetSystemMetrics(index: i32) -> i32;
+        fn SetWindowPos(window: Hwnd, after: Hwnd, x: i32, y: i32, w: i32, h: i32, flags: u32) -> i32;
     }
 
     #[link(name = "kernel32")]
@@ -139,6 +156,28 @@ mod win {
     pub fn unclip() {
         unsafe { ClipCursor(std::ptr::null()) };
     }
+
+    /// A window without a frame (`WS_POPUP`, that's how miniquad makes it borderless) that covers exactly the main
+    /// screen: one pixel taller, upwards. A normal window (with frame) is never touched.
+    pub fn grow_if_exactly_screen(window: Hwnd) {
+        const GWL_STYLE: i32 = -16;
+        const WS_POPUP: u32 = 0x8000_0000;
+        const SM_CXSCREEN: i32 = 0;
+        const SM_CYSCREEN: i32 = 1;
+        const SWP_NOZORDER: u32 = 0x0004;
+        const SWP_NOACTIVATE: u32 = 0x0010;
+        unsafe {
+            if GetWindowLongW(window, GWL_STYLE) as u32 & WS_POPUP == 0 {
+                return;
+            }
+            let (w, h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+            GetWindowRect(window, &mut r);
+            if (r.left, r.top, r.right, r.bottom) == (0, 0, w, h) {
+                SetWindowPos(window, std::ptr::null_mut(), 0, -1, w, h + 1, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
+    }
 }
 
 /// On other systems: no confining, and we trust macroquad.
@@ -158,4 +197,5 @@ mod win {
     }
     pub fn clip_to_client(_: Hwnd) {}
     pub fn unclip() {}
+    pub fn grow_if_exactly_screen(_: Hwnd) {}
 }

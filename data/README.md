@@ -6,6 +6,10 @@ Wert fehlt), läuft das Spiel mit den alten Werten weiter und zeigt oben links e
 
 - Die Dateien werden beim Bauen auch **in die Exe eingebaut**. `dist\LastBastion.exe` läuft also ohne den Ordner, mit
   den Werten vom letzten `build.ps1`.
+- **Ausnahme `spawning.json`:** Der konstante Spawn und die Wellen gehören zur **Karte**. Eine neue Karte bekommt eine
+  Kopie davon in ihre Kartendatei (eine Runde = eine Datei, siehe Haupt-README), danach zählt, was dort steht – im
+  Editor änderbar. Eine Änderung hier gilt also erst für **neue** Spiele („New map“ oder „New game“), nicht für
+  „Restart“ einer Karte, die es schon gibt.
 - JSON kennt keine Kommentare – deshalb steht hier, was jeder Wert heißt.
 - **Zeiten stehen in Sekunden** (`…_seconds`), das Spiel rechnet in Takten (20 pro Sekunde) und rundet.
 - **1 Tag = 3 Minuten, 1 Stunde = 7,5 Sekunden** (steht noch im Code, `DAY_TICKS` in `src\sim\mod.rs`).
@@ -23,6 +27,7 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 | Wert | Bedeutung |
 |---|---|
 | `name`, `letter` | Name im Spiel, 1–2 Buchstaben fürs Symbol |
+| `cost` | Preis in Gold. Bezahlt, sobald sie in die Bauschlange kommt; Abbrechen gibt alles zurück (wie StarCraft) |
 | `hp` | Lebenspunkte |
 | `armor` | Wird von jedem Zombie-Treffer abgezogen (mindestens 1 Schaden kommt immer durch) |
 | `damage` | Schaden pro Schuss |
@@ -32,13 +37,13 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 | `aim_seconds` | Ausholen vor jedem Schuss (Bogen spannen, Gewehr anlegen). Neues Ziel: das Zielen fängt von vorne an |
 | `cooldown_seconds` | Nachladen nach dem Schuss, bevor sie wieder zielen kann (Medic: 0 = Strahl ohne Pause) |
 | `speed` | Laufgeschwindigkeit |
-| `build_seconds` | Bauzeit im Kommandozentrum |
+| `build_seconds` | Ausbildungszeit in der Kaserne |
 | `noise` | **Lärm** wie in TAB: Jeder Zombie so viele Kacheln um den Schützen hört den Schuss und stürmt los (`noise_seconds` in `zombies.json`). Ranger 1, Soldat 3, Scharfschütze 10. Wald und Mauern halten den Lärm nicht auf |
 | `heals` | `true` = schießt nicht, sondern richtet den Strahl auf eigene Einheiten (Medic) |
 
 ## `buildings.json` – Gebäude
 
-Ein Block pro Typ: `command_center`, `tent`, `wall`, `gate`, `tower`.
+Ein Block pro Typ: `command_center`, `barracks` (die Kaserne – nur sie bildet Einheiten aus), `tent`, `wall`, `gate`, `tower`.
 
 | Wert | Bedeutung |
 |---|---|
@@ -47,7 +52,8 @@ Ein Block pro Typ: `command_center`, `tent`, `wall`, `gate`, `tower`.
 | `hp` | Lebenspunkte |
 | `shield_percent` | Schild in **Prozent der HP** (Zelt: 133 % von 150 = 199). Zombies schlagen erst darauf. Bricht er, ist das Gebäude **infiziert** und seine Kolonisten kommen als Zombies heraus. Ohne Kolonisten ist er nur zusätzliches Leben. 0 = kein Schild. Im Spiel ein Balken mit den HP: der Schild graublau dahinter |
 | `colonists` | Kolonisten darin: zahlen Gold und werden bei der Infektion zu Zombies (2–4 Runner, Rest Walker) |
-| `cost` | Preis (wird angezeigt, aber noch nicht bezahlt) |
+| `cost` | Preis in Gold, bezahlt beim Platzieren (im Editor kostenlos) |
+| `repair_cost` | Gold für eine **volle** Reparatur (von 0 auf volle HP + Schild); eine kleinere kostet ihren Anteil. Bezahlt beim Start. Später kommen Holz, Stein … dazu |
 | `sight` | Sichtweite ab der Mitte |
 | `height` | Nur die Optik: wie hoch es gezeichnet wird |
 | `joins` | Nur die Optik: verbindet sich mit Mauern zu einer Linie |
@@ -60,6 +66,7 @@ Dazu für alle:
 | `tower_bonus` | So viel weiter schießen und sehen Einheiten im Turm |
 | `zombie_free_radius` | So viele Kacheln um einen Bauplatz darf kein Zombie stehen |
 | `replace_refund_percent` | Wird ein Gebäude überbaut (Tor auf Mauern), kommt so viel Prozent seines Preises zurück. Unter 100 bleiben, sonst wären „erst Mauern, dann Tor“ billiger als das Tor |
+| `repair_seconds` | So viele Sekunden dauert eine volle Reparatur – eine kleinere entsprechend kürzer |
 
 ## `zombies.json` – Zombies
 
@@ -102,10 +109,15 @@ Dazu für alle:
 | Wert | Bedeutung |
 |---|---|
 | `start_gold` | Gold zu Beginn |
-| `gold_per_colonist_per_hour` | So viel zahlt jeder Kolonist pro Spielstunde (Zelt mit 6 Kolonisten × 2 = 12) |
+| `gold_per_colonist_per_hour` | So viel zahlt jeder Kolonist pro Spielstunde (Zelt mit 6 Kolonisten × 1 = 6) |
 | `start_soldiers`, `start_snipers`, `start_rangers` | Einheiten zu Beginn |
 
-## `spawning.json` – konstanter Spawn
+## `spawning.json` – konstanter Spawn und Wellen einer neuen Runde
+
+Beides bekommt eine **neue Karte** als Kopie in ihre Kartendatei – danach ändert man es im **Editor** (Tab „Waves“)
+oder direkt in der Kartendatei. Hier steht also nur, womit neue Karten anfangen.
+
+### Konstanter Spawn (`stages`, `extra_per_day`)
 
 Nachschub aus den Spawnern, die auf „Constant“ stehen (neue Karten: alle). Getötete Zombies kommen **nie** wieder –
 was du freiräumst, bleibt frei, bis neue nachkommen.
@@ -115,7 +127,7 @@ was du freiräumst, bleibt frei, bis neue nachkommen.
 | Wert | Bedeutung |
 |---|---|
 | `day`, `hour` | Ab wann (Tag ab 1, Stunde 0–23). `"day": 2, "hour": 0` = Ende von Tag 1 |
-| `breed` | `"Walker"` oder `"Runner"` |
+| `breed` | `"Walker"`, `"Runner"` oder `"Fat"` |
 | `every_seconds` | Alle so viele Sekunden kommt eine Gruppe … |
 | `group` | … aus `[min, max]` Zombies (zufällig dazwischen), alle aus einem zufälligen Spawner |
 
@@ -125,4 +137,21 @@ was du freiräumst, bleibt frei, bis neue nachkommen.
 - Nach dem **letzten** Abschnitt wird jede Gruppe pro Tag um `extra_per_day` Zombies größer.
 - Was gerade kommt, zeigt die Entwickler-Anzeige (**F3**): „Spawn: 4-5 Runners every 60.0 s“.
 
-Die Wellen der Zeitleiste (Editor, Tab „Waves“) kommen zusätzlich.
+### Wellen einer neuen Runde (`waves`)
+
+Aus der Anzahl der Tage (Einstellung „Days“) wird die **Zeitleiste** geplant (DESIGN.md 8.2). Die Zahlen gelten **pro
+Seite**, aus der die Welle kommt; die Einstellung „Waves“ (25–300 %) nimmt alle mal so viel.
+
+| Wert | Bedeutung |
+|---|---|
+| `first_day` | An diesem Tag kommt die erste Welle … |
+| `every_days` | … dann alle so viele Tage eine, bis vor dem letzten Tag … |
+| `hour` | … immer zu dieser Stunde |
+| `first`, `last` | Die erste Welle hat so viele Runner, die letzte vor der Schlusswelle so viele – dazwischen gleichmäßig mehr. Die erste Hälfte der Wellen kommt von 1 Seite, die zweite von 2 |
+| `final_hour` | Die **Schlusswelle** kommt am letzten Tag zu dieser Stunde, von **allen 4 Seiten** … |
+| `final_runners`, `final_fat` | … mit so vielen Runnern und Fat pro Seite |
+
+Mit 10 Tagen (die Mini-Runde): Welle am Tag 4 (200 Runner, 1 Seite) und Tag 7 (600 × 2 Seiten), Schlusswelle am Tag
+10 um 6:00 (1.000 Runner + 40 Fat × 4 Seiten = 4.160 Zombies). Mit 40 Tagen: 12 Wellen, dann die Schlusswelle.
+**Gewonnen** ist die Runde, wenn alle Zombies der Schlusswelle tot sind; **verloren**, wenn das letzte
+Kommandozentrum fällt.

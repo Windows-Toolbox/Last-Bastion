@@ -139,6 +139,9 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // --- Ground: one big diamond for the visible area, terrain as small diamonds on top ---
     draw_diamond(camera, area.min, Vec2::splat(area.size), GROUND);
     let (lo, hi) = (area.min.x as i32, area.max().x as i32);
+    // Trees stand up out of their tile: the crown reaches over the tile behind – at the edge of the map even out of it.
+    // So they come after the fog, darkened like their own tile (`draw_tree`), and not at all where nobody has looked.
+    let mut trees = Vec::new();
     for y in lo..hi {
         for x in lo..hi {
             let terrain = world.map.terrain(x, y);
@@ -150,15 +153,22 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             if !on_screen(camera.world_to_screen(corner + 0.5), 40.0) {
                 continue;
             }
-            // Ore on grass: the tile in the ore's colour, a smaller lighter diamond in the middle as a "lump".
+            // Ore on grass: the tile in the ore's colour, a smaller lighter diamond in the middle as a "lump". Oil: one
+            // big dark pool over the whole node, drawn with its last tile (so the other three don't paint over it –
+            // nodes never touch, so that's the one with no oil below or to the right of it).
             if let Some(deposit) = deposit {
                 let color = ore_color(deposit.ore);
                 draw_diamond(camera, corner, Vec2::ONE, color);
-                draw_diamond(camera, corner + 0.3, Vec2::splat(0.4), lighten(color));
+                if deposit.ore != Ore::Oil {
+                    draw_diamond(camera, corner + 0.3, Vec2::splat(0.4), lighten(color));
+                } else if !is_oil(world, x + 1, y) && !is_oil(world, x, y + 1) {
+                    draw_diamond(camera, corner - 0.55, Vec2::splat(1.1), Color::new(0.06, 0.04, 0.08, 1.0));
+                    draw_diamond(camera, corner - 0.25, Vec2::splat(0.3), lighten(color));
+                }
                 continue;
             }
             if terrain == Terrain::Tree {
-                draw_tree(camera, corner + 0.5);
+                trees.push((x, y));
                 continue;
             }
             draw_diamond(camera, corner, Vec2::ONE, terrain_color(terrain));
@@ -170,18 +180,11 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
     // Fog of war on top of the ground – before the figures, which are hidden in the fog anyway (zombies) or
     // always visible (your own units and buildings see themselves).
-    match view.fog {
-        Fog::Off => {}
-        Fog::Player => draw_fog(camera, area, |x, y| {
-            if world.vision.is_visible(x, y) {
-                None
-            } else if world.vision.is_explored(x, y) {
-                Some(EXPLORED)
-            } else {
-                Some(UNEXPLORED)
-            }
-        }),
-        Fog::Zombies(sight) => draw_fog(camera, area, |x, y| (!sight.is_visible(x, y)).then_some(ZOMBIE_DARK)),
+    if !matches!(view.fog, Fog::Off) {
+        draw_fog(camera, area, |x, y| fog_cover(world, &view.fog, x, y));
+    }
+    for (x, y) in trees {
+        draw_tree(camera, vec2(x as f32, y as f32) + 0.5, fog_cover(world, &view.fog, x, y));
     }
     for spawner in &view.spawners {
         draw_spawner(camera, spawner);
@@ -322,6 +325,17 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
 }
 
+/// What lies over a tile: nothing (seen right now, or no fog), or a darkening colour.
+fn fog_cover(world: &World, fog: &Fog, x: i32, y: i32) -> Option<Color> {
+    match fog {
+        Fog::Off => None,
+        Fog::Player if world.vision.is_visible(x, y) => None,
+        Fog::Player if world.vision.is_explored(x, y) => Some(EXPLORED),
+        Fog::Player => Some(UNEXPLORED),
+        Fog::Zombies(sight) => (!sight.is_visible(x, y)).then_some(ZOMBIE_DARK),
+    }
+}
+
 /// The fog over `area`. `cover` says what lies over a tile: nothing (visible), or a darkening colour.
 /// Row by row: neighbouring tiles with the same cover become one long strip, so it's a few hundred strips
 /// instead of 16,000 single diamonds.
@@ -342,18 +356,23 @@ fn draw_fog(camera: &Camera, area: Region, cover: impl Fn(i32, i32) -> Option<Co
     }
 }
 
-/// A single tree standing on the middle of its tile: a short trunk and a round crown above it.
-fn draw_tree(camera: &Camera, center: Vec2) {
+/// A single tree standing on the middle of its tile: a short trunk and a round crown above it. `cover`: the fog on its
+/// tile – the tree is darkened the same way, and under black fog it isn't drawn at all.
+fn draw_tree(camera: &Camera, center: Vec2, cover: Option<Color>) {
     let feet = camera.world_to_screen(center);
-    if !on_screen(feet, 40.0) {
+    if !on_screen(feet, 40.0) || cover.is_some_and(|fog| fog.a >= 1.0) {
         return;
     }
+    let shade = |color: Color| match cover {
+        Some(fog) => mix(color, fog, fog.a),
+        None => color,
+    };
     let unit = TILE_W * camera.zoom;
     let crown = feet - vec2(0.0, 0.42 * unit);
     draw_ellipse(feet.x, feet.y, 0.22 * unit, 0.11 * unit, 0.0, Color::new(0.0, 0.0, 0.0, 0.3)); // shadow
-    draw_line(feet.x, feet.y, crown.x, crown.y, (0.06 * unit).max(1.0), TREE_TRUNK);
-    draw_circle(crown.x, crown.y, 0.24 * unit, TREE_CROWN);
-    draw_circle(crown.x - 0.06 * unit, crown.y - 0.07 * unit, 0.10 * unit, Color::new(0.22, 0.55, 0.24, 1.0));
+    draw_line(feet.x, feet.y, crown.x, crown.y, (0.06 * unit).max(1.0), shade(TREE_TRUNK));
+    draw_circle(crown.x, crown.y, 0.24 * unit, shade(TREE_CROWN));
+    draw_circle(crown.x - 0.06 * unit, crown.y - 0.07 * unit, 0.10 * unit, shade(Color::new(0.22, 0.55, 0.24, 1.0)));
 }
 
 /// A spawner on the ground: see-through area with an edge. The selected one's edge glows (pulsing).
@@ -487,7 +506,7 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
             }
             part(bar(first + step * 0.3, last - step * 0.3, 0.25), height, height + 0.15, color);
         }
-        BuildingKind::CommandCenter | BuildingKind::Tent => {
+        BuildingKind::CommandCenter | BuildingKind::Barracks | BuildingKind::Tent => {
             part(rect(building.corner(), building.far_corner() - building.corner()), 0.0, height, color);
         }
     }
@@ -549,12 +568,17 @@ pub fn terrain_color(terrain: Terrain) -> Color {
     }
 }
 
+fn is_oil(world: &World, x: i32, y: i32) -> bool {
+    world.map.deposit(x, y).is_some_and(|d| d.ore == Ore::Oil)
+}
+
 /// The colour of an ore patch – on the map, on the minimap and in the previews.
 pub fn ore_color(ore: Ore) -> Color {
     match ore {
         Ore::Iron => Color::new(0.55, 0.33, 0.24, 1.0),
         Ore::Coal => Color::new(0.10, 0.10, 0.11, 1.0),
         Ore::Stone => Color::new(0.62, 0.60, 0.54, 1.0),
+        Ore::Oil => Color::new(0.24, 0.10, 0.30, 1.0),
     }
 }
 
@@ -562,6 +586,8 @@ pub fn ore_color(ore: Ore) -> Color {
 pub fn building_color(kind: BuildingKind) -> Color {
     match kind {
         BuildingKind::CommandCenter => Color::new(0.32, 0.45, 0.70, 1.0),
+        // Brick red – a military building, not to be mixed up with the brown tents.
+        BuildingKind::Barracks => Color::new(0.62, 0.32, 0.28, 1.0),
         BuildingKind::Tent => Color::new(0.62, 0.48, 0.30, 1.0),
         BuildingKind::Wall => Color::new(0.58, 0.57, 0.53, 1.0),
         BuildingKind::Gate => Color::new(0.52, 0.50, 0.46, 1.0),
@@ -581,8 +607,8 @@ pub fn kind_color(kind: UnitKind) -> Color {
     }
 }
 
-/// The colour of a zombie breed on the map.
-fn breed_color(breed: Breed) -> Color {
+/// The colour of a zombie breed – on the map and in the panel when one is clicked.
+pub fn breed_color(breed: Breed) -> Color {
     match breed {
         Breed::Walker => WALKER,
         Breed::Runner => RUNNER,
@@ -606,16 +632,6 @@ pub fn mark_color(mark: Mark) -> Color {
         Mark::Attack => RED,
         Mark::Patrol => YELLOW,
         Mark::Heal => BEAM,
-    }
-}
-
-/// Text in the top left, on a dark box – as wide as the longest line.
-pub fn draw_debug(lines: &[String]) {
-    let line_height = 20.0;
-    let width = lines.iter().map(|line| measure_text(line, None, 20, 1.0).width).fold(0.0, f32::max);
-    draw_rectangle(8.0, 8.0, width + 16.0, lines.len() as f32 * line_height + 12.0, Color::new(0.0, 0.0, 0.0, 0.6));
-    for (i, line) in lines.iter().enumerate() {
-        draw_text(line, 16.0, 28.0 + i as f32 * line_height, 20.0, WHITE);
     }
 }
 

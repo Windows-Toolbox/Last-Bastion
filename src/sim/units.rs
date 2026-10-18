@@ -69,6 +69,12 @@ impl Unit {
         matches!(self.queue.front(), Some(Task::Hold))
     }
 
+    /// Does it pick its targets by itself right now – standing, holding, attack-move, patrol, in a tower? (Moving,
+    /// following, going into a tower: it doesn't shoot. Attack or beam at one in particular: that one is its target.)
+    pub(super) fn picks_targets(&self) -> bool {
+        self.is_inside() || matches!(self.queue.front(), None | Some(Task::Hold | Task::AttackMove(_) | Task::Patrol { .. }))
+    }
+
     /// What the unit is doing right now – for the panel at the bottom.
     pub fn order_name(&self) -> &'static str {
         match self.queue.front() {
@@ -167,8 +173,10 @@ impl World {
             self.refresh_chase(i);
         }
 
-        // 2. Read: what does every unit want this tick?
-        let intents: Vec<Intent> = (0..self.units.len()).map(|i| self.intent(i)).collect();
+        // 2. Read: what does every unit want this tick? Whom they aim at is chosen for all of them together, so a crowd
+        // spreads its fire (`combat.rs`) – then each one's walking.
+        let targets = self.choose_targets();
+        let intents: Vec<Intent> = (0..self.units.len()).map(|i| self.intent(i, targets[i])).collect();
 
         // 3. Write: move. Units stay inside the world border.
         let map = &self.map;
@@ -246,18 +254,11 @@ impl World {
         }
     }
 
-    fn intent(&self, i: usize) -> Intent {
+    /// `nearby`: what it would aim at all by itself (`choose_targets` in `combat.rs`) – what it's already aiming at,
+    /// otherwise the nearest zombie not yet taken care of, for medics the nearest hurt unit.
+    fn intent(&self, i: usize, nearby: Option<Target>) -> Intent {
         let unit = &self.units[i];
         let stats = unit.stats();
-        // What it would aim at all by itself: what it's already aiming at (`combat.rs`), otherwise – soldiers – the
-        // nearest zombie or – medics – the nearest hurt unit.
-        let nearby = self.kept_target(i).or_else(|| {
-            if stats.heals {
-                self.nearest_hurt_ally(i, unit.range()).map(Target::Ally)
-            } else {
-                self.nearest_zombie(unit.pos, unit.range()).map(Target::Zombie)
-            }
-        });
         // In a tower: stand still and shoot from up there.
         if unit.is_inside() {
             return Intent { velocity: Vec2::ZERO, walking: false, target: nearby };

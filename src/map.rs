@@ -15,7 +15,7 @@ pub const BORDER: usize = 16;
 
 // What a tile is like, as bits of one byte (`Map::flags`): one look into memory answers "can a zombie go here?",
 // "can a unit go here?", "can you see through it?". The terrain bits are worked out from `terrain` and kept in step
-// with it, buildings set and clear theirs. Three bits are still free (power coverage, DESIGN.md 5.5, will be one).
+// with it, buildings set and clear theirs. Two bits are still free (power coverage, DESIGN.md 5.5, will be one).
 /// Solid terrain – everything but grass: nobody walks here, and zombies can't tear it down.
 const SOLID: u8 = 1 << 0;
 /// Forest or tree: nobody sees or shoots through it.
@@ -26,6 +26,9 @@ const BUILT: u8 = 1 << 2;
 const DOOR: u8 = 1 << 3;
 /// Outside the world border: zombies come from here, your units can't go there.
 const OUTSIDE: u8 = 1 << 4;
+/// An infected building stands here: it belongs to the zombies now – nothing to tear down, and zombies and units alike
+/// walk right through it (its walls are broken). Only ever together with `BUILT`.
+const TAKEN: u8 = 1 << 5;
 /// Off the map altogether: like a mountain outside the border.
 const OFF_MAP: u8 = SOLID | OUTSIDE;
 
@@ -77,16 +80,21 @@ pub enum Ore {
     Iron,
     Coal,
     Stone,
+    /// Not a patch but nodes of exactly 2 × 2 tiles, in groups (`mapgen/ores.rs`) – later an oil pump (2 × 2) goes
+    /// on top of one. Two nodes never touch, so every node can be told apart.
+    Oil,
 }
 
 impl Ore {
-    pub const ALL: [Ore; 3] = [Ore::Iron, Ore::Coal, Ore::Stone];
+    /// The ores that lie in patches – oil lies in nodes.
+    pub const PATCHES: [Ore; 3] = [Ore::Iron, Ore::Coal, Ore::Stone];
 
     pub fn name(self) -> &'static str {
         match self {
             Ore::Iron => "Iron ore",
             Ore::Coal => "Coal",
             Ore::Stone => "Stone",
+            Ore::Oil => "Oil",
         }
     }
 }
@@ -178,16 +186,18 @@ impl Map {
         x >= lo && y >= lo && x < hi && y < hi
     }
 
-    /// Solid terrain, a building, or outside the map? (That's what blocks zombies.)
+    /// Solid terrain, a building (not an infected one), or outside the map? (That's what blocks zombies.)
     pub fn is_blocked(&self, x: i32, y: i32) -> bool {
-        self.has(x, y, SOLID | BUILT)
+        let flags = self.flags(x, y);
+        (flags & SOLID) != 0 || (flags & (BUILT | TAKEN)) == BUILT
     }
 
     /// Blocked for your units: like `is_blocked`, plus everything outside the world border – but a gate's door
-    /// lets them through. Not onto solid terrain, though: in the editor a gate can stand on water.
+    /// and an infected building let them through. Not onto solid terrain, though: in the editor a gate can stand on
+    /// water.
     pub fn blocks_unit(&self, x: i32, y: i32) -> bool {
         let flags = self.flags(x, y);
-        let closed_building = (flags & BUILT) != 0 && (flags & DOOR) == 0;
+        let closed_building = (flags & BUILT) != 0 && (flags & (DOOR | TAKEN)) == 0;
         (flags & (SOLID | OUTSIDE)) != 0 || closed_building
     }
 
@@ -215,6 +225,13 @@ impl Map {
     /// Only solid terrain – not buildings. Zombies can break through buildings, never through this.
     pub fn is_solid(&self, x: i32, y: i32) -> bool {
         self.has(x, y, SOLID)
+    }
+
+    /// Can zombies tear down what blocks this tile – one of your buildings, not on solid terrain (in the editor a
+    /// building can stand on water) and not one they have taken (infected)?
+    pub fn can_tear_down(&self, x: i32, y: i32) -> bool {
+        let flags = self.flags(x, y);
+        (flags & BUILT) != 0 && (flags & (SOLID | TAKEN)) == 0
     }
 
     /// Forest or tree on this tile – you can't see through it.
@@ -320,7 +337,25 @@ impl Map {
                     if value {
                         self.flags[i] |= BUILT;
                     } else {
-                        self.flags[i] &= !(BUILT | DOOR);
+                        self.flags[i] &= !(BUILT | DOOR | TAKEN);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Marks the built-on tiles of a rectangle as taken by the zombies (an infected building, `TAKEN`) – or, `false`,
+    /// as yours again (repaired: cured).
+    pub fn set_taken(&mut self, x0: i32, y0: i32, size: (i32, i32), taken: bool) {
+        for y in y0..y0 + size.1 {
+            for x in x0..x0 + size.0 {
+                if let Some(i) = self.index(x, y) {
+                    if (self.flags[i] & BUILT) != 0 {
+                        if taken {
+                            self.flags[i] |= TAKEN;
+                        } else {
+                            self.flags[i] &= !TAKEN;
+                        }
                     }
                 }
             }
@@ -415,6 +450,20 @@ mod tests {
         assert!(!map.is_door(c, c) && map.is_buildable(c, c));
         map.set_door(c, c);
         assert!(!map.is_door(c, c));
+
+        // Built on and taken by the zombies (infected): open for everyone, still built on, nothing to tear down. Cured:
+        // closed again. Torn down: gone.
+        map.set_occupied(c, c, (1, 1), true);
+        assert!(map.can_tear_down(c, c));
+        map.set_taken(c, c, (1, 1), true);
+        assert!(!map.is_blocked(c, c) && !map.blocks_unit(c, c) && !map.can_tear_down(c, c) && !map.is_buildable(c, c));
+        map.set_taken(c, c, (1, 1), false);
+        assert!(map.is_blocked(c, c) && map.blocks_unit(c, c) && map.can_tear_down(c, c));
+        map.set_taken(c, c, (1, 1), true);
+        map.set_occupied(c, c, (1, 1), false);
+        map.set_occupied(c, c, (1, 1), true);
+        assert!(map.can_tear_down(c, c));
+        map.set_occupied(c, c, (1, 1), false);
 
         // Outside the world border: zombies walk there, units don't, nobody builds. Off the map: blocked for all.
         let out = BORDER as i32 - 1;

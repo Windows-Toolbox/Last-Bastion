@@ -2,6 +2,9 @@
 name = "last_bastion"
 version = "0.1.0"
 edition = "2024"
+# Two programs from one library (`src\lib.rs`): the game (`src\main.rs`) and the map editor (`src\bin\editor.rs`,
+# Cargo finds everything in `src\bin\` by itself). `cargo run` starts the game, `cargo run --bin editor` the editor.
+default-run = "last_bastion"
 
 [dependencies]
 libm = "0.2.16"

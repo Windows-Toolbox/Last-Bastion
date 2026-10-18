@@ -149,6 +149,14 @@ impl World {
         })
     }
 
+    /// May building `b` be repaired now? Not with a living zombie in its build zone – the same zone that keeps you
+    /// from building there (`zombies_in_build_zone`): nobody patches a wall the horde is hitting.
+    /// Later also not on creep (DESIGN.md 8.4) – that check goes here once creep exists (roadmap step 9).
+    pub fn can_repair(&self, b: usize) -> bool {
+        let building = &self.buildings[b];
+        !self.zombies_in_build_zone(building.kind, building.tile, building.turned)
+    }
+
     /// Does a building stand on this tile that the new one may replace?
     fn replaceable_at(&self, kind: BuildingKind, site: Site, tile: (i32, i32)) -> bool {
         self.buildings.iter().any(|b| {
@@ -198,7 +206,7 @@ pub fn placement_line(kind: BuildingKind, start: (i32, i32), end: (i32, i32)) ->
             }
             kept
         }
-        BuildingKind::Gate | BuildingKind::CommandCenter => vec![end],
+        BuildingKind::Gate | BuildingKind::CommandCenter | BuildingKind::Barracks => vec![end],
         BuildingKind::Tent => {
             // Computed in "building steps": a tent (2 × 2) needs 2 tiles per step, plus the gap.
             let size = kind.stats().size.0 + spacing;

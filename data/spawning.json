@@ -5,5 +5,15 @@
     { "day": 4, "hour": 0, "breed": "Runner", "every_seconds": 60.0, "group": [4, 5] },
     { "day": 8, "hour": 0, "breed": "Runner", "every_seconds": 40.0, "group": [8, 10] }
   ],
-  "extra_per_day": 1.0
+  "extra_per_day": 1.0,
+  "waves": {
+    "first_day": 4,
+    "every_days": 3,
+    "hour": 12,
+    "first": 200,
+    "last": 600,
+    "final_hour": 6,
+    "final_runners": 1000,
+    "final_fat": 40
+  }
 }

@@ -47,6 +47,8 @@ pub struct Zombie {
     /// Placed as a wanderer (editor): strolls around where it was put instead of heading for the command center –
     /// until it notices one of your units. `None`: a normal zombie.
     pub(super) wander: Option<Wander>,
+    /// Came with the final wave – the round is won once none of these is left (`round.rs`).
+    pub final_wave: bool,
 }
 
 /// What kind of zombie (DESIGN.md 8.1) – for now three. All behave the same, only their numbers differ
@@ -76,6 +78,14 @@ impl Breed {
     pub fn index(self) -> usize {
         self as usize
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Breed::Walker => "Walker",
+            Breed::Runner => "Runner",
+            Breed::Fat => "Fat",
+        }
+    }
 }
 
 /// A wandering zombie: where it was put, where it's strolling to right now, and a countdown.
@@ -91,6 +101,16 @@ pub(super) struct Wander {
 impl Zombie {
     pub fn is_alive(&self) -> bool {
         self.hp > 0
+    }
+
+    /// Hit points left – for the panel when it's clicked.
+    pub fn hp(&self) -> u32 {
+        self.hp
+    }
+
+    /// Its own speed (tiles per second) – for the panel when it's clicked.
+    pub fn speed(&self) -> f32 {
+        self.speed
     }
 
     /// Is it looking for a gap right now (shot, or standing next to one that was)?
@@ -155,7 +175,7 @@ impl World {
         let id = self.new_zombie_id();
         let wander = wander.then_some(Wander { home: pos, goal: None, timer: 0 });
         let radius = stats.radius;
-        self.zombies.push(Zombie { pos, prev: pos, id, hp: stats.hp, speed, radius, cooldown: 0, alert: 0, seek: 0, breed, wander });
+        self.zombies.push(Zombie { pos, prev: pos, id, hp: stats.hp, speed, radius, cooldown: 0, alert: 0, seek: 0, breed, wander, final_wave: false });
     }
 
     /// Zombie `z` has just been shot: it and up to `seek_helpers` of the ones standing closest to it (within
@@ -199,7 +219,7 @@ impl World {
     }
 
     /// Where is the zombie with this `id` in the list? `None` if it doesn't exist anymore.
-    pub(super) fn find_zombie(&self, id: u32) -> Option<usize> {
+    pub fn find_zombie(&self, id: u32) -> Option<usize> {
         self.zombies.iter().position(|z| z.id == id && z.is_alive())
     }
 
@@ -310,6 +330,22 @@ impl World {
         }
     }
 
+    /// What a zombie is up to right now, in a few words – for the panel when it's clicked. The same order as in
+    /// `zombie_intent`, only roughly (it doesn't look whether the way is really there).
+    pub fn zombie_doing(&self, zombie: &Zombie) -> &'static str {
+        if zombie.is_seeking() {
+            "Looking for a gap to your units"
+        } else if self.notices(zombie) {
+            "Storming your units"
+        } else if self.building_aggro.near(zombie.pos).is_some() {
+            "Tearing down a building"
+        } else if zombie.wander.is_some() {
+            "Wandering around"
+        } else {
+            "Heading for the command center"
+        }
+    }
+
     /// Has this zombie noticed one of your units – sees one, hears one close by, has just been shot or heard a shot?
     fn notices(&self, zombie: &Zombie) -> bool {
         zombie.alert > 0
@@ -394,14 +430,15 @@ impl World {
         (dir, None)
     }
 
-    /// Does this zombie touch a building? Only looks into the tiles around it.
+    /// Does this zombie touch a building it would hit – one of yours, not an infected one? Only looks into the tiles
+    /// around it.
     fn touching_building(&self, zombie: &Zombie) -> Option<usize> {
         let pos = zombie.pos;
         let (cx, cy) = (pos.x.floor() as i32, pos.y.floor() as i32);
         for dy in -1..=1 {
             for dx in -1..=1 {
                 if let Some(b) = self.building_on_tile(cx + dx, cy + dy) {
-                    if self.buildings[b].distance_to(pos) <= zombie.radius + ARM {
+                    if !self.buildings[b].infected && self.buildings[b].distance_to(pos) <= zombie.radius + ARM {
                         return Some(b);
                     }
                 }

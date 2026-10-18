@@ -1,14 +1,14 @@
-//! Where zombies come from: walkers scattered over the map at the start, the constant spawn of the round
-//! (`data\spawning.json`), spawners (placed in the editor), waves (now or on the timeline), and your dead units
-//! rising again. A killed zombie stays dead – a cleared part of the map stays clear.
+//! Where zombies come from: walkers scattered over the map at the start, the constant spawn of the map (a new map
+//! gets it from `data\spawning.json`), spawners (placed in the editor), waves (now or on the timeline), and your dead
+//! units rising again. A killed zombie stays dead – a cleared part of the map stays clear.
 
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use super::terrain::free_point_near;
 use super::zombies::{values, Breed};
-use super::{Order, World, DAY_TICKS, HOUR_TICKS, TICKS_PER_SECOND};
-use crate::data::{self, Stage};
+use super::{World, DAY_TICKS, HOUR_TICKS, TICKS_PER_SECOND};
+use crate::data::{ConstantSpawn, Stage};
 use crate::kinds::UnitKind;
 
 /// So many random spots in the spawners are tried for a new zombie before giving up
@@ -80,13 +80,26 @@ pub enum WaveFrom {
 }
 
 /// A wave on the timeline of the map (editor, "Waves" tab – like TAB's events "on day 12, 6:00 a wave from the
-/// north"). It comes all by itself when the clock gets there.
+/// north"). It comes all by itself when the clock gets there. A new round plans its waves itself (`plan_waves`).
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct TimedWave {
     /// At this tick (`DAY_TICKS`, `HOUR_TICKS`).
     pub at: u64,
+    /// How many – from every side it comes from (`WaveFrom::Sides`), or in total from one spawner.
     pub count: u32,
     pub from: WaveFrom,
+    /// Which zombies. `default`: map files from before 2026-10-17 have no breed – their waves were runners.
+    #[serde(default = "runner")]
+    pub breed: Breed,
+    /// Part of the final wave: when every final wave has come and none of its zombies is left, the round is won
+    /// (`round.rs`). `default`: old files have no final wave.
+    #[serde(default)]
+    pub final_wave: bool,
+}
+
+/// What a wave without a breed in its file sends – for `#[serde(default = "runner")]` above, which wants a function.
+fn runner() -> Breed {
+    Breed::Runner
 }
 
 /// What the constant spawn sends right now: a group of `min` to `max` zombies of this breed every `every` ticks.
@@ -98,17 +111,16 @@ pub struct Group {
     pub max: u32,
 }
 
-/// The tick a stage of `data\spawning.json` starts at (day 1, hour 0 = tick 0).
-fn stage_start(stage: &Stage) -> u64 {
+/// The tick a stage of the constant spawn starts at (day 1, hour 0 = tick 0).
+pub fn stage_start(stage: &Stage) -> u64 {
     stage.day.saturating_sub(1) * DAY_TICKS + stage.hour * HOUR_TICKS
 }
 
-/// What the constant spawn sends at this tick – `None` before the first stage. Within a stage the values go over
-/// smoothly to those of the next one, as long as that one has the same breed (walkers: more and more often, bigger
-/// groups). Next stage another breed: the values stay until it starts. After the last stage the groups keep
+/// What the constant spawn `spawning` sends at this tick – `None` before the first stage. Within a stage the values
+/// go over smoothly to those of the next one, as long as that one has the same breed (walkers: more and more often,
+/// bigger groups). Next stage another breed: the values stay until it starts. After the last stage the groups keep
 /// growing by `extra_per_day`.
-pub(super) fn group_at(tick: u64) -> Option<Group> {
-    let spawning = &data::get().spawning;
+pub(super) fn group_at(spawning: &ConstantSpawn, tick: u64) -> Option<Group> {
     let i = spawning.stages.iter().rposition(|s| stage_start(s) <= tick)?;
     let stage = spawning.stages[i];
     let (mut every, mut min, mut max) = (stage.every_seconds, stage.group[0] as f32, stage.group[1] as f32);
@@ -191,6 +203,7 @@ impl World {
             if self.units[i].hp == 0 {
                 let rise_in = min + self.rng.below(max.saturating_sub(min) + 1);
                 self.corpses.push(Corpse { pos: self.units[i].pos, kind: self.units[i].kind, rise_in });
+                self.score.units_lost += 1;
             }
         }
     }
@@ -247,13 +260,38 @@ impl World {
     }
 
     /// `count` zombies of this breed, each from a random one of these spawners (indices into `spawners`). They storm
-    /// the command center.
-    pub(super) fn spawn_from(&mut self, spawners: &[usize], count: usize, breed: Breed) {
+    /// the command center. `final_wave`: they belong to the final wave – the round is won once they're all dead.
+    pub(super) fn spawn_from(&mut self, spawners: &[usize], count: usize, breed: Breed, final_wave: bool) {
         for _ in 0..count {
             let Some(pos) = self.spawn_point(spawners) else {
                 break; // no spot in these spawners leads to the base: nobody can come
             };
             self.spawn_zombie_as(pos, breed, false);
+            if let Some(zombie) = self.zombies.last_mut() {
+                zombie.final_wave = final_wave;
+            }
+        }
+    }
+
+    /// A wave out of the spawners: `count` zombies from one random spawner, or `count` from each of `sides` different
+    /// random sides (only sides that have spawners at all), spread over the spawners there.
+    pub(super) fn send_wave(&mut self, count: usize, from: WaveFrom, breed: Breed, final_wave: bool) {
+        match from {
+            WaveFrom::OneSpawner => {
+                if !self.spawners.is_empty() {
+                    let s = self.rng.below(self.spawners.len() as u32) as usize;
+                    self.spawn_from(&[s], count, breed, final_wave);
+                }
+            }
+            WaveFrom::Sides(sides) => {
+                let size = self.map.size;
+                let mut left: Vec<u32> = (0..4).filter(|&side| self.spawners.iter().any(|s| s.side(size) == side)).collect();
+                for _ in 0..sides.min(left.len() as u32) {
+                    let side = left.remove(self.rng.below(left.len() as u32) as usize);
+                    let on_side: Vec<usize> = (0..self.spawners.len()).filter(|&s| self.spawners[s].side(size) == side).collect();
+                    self.spawn_from(&on_side, count, breed, final_wave);
+                }
+            }
         }
     }
 
@@ -280,7 +318,7 @@ impl World {
     pub(super) fn fire_timed_waves(&mut self) {
         let due: Vec<TimedWave> = self.waves.iter().filter(|w| w.at == self.tick).copied().collect();
         for wave in due {
-            self.apply(&Order::SpawnWave { count: wave.count as usize, from: wave.from });
+            self.send_wave(wave.count as usize, wave.from, wave.breed, wave.final_wave);
         }
     }
 
@@ -295,14 +333,14 @@ impl World {
             self.spawners[s].timer += 1;
             if self.spawners[s].timer as f32 >= every as f32 * TICKS_PER_SECOND {
                 self.spawners[s].timer = 0;
-                self.spawn_from(&[s], count as usize, Breed::Runner);
+                self.spawn_from(&[s], count as usize, Breed::Runner, false);
             }
         }
     }
 
     /// What the constant spawn sends right now – for the developer overlay (F3).
     pub fn spawn_group(&self) -> Option<Group> {
-        group_at(self.tick)
+        group_at(&self.constant, self.tick)
     }
 
     /// The constant spawn (`group_at`): when its time has come, one group out of one random spawner set to
@@ -312,9 +350,9 @@ impl World {
         if self.tick < self.next_group {
             return;
         }
-        let Some(group) = group_at(self.tick) else {
+        let Some(group) = group_at(&self.constant, self.tick) else {
             // Before the first stage: nothing until it starts (no stages at all: never).
-            let first = data::get().spawning.stages.iter().map(stage_start).min();
+            let first = self.constant.stages.iter().map(stage_start).min();
             self.next_group = first.filter(|&t| t > self.tick).unwrap_or(u64::MAX);
             return;
         };
@@ -325,7 +363,15 @@ impl World {
         }
         let s = constant[self.rng.below(constant.len() as u32) as usize];
         let count = group.min + self.rng.below(group.max - group.min + 1);
-        self.spawn_from(&[s], count as usize, group.breed);
+        self.spawn_from(&[s], count as usize, group.breed, false);
+    }
+
+    /// The constant spawn was changed (editor): keep its stages in order of time – `group_at` relies on that – and
+    /// look again at the next tick what comes when, instead of waiting for a group planned with the old values.
+    /// `sort_by_key` is stable: two stages at the same time keep their order, the same on every PC.
+    pub(super) fn constant_spawn_changed(&mut self) {
+        self.constant.stages.sort_by_key(stage_start);
+        self.next_group = self.tick;
     }
 
     /// A spawner always lies completely on the map and is at least 1 × 1 tile.

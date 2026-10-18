@@ -15,6 +15,7 @@
 //! - `combat.rs`: whom units aim at, and shooting.
 //! - `buildings.rs`: buildings, production queues, towers.
 //! - `terrain.rs`: when the map changes – recompute what depends on it, push everyone off new terrain.
+//! - `round.rs`: the round as a whole – its days and waves, how it ends (won, lost), what happened in it.
 //!
 //! This file: the `World` itself, the order of a tick (`step`) and small helpers that all of them use.
 
@@ -22,6 +23,7 @@ mod buildings;
 mod combat;
 mod commands;
 mod orders;
+mod round;
 mod spawning;
 mod terrain;
 mod units;
@@ -32,7 +34,7 @@ mod tests;
 use macroquad::math::{vec2, Vec2};
 
 use crate::aggro::AggroMap;
-use crate::data;
+use crate::data::{self, ConstantSpawn};
 use crate::flow::FlowField;
 use crate::grid::SpatialGrid;
 use crate::hunt::{HuntMap, Through};
@@ -43,10 +45,11 @@ use crate::rng::Rng;
 use crate::vision::Vision;
 
 // What the rest of the game sees of the simulation – the same names as when it was all one file `sim.rs`.
-pub use buildings::{Building, Rally, MAX_PRODUCTION};
+pub use buildings::{Building, Rally, RepairPlan, MAX_PRODUCTION};
 pub use commands::{Command, Mark};
 pub use orders::Order;
-pub use spawning::{Corpse, SpawnMode, Spawner, TimedWave, WaveFrom};
+pub use round::{plan_waves, Outcome, Score};
+pub use spawning::{stage_start, Corpse, SpawnMode, Spawner, TimedWave, WaveFrom};
 pub use units::Unit;
 pub use zombies::{Breed, Zombie};
 
@@ -72,8 +75,18 @@ pub struct World {
     pub buildings: Vec<Building>,
     /// Your fallen units – they rise as walkers (`spawning.rs`).
     pub corpses: Vec<Corpse>,
-    /// The colony's gold: the tents pay it every hour (`buildings.rs`). Nothing costs gold yet (DESIGN.md 13, step 4).
+    /// The colony's gold: the tents pay it every hour (`buildings.rs`), units and buildings cost it (`orders.rs`).
     pub gold: u32,
+    /// How many days the round lasts – the final wave comes on the last one (DESIGN.md 4.1). 0: no set length (old map
+    /// files).
+    pub days: u32,
+    /// The constant spawn of this map (`spawning.rs`). A new map gets it from `data\spawning.json`, then it's part of
+    /// its map file.
+    pub constant: ConstantSpawn,
+    /// How the round ended (`round.rs`) – `None` while it's still going.
+    pub outcome: Option<Outcome>,
+    /// What happened in the round so far – for the end screen.
+    pub score: Score,
     /// Where the zombies come from.
     pub spawners: Vec<Spawner>,
     /// What your units and buildings see right now, and what they have ever seen (fog of war).
@@ -117,10 +130,13 @@ pub struct World {
 
 impl World {
     /// A new round: the map from `setup` (same seed + same values = same map, `mapgen`), its spawners, the
-    /// command center on the base, the start units and the walkers scattered over the map.
+    /// command center on the base, the start units, the zombies roaming the map, and the round – its days and the
+    /// waves planned for them (`round.rs`).
     pub fn generate(seed: u64, setup: &MapSetup) -> World {
         let generated = mapgen::generate(seed, setup);
         let mut world = World::empty(seed, generated.map);
+        world.days = setup.round.days.round() as u32;
+        world.waves = plan_waves(world.days, setup.round.waves);
         for spot in generated.spawners {
             world.add_spawner(spot.name, spot.min, spot.size, SpawnMode::Constant);
         }
@@ -147,12 +163,15 @@ impl World {
     }
 
     /// For the tests: the default "Wild" map, but at the old size of 128 tiles – smaller is faster, and the tests
-    /// were written for it.
+    /// were written for it. With plenty of gold, so tests that build and train don't depend on the prices – the
+    /// tests about gold set it themselves.
     #[cfg(test)]
     pub fn new(seed: u64) -> World {
         let mut setup = MapSetup::default();
         setup.common.size = 128.0;
-        World::generate(seed, &setup)
+        let mut world = World::generate(seed, &setup);
+        world.gold = 100_000;
+        world
     }
 
     /// A world with this map and nothing on it yet – no spawner, no building, nobody. The base is the middle.
@@ -179,6 +198,10 @@ impl World {
             buildings: Vec::new(),
             corpses: Vec::new(),
             gold: data::get().colony.start_gold,
+            days: 0,
+            constant: data::get().spawning.constant.clone(),
+            outcome: None,
+            score: Score::default(),
             spawners: Vec::new(),
             shots: Vec::new(),
             beams: Vec::new(),
@@ -224,8 +247,10 @@ impl World {
         day_and_hour(self.tick)
     }
 
-    /// Everyone looks around: units from where they stand (in a tower further), buildings from their middle.
-    fn update_vision(&mut self) {
+    /// Everyone looks around: units from where they stand (in a tower further), buildings from their middle. Every
+    /// tick – and from outside in the editor, where orders are carried out without time passing: a unit placed there
+    /// should lift the fog right away.
+    pub fn update_vision(&mut self) {
         let units = self.units.iter().map(|u| (u.pos, u.sight()));
         let buildings = self.buildings.iter().map(|b| (b.center(), b.stats().sight));
         self.vision.update(&self.map, units.chain(buildings));
@@ -242,18 +267,21 @@ impl World {
         self.move_zombies(); // zombies.rs, infected buildings in buildings.rs
         self.update_units(); // units.rs, shooting in combat.rs
         self.update_buildings(); // buildings.rs, gold too
-        self.remove_dead();
+        let command_center_fell = self.remove_dead();
+        self.check_outcome(command_center_fell); // round.rs
         self.update_vision();
         self.tick += 1;
     }
 
     /// Clean up at the end of the tick: dead units lie down and disappear, destroyed buildings fall (`buildings.rs`),
-    /// killed zombies are gone for good.
-    fn remove_dead(&mut self) {
+    /// killed zombies are gone for good (and counted). Returns whether a command center fell.
+    fn remove_dead(&mut self) -> bool {
         self.lay_down_dead_units();
         self.units.retain(|u| u.hp > 0);
-        self.remove_destroyed_buildings();
+        let command_center_fell = self.remove_destroyed_buildings();
+        self.score.zombies_killed += self.zombies.iter().filter(|z| !z.is_alive()).count() as u32;
         self.zombies.retain(|z| z.is_alive());
+        command_center_fell
     }
 
     /// Checksum over all positions and hit points. Same seed + same orders → same number.

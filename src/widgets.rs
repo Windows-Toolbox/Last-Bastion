@@ -48,10 +48,10 @@ impl Column {
         r
     }
 
-    /// A lower row (sliders in long lists).
-    pub fn thin_row(&mut self) -> Rect {
-        let r = Rect::new(self.x, self.y, self.width, 28.0);
-        self.y += 28.0 + 3.0;
+    /// A lower row of this height (sliders in long lists) – squeezed together when a list is long and the window low.
+    pub fn row_of(&mut self, height: f32) -> Rect {
+        let r = Rect::new(self.x, self.y, self.width, height);
+        self.y += height + 3.0;
         r
     }
 

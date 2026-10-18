@@ -7,8 +7,22 @@
     "shield_percent": 0,
     "colonists": 0,
     "cost": 0,
+    "repair_cost": 300,
     "sight": 11.0,
     "height": 0.9,
+    "joins": false
+  },
+  "barracks": {
+    "name": "Barracks",
+    "letter": "B",
+    "size": [3, 3],
+    "hp": 800,
+    "shield_percent": 0,
+    "colonists": 0,
+    "cost": 150,
+    "repair_cost": 75,
+    "sight": 6.0,
+    "height": 0.7,
     "joins": false
   },
   "tent": {
@@ -18,7 +32,8 @@
     "hp": 150,
     "shield_percent": 133,
     "colonists": 6,
-    "cost": 50,
+    "cost": 100,
+    "repair_cost": 50,
     "sight": 5.0,
     "height": 0.45,
     "joins": false
@@ -31,6 +46,7 @@
     "shield_percent": 0,
     "colonists": 0,
     "cost": 10,
+    "repair_cost": 5,
     "sight": 3.0,
     "height": 0.55,
     "joins": true
@@ -43,6 +59,7 @@
     "shield_percent": 0,
     "colonists": 0,
     "cost": 40,
+    "repair_cost": 20,
     "sight": 3.0,
     "height": 0.6,
     "joins": true
@@ -54,7 +71,8 @@
     "hp": 600,
     "shield_percent": 0,
     "colonists": 0,
-    "cost": 30,
+    "cost": 100,
+    "repair_cost": 50,
     "sight": 6.0,
     "height": 1.2,
     "joins": true
@@ -62,5 +80,6 @@
   "tower_slots": 4,
   "tower_bonus": 2.0,
   "zombie_free_radius": 4,
-  "replace_refund_percent": 50
+  "replace_refund_percent": 50,
+  "repair_seconds": 10
 }

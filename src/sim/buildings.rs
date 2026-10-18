@@ -8,7 +8,7 @@ use macroquad::math::{vec2, Vec2};
 use super::commands::Command;
 use super::terrain::free_point_near;
 use super::zombies::Breed;
-use super::{World, HOUR_TICKS};
+use super::{World, HOUR_TICKS, TICKS_PER_SECOND};
 use crate::data;
 use crate::kinds::{BuildingKind, BuildingStats, UnitKind};
 
@@ -27,8 +27,10 @@ pub struct Building {
     pub hp: u32,
     /// What's left of the shield – zombies hit it first (`BuildingStats::max_shield`).
     pub shield: u32,
-    /// The shield broke: its colonists came out as zombies, it pays no more gold.
+    /// The shield broke: its colonists came out as zombies, it pays no more gold, everyone walks through it.
     pub infected: bool,
+    /// Points (hit points, then shield) that are paid for and still come back – a little every tick (`repair`).
+    pub repair_left: u32,
     /// Production queue: in front the unit currently being built.
     pub production: VecDeque<UnitKind>,
     /// How many ticks the front unit has been built for.
@@ -89,10 +91,59 @@ impl Building {
         broke
     }
 
+    /// Hit points and shield together, when it's whole.
+    fn full(&self) -> u32 {
+        self.stats().hp + self.stats().max_shield()
+    }
+
+    /// What's missing to whole and isn't paid for yet – what a repair would fix now.
+    pub fn unpaid_damage(&self) -> u32 {
+        // `saturating_sub`: never below 0 – even if `data\` was changed to fewer hit points than it has.
+        self.full().saturating_sub(self.hp + self.shield + self.repair_left)
+    }
+
+    /// What repairing it costs right now: its share of `repair_cost`, rounded up – a scratch never costs nothing.
+    /// `u64` in between: the product of two `u32` could get too big for one.
+    pub fn repair_price(&self) -> u32 {
+        let damage = self.unpaid_damage() as u64;
+        (self.stats().repair_cost as u64 * damage).div_ceil(self.full() as u64) as u32
+    }
+
+    /// One tick of repairing: back come the hit points first, then the shield – so much per tick that a full repair
+    /// takes `repair_seconds`. Returns `true` if this made an infected building whole: then it's cured.
+    fn repair(&mut self) -> bool {
+        if self.repair_left == 0 {
+            return false;
+        }
+        let ticks = (data::get().buildings.repair_seconds * TICKS_PER_SECOND).max(1.0) as u32;
+        let mut step = self.full().div_ceil(ticks).min(self.repair_left);
+        self.repair_left -= step;
+        let hp = step.min(self.stats().hp - self.hp);
+        self.hp += hp;
+        step -= hp;
+        self.shield = (self.shield + step).min(self.stats().max_shield());
+        if self.hp + self.shield == self.full() {
+            self.repair_left = 0; // whole – nothing left to do (it can only be left over if it was hit meanwhile)
+            return std::mem::take(&mut self.infected);
+        }
+        false
+    }
+
     /// Gold per hour: every colonist pays – as long as the building isn't infected.
     pub fn income(&self) -> u32 {
         if self.infected { 0 } else { self.stats().colonists * data::get().colony.gold_per_colonist_per_hour }
     }
+}
+
+/// What a repair of some buildings would do right now (`World::repair_plan`) – the buttons show it, the UI sends it.
+pub struct RepairPlan {
+    /// The buildings it repairs (indices): cheapest first, as many as the gold pays for.
+    pub chosen: Vec<usize>,
+    /// What all of them that may be repaired would cost together – more than the gold: not all get repaired.
+    pub price: u32,
+    /// How many have anything to repair at all, and how many of those may not be repaired now (`can_repair`).
+    pub damaged: usize,
+    pub blocked: usize,
 }
 
 /// Rally point of a building: a point, or a unit that new units follow (DESIGN.md 7.1).
@@ -140,6 +191,7 @@ impl World {
             hp: kind.stats().hp,
             shield: kind.stats().max_shield(),
             infected: false,
+            repair_left: 0,
             production: VecDeque::new(),
             progress: 0,
             rally: None,
@@ -158,38 +210,55 @@ impl World {
     /// its tiles are free again. `remove` instead of `swap_remove`, so the order of the list stays the same on every PC.
     pub(super) fn replace_buildings(&mut self, kind: BuildingKind, tile: (i32, i32), turned: bool) {
         for id in self.replaced_by(kind, tile, turned) {
-            if let Some(b) = self.find_building(id) {
-                let old = self.buildings.remove(b);
-                self.map.set_occupied(old.tile.0, old.tile.1, old.footprint(), false);
-                for unit in self.units.iter_mut().filter(|u| u.inside == Some(old.id)) {
-                    unit.inside = None;
-                }
-                self.map_changed = true;
+            self.take_down(id);
+        }
+    }
+
+    /// The building with this `id` goes away (built over, or the editor's eraser): its tiles are free again, whoever
+    /// was in it stands on the ground. Recomputed after the orders of the tick (`map_changed`).
+    pub(super) fn take_down(&mut self, id: u32) {
+        if let Some(b) = self.find_building(id) {
+            let old = self.buildings.remove(b);
+            self.map.set_occupied(old.tile.0, old.tile.1, old.footprint(), false);
+            for unit in self.units.iter_mut().filter(|u| u.inside == Some(old.id)) {
+                unit.inside = None;
             }
+            self.map_changed = true;
         }
     }
 
     /// Destroyed buildings: free their tiles, then recompute the index and the zombies' path.
-    /// Whoever was in a fallen tower now stands on the ground where it was.
-    pub(super) fn remove_destroyed_buildings(&mut self) {
+    /// Whoever was in a fallen tower now stands on the ground where it was. Returns whether a command center fell –
+    /// the round may be lost (`round.rs`).
+    pub(super) fn remove_destroyed_buildings(&mut self) -> bool {
         let before = self.buildings.len();
+        let mut command_center_fell = false;
         for building in &self.buildings {
             if building.hp == 0 {
                 self.map.set_occupied(building.tile.0, building.tile.1, building.footprint(), false);
                 for unit in self.units.iter_mut().filter(|u| u.inside == Some(building.id)) {
                     unit.inside = None;
                 }
+                command_center_fell |= building.kind == BuildingKind::CommandCenter;
             }
         }
         self.buildings.retain(|b| b.hp > 0);
         if self.buildings.len() != before {
+            self.score.buildings_lost += (before - self.buildings.len()) as u32;
             self.refresh_map();
         }
+        command_center_fell
     }
 
     /// Building `b` has just been infected: its colonists come out as zombies right next to it (DESIGN.md 6). For a
     /// tent with 6: 2–4 runners, the rest walkers. Not wandering – they go for the next target right away.
+    /// From now on it belongs to the zombies: they don't hit it anymore, and its broken walls let everyone through
+    /// (`Map::set_taken`) – so the threat map and their way to the command center are computed anew.
     pub(super) fn infect(&mut self, b: usize) {
+        let (tile, size) = (self.buildings[b].tile, self.buildings[b].footprint());
+        self.buildings[b].repair_left = 0; // a repair underway is lost with it
+        self.map.set_taken(tile.0, tile.1, size, true);
+        self.refresh_map();
         let colonists = self.buildings[b].stats().colonists;
         let runners = colonists.min(2 + self.rng.below(3));
         // Free tiles in the ring around the building – for zombies, so not on walls or water.
@@ -221,11 +290,19 @@ impl World {
         self.buildings.iter().map(|b| b.income()).sum()
     }
 
-    /// Every full hour of the round each building pays its gold (colonists × `gold_per_colonist_per_hour`, `datalony.json`).
-    /// Then continue the production queues. Finished units come out next to the building.
+    /// Every full hour of the round each building pays its gold (colonists × `gold_per_colonist_per_hour`,
+    /// `data\colony.json`). Then repairs go on, and the production queues. Finished units come out next to the
+    /// building.
     pub(super) fn update_buildings(&mut self) {
         if (self.tick + 1) % HOUR_TICKS == 0 {
-            self.gold += self.income();
+            let income = self.income();
+            self.gold += income;
+            self.score.gold_earned += income;
+        }
+        for b in 0..self.buildings.len() {
+            if self.buildings[b].repair() {
+                self.cure(b);
+            }
         }
         for b in 0..self.buildings.len() {
             let Some(&kind) = self.buildings[b].production.front() else {
@@ -238,6 +315,61 @@ impl World {
                 self.finish_unit(b, kind);
             }
         }
+    }
+
+    /// Building `b` was infected and is whole again: it's yours again – closed for everyone (whoever stands in it is
+    /// pushed out), something for the zombies to hit, and it pays gold. Its colonists are back (a repair brings new
+    /// ones). Everyone's ways are computed anew.
+    fn cure(&mut self, b: usize) {
+        let (tile, size) = (self.buildings[b].tile, self.buildings[b].footprint());
+        self.map.set_taken(tile.0, tile.1, size, false);
+        self.push_out_of_terrain();
+        self.reroute_units();
+        self.refresh_map();
+    }
+
+    /// Which of these buildings (indices) a repair fixes right now: the damaged ones that may be repaired
+    /// (`can_repair`), cheapest first, as many as the gold pays for – that way the most buildings get repaired.
+    pub fn repair_plan(&self, candidates: impl IntoIterator<Item = usize>) -> RepairPlan {
+        let (mut damaged, mut blocked) = (0, 0);
+        // (price, id, index): sorted, the cheapest comes first, the id decides between equal prices.
+        let mut repairable: Vec<(u32, u32, usize)> = Vec::new();
+        for b in candidates {
+            if self.buildings[b].unpaid_damage() == 0 {
+                continue;
+            }
+            damaged += 1;
+            if !self.can_repair(b) {
+                blocked += 1;
+                continue;
+            }
+            repairable.push((self.buildings[b].repair_price(), self.buildings[b].id, b));
+        }
+        repairable.sort_unstable();
+        let price = repairable.iter().map(|&(p, _, _)| p).sum();
+        let mut gold = self.gold;
+        let mut chosen = Vec::new();
+        for (p, _, b) in repairable {
+            if p <= gold {
+                gold -= p;
+                chosen.push(b);
+            }
+        }
+        RepairPlan { chosen, price, damaged, blocked }
+    }
+
+    /// Pays for repairing building `b`, if it may be repaired now (`can_repair`) and the gold is enough: what's missing
+    /// then comes back over the next seconds. Returns whether it was paid (and so whether it repairs now).
+    pub(super) fn start_repair(&mut self, b: usize) -> bool {
+        let price = self.buildings[b].repair_price();
+        let damage = self.buildings[b].unpaid_damage();
+        if damage == 0 || price > self.gold || !self.can_repair(b) {
+            return false;
+        }
+        self.gold -= price;
+        self.score.gold_spent += price;
+        self.buildings[b].repair_left += damage;
+        true
     }
 
     /// The free tile around a building that is closest to `toward` (its middle) – where units come out of it.
@@ -276,6 +408,7 @@ impl World {
             return;
         };
         self.spawn_unit(kind, pos);
+        self.score.units_trained += 1;
         let id = self.next_unit_id;
         match rally {
             Some(Rally::Point(p)) => self.command(&[id], Command::Move(p), false, None),

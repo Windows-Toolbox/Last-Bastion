@@ -23,6 +23,8 @@ pub struct Stats {
     pub name: String,
     /// One or two letters for the icon in the selection panel.
     pub letter: String,
+    /// Gold, paid when it goes into the production queue – back in full if it's cancelled (like in StarCraft).
+    pub cost: u32,
     pub hp: u32,
     /// Subtracted from every hit (at least 1 damage always gets through).
     pub armor: u32,
@@ -76,6 +78,8 @@ impl Stats {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub enum BuildingKind {
     CommandCenter,
+    /// Trains your units – the only building that does (DESIGN.md 6, "Military").
+    Barracks,
     Tent,
     Wall,
     /// 3 × 1, can be turned: two posts and a door in the middle that lets your units through, but not zombies.
@@ -99,9 +103,13 @@ pub struct BuildingStats {
     /// How many colonists live in it. Each pays `gold_per_colonist_per_hour` (`data\colony.json`) – until the
     /// building is infected.
     pub colonists: u32,
-    /// Price, first guess. Only shown for now – nothing is paid until the economy comes (DESIGN.md 5), and which
-    /// resources (wood, stone …) is decided then. Built over other buildings it gets cheaper (`placement.rs`).
+    /// Price in gold, paid when it's placed (first guess). Wood, stone … come with the economy (DESIGN.md 5). Built
+    /// over other buildings it gets cheaper (`placement.rs`). The editor places buildings for free.
     pub cost: u32,
+    /// Gold for a full repair – from nothing to full hit points and shield; a smaller repair pays its share of it.
+    /// Paid when the repair starts. Repairing an infected building cures it (DESIGN.md 6). Once buildings cost wood
+    /// and stone, repairs take their share of those too.
+    pub repair_cost: u32,
     /// How far it sees, in tiles, counted from its middle.
     pub sight: f32,
     /// How tall the building is drawn (in tile widths) – only the look.
@@ -120,6 +128,11 @@ impl BuildingStats {
 impl BuildingKind {
     pub fn stats(self) -> &'static BuildingStats {
         data::get().building(self)
+    }
+
+    /// Does it train units (a production queue and a rally point)? Only the barracks.
+    pub fn trains(self) -> bool {
+        self == BuildingKind::Barracks
     }
 
     /// Width and depth in tiles – turned, the two swap (only the gate isn't square).

@@ -1,10 +1,14 @@
 //! All values of the game in one place: the JSON files in `data\` (DESIGN.md 12.4) – units, buildings, zombies, the
-//! colony, the constant spawn. What each value means is in `data\README.md`.
+//! colony, the constant spawn and the waves of a new round. What each value means is in `data\README.md`.
 //!
 //! The files are built into the program (`include_str!`), so the game also runs without the folder (`dist\`). If a
 //! folder `data\` lies next to where the game is started (or next to the exe), `reload` reads it instead – before
 //! every new round, so a changed value counts after "Restart" without building anew. A broken file never crashes the
 //! game: the old values stay and `problem` says what's wrong.
+//!
+//! The constant spawn and the waves are an exception: a new map gets a copy of them, and from then on they belong to
+//! its map file (one game = one file, `mapfile.rs`) – the editor can change them there. `data\spawning.json` only
+//! decides what new maps start with.
 //!
 //! Co-op (DESIGN.md 12.8): both PCs need the same values, or they compute different games. Checking that comes with
 //! the network code.
@@ -12,7 +16,7 @@
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, RwLock};
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::kinds::{BuildingKind, BuildingStats, Stats, UnitKind};
 use crate::sim::{Breed, TICKS_PER_SECOND};
@@ -39,6 +43,7 @@ pub struct Units {
 #[derive(Deserialize)]
 pub struct Buildings {
     pub command_center: BuildingStats,
+    pub barracks: BuildingStats,
     pub tent: BuildingStats,
     pub wall: BuildingStats,
     pub gate: BuildingStats,
@@ -51,6 +56,8 @@ pub struct Buildings {
     pub zombie_free_radius: i32,
     /// Built over another building (a gate on walls), this many percent of its price come back.
     pub replace_refund_percent: u32,
+    /// A repair from nothing to full takes this many seconds – a smaller one less (`BuildingStats::repair_cost`).
+    pub repair_seconds: f32,
 }
 
 /// `data\zombies.json`
@@ -142,17 +149,48 @@ pub struct Colony {
     pub start_rangers: usize,
 }
 
-/// `data\spawning.json`: the constant spawn of the round (`sim/spawning.rs`).
+/// `data\spawning.json`: what a new map starts with – its constant spawn, and how the waves of its round are planned
+/// (`sim/spawning.rs`, `sim/round.rs`).
 #[derive(Deserialize)]
 pub struct Spawning {
+    /// `flatten`: `stages` and `extra_per_day` stand directly in the file, not inside an extra `{ }` – the file stays
+    /// as it was, only the program keeps the two together (they go into every map file together).
+    #[serde(flatten)]
+    pub constant: ConstantSpawn,
+    pub waves: WavePlan,
+}
+
+/// The constant spawn of a map: groups of zombies out of the spawners set to "Constant", all round long. A copy of it
+/// is in every map file (`Serialize`: it can be written, not only read).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct ConstantSpawn {
     /// In order of time. Between two stages of the same breed the values go over smoothly.
     pub stages: Vec<Stage>,
     /// After the last stage every group gets this many zombies more per day.
     pub extra_per_day: f32,
 }
 
+/// How the waves of a new round are planned from its number of days (`sim::plan_waves`, DESIGN.md 8.2). The counts
+/// are per side the wave comes from.
+#[derive(Deserialize)]
+pub struct WavePlan {
+    /// The first wave comes on this day …
+    pub first_day: u32,
+    /// … then one every this many days, until the last day …
+    pub every_days: u32,
+    /// … always at this hour.
+    pub hour: u32,
+    /// The first wave has this many runners, the last one before the final wave this many – in between they grow evenly.
+    pub first: u32,
+    pub last: u32,
+    /// The final wave on the last day, at this hour, from all four sides: this many runners and this many fat ones per side.
+    pub final_hour: u32,
+    pub final_runners: u32,
+    pub final_fat: u32,
+}
+
 /// From this time on: every `every_seconds` a group of `group[0]` to `group[1]` zombies of this breed.
-#[derive(Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 pub struct Stage {
     /// Day of the round (from 1) and hour (0–23).
     pub day: u64,
@@ -175,6 +213,7 @@ impl GameData {
     pub fn building(&self, kind: BuildingKind) -> &BuildingStats {
         match kind {
             BuildingKind::CommandCenter => &self.buildings.command_center,
+            BuildingKind::Barracks => &self.buildings.barracks,
             BuildingKind::Tent => &self.buildings.tent,
             BuildingKind::Wall => &self.buildings.wall,
             BuildingKind::Gate => &self.buildings.gate,
@@ -284,7 +323,9 @@ mod tests {
     fn built_in_data_parses() {
         let data = GameData::built_in();
         assert_eq!(data.units.soldier.cooldown, 8, "0.4 s should be 8 ticks");
-        assert!(data.spawning.stages.windows(2).all(|w| (w[0].day, w[0].hour) <= (w[1].day, w[1].hour)), "stages out of order");
+        let stages = &data.spawning.constant.stages;
+        assert!(stages.windows(2).all(|w| (w[0].day, w[0].hour) <= (w[1].day, w[1].hour)), "stages out of order");
+        assert_eq!(data.spawning.waves.first_day, 4, "the waves aren't read");
     }
 
     /// `reload` finds `data\` (tests run in the project folder) and reads it without a problem. The same files as the

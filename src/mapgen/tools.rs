@@ -1,7 +1,8 @@
 //! Building blocks the generators share: the grid of tiles they paint on, rivers, single trees, and the step that
 //! connects every open place to the base.
 
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 use macroquad::math::{vec2, Vec2};
 
@@ -47,9 +48,11 @@ impl Tiles {
         (0..size).flat_map(move |y| (0..size).map(move |x| (x, y)))
     }
 
-    pub fn clear_rect(&mut self, min: (i32, i32), size: (i32, i32)) {
-        for y in min.1..min.1 + size.1 {
-            for x in min.0..min.0 + size.0 {
+    /// Grass on every tile outside the square `lo` … `hi` (on both axes, `hi` itself is outside) – the ring outside
+    /// the world border.
+    pub fn clear_outside(&mut self, lo: i32, hi: i32) {
+        for (x, y) in self.all() {
+            if x < lo || y < lo || x >= hi || y >= hi {
                 self.set(x, y, Terrain::Grass);
             }
         }
@@ -266,32 +269,36 @@ pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meande
 }
 
 /// Makes sure every open place (grass) can be reached from `from` on foot, in two passes:
-/// 1. **Everywhere**, the ring outside the border too – the spawners' way into the playing field.
-/// 2. **Inside** the world border (`inside`), only through tiles inside it – that's where your units walk. Before
-///    2026-10-17 there was only pass 1, and many places inside were only connected through the ring outside the
-///    border: zombies got there, your units didn't (thousands of tiles per map). In this order, because pass 2 only
-///    opens tiles – it can't cut off what pass 1 connected; the other way round, pass 1's ways sometimes opened new
-///    little pockets inside. For the same reason pass 2 never fills a small pocket (it could be the zombies' only way
-///    in) – it connects it; the small pockets that are closed off completely were already filled in pass 1.
+/// 1. **Inside** the world border (`inside`), only through tiles inside it – that's where your units walk.
+/// 2. **Everywhere**, the ring outside the border too – the zombies' way in. Since the ring is open ground (`generate`)
+///    and every way in starts at the border, there is normally nothing left to do here; it's the guarantee.
 ///
-/// A cut-off place gets the way that cuts through **as few blocked tiles as possible** (and uses open ground for the
-/// rest), 2 tiles wide where it cuts. Those cuts are natural chokepoints (a ford through a river, a gap in a ridge).
-/// Open places smaller than `min_pocket` tiles are filled with forest instead.
+/// In this order: before 2026-10-17 it was the other way round, and a meadow closed in by forest got two cuts – first
+/// the cheapest one out to the ring, then a second one inside for your units. Filling a small pocket is safe in both
+/// passes now: the ring is open all around, so no pocket inside is anyone's only way in.
+///
+/// A cut-off place gets the way that cuts through **as little as possible** – a ford through a river, a gap in a
+/// ridge, a trail through a forest – 3 tiles wide where it cuts. How much a blocked tile "costs" changes slowly over
+/// the map (`rough`), so the way winds along the thinner, cheaper parts instead of running along a grid line (cut
+/// with a ruler, it looked like one). Open places smaller than `min_pocket` tiles are filled with forest instead.
+/// Since the ways in (`lanes.rs`) this is only the safety net for what the generators still close off. Returns how many
+/// blocked tiles it opened.
 ///
 /// Walking counts only straight steps (4 neighbours): stricter than the units, who also go diagonally – so whatever
 /// is connected here is certainly connected in the game.
-pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, inside: impl Fn(i32, i32) -> bool) {
-    connect_area(tiles, from, min_pocket, &|_, _| true);
-    connect_area(tiles, from, 0, &inside);
+pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, rough: &Noise, inside: impl Fn(i32, i32) -> bool) -> usize {
+    connect_area(tiles, from, min_pocket, rough, &inside) + connect_area(tiles, from, min_pocket, rough, &|_, _| true)
 }
 
 /// One pass of `connect_pockets`: everything open within `area` reachable from `from`, ways only within `area`.
-fn connect_area(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, area: &dyn Fn(i32, i32) -> bool) {
+/// Returns how many blocked tiles it opened.
+fn connect_area(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, rough: &Noise, area: &dyn Fn(i32, i32) -> bool) -> usize {
     let n = tiles.size;
     let index = |x: i32, y: i32| (y * n + x) as usize;
     let open = |tiles: &Tiles, x: i32, y: i32| tiles.inside(x, y) && area(x, y) && !tiles.get(x, y).is_solid();
     let mut reached = vec![false; (n * n) as usize];
     flood(tiles, from, &mut reached, &open);
+    let mut opened = 0;
     let mut pocket_seen = vec![false; (n * n) as usize];
     for (x, y) in tiles.all() {
         let i = index(x, y);
@@ -310,52 +317,50 @@ fn connect_area(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, area: &d
             }
             continue;
         }
-        // From all of its tiles at once until a reached tile turns up – the way that cuts the fewest blocked tiles.
-        // "0-1 BFS": a step onto open ground costs 0 and goes to the front of the queue, a step through a blocked tile
-        // costs 1 and goes to the back. So the queue always takes the cheapest way first, like Dijkstra, but without
-        // sorting.
+        // From all of its tiles at once until a reached tile turns up – the cheapest way. Dijkstra: always go on from
+        // the cheapest tile so far (`BinaryHeap` + `Reverse` = smallest cost first). A step onto open ground costs
+        // nothing, a step through a blocked tile 6 to 26 (the slow noise `rough`).
         let mut cost = vec![u32::MAX; (n * n) as usize];
         let mut came_from: Vec<u32> = vec![u32::MAX; (n * n) as usize];
-        let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
+        let mut queue: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
         for &(px, py) in &cells {
             cost[index(px, py)] = 0;
             came_from[index(px, py)] = index(px, py) as u32;
-            queue.push_back((px, py));
+            queue.push(Reverse((0, index(px, py) as u32)));
         }
         let mut found = None;
-        while let Some((cx, cy)) = queue.pop_front() {
-            if reached[index(cx, cy)] {
+        while let Some(Reverse((here, i))) = queue.pop() {
+            if here > cost[i as usize] {
+                continue; // an old entry – this tile was reached cheaper in the meantime
+            }
+            let (cx, cy) = (i as i32 % n, i as i32 / n);
+            if reached[i as usize] {
                 found = Some((cx, cy));
                 break;
             }
-            let here = cost[index(cx, cy)];
             for (nx, ny) in [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)] {
                 if !tiles.inside(nx, ny) || !area(nx, ny) {
                     continue;
                 }
-                let step = if open(tiles, nx, ny) { 0 } else { 1 };
+                let step = if open(tiles, nx, ny) { 0 } else { 6 + (rough.fractal(nx as f32, ny as f32, 8.0, 2) * 20.0) as u32 };
                 if here + step < cost[index(nx, ny)] {
                     cost[index(nx, ny)] = here + step;
-                    came_from[index(nx, ny)] = index(cx, cy) as u32;
-                    if step == 0 {
-                        queue.push_front((nx, ny));
-                    } else {
-                        queue.push_back((nx, ny));
-                    }
+                    came_from[index(nx, ny)] = i;
+                    queue.push(Reverse((here + step, index(nx, ny) as u32)));
                 }
             }
         }
         let Some(mut at) = found else {
             continue;
         };
-        // Walk back and clear the blocked tiles of the way, 2 tiles wide (a 1-tile cut would be too easy to miss and
-        // to block) – but never out of the area.
+        // Walk back along the way and clear it where it goes through something: the tile and its 8 neighbours (a
+        // 1-tile cut would be too easy to miss and to block). Never out of the area.
         let mut path = Vec::new();
         loop {
             if tiles.get(at.0, at.1).is_solid() {
-                for tile in [at, (at.0 + 1, at.1), (at.0, at.1 + 1)] {
-                    if tiles.inside(tile.0, tile.1) && area(tile.0, tile.1) {
-                        tiles.set(tile.0, tile.1, Terrain::Grass);
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        opened += open_up(tiles, area, at.0 + dx, at.1 + dy) as usize;
                     }
                 }
             }
@@ -373,6 +378,16 @@ fn connect_area(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, area: &d
             flood(tiles, (px, py), &mut reached, &open);
         }
     }
+    opened
+}
+
+/// Grass on a blocked tile of the area – returns whether there was something to open.
+fn open_up(tiles: &mut Tiles, area: &dyn Fn(i32, i32) -> bool, x: i32, y: i32) -> bool {
+    let blocked = tiles.inside(x, y) && area(x, y) && tiles.get(x, y).is_solid();
+    if blocked {
+        tiles.set(x, y, Terrain::Grass);
+    }
+    blocked
 }
 
 /// Marks every `open` tile reachable from `start` (straight steps) in `seen` and returns the newly marked ones.
@@ -413,7 +428,7 @@ mod tests {
                 }
             }
         }
-        connect_pockets(&mut tiles, (10, 10), 5, |_, _| true);
+        connect_pockets(&mut tiles, (10, 10), 5, &Noise::new(1), |_, _| true);
         let mut seen = vec![false; 1600];
         flood(&tiles, (10, 10), &mut seen, &|t: &Tiles, x, y| t.inside(x, y) && !t.get(x, y).is_solid());
         assert!(seen[30 * 40 + 30], "the room is connected");

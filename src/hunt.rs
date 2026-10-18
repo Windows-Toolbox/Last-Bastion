@@ -121,8 +121,8 @@ impl HuntMap {
             return Some(1);
         }
         match self.through {
-            // Blocked, but no solid terrain and on the map: a building.
-            Through::Cost(cost) if !map.is_solid(x, y) => Some(cost),
+            // Blocked, but no solid terrain and on the map: a building – one of yours, not an infected one.
+            Through::Cost(cost) if map.can_tear_down(x, y) => Some(cost),
             _ => None,
         }
     }

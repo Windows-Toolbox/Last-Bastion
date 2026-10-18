@@ -78,6 +78,7 @@ impl World {
                 Some(Target::Zombie(z)) => {
                     self.shots.push((unit.pos, to));
                     let zombie = &mut self.zombies[z];
+                    // The same as `shot_damage` – here `self` is already borrowed through `unit` and `zombie`.
                     let damage = stats.damage.saturating_sub(zombie.breed.stats().armor).max(1);
                     zombie.hp = zombie.hp.saturating_sub(damage);
                     if !zombie.is_alive() {
@@ -117,7 +118,57 @@ impl World {
         }
     }
 
-    pub(super) fn nearest_zombie(&self, pos: Vec2, range: f32) -> Option<usize> {
+    /// Whom every unit aims at this tick – for all of them together, so a crowd doesn't all pick the same zombie
+    /// (overkill prevention, 2026-10-17). Without it, a blob of soldiers aimed at the one zombie in front: the first
+    /// shots killed it, all the others had to turn and aim anew – at the next one in front, again all together. 160
+    /// soldiers fired like 15.
+    ///
+    /// Two rounds, in the order of the list (the same on every PC):
+    /// 1. Whoever keeps its target (`kept_target`) keeps it – what its next shot does to it is counted.
+    /// 2. Whoever needs a new one takes the nearest zombie that isn't already as good as dead from the shots aimed at
+    ///    it – and counts its own shot. Is every zombie in range covered: simply the nearest. Medics: the nearest hurt
+    ///    unit, as before.
+    ///
+    /// Only for units that pick their targets themselves (standing, holding, attack-move, patrol, in a tower) – one
+    /// that walks (move, follow) or has a zombie of its own to attack gets `None` here (`units.rs` decides for it).
+    pub(super) fn choose_targets(&self) -> Vec<Option<Target>> {
+        let picks = |i: usize| self.units[i].picks_targets();
+        let mut targets: Vec<Option<Target>> =
+            (0..self.units.len()).map(|i| if picks(i) { self.kept_target(i) } else { None }).collect();
+        // Per zombie (by index): the damage of the shots already aimed at it.
+        let mut aimed = vec![0u32; self.zombies.len()];
+        for (i, target) in targets.iter().enumerate() {
+            if let Some(Target::Zombie(z)) = *target {
+                aimed[z] += self.shot_damage(i, z);
+            }
+        }
+        for i in 0..self.units.len() {
+            if targets[i].is_some() || !picks(i) {
+                continue;
+            }
+            let unit = &self.units[i];
+            if unit.stats().heals {
+                targets[i] = self.nearest_hurt_ally(i, unit.range()).map(Target::Ally);
+                continue;
+            }
+            // A zombie is still open if the shots aimed at it don't kill it yet.
+            let open = self.nearest_zombie(unit.pos, unit.range(), |z| aimed[z] < self.zombies[z].hp);
+            let pick = open.or_else(|| self.nearest_zombie(unit.pos, unit.range(), |_| true));
+            if let Some(z) = pick {
+                aimed[z] += self.shot_damage(i, z);
+            }
+            targets[i] = pick.map(Target::Zombie);
+        }
+        targets
+    }
+
+    /// What one shot of unit `i` does to zombie `z`: the damage minus the zombie's armor, at least 1.
+    fn shot_damage(&self, i: usize, z: usize) -> u32 {
+        self.units[i].stats().damage.saturating_sub(self.zombies[z].breed.stats().armor).max(1)
+    }
+
+    /// The nearest living zombie within `range` that's in sight and that `accept` takes (by its index).
+    pub(super) fn nearest_zombie(&self, pos: Vec2, range: f32, accept: impl Fn(usize) -> bool) -> Option<usize> {
         let r = range.ceil() as i32;
         let (cx, cy) = (pos.x.floor() as i32, pos.y.floor() as i32);
         let mut best: Option<(f32, usize)> = None;
@@ -125,7 +176,7 @@ impl World {
             for dx in -r..=r {
                 for &z in self.grid.cell(cx + dx, cy + dy) {
                     let z = z as usize;
-                    if !self.zombies[z].is_alive() {
+                    if !self.zombies[z].is_alive() || !accept(z) {
                         continue;
                     }
                     let d = self.zombies[z].pos.distance(pos);

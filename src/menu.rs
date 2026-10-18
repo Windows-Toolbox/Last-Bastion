@@ -1,19 +1,26 @@
-//! The game menu (Esc, DESIGN.md 7.1) with the settings (11.4). In single player it stops
+//! The menu on Esc (DESIGN.md 7.1) with the settings (11.4). In single player it stops
 //! everything: while it's open, no simulation runs and no orders go out.
+//! The game and the editor have their own buttons (`Program`).
 //! The buttons and sliders come from `widgets.rs` (shared with the home screen).
 
 use macroquad::prelude::*;
 
+use crate::app::Program;
 use crate::settings::{self, Settings, WindowMode};
 use crate::widgets::{button, choice, slider, toggle, Column};
 
 const WIDTH: f32 = 460.0;
 
-/// What the player triggered in the menu – `main.rs` carries it out.
+/// What the player triggered in the menu – `game.rs` carries it out.
 pub enum MenuAction {
     Nothing,
+    /// Game: the same map from the start. Editor: back to the map as it was saved ("Revert").
     Restart,
+    /// Game: a new map with the same setup and a new seed.
     NewMap,
+    /// Editor: save the map.
+    Save,
+    /// Game: back to the home screen. Editor: close the map (to the editor's home screen).
     MainMenu,
     Quit,
 }
@@ -27,11 +34,12 @@ enum Page {
 pub struct Menu {
     pub open: bool,
     page: Page,
+    program: Program,
 }
 
 impl Menu {
-    pub fn new() -> Menu {
-        Menu { open: false, page: Page::Main }
+    pub fn new(program: Program) -> Menu {
+        Menu { open: false, page: Page::Main, program }
     }
 
     /// Esc: open the menu – inside the menu one page back – on the first page close it.
@@ -66,31 +74,37 @@ impl Menu {
     }
 
     fn main_page(&mut self) -> MenuAction {
-        let mut col = Column::centered("Game menu", 8, WIDTH);
+        let editor = self.program == Program::Editor;
+        let mut col = Column::centered(if editor { "Editor menu" } else { "Game menu" }, 8, WIDTH);
         if button(col.row(), "Resume", true) {
             self.open = false;
         }
         if button(col.row(), "Settings", true) {
             self.page = Page::Settings;
         }
-        if button(col.row(), "Restart (same map)", true) {
-            self.open = false;
-            return MenuAction::Restart;
-        }
-        if button(col.row(), "New map (same setup, new seed)", true) {
-            self.open = false;
-            return MenuAction::NewMap;
-        }
-        button(col.row(), "Save / Load game (coming later)", false);
+        // `bool::then_some`: `Some(action)` if the button was clicked, otherwise `None`. Every `button` call is made (each
+        // one draws its button), `or` keeps the first `Some`.
+        let mut clicked = if editor {
+            let save = button(col.row(), "Save map (Ctrl+S)", true).then_some(MenuAction::Save);
+            let revert = button(col.row(), "Revert to saved", true).then_some(MenuAction::Restart);
+            save.or(revert)
+        } else {
+            let restart = button(col.row(), "Restart (same map)", true).then_some(MenuAction::Restart);
+            let new_map = button(col.row(), "New map (same setup, new seed)", true).then_some(MenuAction::NewMap);
+            button(col.row(), "Save / Load game (coming later)", false);
+            restart.or(new_map)
+        };
         col.gap();
-        if button(col.row(), "Main menu", true) {
-            self.open = false;
-            return MenuAction::MainMenu;
+        let leave = if editor { "Close map" } else { "Main menu" };
+        clicked = clicked.or(button(col.row(), leave, true).then_some(MenuAction::MainMenu));
+        clicked = clicked.or(button(col.row(), if editor { "Quit editor" } else { "Quit game" }, true).then_some(MenuAction::Quit));
+        match clicked {
+            Some(action) => {
+                self.open = false;
+                action
+            }
+            None => MenuAction::Nothing,
         }
-        if button(col.row(), "Quit game", true) {
-            return MenuAction::Quit;
-        }
-        MenuAction::Nothing
     }
 }
 

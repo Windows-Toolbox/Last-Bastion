@@ -2,6 +2,7 @@
   "soldier": {
     "name": "Soldier",
     "letter": "S",
+    "cost": 100,
     "hp": 120,
     "armor": 3,
     "damage": 15,
@@ -18,6 +19,7 @@
   "ranger": {
     "name": "Ranger",
     "letter": "R",
+    "cost": 60,
     "hp": 60,
     "armor": 0,
     "damage": 10,
@@ -34,6 +36,7 @@
   "sniper": {
     "name": "Sniper",
     "letter": "Sn",
+    "cost": 200,
     "hp": 150,
     "armor": 2,
     "damage": 100,
@@ -50,6 +53,7 @@
   "medic": {
     "name": "Medic",
     "letter": "M",
+    "cost": 120,
     "hp": 60,
     "armor": 1,
     "damage": 0,

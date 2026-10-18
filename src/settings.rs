@@ -34,6 +34,8 @@ pub struct Settings {
     pub always_full_queue: bool,
     /// Stats and key help in the top left (F3).
     pub dev_overlay: bool,
+    /// The sections of that overlay that are folded shut (`overlay.rs`) – by their key.
+    pub overlay_folded: Vec<String>,
 }
 
 impl Default for Settings {
@@ -46,6 +48,8 @@ impl Default for Settings {
             always_health_bars: false,
             always_full_queue: true,
             dev_overlay: true,
+            // At first only the measurements and the switches are open – the key help is there, one click away.
+            overlay_folded: ["select", "commands", "buildings", "groups", "keys"].map(String::from).to_vec(),
         }
     }
 }
@@ -78,6 +82,16 @@ impl Settings {
         };
         if fs::create_dir_all(&dir).and_then(|_| fs::write(&path, text)).is_err() {
             eprintln!("Could not save the settings: {}", path.display());
+        }
+    }
+
+    /// Changed since `before` (one frame earlier)? Then apply it right away and save it (DESIGN.md 11.4).
+    pub fn apply_changes(&self, before: &Settings) {
+        if self != before {
+            if self.window_mode != before.window_mode {
+                macroquad::window::set_fullscreen(self.window_mode == WindowMode::Borderless);
+            }
+            self.save();
         }
     }
 }

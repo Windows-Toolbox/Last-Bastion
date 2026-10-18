@@ -9,10 +9,13 @@ use crate::cursor::Cursor;
 use crate::draw::{draw_diamond, mark_color, ore_color, terrain_color, SpawnerShape, ZOMBIE};
 use crate::editor::{Editor, Sight, Tool};
 use crate::formation::{self, Formation, Shape, MIN_DRAG};
-use crate::hud::{Button, HudHit, Layout, Submenu, COMMAND_CENTER_BUTTONS, DEFENSE_BUTTONS, TOWER_BUTTONS, UNIT_BUTTONS};
+use crate::hud::{
+    menu_buttons, Button, HudHit, Layout, Submenu, BARRACKS_BUTTONS, COMMAND_CENTER_BUTTONS, REPAIR_BUTTONS, TOWER_BUTTONS,
+    UNIT_BUTTONS,
+};
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::{Region, Terrain};
+use crate::map::{Ore, Region, Terrain};
 use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
 use crate::sim::{Command, Mark, Order, Rally, Spawner, World};
@@ -147,6 +150,9 @@ pub struct Ui {
     pub selected: Vec<u32>,
     /// The selected buildings (their `id`) – alone or together with units.
     pub selected_buildings: Vec<u32>,
+    /// A zombie clicked on (its `id`) – only to look at its values, like an enemy in StarCraft. Never together with
+    /// your units or buildings, and gone once it's dead or out of sight.
+    pub selected_zombie: Option<u32>,
     /// The Tab subgroup: which type of the selection is "in front" right now – its buttons are on the card.
     pub active: Option<Sub>,
     /// The build menu of the command center that is open (D, E, A) – `None`: its main buttons.
@@ -169,9 +175,20 @@ pub struct Ui {
     pan_drag: Option<Vec2>,
     /// After T, P, M or R: the next left click gives this command instead of selecting.
     pub targeting: Option<Button>,
+    /// The waiting command was given with Shift at least once (waypoints) – letting go of Shift then takes it off the
+    /// mouse and puts it here, and pressing Shift again puts it back. Gone with the next click, command or selection.
+    chained: bool,
+    parked: Option<Button>,
+    /// The overlay in the top left (F3), if it's shown: clicks there are for it, not for the map (`game.rs`).
+    pub overlay: Option<Rect>,
     /// After B, V, G or T: a building hangs on the mouse and waits for its spot. It stays there after building –
     /// until right click or Esc.
     pub placing: Option<BuildingKind>,
+    /// The building on the mouse came from the editor's panel: it goes anywhere and costs nothing – even in a test.
+    /// (From the command center it follows the rules of the game while a test runs.)
+    free_placing: bool,
+    /// A short message in the middle at the top ("Not enough gold", a wave is coming) and how many seconds it stays.
+    alert: Option<(String, f32)>,
     /// The building on the mouse is turned by 90° (R – only the gate is not square).
     turned: bool,
     /// The formation units line up in when they're sent somewhere (buttons on the command card).
@@ -205,16 +222,18 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(settings: Settings) -> Ui {
+    /// `editor`: in the map editor (with its panel and tools) or in the game.
+    pub fn new(settings: Settings, editor: bool) -> Ui {
         Ui {
             selected: Vec::new(),
             selected_buildings: Vec::new(),
+            selected_zombie: None,
             active: None,
             submenu: None,
             paused: false,
             speed: 1,
             settings,
-            editor: Editor::new(),
+            editor: Editor::new(editor),
             cursor: Cursor::new(),
             real_mouse: None,
             hover_unit: None,
@@ -222,7 +241,12 @@ impl Ui {
             hover_building: None,
             pan_drag: None,
             targeting: None,
+            chained: false,
+            parked: None,
+            overlay: None,
             placing: None,
+            free_placing: false,
+            alert: None,
             turned: false,
             formation: Shape::Line,
             form_drag: None,
@@ -290,13 +314,60 @@ impl Ui {
         Some(self.editor.zombie_order(at, self.editor.rate))
     }
 
-    /// Can the building on the mouse go here? In the game by the rules (`can_place`), in editor mode almost anywhere.
+    /// Does the building on the mouse go without the rules of the game (anywhere, for free)? While editing always; in a
+    /// test only if it came from the editor's panel – from the command center the test is the real game.
+    fn rule_free(&self) -> bool {
+        self.editor.editing() && (self.free_placing || !self.editor.testing())
+    }
+
+    /// Can the building on the mouse go here? By the rules (`can_place`), or almost anywhere (`rule_free`).
     fn fits(&self, world: &World, kind: BuildingKind, tile: (i32, i32)) -> bool {
-        if self.editor.editing() {
+        if self.rule_free() {
             world.can_place_anywhere(kind, tile, self.turned)
         } else {
             world.can_place(kind, tile, self.turned)
         }
+    }
+
+    /// The pieces of a building line that would really be built: those that fit and – by the rules – that the gold
+    /// pays for, one after the other. Returns them with what they cost together, and whether some fit but were too
+    /// expensive. `world.gold` is only read: the simulation pays when the orders arrive (`orders.rs`).
+    fn affordable(&self, world: &World, kind: BuildingKind, tiles: &[(i32, i32)]) -> (Vec<(i32, i32)>, u32, bool) {
+        let free = self.rule_free();
+        let (mut left, mut cost, mut short) = (world.gold, 0, false);
+        let mut built = Vec::new();
+        for &tile in tiles {
+            if !self.fits(world, kind, tile) {
+                continue;
+            }
+            let price = if free { 0 } else { world.build_cost(kind, tile, self.turned) };
+            if price > left {
+                short = true;
+                continue;
+            }
+            left -= price;
+            cost += price;
+            built.push(tile);
+        }
+        (built, cost, short)
+    }
+
+    /// A short message in the middle at the top, for a few seconds.
+    pub fn alert(&mut self, text: &str) {
+        self.alert = Some((text.to_owned(), 2.5));
+    }
+
+    /// Nothing selected anymore, the control groups empty – the editor's test runs on a copy of the map, whose units
+    /// and buildings have other numbers.
+    pub fn forget_selection(&mut self) {
+        self.selected.clear();
+        self.selected_buildings.clear();
+        self.selected_zombie = None;
+        self.groups = Default::default();
+        self.targeting = None;
+        self.parked = None;
+        self.placing = None;
+        self.marker = None;
     }
 
     /// Can this zombie be seen (drawn, clicked)? In the player's view only where your units look.
@@ -310,14 +381,26 @@ impl Ui {
         self.targeting.is_some() || self.placing.is_some() || self.editor.tool.is_some()
     }
 
-    /// Does Esc have something to do here – cancel, put away, deselect the spawner, stop typing?
+    /// Does Esc have something to do here – cancel, put away, deselect the spawner, stop typing, clear the selection?
     /// Then it doesn't open the menu.
     pub fn is_busy(&self) -> bool {
+        self.has_pending() || self.has_selection() || self.selected_zombie.is_some()
+    }
+
+    /// Everything Esc cancels before it gets to the selection: a waiting command or tool, a formation being drawn,
+    /// a build menu, the selected spawner, a name being typed.
+    fn has_pending(&self) -> bool {
         self.is_waiting()
             || self.form_drag.is_some()
             || self.submenu.is_some()
             || self.editor.spawner.is_some()
             || self.editor.is_typing()
+    }
+
+    /// Nothing selected anymore (Esc, a click or a box on nothing) – then WASD moves the camera again.
+    fn deselect(&mut self) {
+        self.set_selection(Vec::new(), Vec::new());
+        self.targeting = None;
     }
 
     /// The spawners as the editor shows them – a dragged one with the size it has right now, a renamed one with
@@ -354,19 +437,24 @@ impl Ui {
             Some(Sub::Unit(_)) => UNIT_BUTTONS.to_vec(),
             Some(Sub::Building(BuildingKind::CommandCenter)) => match self.submenu {
                 None => COMMAND_CENTER_BUTTONS.to_vec(),
-                Some(Submenu::Defense) => DEFENSE_BUTTONS.to_vec(),
-                Some(Submenu::Energy | Submenu::Special) => vec![Button::Back],
+                Some(menu) => menu_buttons(menu),
             },
+            Some(Sub::Building(BuildingKind::Barracks)) => BARRACKS_BUTTONS.to_vec(),
             Some(Sub::Building(BuildingKind::Tower)) => TOWER_BUTTONS.to_vec(),
-            _ => Vec::new(),
+            Some(Sub::Building(_)) => REPAIR_BUTTONS.to_vec(),
+            None => Vec::new(),
         }
     }
 
-    /// A new selection: these units and buildings, nothing on the mouse anymore.
+    /// A new selection: these units and buildings, nothing on the mouse anymore. A build menu of the command center
+    /// closes – selecting it again (click, group key) shows its main buttons.
     fn set_selection(&mut self, units: Vec<u32>, buildings: Vec<u32>) {
         self.selected = units;
         self.selected_buildings = buildings;
+        self.selected_zombie = None;
         self.placing = None;
+        self.parked = None;
+        self.submenu = None;
     }
 
     fn select_units(&mut self, ids: Vec<u32>) {
@@ -386,8 +474,26 @@ impl Ui {
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
 
+        // Waypoints with Shift (like StarCraft): Shift let go, and the command comes off the mouse – no right click
+        // needed. Shift pressed again before anything else happened, and it's back on the mouse.
+        if self.chained && !shift {
+            self.parked = self.targeting.take();
+            self.chained = false;
+        } else if shift && self.targeting.is_none() {
+            if let Some(button) = self.parked.take() {
+                self.targeting = Some(button);
+                self.chained = true;
+            }
+        }
+        if is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right) {
+            self.parked = None;
+        }
+
         // While a name is being typed (spawner, map), the keyboard belongs to the name field: no hotkeys, no WASD.
         let typing = self.editor.is_typing();
+        // Esc with nothing else to cancel clears the selection – the next Esc opens the menu. Decided now, before
+        // anything below cancels something: one press does one thing.
+        let esc_deselects = !typing && is_key_pressed(KeyCode::Escape) && !self.has_pending();
         if typing {
             self.editor.type_text(orders);
         } else if is_key_pressed(KeyCode::Escape) {
@@ -406,10 +512,17 @@ impl Ui {
         }
         let card = self.card(world);
         self.mouse_buttons(world, camera, orders, &layout, mouse, shift, ctrl);
+        // X: repair all (like TAB) – unless the card has a button on X right now (units: the Line formation).
+        if !typing && is_key_pressed(KeyCode::X) && !card.iter().any(|b| b.key() == KeyCode::X) {
+            self.repair(world, orders, (0..world.buildings.len()).collect());
+        }
         if !typing {
             self.command_keys(world, orders, &card, shift);
             self.selection_keys(world, camera, shift, ctrl);
             self.other_keys();
+        }
+        if esc_deselects {
+            self.deselect();
         }
         self.move_camera(world, camera, mouse, dt, !typing);
         self.fix_active(world);
@@ -421,6 +534,12 @@ impl Ui {
             *time_left -= dt;
             if *time_left <= 0.0 {
                 self.marker = None;
+            }
+        }
+        if let Some((_, time_left)) = &mut self.alert {
+            *time_left -= dt;
+            if *time_left <= 0.0 {
+                self.alert = None;
             }
         }
     }
@@ -438,6 +557,12 @@ impl Ui {
         if self.selected_buildings.len() < before {
             self.targeting = None;
             self.placing = None;
+        }
+        // The zombie looked at: gone when it's dead, out of sight – or when units or buildings got selected some
+        // other way (control group, F2 …).
+        let zombie_gone = |id: u32| world.find_zombie(id).is_none_or(|z| !self.shows_zombie(world, world.zombies[z].pos));
+        if self.selected_zombie.is_some_and(zombie_gone) || self.has_selection() {
+            self.selected_zombie = None;
         }
         // A removed spawner – but not one that has just been placed and isn't in the world yet.
         if let Some(id) = self.editor.spawner {
@@ -464,9 +589,10 @@ impl Ui {
         // The production queue is only shown (and clickable) when one building alone is selected.
         let building = self.single_building(world);
         let queue = building.map_or(0, |b| world.buildings[b].production.len());
-        // The editor panel lies on top of the map: there it counts like the bottom panel (not the map).
+        // The editor panel and the overlay lie on top of the map: there it counts like the bottom panel (not the map).
         let on_editor = self.editor.contains(mouse);
-        let hit = if on_editor {
+        let on_overlay = self.overlay.is_some_and(|r| r.contains(mouse));
+        let hit = if on_editor || on_overlay {
             Some(HudHit::Panel)
         } else {
             layout.hit(mouse, self.view_area(world), view.len(), queue, &self.card(world))
@@ -491,6 +617,7 @@ impl Ui {
                 if let Some(place) = self.editor.place.take() {
                     self.targeting = None;
                     self.placing = place;
+                    self.free_placing = true;
                     self.turned = false;
                     self.selected_buildings.clear();
                 }
@@ -510,18 +637,13 @@ impl Ui {
                 match self.aimed_at(button, world, camera, mouse).filter(|_| on_field) {
                     Some(command) => {
                         self.give(orders, command, shift, point, None);
-                        // With Shift the mode stays – that's how you set several waypoints in a row.
-                        if !shift {
-                            self.targeting = None;
-                        }
+                        self.keep_targeting(shift);
                     }
                     None if on_field => self.form_drag = Some(FormDrag { from: point, button, mouse: MouseButton::Left }),
                     None => {
                         // On the minimap: a click, so no formation – everyone to the point.
                         self.give(orders, point_command(button, point), shift, point, None);
-                        if !shift {
-                            self.targeting = None;
-                        }
+                        self.keep_targeting(shift);
                     }
                 }
             } else {
@@ -541,6 +663,8 @@ impl Ui {
                         }
                     }
                     Some(HudHit::Button(button)) => self.press(button, world, orders, shift),
+                    Some(HudHit::Pause) => self.paused = !self.paused,
+                    Some(HudHit::RepairAll) => self.repair(world, orders, (0..world.buildings.len()).collect()),
                     Some(HudHit::Panel) => {}
                 }
             }
@@ -551,10 +675,10 @@ impl Ui {
                     camera.center = p;
                 }
             }
-            // Painting terrain or ore: every frame the mouse is on another tile, paint the way there.
-            if let (Some(tool @ (Tool::Paint(_) | Tool::Ore(_))), Some(last), None) = (self.editor.tool, self.paint_last, hit) {
+            // Painting terrain or ore, erasing: every frame the mouse is on another tile, paint the way there.
+            if let (Some(tool), Some(last), None) = (self.editor.tool, self.paint_last, hit) {
                 let now = tile_of(point);
-                if now != last {
+                if tool.paints() && now != last {
                     self.paint(tool, last, now, orders);
                 }
             }
@@ -569,15 +693,16 @@ impl Ui {
             self.minimap_drag = false;
             self.paint_last = None;
             if let (Some(start), Some(kind)) = (self.place_start.take(), self.placing) {
-                // Build the whole line – every piece that has room. The building stays on the mouse for the next
-                // line, until right click or Esc.
-                // In editor mode without the rules of the game.
+                // Build the whole line – every piece that has room and that the gold pays for. The building stays on
+                // the mouse for the next line, until right click or Esc. In the editor without the rules of the game.
                 let end = placement_tile(kind, self.turned, camera.screen_to_world(mouse));
-                let (turned, editor) = (self.turned, self.editor.editing());
-                for tile in placement_line(kind, start, end) {
-                    if self.fits(world, kind, tile) {
-                        orders.push(Order::PlaceBuilding { kind, tile, turned, editor });
-                    }
+                let (turned, editor) = (self.turned, self.rule_free());
+                let (tiles, _, short) = self.affordable(world, kind, &placement_line(kind, start, end));
+                for tile in tiles {
+                    orders.push(Order::PlaceBuilding { kind, tile, turned, editor });
+                }
+                if short {
+                    self.alert("Not enough gold");
                 }
             }
             if let Some(start) = self.drag_start.take() {
@@ -654,7 +779,17 @@ impl Ui {
             let middle = if self.formation == Shape::Circle { drag.from } else { (drag.from + to) / 2.0 };
             self.give(orders, command, shift, middle, Some(formation));
         }
-        if drag.mouse == MouseButton::Left && !shift {
+        if drag.mouse == MouseButton::Left {
+            self.keep_targeting(shift);
+        }
+    }
+
+    /// After a command went to its target: without Shift the waiting ends, with Shift it stays – that's how you set
+    /// several waypoints in a row (until Shift is let go).
+    fn keep_targeting(&mut self, shift: bool) {
+        if shift {
+            self.chained = true;
+        } else {
             self.targeting = None;
         }
     }
@@ -685,7 +820,7 @@ impl Ui {
     /// Left click on the map with an editor tool in hand.
     fn use_tool(&mut self, tool: Tool, world: &World, orders: &mut Vec<Order>, point: Vec2) {
         match tool {
-            Tool::Paint(_) | Tool::Ore(_) => {
+            Tool::Paint(_) | Tool::Ore(_) | Tool::Remove => {
                 let tile = tile_of(point);
                 self.paint(tool, tile, tile, orders);
             }
@@ -707,20 +842,31 @@ impl Ui {
     }
 
     /// Paints with the brush along the line from `from` to `to` – one order for the whole stroke.
-    /// `tool`: terrain or ore – anything else doesn't paint.
+    /// `tool`: terrain, ore or the eraser – anything else doesn't paint.
     fn paint(&mut self, tool: Tool, from: (i32, i32), to: (i32, i32), orders: &mut Vec<Order>) {
+        // Oil isn't painted but stamped: one node of 2 × 2 tiles, whatever the brush. Dragged, the next one only comes
+        // where it doesn't touch the last one – nodes never touch (`mapgen/ores.rs`).
+        if tool == Tool::Ore(Some(Ore::Oil)) {
+            if self.paint_last.is_some() && (to.0 - from.0).abs().max((to.1 - from.1).abs()) < 3 {
+                return;
+            }
+            orders.push(Order::PaintOre { ore: Some(Ore::Oil), tiles: oil_node(to) });
+            self.paint_last = Some(to);
+            return;
+        }
         let mut tiles: Vec<(i32, i32)> = grid_line(from, to).into_iter().flat_map(|t| self.editor.brush_tiles(t)).collect();
         tiles.sort();
         tiles.dedup(); // neighbouring brush squares overlap
         match tool {
             Tool::Paint(terrain) => orders.push(Order::PaintTerrain { terrain, tiles }),
             Tool::Ore(ore) => orders.push(Order::PaintOre { ore, tiles }),
+            Tool::Remove => orders.push(Order::RemoveAt { tiles }),
             _ => {}
         }
         self.paint_last = Some(to);
     }
 
-    /// The selected buildings that have a rally point (command center, tower) – `active`: only those of the active
+    /// The selected buildings that have a rally point (barracks, tower) – `active`: only those of the active
     /// type (the Rally button), otherwise all of them (right click).
     fn rally_buildings(&self, world: &World, active: bool) -> Vec<u32> {
         let picked = if active { self.active_buildings(world) } else { self.selection_view(world).iter().filter_map(|p| match p {
@@ -729,7 +875,7 @@ impl Ui {
         }).collect() };
         picked
             .into_iter()
-            .filter(|&b| matches!(world.buildings[b].kind, BuildingKind::CommandCenter | BuildingKind::Tower))
+            .filter(|&b| matches!(world.buildings[b].kind, BuildingKind::Barracks | BuildingKind::Tower))
             .map(|b| world.buildings[b].id)
             .collect()
     }
@@ -793,6 +939,8 @@ impl Ui {
             return;
         }
         self.targeting = None;
+        self.chained = false;
+        self.parked = None;
         self.placing = None;
         self.editor.tool = None;
         let buildings = self.active_buildings(world);
@@ -803,33 +951,83 @@ impl Ui {
                 orders.push(Order::Command { units, command: Command::Hold, queue: shift, formation: None });
             }
             Button::Move | Button::Patrol | Button::Attack | Button::Rally => self.targeting = Some(button),
-            Button::PlaceTent | Button::PlaceWall | Button::PlaceGate | Button::PlaceTower => {
+            Button::PlaceBarracks | Button::PlaceTent | Button::PlaceWall | Button::PlaceGate | Button::PlaceTower => {
                 self.placing = button.places();
+                self.free_placing = false;
             }
             Button::Open(menu) => self.submenu = Some(menu),
             Button::Back => self.submenu = None,
+            Button::Planned(_) => self.alert(&format!("{} - planned, not in the game yet", button.title())),
+            Button::Repair => {
+                let selected = self.selected_building_indices(world);
+                self.repair(world, orders, selected);
+            }
             Button::Unload => {
                 for b in buildings {
                     orders.push(Order::Unload { building: world.buildings[b].id });
                 }
             }
-            // With Shift 5 at once, like in StarCraft. Several command centers selected: each unit goes to the one
-            // with the shortest queue.
+            // With Shift 5 at once, like in StarCraft. Several barracks selected: each unit goes to the one
+            // with the shortest queue. Only as many as the gold pays for (the simulation pays, `orders.rs`).
             Button::TrainSoldier | Button::TrainRanger | Button::TrainSniper | Button::TrainMedic => {
                 let Some(kind) = button.trains() else {
                     return;
                 };
+                if self.editor.editing() && !self.editor.testing() {
+                    self.alert("No time passes while editing - train units in a test (F10)");
+                    return;
+                }
                 let mut queued: Vec<(usize, u32)> =
                     buildings.iter().map(|&b| (world.buildings[b].production.len(), world.buildings[b].id)).collect();
+                let mut gold = world.gold;
                 for _ in 0..if shift { 5 } else { 1 } {
+                    if gold < kind.stats().cost {
+                        self.alert("Not enough gold");
+                        return;
+                    }
                     let Some(shortest) = queued.iter_mut().min_by_key(|(len, _)| *len) else {
                         return;
                     };
                     orders.push(Order::Train { building: shortest.1, kind });
                     shortest.0 += 1;
+                    gold -= kind.stats().cost;
                 }
             }
             Button::FormLine | Button::FormBox | Button::FormCircle => {} // handled above
+        }
+    }
+
+    /// The selected buildings (all types, not only the active one) – what F repairs.
+    pub fn selected_building_indices(&self, world: &World) -> Vec<usize> {
+        self.selected_buildings.iter().filter_map(|&id| world.find_building(id)).collect()
+    }
+
+    /// Repair these buildings (indices) – F: the selected ones, X: all. Cheapest first, as many as the gold pays for
+    /// (`repair_plan`), and a message if not all of them get repaired. The simulation checks it all again when the
+    /// order arrives (`start_repair`); `world.gold` is only read here.
+    fn repair(&mut self, world: &World, orders: &mut Vec<Order>, candidates: Vec<usize>) {
+        if self.editor.editing() && !self.editor.testing() {
+            self.alert("No time passes while editing - repair in a test (F10)");
+            return;
+        }
+        let plan = world.repair_plan(candidates);
+        if plan.damaged == 0 {
+            self.alert("Nothing to repair");
+            return;
+        }
+        if plan.chosen.len() < plan.damaged {
+            let short = plan.damaged - plan.blocked > plan.chosen.len();
+            let why = match (plan.blocked > 0, short) {
+                (true, true) => "zombies too close, not enough gold",
+                (true, false) => "zombies too close",
+                _ => "not enough gold",
+            };
+            let (done, of) = (plan.chosen.len(), plan.damaged);
+            self.alert(&if done == 0 { format!("Nothing repaired - {why}") } else { format!("Repairing {done} of {of} - {why}") });
+        }
+        if !plan.chosen.is_empty() {
+            let buildings = plan.chosen.iter().map(|&b| world.buildings[b].id).collect();
+            orders.push(Order::Repair { buildings });
         }
     }
 
@@ -837,6 +1035,7 @@ impl Ui {
     fn command_keys(&mut self, world: &World, orders: &mut Vec<Order>, card: &[Button], shift: bool) {
         // Esc: first the waiting command or the building on the mouse, then the build menu (back to the main buttons).
         if is_key_pressed(KeyCode::Escape) {
+            self.parked = None;
             if self.targeting.is_some() || self.placing.is_some() {
                 self.targeting = None;
                 self.placing = None;
@@ -898,7 +1097,8 @@ impl Ui {
 
     /// A click (barely moved) selects one unit, dragging selects everyone in the box.
     /// Shift: add, or remove again by clicking. Ctrl-click or double click: all of this type on screen.
-    /// Like in StarCraft the old selection stays if the click or box hits nothing.
+    /// A click or box on nothing clears the selection like in TAB (StarCraft keeps it – but then there was no quick
+    /// way to get rid of it, and WASD only moves the camera with nothing selected). With Shift or Ctrl it stays.
     #[allow(clippy::too_many_arguments)]
     fn select(&mut self, world: &World, camera: &Camera, layout: &Layout, start: Vec2, end: Vec2, shift: bool, ctrl: bool) {
         let rect = Rect::new(
@@ -926,15 +1126,27 @@ impl Ui {
                 .filter(|b| rect.contains(camera.world_to_screen(b.center())))
                 .map(|b| b.id)
                 .collect();
+            if buildings.is_empty() && !shift && !ctrl {
+                self.deselect();
+            }
             self.add_or_replace_buildings(buildings, shift);
             return;
         }
 
         let Some(i) = unit_under_mouse(world, camera, end) else {
+            // No unit, but a zombie: show its values (the selection goes – like clicking an enemy in StarCraft). With
+            // Shift or Ctrl a zombie can't be added to your units, so then it's ignored.
+            if let Some(zombie) = self.zombie_at(world, camera, end).filter(|_| !shift && !ctrl) {
+                self.deselect();
+                self.selected_zombie = Some(zombie);
+                return;
+            }
             // No unit, but a building: select it. Shift: add or take out. Ctrl or double click: all of its type on
-            // the screen.
-            if let Some(b) = building_under_mouse(world, camera, end) {
-                self.click_building(world, camera, layout, b, shift, ctrl);
+            // the screen. Nothing at all: the selection goes.
+            match building_under_mouse(world, camera, end) {
+                Some(b) => self.click_building(world, camera, layout, b, shift, ctrl),
+                None if !shift && !ctrl => self.deselect(),
+                None => {}
             }
             return;
         };
@@ -1272,8 +1484,14 @@ impl Ui {
             }
         }
         // Under the mouse: zombie red (right click = attack), own unit white.
-        if let Some(z) = self.hover_zombie.and_then(|id| world.zombies.iter().find(|z| z.id == id)) {
-            ring(z.pos, RED);
+        if let Some(z) = self.hover_zombie.and_then(|id| world.find_zombie(id)) {
+            ring(world.zombies[z].pos, RED);
+        }
+        // The zombie clicked on: a thick red ring.
+        if let Some(z) = self.selected_zombie.and_then(|id| world.find_zombie(id)) {
+            let s = camera.world_to_screen(world.zombies[z].pos);
+            let w = 0.8 * TILE_W * camera.zoom;
+            draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 3.0, RED);
         }
         if let Some(i) = self.hover_unit.and_then(|id| world.find_unit(id)) {
             ring(world.units[i].pos, WHITE);
@@ -1317,9 +1535,10 @@ impl Ui {
             } else {
                 Color::new(1.0, 1.0, 1.0, 0.35)
             };
-            // The zone free of zombies only counts in the game – the editor builds anywhere.
+            // The zone free of zombies only counts by the rules of the game – the editor builds anywhere.
+            let free = self.rule_free();
             let corners = [min, vec2(max.x, min.y), max, vec2(min.x, max.y)];
-            for k in (0..4).filter(|_| !self.editor.editing()) {
+            for k in (0..4).filter(|_| !free) {
                 let (p, q) = (camera.world_to_screen(corners[k]), camera.world_to_screen(corners[(k + 1) % 4]));
                 draw_line(p.x, p.y, q.x, q.y, 1.5, frame);
             }
@@ -1328,14 +1547,10 @@ impl Ui {
                 None => vec![here],
             };
             let (w, h) = kind.footprint(turned);
-            // What the pieces that have room cost together (only shown – nothing is paid yet).
-            let mut cost = 0;
+            // Green: it will be built – red: no room there, or the gold doesn't reach that far.
+            let (built, cost, short) = self.affordable(world, kind, &tiles);
             for tile in tiles {
-                let fits = self.fits(world, kind, tile);
-                if fits {
-                    cost += world.build_cost(kind, tile, turned);
-                }
-                let color = if fits {
+                let color = if built.contains(&tile) {
                     Color::new(0.3, 0.9, 0.3, 0.45)
                 } else {
                     Color::new(0.9, 0.2, 0.2, 0.45)
@@ -1349,26 +1564,33 @@ impl Ui {
             }
             // On walls the gate is cheaper – the text says so, so it doesn't look like a mistake.
             let on_walls = world.replaced_by(kind, here, turned).len();
-            let mut text = format!("Cost {cost}");
-            if on_walls > 0 && self.place_start.is_none() {
+            let mut text = if free { "Free (editor)".to_owned() } else { format!("Cost {cost}") };
+            if on_walls > 0 && self.place_start.is_none() && !free {
                 text += &format!(" (on {on_walls} wall{})", if on_walls == 1 { "" } else { "s" });
+            }
+            if short {
+                text += &format!(" - not enough gold ({})", world.gold);
             }
             if kind == BuildingKind::Gate {
                 text += "   R: turn";
             }
-            draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, WHITE);
+            let color = if short { Color::new(1.0, 0.45, 0.4, 1.0) } else { WHITE };
+            draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, color);
         }
         // Editor tool on the mouse: the brush in the colour of the terrain, or the name of what gets spawned.
         if let Some(tool) = self.editor.tool.filter(|_| !self.editor.contains(mouse)) {
             match tool {
-                Tool::Paint(_) | Tool::Ore(_) => {
+                Tool::Paint(_) | Tool::Ore(_) | Tool::Remove => {
                     let color = match tool {
                         Tool::Paint(Terrain::Grass) | Tool::Ore(None) => Color::new(1.0, 1.0, 1.0, 0.25),
                         Tool::Paint(terrain) => Color { a: 0.6, ..terrain_color(terrain) },
                         Tool::Ore(Some(ore)) => Color { a: 0.6, ..ore_color(ore) },
+                        Tool::Remove => Color::new(0.9, 0.15, 0.15, 0.35),
                         _ => WHITE,
                     };
-                    for (x, y) in self.editor.brush_tiles(tile_of(camera.screen_to_world(mouse))) {
+                    let tile = tile_of(camera.screen_to_world(mouse));
+                    let tiles = if tool == Tool::Ore(Some(Ore::Oil)) { oil_node(tile) } else { self.editor.brush_tiles(tile) };
+                    for (x, y) in tiles {
                         draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, color);
                     }
                 }
@@ -1457,6 +1679,15 @@ impl Ui {
             let color = mark_color(button_mark(button));
             draw_circle_lines(mouse.x, mouse.y, 10.0, 2.0, color);
             draw_text(button.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, color);
+        }
+        // The message at the top (`alert`) – it fades out in its last half second.
+        if let Some((text, time_left)) = &self.alert {
+            let fade = (time_left * 2.0).min(1.0);
+            let w = measure_text(text, None, 24, 1.0).width + 32.0;
+            let (x, y) = ((screen_width() - w) / 2.0, 48.0);
+            draw_rectangle(x, y, w, 38.0, Color::new(0.08, 0.09, 0.11, 0.85 * fade));
+            draw_rectangle_lines(x, y, w, 38.0, 1.0, Color::new(0.95, 0.62, 0.20, fade));
+            draw_text(text, x + 16.0, y + 26.0, 24.0, Color::new(1.0, 1.0, 1.0, fade));
         }
     }
 }
@@ -1578,3 +1809,7 @@ fn building_under_mouse(world: &World, camera: &Camera, mouse: Vec2) -> Option<u
     None
 }
 
+/// The 2 × 2 tiles of an oil node whose top corner is `tile` – the editor's oil stamp.
+fn oil_node(tile: (i32, i32)) -> Vec<(i32, i32)> {
+    vec![tile, (tile.0 + 1, tile.1), (tile.0, tile.1 + 1), (tile.0 + 1, tile.1 + 1)]
+}

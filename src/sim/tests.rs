@@ -16,6 +16,8 @@ fn scripted_game() -> u64 {
     let circle = Formation { shape: formation::Shape::Circle, from: base + vec2(-6.0, -6.0), to: base + vec2(-3.0, -6.0) };
     for tick in 0..600 {
         let orders = match tick {
+            // The barracks a tick before the rest, so it gets building number 2 whether the tent fits or not.
+            49 => vec![Order::PlaceBuilding { kind: BuildingKind::Barracks, tile: (bx + 8, by + 8), turned: false, editor: true }],
             50 => vec![
                 Order::SpawnWave { count: 300, from: WaveFrom::Sides(2) },
                 Order::SpawnZombiesAt { count: 50, point: base + vec2(6.0, -4.0) },
@@ -27,8 +29,8 @@ fn scripted_game() -> u64 {
                 Order::Command { units: ids[3..8].to_vec(), command: Command::AttackMove(base + vec2(6.0, 6.0)), queue: true, formation: None },
                 Order::Command { units: ids[8..10].to_vec(), command: Command::Follow(ids[0]), queue: false, formation: None },
                 Order::PlaceBuilding { kind: BuildingKind::Tent, tile: (bx + 5, by - 5), turned: false, editor: false },
-                Order::Train { building: 1, kind: UnitKind::Medic },
-                Order::SetRally { building: 1, rally: Rally::Point(base + vec2(-4.0, -4.0)) },
+                Order::Train { building: 2, kind: UnitKind::Medic },
+                Order::SetRally { building: 2, rally: Rally::Point(base + vec2(-4.0, -4.0)) },
             ],
             150 => vec![Order::PaintTerrain { terrain: Terrain::Water, tiles: (bx - 4..bx + 4).map(|x| (x, by + 10)).collect() }],
             300 => vec![Order::Command { units: ids[0..8].to_vec(), command: Command::Move(circle.from), queue: false, formation: Some(circle) }],
@@ -51,7 +53,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0x1661_580a_034c_8173;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0x340f_39ae_9e47_387c;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -79,13 +81,27 @@ fn quiet_world() -> (World, u32) {
     (world, id)
 }
 
+/// A barracks on cleared ground up left of the command center (tiles x −7…−5, y −8…−6 from the base), placed like
+/// in the editor – without time passing, so `tick` stays where it was. Returns its `id`.
+fn barracks(world: &mut World) -> u32 {
+    let tile = (world.base.x as i32 - 7, world.base.y as i32 - 8);
+    let ground = (tile.1 - 2..tile.1 + 5).flat_map(|y| (tile.0 - 2..tile.0 + 5).map(move |x| (x, y))).collect();
+    world.apply_orders(&[
+        Order::PaintTerrain { terrain: Terrain::Grass, tiles: ground },
+        Order::PlaceBuilding { kind: BuildingKind::Barracks, tile, turned: false, editor: true },
+    ]);
+    let b = world.buildings.last().unwrap();
+    assert_eq!((b.kind, b.tile), (BuildingKind::Barracks, tile), "the barracks didn't fit");
+    b.id
+}
+
 /// A wave on the timeline comes exactly at its tick, out of the spawners in the ring – not a tick earlier.
 /// And the clock counts days of 24 hours from day 1.
 #[test]
 fn timed_wave_comes_on_time() {
     let (mut world, _) = quiet_world();
     let at = world.tick + 30;
-    world.step(&[Order::AddTimedWave(TimedWave { at, count: 50, from: WaveFrom::Sides(1) })]);
+    world.step(&[Order::AddTimedWave(TimedWave { at, count: 50, from: WaveFrom::Sides(1), breed: Breed::Runner, final_wave: false })]);
     while world.tick < at {
         assert!(world.zombies.is_empty(), "too early, tick {}", world.tick);
         world.step(&[]);
@@ -266,21 +282,22 @@ fn tents_only_on_free_ground() {
     assert!(!world.can_place(BuildingKind::Tent, cc, false));
 }
 
-/// Zombies arriving at a tent hit it until it collapses and frees the spot. (No units: otherwise the zombies
-/// see them, storm at them and go around the tent.)
+/// Zombies arriving at a building hit it until it collapses and frees the spot. (No units: otherwise the zombies
+/// see them, storm at them and go around it.) A barracks – a tent would be infected and then left alone.
 #[test]
-fn zombies_destroy_a_tent() {
+fn zombies_destroy_a_building() {
     let (mut world, _) = quiet_world();
     world.units.clear();
     let tile = (world.base.x as i32 + 5, world.base.y as i32 - 5);
-    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile, turned: false, editor: false }]);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Barracks, tile, turned: false, editor: false }]);
+    assert_eq!(world.buildings.len(), 2, "the barracks didn't fit");
     let corner = vec2(tile.0 as f32, tile.1 as f32);
     world.step(&[Order::SpawnZombiesAt { count: 60, point: corner + vec2(1.0, -0.8) }]);
     for _ in 0..600 {
         world.step(&[]);
     }
     // (Without units shooting them, the 60 zombies then tear down the command center too.)
-    assert!(world.buildings.iter().all(|b| b.kind != BuildingKind::Tent), "the tent is still standing");
+    assert!(world.buildings.iter().all(|b| b.kind != BuildingKind::Barracks), "the barracks is still standing");
     assert!(!world.map.is_blocked(tile.0, tile.1));
 }
 
@@ -551,6 +568,25 @@ fn waves_come_from_the_spawners() {
     assert_eq!(sides, vec![100, 100]);
 }
 
+/// A wave from one side comes along the whole side like a TAB swarm, not out of 3 points: the spawners of a new map
+/// cover their side, so the zombies are spread over nearly its whole length – every fifth of it gets some.
+#[test]
+fn a_wave_comes_along_the_whole_side() {
+    let (mut world, _) = quiet_world();
+    world.step(&[Order::SpawnWave { count: 300, from: WaveFrom::Sides(1) }]);
+    let first = spawner_of(&world, world.zombies[0].prev).expect("outside every spawner");
+    let side = world.spawners[first].side(world.map.size);
+    // Along the side: x for the sides at the top and bottom of the map (0, 1), y for the left and right (2, 3).
+    let along: Vec<f32> = world.zombies.iter().map(|z| if side < 2 { z.prev.x } else { z.prev.y }).collect();
+    let play = world.map.play_area();
+    let fifth = play.size / 5.0;
+    for k in 0..5 {
+        let from = play.min.x + fifth * k as f32;
+        let count = along.iter().filter(|&&a| a >= from && a < from + fifth).count();
+        assert!(count > 20, "only {count} of 300 zombies in fifth {k} of side {side}");
+    }
+}
+
 /// Without spawners no zombie comes at all.
 #[test]
 fn no_spawners_no_zombies() {
@@ -630,15 +666,15 @@ fn idle_medic_beams_at_hurt_units_only() {
     assert_eq!(world.beams.len(), 1, "no beam after {ticks} ticks");
 }
 
-/// The command center builds a unit; it comes out and walks to the rally point.
+/// The barracks builds a unit; it comes out and walks to the rally point.
 #[test]
-fn command_center_trains_and_sends_to_rally() {
+fn barracks_trains_and_sends_to_rally() {
     let (mut world, _) = quiet_world();
-    let cc = world.buildings[0].id;
+    let barracks = barracks(&mut world);
     let rally = world.base + vec2(6.0, -6.0);
     world.step(&[
-        Order::SetRally { building: cc, rally: Rally::Point(rally) },
-        Order::Train { building: cc, kind: UnitKind::Soldier },
+        Order::SetRally { building: barracks, rally: Rally::Point(rally) },
+        Order::Train { building: barracks, kind: UnitKind::Soldier },
     ]);
     let before = world.units.len();
     for _ in 0..UnitKind::Soldier.stats().build_time + 200 {
@@ -649,11 +685,27 @@ fn command_center_trains_and_sends_to_rally() {
     assert!(newest.pos.distance(rally) < 2.0, "stands at {:?}", newest.pos);
 }
 
+/// Only the barracks trains: the command center takes no unit into its queue, and no gold is paid.
+#[test]
+fn only_the_barracks_trains_units() {
+    let (mut world, _) = quiet_world();
+    let cc = world.buildings[0].id;
+    let gold = world.gold;
+    world.apply_orders(&[Order::Train { building: cc, kind: UnitKind::Soldier }]);
+    assert!(world.buildings[0].production.is_empty(), "the command center trains");
+    assert_eq!(world.gold, gold);
+    let barracks = barracks(&mut world);
+    world.apply_orders(&[Order::Train { building: barracks, kind: UnitKind::Soldier }]);
+    assert_eq!(world.buildings.last().unwrap().production.len(), 1);
+    assert_eq!(world.gold, gold - UnitKind::Soldier.stats().cost);
+}
+
 /// More than 5 in the queue isn't possible, and cancelling takes one out.
 #[test]
 fn production_queue_is_limited() {
     let (mut world, _) = quiet_world();
-    let cc = world.buildings[0].id;
+    let cc = barracks(&mut world);
+    let b = world.find_building(cc).unwrap();
     let train = Order::Train { building: cc, kind: UnitKind::Sniper };
     world.step(&[
         train.clone(),
@@ -663,11 +715,11 @@ fn production_queue_is_limited() {
         train.clone(),
         train,
     ]);
-    assert_eq!(world.buildings[0].production.len(), MAX_PRODUCTION);
+    assert_eq!(world.buildings[b].production.len(), MAX_PRODUCTION);
     world.step(&[Order::CancelTrain { building: cc, index: 0 }]);
-    assert_eq!(world.buildings[0].production.len(), MAX_PRODUCTION - 1);
+    assert_eq!(world.buildings[b].production.len(), MAX_PRODUCTION - 1);
     // The build starts from the beginning – a build tick has already run again in the same tick.
-    assert_eq!(world.buildings[0].progress, 1);
+    assert_eq!(world.buildings[b].progress, 1);
 }
 
 /// Plain grass in a square of radius `r` around `center` – no tree in the test's way.
@@ -795,16 +847,18 @@ fn spawners_send_periodically_or_not_and_the_dead_stay_dead() {
 #[test]
 fn constant_spawn_follows_the_stages() {
     let at = |day: u64, hour: u64| (day - 1) * DAY_TICKS + hour * HOUR_TICKS;
-    assert_eq!(spawning::group_at(at(1, 23)), None, "something on day 1");
-    let early = spawning::group_at(at(2, 0)).unwrap();
+    let spawning = &data::get().spawning.constant;
+    let group_at = |tick| spawning::group_at(spawning, tick);
+    assert_eq!(group_at(at(1, 23)), None, "something on day 1");
+    let early = group_at(at(2, 0)).unwrap();
     assert_eq!((early.breed, early.min, early.max), (Breed::Walker, 1, 1));
-    let later = spawning::group_at(at(3, 12)).unwrap();
+    let later = group_at(at(3, 12)).unwrap();
     assert_eq!(later.breed, Breed::Walker);
     assert!(later.every < early.every, "walkers don't come more often: {} vs {} ticks", later.every, early.every);
-    let runners = spawning::group_at(at(4, 0)).unwrap();
+    let runners = group_at(at(4, 0)).unwrap();
     assert_eq!((runners.breed, runners.min, runners.max), (Breed::Runner, 4, 5));
-    let last = data::get().spawning.stages.last().unwrap();
-    let grown = spawning::group_at(at(last.day + 5, last.hour)).unwrap();
+    let last = spawning.stages.last().unwrap();
+    let grown = group_at(at(last.day + 5, last.hour)).unwrap();
     assert!(grown.min > last.group[0], "groups don't grow after the last stage");
 
     // In the world: the first walker comes out of a "constant" spawner right at the start of day 2.
@@ -903,17 +957,18 @@ fn units_walk_straight_at_any_angle() {
 fn orders_in_the_pause_are_the_same_as_with_the_next_tick() {
     let run = |paused: bool| {
         let mut world = World::new(9);
+        let barracks = barracks(&mut world);
         let ids: Vec<u32> = world.units.iter().map(|u| u.id).collect();
         let orders = vec![
             Order::Command { units: ids[0..4].to_vec(), command: Command::AttackMove(world.base + vec2(8.0, 2.0)), queue: false, formation: None },
-            Order::Train { building: world.buildings[0].id, kind: UnitKind::Sniper },
+            Order::Train { building: barracks, kind: UnitKind::Sniper },
             Order::PlaceBuilding { kind: BuildingKind::Wall, tile: (world.base.x as i32 + 5, world.base.y as i32 - 6), turned: false, editor: false },
         ];
         if paused {
             world.apply_orders(&orders);
             // Taken over, but nobody has moved yet:
             assert_eq!(world.units[0].order_name(), "Attack-move");
-            assert_eq!(world.buildings[0].production.len(), 1);
+            assert_eq!(world.buildings[world.find_building(barracks).unwrap()].production.len(), 1);
             assert_eq!(world.tick, 0);
             world.step(&[]);
         } else {
@@ -1313,20 +1368,45 @@ fn a_tent_whose_shield_breaks_lets_out_six_zombies() {
     assert!(runners_seen.len() > 1, "always the same number of runners");
 }
 
-/// Every hour of the round (7.5 s) a tent pays 2 gold per colonist – 12. An infected tent pays nothing.
+/// An infected tent belongs to the zombies: the ones that came out of it, standing right next to it, don't hit it –
+/// they go for the command center. And it's no longer something to tear down on their way: it's open.
+#[test]
+fn zombies_leave_an_infected_tent_alone() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let t = (world.base.x as i32 + 8, world.base.y as i32 - 8);
+    clear_ground(&mut world, t, 6);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: t, turned: false, editor: false }]);
+    let b = world.buildings.len() - 1;
+    let shield = world.buildings[b].shield;
+    assert!(world.buildings[b].take_damage(shield));
+    world.infect(b);
+    assert_eq!(world.zombies.len(), 6);
+    assert!(!world.map.is_blocked(t.0, t.1) && !world.map.can_tear_down(t.0, t.1));
+    for _ in 0..200 {
+        world.step(&[]);
+    }
+    let tent = &world.buildings[b];
+    assert_eq!(tent.hp, tent.stats().hp, "the zombies hit their own tent");
+}
+
+/// Every hour of the round (7.5 s) a tent pays `gold_per_colonist_per_hour` (`data\colony.json`) for each of its 6
+/// colonists. An infected tent pays nothing.
 #[test]
 fn tents_pay_gold_every_hour() {
     let (mut world, _) = quiet_world();
     let t = (world.base.x as i32 + 8, world.base.y as i32 - 8);
     clear_ground(&mut world, t, 6);
     world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: t, turned: false, editor: false }]);
-    assert_eq!(world.income(), 12);
+    let per_hour = BuildingKind::Tent.stats().colonists * data::get().colony.gold_per_colonist_per_hour;
+    assert!(per_hour > 0);
+    assert_eq!(world.income(), per_hour);
     let start = world.gold;
     // In any 2 hours in a row the clock passes exactly two full hours.
     for _ in 0..2 * HOUR_TICKS {
         world.step(&[]);
     }
-    assert_eq!(world.gold - start, 24);
+    assert_eq!(world.gold - start, 2 * per_hour);
 
     let b = world.buildings.len() - 1;
     let shield = world.buildings[b].shield;
@@ -1337,6 +1417,134 @@ fn tents_pay_gold_every_hour() {
         world.step(&[]);
     }
     assert_eq!(world.gold, start, "an infected tent still pays");
+}
+
+/// A tent next to the base whose shield just broke: infected, its zombies out and cleared away again. Returns the
+/// tent's index and its top left tile.
+fn infected_tent(world: &mut World) -> (usize, (i32, i32)) {
+    let t = (world.base.x as i32 + 8, world.base.y as i32 - 8);
+    clear_ground(world, t, 6);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: t, turned: false, editor: false }]);
+    let b = world.buildings.len() - 1;
+    let shield = world.buildings[b].shield;
+    assert!(world.buildings[b].take_damage(shield));
+    world.infect(b);
+    world.step(&[Order::ClearZombies]);
+    (b, t)
+}
+
+/// The walls of an infected building are broken: zombies and units walk right through it – a unit sent into its middle
+/// gets there.
+#[test]
+fn units_and_zombies_walk_through_an_infected_tent() {
+    let (mut world, id) = quiet_world();
+    let (b, _) = infected_tent(&mut world);
+    for (x, y) in world.buildings[b].tiles() {
+        assert!(!world.map.is_blocked(x, y) && !world.map.blocks_unit(x, y), "tile {x}, {y} still closed");
+    }
+    let middle = world.buildings[b].center();
+    world.step(&[Order::Command { units: vec![id], command: Command::Move(middle), queue: false, formation: None }]);
+    for _ in 0..600 {
+        world.step(&[]);
+    }
+    let u = world.find_unit(id).unwrap();
+    assert!(world.units[u].pos.distance(middle) < 0.5, "stopped at {:?}, not in the tent", world.units[u].pos);
+}
+
+/// A repair costs the share of `repair_cost` that's missing (half the hit points: half the price), paid at once – and
+/// that share of `repair_seconds`. Without enough gold nothing happens.
+#[test]
+fn a_repair_costs_its_share_and_takes_its_time() {
+    let (mut world, _) = quiet_world();
+    let id = barracks(&mut world);
+    let b = world.find_building(id).unwrap();
+    let (full, cost) = (world.buildings[b].stats().hp, world.buildings[b].stats().repair_cost);
+    world.buildings[b].hp = full / 2;
+    let price = world.buildings[b].repair_price();
+    assert_eq!(price, cost.div_ceil(2));
+
+    world.gold = price - 1;
+    world.step(&[Order::Repair { buildings: vec![id] }]);
+    assert_eq!((world.gold, world.buildings[b].repair_left), (price - 1, 0), "repaired without enough gold");
+
+    world.gold = price;
+    world.step(&[Order::Repair { buildings: vec![id] }]);
+    assert_eq!(world.gold, 0);
+    assert_eq!(world.buildings[b].repair_price(), 0, "the same damage can be paid twice");
+    let mut ticks = 1;
+    while world.buildings[b].hp < full && ticks < 1000 {
+        world.step(&[]);
+        ticks += 1;
+    }
+    let half = (data::get().buildings.repair_seconds * TICKS_PER_SECOND / 2.0) as i32;
+    assert!((ticks - half).abs() <= 1, "took {ticks} ticks, half a full repair is {half}");
+    assert_eq!(world.buildings[b].repair_left, 0);
+}
+
+/// Repairing an infected tent cures it once it's whole: closed again (whoever stood in it is pushed out), something to
+/// tear down again, and it pays gold again.
+#[test]
+fn a_repair_cures_an_infected_tent() {
+    let (mut world, _) = quiet_world();
+    let (b, t) = infected_tent(&mut world);
+    let middle = world.buildings[b].center();
+    let inside = bait(&mut world, UnitKind::Soldier, middle);
+    assert_eq!(world.income(), 0);
+    let price = world.buildings[b].repair_price();
+    assert!(price > 0 && price <= world.buildings[b].stats().repair_cost);
+    world.gold = price;
+    let id = world.buildings[b].id;
+    world.step(&[Order::Repair { buildings: vec![id] }]);
+    for _ in 0..(data::get().buildings.repair_seconds * TICKS_PER_SECOND) as u32 + 5 {
+        world.step(&[]);
+    }
+    let tent = &world.buildings[b];
+    assert!(!tent.infected, "still infected");
+    assert_eq!((tent.hp, tent.shield), (tent.stats().hp, tent.stats().max_shield()));
+    assert!(world.map.is_blocked(t.0, t.1) && world.map.can_tear_down(t.0, t.1));
+    assert!(world.income() > 0);
+    let u = world.find_unit(inside).unwrap();
+    let pos = world.units[u].pos;
+    assert!(!world.map.blocks_unit(pos.x.floor() as i32, pos.y.floor() as i32), "a unit stuck in the cured tent");
+}
+
+/// No repair with a zombie in the building's build zone (the same zone as for building it) – once it's gone, it works.
+#[test]
+fn no_repair_with_a_zombie_nearby() {
+    let (mut world, _) = quiet_world();
+    let id = barracks(&mut world);
+    let b = world.find_building(id).unwrap();
+    world.buildings[b].hp /= 2;
+    world.gold = 1000;
+    let near = world.buildings[b].center() + vec2(crate::placement::build_clearance() as f32, 0.0);
+    world.spawn_zombie_as(near, Breed::Walker, true);
+    assert!(!world.can_repair(b));
+    let plan = world.repair_plan([b]);
+    assert_eq!((plan.chosen.len(), plan.damaged, plan.blocked), (0, 1, 1));
+    world.step(&[Order::Repair { buildings: vec![id] }]);
+    assert_eq!((world.gold, world.buildings[b].repair_left), (1000, 0), "repaired with a zombie next to it");
+
+    world.step(&[Order::ClearZombies]);
+    assert!(world.can_repair(b));
+    world.step(&[Order::Repair { buildings: vec![id] }]);
+    assert!(world.gold < 1000 && world.buildings[b].repair_left > 0);
+}
+
+/// "Repair all" with too little gold: the cheapest first, so as many buildings as possible get repaired.
+#[test]
+fn repair_all_takes_the_cheapest_first() {
+    let (mut world, _) = quiet_world();
+    let id = barracks(&mut world);
+    let barracks = world.find_building(id).unwrap();
+    let cc = world.buildings.iter().position(|b| b.kind == BuildingKind::CommandCenter).unwrap();
+    world.buildings[barracks].hp /= 2;
+    world.buildings[cc].hp /= 2;
+    let (small, big) = (world.buildings[barracks].repair_price(), world.buildings[cc].repair_price());
+    assert!(small < big);
+    world.gold = big - 1;
+    let plan = world.repair_plan(0..world.buildings.len());
+    assert_eq!(plan.chosen, vec![barracks]);
+    assert_eq!((plan.price, plan.damaged, plan.blocked), (small + big, 2, 0));
 }
 
 /// How many shots a unit needs for a zombie – as decided on 2026-10-17 (soldier with TAB's 15 damage, so 3 for a
@@ -1399,4 +1607,255 @@ fn fat_zombies_are_big_and_tough() {
         merged += zombies[i + 1..].iter().filter(|q| p.distance(**q) < fat.radius * 1.5).count();
     }
     assert!(merged <= 1, "{merged} pairs of fat zombies inside each other");
+}
+
+/// A unit is paid when it goes into the queue – without enough gold it doesn't go in – and cancelling pays it back in
+/// full (like StarCraft).
+#[test]
+fn training_costs_gold_and_cancelling_pays_it_back() {
+    let (mut world, _) = quiet_world();
+    let cc = barracks(&mut world);
+    let cost = UnitKind::Soldier.stats().cost;
+    world.gold = cost * 2 + cost / 2;
+    let train = Order::Train { building: cc, kind: UnitKind::Soldier };
+    world.apply_orders(&[train.clone(), train.clone(), train]);
+    assert_eq!(world.buildings[world.find_building(cc).unwrap()].production.len(), 2, "the third one wasn't paid for");
+    assert_eq!(world.gold, cost / 2);
+    world.apply_orders(&[Order::CancelTrain { building: cc, index: 1 }]);
+    assert_eq!(world.gold, cost + cost / 2);
+    assert_eq!(world.score.gold_spent, cost);
+}
+
+/// A building costs its price: of a dragged line only as many pieces as the gold pays for. The editor builds for free.
+#[test]
+fn buildings_cost_gold_and_a_line_stops_when_it_runs_out() {
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    clear_ground(&mut world, (bx + 10, by - 8), 6);
+    world.gold = BuildingKind::Wall.stats().cost * 3;
+    let line: Vec<Order> =
+        (0..5).map(|k| Order::PlaceBuilding { kind: BuildingKind::Wall, tile: (bx + 8 + k, by - 6), turned: false, editor: false }).collect();
+    world.step(&line);
+    assert_eq!(world.buildings.iter().filter(|b| b.kind == BuildingKind::Wall).count(), 3);
+    assert_eq!(world.gold, 0);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: (bx + 8, by - 11), turned: false, editor: true }]);
+    assert_eq!(world.buildings.iter().filter(|b| b.kind == BuildingKind::Tent).count(), 1, "the editor's tent isn't there");
+    assert_eq!(world.gold, 0, "the editor's tent cost something");
+}
+
+/// Lost: when the last command center falls – not before. The editor's eraser taking it away loses nothing (a map
+/// without a command center can't be lost that way).
+#[test]
+fn losing_the_last_command_center_loses_the_round() {
+    let (mut world, _) = quiet_world();
+    world.step(&[]);
+    assert_eq!(world.outcome, None);
+    world.buildings[0].hp = 0;
+    world.step(&[]);
+    assert!(matches!(world.outcome, Some(Outcome::Lost { .. })), "{:?}", world.outcome);
+
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    world.step(&[Order::RemoveAt { tiles: vec![(bx, by)] }]);
+    assert!(world.buildings.iter().all(|b| b.kind != BuildingKind::CommandCenter));
+    world.step(&[]);
+    assert_eq!(world.outcome, None);
+}
+
+/// Won: once the final wave has come and its last zombie is dead – other zombies still around don't matter.
+#[test]
+fn killing_the_final_wave_wins_the_round() {
+    let (mut world, _) = quiet_world();
+    world.waves.clear();
+    let at = world.tick + 5;
+    world.step(&[
+        Order::AddTimedWave(TimedWave { at, count: 3, from: WaveFrom::Sides(1), breed: Breed::Runner, final_wave: true }),
+        Order::SpawnWave { count: 10, from: WaveFrom::Sides(1) },
+    ]);
+    while world.tick <= at {
+        assert_eq!(world.outcome, None, "won before the final wave came");
+        world.step(&[]);
+    }
+    assert_eq!(world.zombies.iter().filter(|z| z.final_wave).count(), 3);
+    world.step(&[]);
+    assert_eq!(world.outcome, None, "won with the final wave alive");
+    for zombie in world.zombies.iter_mut().filter(|z| z.final_wave) {
+        zombie.hp = 0;
+    }
+    world.step(&[]);
+    assert!(matches!(world.outcome, Some(Outcome::Won { .. })), "{:?}", world.outcome);
+    assert_eq!(world.zombies.len(), 10, "the other zombies are gone too");
+    assert_eq!(world.score.zombies_killed, 3);
+}
+
+/// A new round plans its waves from its days: the mini round (10 days) gets two waves (day 4 and 7) and the final wave
+/// on day 10 from all sides, with fat ones. 40 days get twelve, growing. "Waves" 200 % doubles every count.
+#[test]
+fn waves_are_planned_from_the_days() {
+    let mini = plan_waves(10, 1.0);
+    let normal: Vec<&TimedWave> = mini.iter().filter(|w| !w.final_wave).collect();
+    let days: Vec<u64> = normal.iter().map(|w| day_and_hour(w.at).0).collect();
+    assert_eq!(days, vec![4, 7]);
+    assert!(mini.iter().filter(|w| w.final_wave).all(|w| day_and_hour(w.at).0 == 10 && w.from == WaveFrom::Sides(4)));
+    assert!(mini.iter().any(|w| w.final_wave && w.breed == Breed::Fat), "no fat ones in the final wave");
+
+    let long = plan_waves(40, 1.0);
+    let normal: Vec<&TimedWave> = long.iter().filter(|w| !w.final_wave).collect();
+    assert_eq!(normal.len(), 12);
+    assert!(normal.windows(2).all(|pair| pair[0].at < pair[1].at && pair[0].count <= pair[1].count), "not growing");
+    assert!(plan_waves(0, 1.0).is_empty());
+    assert_eq!(plan_waves(10, 2.0)[0].count, mini[0].count * 2);
+
+    let world = World::new(3);
+    assert_eq!(world.days, 10);
+    assert_eq!(world.waves, mini, "a new round doesn't get the planned waves");
+}
+
+/// Changing the days (editor) moves the final wave along to the new last day, at the same hour – the other waves stay.
+#[test]
+fn changing_the_days_moves_the_final_wave() {
+    let (mut world, _) = quiet_world();
+    let before = world.waves.clone();
+    world.step(&[Order::SetDays { days: 20 }]);
+    assert_eq!(world.days, 20);
+    for (old, new) in before.iter().zip(&world.waves) {
+        if old.final_wave {
+            assert_eq!(day_and_hour(new.at), (20, day_and_hour(old.at).1));
+        } else {
+            assert_eq!(old, new);
+        }
+    }
+    assert!(world.waves.iter().any(|w| w.final_wave), "the final wave is gone");
+}
+
+/// The editor's eraser takes everything off its tiles: units, zombies – and a building even if it only stands on one
+/// of them (the command center, 3 × 3, by one corner).
+#[test]
+fn the_eraser_takes_everything_off_its_tiles() {
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    // The start units stand in rows below the base, on the tiles bx - 2 … bx + 3 and by + 3 … by + 5.
+    let center = vec2(bx as f32 + 2.5, by as f32 + 4.5);
+    world.apply_orders(&[Order::PlaceZombies { center, radius: 0.4, count: 3, breed: Breed::Walker, wander: true }]);
+    let mut tiles = vec![(bx + 1, by + 1)];
+    for y in by + 3..=by + 5 {
+        for x in bx - 1..=bx + 3 {
+            tiles.push((x, y));
+        }
+    }
+    world.apply_orders(&[Order::RemoveAt { tiles }]);
+    assert!(world.buildings.is_empty(), "the command center is still there");
+    assert!(!world.map.is_built(bx, by), "its tiles are still taken");
+    assert!(world.zombies.is_empty());
+    assert!(world.units.iter().all(|u| (u.pos.x.floor() as i32) == bx - 2), "a unit under the eraser is still there");
+    assert_eq!(world.units.len(), 3);
+}
+
+/// The constant spawn belongs to the map: the editor's orders change it, and its stages stay in order of time.
+#[test]
+fn the_constant_spawn_can_be_edited() {
+    let (mut world, _) = quiet_world();
+    let stage = data::Stage { day: 1, hour: 2, breed: Breed::Fat, every_seconds: 5.0, group: [2, 2] };
+    world.apply_orders(&[Order::AddStage(stage)]);
+    assert_eq!(world.constant.stages[0], stage, "not sorted to the front");
+    assert_eq!(world.spawn_group(), None, "before 2:00 of day 1 nothing should come");
+    world.tick = round::tick_of(1, 2);
+    assert_eq!(world.spawn_group().map(|g| g.breed), Some(Breed::Fat));
+    world.apply_orders(&[Order::RemoveStage { index: 0 }, Order::SetExtraPerDay { extra: 3.0 }]);
+    assert_eq!(world.constant.extra_per_day, 3.0);
+    assert_eq!(world.constant.stages, data::get().spawning.constant.stages);
+}
+
+/// Overkill prevention: two snipers side by side, two walkers in front of them. One shot kills a walker – so the second
+/// sniper takes the other walker instead of the same one (before 2026-10-17 both aimed at the nearer one).
+#[test]
+fn a_crowd_spreads_its_fire() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(6.5, 6.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 7);
+    let walker = |at: Vec2| Order::PlaceZombies { center: at, radius: 0.0, count: 1, breed: Breed::Walker, wander: true };
+    world.step(&[
+        Order::SpawnUnit { kind: UnitKind::Sniper, point: p },
+        Order::SpawnUnit { kind: UnitKind::Sniper, point: p + vec2(0.0, 0.8) },
+        walker(p + vec2(5.0, 0.3)),
+        walker(p + vec2(5.5, 1.5)),
+    ]);
+    world.step(&[]);
+    let (a, b) = (world.units[0].aim_at, world.units[1].aim_at);
+    assert!(a.is_some() && b.is_some(), "not both aiming: {}, {}", a.is_some(), b.is_some());
+    assert!(a != b, "both snipers aim at the same walker");
+}
+
+/// Not a real test – a tool for balancing the mini round (DESIGN.md 13, step 4): plays it at full size, once with a
+/// player who does nothing, once with a very simple one (every hour: a tent while there are fewer than 12, then a
+/// barracks, then soldiers – all of them simply stand at the base). Prints every half day how it's going and how the round ends – up
+/// to two days after the last one: the final wave can take a while to arrive, through narrow passes one by one.
+/// In the fast build, it takes a minute or two:
+/// `cargo test --release balance_mini_round -- --ignored --nocapture`
+/// With `$env:WAVES = "3"` first, the waves are that strong (the setup's "Waves": 3 = 300 %).
+#[test]
+#[ignore]
+fn balance_mini_round() {
+    let mut setup = MapSetup::default();
+    if let Some(waves) = std::env::var("WAVES").ok().and_then(|w| w.parse().ok()) {
+        setup.round.waves = waves;
+    }
+    for simple_player in [false, true] {
+        let mut world = World::generate(1, &setup);
+        println!("--- {} ---", if simple_player { "simple player" } else { "player does nothing" });
+        let end = round::tick_of(world.days + 3, 0);
+        while world.tick < end && world.outcome.is_none() {
+            let orders = if simple_player && world.tick % HOUR_TICKS == 0 { simple_orders(&world) } else { Vec::new() };
+            world.step(&orders);
+            if world.tick % (12 * HOUR_TICKS) == 0 {
+                let (day, hour) = world.clock();
+                let cc = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter).map_or(0, |b| b.hp);
+                let tents = world.buildings.iter().filter(|b| b.kind == BuildingKind::Tent && !b.infected).count();
+                println!(
+                    "day {day:2} {hour:02}:00  zombies {:5}  units {:3}  tents {tents:2}  gold {:5} (+{}/h)  CC {cc}",
+                    world.zombies.len(),
+                    world.units.len(),
+                    world.gold,
+                    world.income()
+                );
+            }
+        }
+        println!("{:?}  {:?}", world.outcome, world.score);
+    }
+}
+
+/// The simple player of `balance_mini_round`: a tent on the first free spot around the base while there are fewer
+/// than 12, then a barracks, then a soldier – if the gold is there.
+fn simple_orders(world: &World) -> Vec<Order> {
+    if !world.buildings.iter().any(|b| b.kind == BuildingKind::CommandCenter) {
+        return Vec::new();
+    }
+    let tents = world.buildings.iter().filter(|b| b.kind == BuildingKind::Tent).count();
+    let barracks = world.buildings.iter().find(|b| b.kind == BuildingKind::Barracks);
+    let build = match (tents < 12, barracks) {
+        (true, _) => BuildingKind::Tent,
+        (false, None) => BuildingKind::Barracks,
+        (false, Some(barracks)) if world.gold >= UnitKind::Soldier.stats().cost => {
+            return vec![Order::Train { building: barracks.id, kind: UnitKind::Soldier }];
+        }
+        (false, Some(_)) => return Vec::new(),
+    };
+    if world.gold < build.stats().cost {
+        return Vec::new();
+    }
+    // The first free spot on rings around the base, in steps as wide as the building (tent 2, barracks 3).
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    let step = build.stats().size.0 as usize;
+    for r in (4..30).step_by(step) {
+        for dy in (-r..=r).step_by(step) {
+            for dx in (-r..=r).step_by(step) {
+                let tile = (bx + dx, by + dy);
+                if (dx.abs() == r || dy.abs() == r) && world.can_place(build, tile, false) {
+                    return vec![Order::PlaceBuilding { kind: build, tile, turned: false, editor: false }];
+                }
+            }
+        }
+    }
+    Vec::new()
 }
