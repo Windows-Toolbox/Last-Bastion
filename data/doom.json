@@ -1,0 +1,13 @@
+{
+  "hp": 1500,
+  "armor": 2,
+  "wake_radius": 7.0,
+  "near_zombies": 3,
+  "near_every_seconds": 10.0,
+  "hearing": 24.0,
+  "hear_threshold": 300,
+  "release_per_second": 15.0,
+  "hit_zombies": 1,
+  "loot_gold": 1000,
+  "loot_goods": 20
+}

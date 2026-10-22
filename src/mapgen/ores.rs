@@ -17,7 +17,7 @@ use macroquad::math::{vec2, Vec2};
 
 use super::tools::{self, Tiles};
 use super::Context;
-use crate::map::{Deposit, Ore, Terrain};
+use crate::map::{Deposit, Ore, Region, Terrain};
 use crate::noise::Noise;
 use crate::rng::Rng;
 
@@ -65,18 +65,22 @@ struct Patch {
 }
 
 /// Where the ore goes: (x, y, deposit) for every tile of every patch. `play`: the playing field inside the world
-/// border, as (first tile, one past the last tile) on both axes.
-pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: (i32, i32), settings: &OreSettings) -> Vec<(i32, i32, Deposit)> {
-    let (lo, hi) = play;
-    let half = (hi - lo) as f32 / 2.0;
+/// border.
+pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: &Region, settings: &OreSettings) -> Vec<(i32, i32, Deposit)> {
+    // The squares of regions cover the diamond of the playing field: from its leftmost to its rightmost tile.
+    let corners = play.corners();
+    let (lo, hi) = (corners[0].x.floor() as i32, corners[2].x.ceil() as i32);
+    // How many tiles of the square (x, y, w, h) lie inside – a region half outside gets half the patches.
+    let inside = |x0: i32, y0: i32, w: i32, h: i32| (y0..y0 + h).flat_map(|y| (x0..x0 + w).map(move |x| (x, y))).filter(|&(x, y)| play.contains_tile(x, y)).count();
+    // From the base to the middle of a side, in a straight line (the corners count as edge too).
+    let half = (play.max.x - play.min.x) / 2.0 * std::f32::consts::FRAC_1_SQRT_2;
     let shape = Noise::new(rng.next_u64() as u32);
     let favour = Noise::new(rng.next_u64() as u32);
     let mut patches: Vec<Patch> = Vec::new();
 
     // Is the disc inside the world border, mostly on grass, and far enough from every patch so far?
     let fits = |patches: &[Patch], c: Vec2, r: f32, grass_needed: f32| {
-        let inside = c.x - r >= lo as f32 && c.y - r >= lo as f32 && c.x + r <= hi as f32 && c.y + r <= hi as f32;
-        inside && patches.iter().all(|p| p.center.distance(c) >= p.radius + r + GAP) && grass_share(tiles, c, r) >= grass_needed
+        play.contains_disc(c, r) && patches.iter().all(|p| p.center.distance(c) >= p.radius + r + GAP) && grass_share(tiles, c, r) >= grass_needed
     };
 
     // 1. Start area: one patch of each ore, a few tiles outside the free space, in random directions.
@@ -97,7 +101,7 @@ pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: (i32, i32), sett
         for ry in (lo..hi).step_by(REGION as usize) {
             for rx in (lo..hi).step_by(REGION as usize) {
                 let (w, h) = ((hi - rx).min(REGION), (hi - ry).min(REGION));
-                let wanted = settings.per_10k * (w * h) as f32 / 10_000.0;
+                let wanted = settings.per_10k * inside(rx, ry, w, h) as f32 / 10_000.0;
                 // 2.4 wanted: 2 patches, and a 40 % chance of a third.
                 let mut count = wanted.floor() as usize + usize::from(rng.unit_f32() < wanted - wanted.floor());
                 let mut candidates: Vec<(f32, Vec2)> = (0..CANDIDATES)
@@ -145,7 +149,7 @@ pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: (i32, i32), sett
         let (cx, cy) = (p.center.x.floor() as i32, p.center.y.floor() as i32);
         for y in cy - reach..=cy + reach {
             for x in cx - reach..=cx + reach {
-                if x < lo || y < lo || x >= hi || y >= hi || tiles.get(x, y) != Terrain::Grass || taken[(y * n + x) as usize] {
+                if !play.contains_tile(x, y) || tiles.get(x, y) != Terrain::Grass || taken[(y * n + x) as usize] {
                     continue;
                 }
                 let d = vec2(x as f32 + 0.5, y as f32 + 0.5).distance(p.center);
@@ -161,7 +165,7 @@ pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: (i32, i32), sett
     }
 
     // 4. Oil: one node in the start area, then groups region by region – more nodes per group further out.
-    let mut oil = Oil { tiles, play, taken, deposits, groups: Vec::new() };
+    let mut oil = Oil { tiles, play: *play, taken, deposits, groups: Vec::new() };
     for _ in 0..60 {
         let c = ctx.center + tools::random_direction(rng) * (ctx.keep_out + 3.0 + rng.unit_f32() * 10.0);
         if oil.group(rng, c, 1, settings.richness) {
@@ -173,7 +177,7 @@ pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: (i32, i32), sett
         for ry in (lo..hi).step_by(OIL_REGION as usize) {
             for rx in (lo..hi).step_by(OIL_REGION as usize) {
                 let (w, h) = ((hi - rx).min(OIL_REGION), (hi - ry).min(OIL_REGION));
-                let wanted = settings.oil_per_10k * (w * h) as f32 / 10_000.0;
+                let wanted = settings.oil_per_10k * inside(rx, ry, w, h) as f32 / 10_000.0;
                 let mut count = wanted.floor() as usize + usize::from(rng.unit_f32() < wanted - wanted.floor());
                 let mut candidates: Vec<(f32, Vec2)> = (0..CANDIDATES)
                     .map(|_| {
@@ -205,7 +209,7 @@ pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: (i32, i32), sett
 /// Placing oil nodes: what's taken so far (ore and oil) and the middles of the groups so far.
 struct Oil<'a> {
     tiles: &'a Tiles,
-    play: (i32, i32),
+    play: Region,
     taken: Vec<bool>,
     deposits: Vec<(i32, i32, Deposit)>,
     groups: Vec<Vec2>,
@@ -238,9 +242,8 @@ impl Oil<'_> {
     /// nothing lies on them or right next to them (so two nodes never touch, and none touches an ore patch).
     fn node(&mut self, p: Vec2, richness: f32) -> bool {
         let (x0, y0) = (p.x.floor() as i32, p.y.floor() as i32);
-        let (lo, hi) = self.play;
         let n = self.tiles.size;
-        if x0 < lo || y0 < lo || x0 + 2 > hi || y0 + 2 > hi {
+        if !(0..4).all(|k| self.play.contains_tile(x0 + k % 2, y0 + k / 2)) {
             return false;
         }
         let grass = (0..4).all(|k| self.tiles.get(x0 + k % 2, y0 + k / 2) == Terrain::Grass);

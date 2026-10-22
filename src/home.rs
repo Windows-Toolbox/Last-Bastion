@@ -1,8 +1,12 @@
 //! The home screens (DESIGN.md 10.1, a first version) – of the game and of the map editor (`Program`):
 //! - **Main page.** The game: New game, Map editor, Custom maps, Settings, Quit. The editor: New map, Open a map,
 //!   Settings, Quit. In front of a map of the current setup.
-//! - **Setup page:** pick a generator, change its values, pick a seed, set the round (days, waves) – the preview on
-//!   the right shows the map right away. "Start game" plays it, "Open in the editor" edits it.
+//! - **New game** (the game, like TAB's): pick a map (`data\game_maps.json`), a difficulty (`game_difficulties.json`)
+//!   and how long the round lasts (`game_durations.json`) – the preview shows the map, the score factor what the
+//!   round is worth. "Custom setup" goes on to the setup page with the picked map's values.
+//! - **Setup page** (the game's "Custom setup", the editor's "New map"): pick a generator, change its values, pick a
+//!   seed, set the round (difficulty, days) – the preview on the right shows the map right away. "Start game" plays
+//!   it, "Open in the editor" edits it.
 //! - **Maps:** the files in the maps folder (`mapfile.rs`) – every game that was started and every map saved in the
 //!   editor, newest first: play, edit, delete.
 //! - **Settings:** the same page as in the Esc menu.
@@ -16,15 +20,17 @@ use std::time::Duration;
 use macroquad::prelude::*;
 
 use crate::app::{self, Program};
+use crate::data;
 use crate::iso::{iso, TILE_H, TILE_W};
-use crate::map::Region;
+use crate::map::{Map, Region};
 use crate::mapfile::{self, Entry, MapFile};
-use crate::mapgen::{self, Generator, MapSetup};
+use crate::mapgen::{self, Generator, MapSetup, RoundSetup};
 use crate::menu::settings_page;
 use crate::picture::{Extras, MapPicture};
 use crate::rng::Rng;
 use crate::settings::{self, Settings};
-use crate::widgets::{self, button, button_lit, field_slider, text_box, tooltip, type_into, Column, ACCENT, DIM};
+use crate::sim::{DAY_TICKS, TICKS_PER_SECOND};
+use crate::widgets::{self, button, button_lit, field_slider, pick, text_box, tooltip, type_into, Column, ACCENT, DIM};
 
 /// What the home screen wants `app.rs` to do.
 pub enum HomeAction {
@@ -39,6 +45,7 @@ pub enum HomeAction {
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Main,
+    NewGame,
     Setup,
     Maps,
     Settings,
@@ -74,11 +81,13 @@ fn setup_file() -> Option<PathBuf> {
     settings::folder().map(|dir| dir.join("map_setup.json"))
 }
 
+/// The very first time (no file yet): the default setup, as long as the default duration says.
 pub fn load_setup() -> MapSetup {
-    setup_file()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    setup_file().and_then(|path| fs::read_to_string(path).ok()).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| {
+        let mut setup = MapSetup::default();
+        setup.round.days = data::get().durations.default_days as f32;
+        setup
+    })
 }
 
 fn save_setup(setup: &MapSetup) {
@@ -124,6 +133,7 @@ impl Home {
         }
         match self.page {
             Page::Main => self.main_page(),
+            Page::NewGame => self.new_game_page(new_seed),
             Page::Setup => self.setup_page(new_seed),
             Page::Maps => self.maps_page(),
             Page::Settings => {
@@ -145,25 +155,48 @@ impl Home {
             return;
         }
         let generated = mapgen::generate(self.seed, &self.setup);
-        let spawners: Vec<((i32, i32), (i32, i32))> = generated.spawners.iter().map(|s| (s.min, s.size)).collect();
+        let spawners: Vec<Region> = generated.spawners.iter().map(|s| s.region()).collect();
         let extras = Extras { fog: None, spawners: &spawners, base: true, shade_ring: true };
         self.preview.paint(&generated.map, &extras);
         self.preview_stale = false;
         self.preview_time = get_time();
     }
 
-    /// The preview of the map as a diamond, as big as fits into `r`.
+    /// The preview of the whole map (turned like on screen, twice as wide as high), as big as fits into `r`.
     fn draw_preview(&self, r: Rect) {
-        let n = self.setup.map_size() as f32;
-        let scale = (r.w / (n * TILE_W)).min(r.h / (n * TILE_H));
-        let top = vec2(r.x + r.w / 2.0, r.y + (r.h - n * TILE_H * scale) / 2.0);
-        self.preview.draw(Region { min: Vec2::ZERO, size: n }, |p| top + iso(p) * scale);
+        let n = self.setup.map_size();
+        let area = Map::full_area_of(n);
+        let size = vec2(n as f32 * TILE_W, n as f32 * TILE_H) / 2.0;
+        let scale = (r.w / size.x).min(r.h / size.y);
+        let top_left = vec2(r.x, r.y) + (vec2(r.w, r.h) - size * scale) / 2.0;
+        let origin = iso(area.corners()[0]);
+        self.preview.draw(area, |p| top_left + (iso(p) - origin) * scale);
     }
 
     /// The map of the current setup over the whole screen, darkened – behind the main page.
     fn draw_backdrop(&self, dark: f32) {
         self.draw_preview(Rect::new(-60.0, 0.0, screen_width() + 120.0, screen_height() * 1.15));
         draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.03, 0.04, 0.05, dark));
+    }
+
+    /// To the new game page: the picks of last time, with fresh values from `data\` – a map changed in
+    /// `game_maps.json` shows as it is now. A difficulty that isn't in the list any more becomes the default one, a
+    /// number of days the closest duration.
+    fn open_new_game(&mut self) {
+        data::reload();
+        let data = data::get();
+        self.setup.round.difficulty = data.difficulty(&self.setup.round.difficulty).name.clone();
+        self.setup.round.days = data.duration(self.setup.round.days.round() as u32).days as f32;
+        self.setup = picked_setup(&self.setup.map, &self.setup.round);
+        self.preview_stale = true;
+        self.page = Page::NewGame;
+    }
+
+    /// To the setup page, with fresh values from `data\` (the difficulties and durations to pick).
+    fn open_setup_page(&mut self) {
+        data::reload();
+        self.preview_stale = true;
+        self.page = Page::Setup;
     }
 
     /// To the maps page – the list is read from the folder anew.
@@ -188,7 +221,7 @@ impl Home {
         match self.program {
             Program::Game => {
                 if button(col.row(), "New game", true) {
-                    self.page = Page::Setup;
+                    self.open_new_game();
                 }
                 button(col.row(), "Continue (saving a round comes later)", false);
                 if button(col.row(), "Map editor", true) {
@@ -202,7 +235,7 @@ impl Home {
             }
             Program::Editor => {
                 if button(col.row(), "New map", true) {
-                    self.page = Page::Setup;
+                    self.open_setup_page();
                 }
                 if button(col.row(), "Open a map", true) {
                     self.open_maps();
@@ -226,29 +259,95 @@ impl Home {
         action
     }
 
-    fn setup_page(&mut self, new_seed: impl Fn() -> u64) -> HomeAction {
+    /// The new game page, like TAB's: a map, a difficulty, how long the round lasts – and what the round is worth (the
+    /// score factor: the three multiplied). "Custom setup" goes on to every value of the picked map (the setup page).
+    fn new_game_page(&mut self, new_seed: impl Fn() -> u64) -> HomeAction {
         let h = screen_height();
         let left = Rect::new(16.0, 16.0, 440.0, h - 32.0);
-        let (title, start) = match self.program {
-            Program::Game => ("New game", "Start game"),
-            Program::Editor => ("New map", "Open in the editor"),
-        };
-        let mut col = Column::boxed(title, left);
-        let mut changed = false;
-        let mut help: Option<&'static str> = None;
+        let mut col = Column::boxed("New game", left);
+        // `&'static`: the values live as long as the program (`data::get`) – borrowing them doesn't hold up `self`.
+        let data = data::get();
 
-        // Which generator.
-        let gens = col.split(Generator::ALL.len());
-        for (r, g) in gens.into_iter().zip(Generator::ALL) {
-            if button_lit(r, g.name(), true, self.setup.generator == g) && self.setup.generator != g {
-                self.setup.generator = g;
-                changed = true;
+        col.heading("Map");
+        for map in &data.maps.maps {
+            let picked = map.name == self.setup.map;
+            if pick(col.row(), &map.name, &format!("{} %", map.score_percent), picked) && !picked {
+                self.setup = picked_setup(&map.name, &self.setup.round);
+                self.preview_stale = true;
             }
         }
-        col.note(self.setup.generator.about());
+        col.wrap(&data.game_map(&self.setup.map).about);
+        self.round_picks(&mut col, true);
+        col.gap();
+        if self.seed_row(col.row(), &new_seed) {
+            self.preview_stale = true;
+        }
 
-        // The seed: click the box to type one, or roll a new one.
-        let row = col.row();
+        // Right side: the preview, what was picked and its score factor, the buttons.
+        let right = Rect::new(left.right() + 16.0, 16.0, screen_width() - left.right() - 32.0, h - 32.0);
+        self.draw_preview(Rect::new(right.x, right.y, right.w, right.h - 130.0));
+        let map = data.game_map(&self.setup.map);
+        let difficulty = data.difficulty(&self.setup.round.difficulty);
+        let duration = data.duration(self.setup.round.days.round() as u32);
+        let picked = format!("{} - {} - {} days ({})", map.name, difficulty.name, duration.days, play_time(duration.days));
+        draw_text(&picked, right.x, right.bottom() - 98.0, 24.0, WHITE);
+        let factor = map.score_percent as u64 * difficulty.score_percent as u64 * duration.score_percent as u64 / 10_000;
+        let score = format!("Score factor {factor} %  (map {} % x difficulty {} % x duration {} %)", map.score_percent, difficulty.score_percent, duration.score_percent);
+        draw_text(&score, right.x, right.bottom() - 70.0, 19.0, ACCENT);
+
+        let third = (right.w - 16.0) / 3.0;
+        let row = right.bottom() - 44.0;
+        let mut action = HomeAction::Nothing;
+        if button(Rect::new(right.x, row, third, 40.0), "Back", true) {
+            self.page = Page::Main;
+        }
+        if button(Rect::new(right.x + third + 8.0, row, third, 40.0), "Custom setup...", true) {
+            self.open_setup_page();
+        }
+        let start = Rect::new(right.x + 2.0 * (third + 8.0), row, third, 40.0);
+        if button(start, "Start game", true) {
+            save_setup(&self.setup);
+            action = HomeAction::Start { seed: self.seed, setup: self.setup.clone() };
+        }
+        draw_rectangle_lines(start.x, start.y, start.w, start.h, 2.0, ACCENT);
+        action
+    }
+
+    /// The round, both pages: a row of difficulties and a row of durations. `notes`: what the picked ones mean under
+    /// each row (the new game page has room for it).
+    fn round_picks(&mut self, col: &mut Column, notes: bool) {
+        let data = data::get();
+        let round = &mut self.setup.round;
+        col.heading("Difficulty");
+        let list = &data.difficulties.difficulties;
+        let current = data.difficulty(&round.difficulty).name.clone();
+        for (r, d) in col.split(list.len()).into_iter().zip(list) {
+            if button_lit(r, &d.name, true, d.name == current) {
+                round.difficulty = d.name.clone();
+            }
+        }
+        if notes {
+            let d = data.difficulty(&round.difficulty);
+            col.wrap(&format!("{} - score {} %", d.about, d.score_percent));
+        }
+        col.heading("Duration");
+        let list = &data.durations.durations;
+        let days = round.days.round() as u32;
+        for (r, d) in col.split(list.len()).into_iter().zip(list) {
+            if button_lit(r, &format!("{} days", d.days), true, d.days == days) {
+                round.days = d.days as f32;
+            }
+        }
+        if notes {
+            let d = data.duration(round.days.round() as u32);
+            let waves = format!("first wave on day {}, then every {} days", d.first_wave_day, d.wave_every_days);
+            col.wrap(&format!("{} at speed x1 - {waves} - score {} %", play_time(d.days), d.score_percent));
+        }
+    }
+
+    /// The seed: click the box to type one, or roll a new one. `true` if it changed.
+    fn seed_row(&mut self, row: Rect, new_seed: &impl Fn() -> u64) -> bool {
+        let mut changed = false;
         let (seed_box, roll) = (Rect::new(row.x, row.y, row.w * 0.62, row.h), Rect::new(row.x + row.w * 0.64, row.y, row.w * 0.36, row.h));
         let shown = self.seed_text.clone().unwrap_or_else(|| self.seed.to_string());
         if text_box(seed_box, "Seed", &shown, self.seed_text.is_some()) && self.seed_text.is_none() {
@@ -268,6 +367,30 @@ impl Home {
             self.seed_text = None;
             changed = true;
         }
+        changed
+    }
+
+    fn setup_page(&mut self, new_seed: impl Fn() -> u64) -> HomeAction {
+        let h = screen_height();
+        let left = Rect::new(16.0, 16.0, 440.0, h - 32.0);
+        let (title, start) = match self.program {
+            Program::Game => ("Custom setup", "Start game"),
+            Program::Editor => ("New map", "Open in the editor"),
+        };
+        let mut col = Column::boxed(title, left);
+        let mut changed = false;
+        let mut help: Option<&'static str> = None;
+
+        // Which generator.
+        let gens = col.split(Generator::ALL.len());
+        for (r, g) in gens.into_iter().zip(Generator::ALL) {
+            if button_lit(r, g.name(), true, self.setup.generator == g) && self.setup.generator != g {
+                self.setup.generator = g;
+                changed = true;
+            }
+        }
+        col.note(self.setup.generator.about());
+        changed |= self.seed_row(col.row(), &new_seed);
 
         // Both lists of sliders have to fit into the box: in a 720 px window (Wild: 19 sliders) the rows get lower.
         let count = self.setup.common_fields().len() + self.setup.generator_fields().len();
@@ -288,18 +411,13 @@ impl Home {
 
         // Right side: preview, the round under it, then the buttons.
         let right = Rect::new(left.right() + 16.0, 16.0, screen_width() - left.right() - 32.0, h - 32.0);
-        self.draw_preview(Rect::new(right.x, right.y, right.w, right.h - 200.0));
-        let n = self.setup.map_size();
-        let info = format!("{n} x {n} tiles ({} inside the border)   seed {}", n - 2 * crate::map::BORDER, self.seed);
-        draw_text(&info, right.x, right.bottom() - 184.0, 18.0, DIM);
-        draw_text("Round", right.x, right.bottom() - 156.0, 22.0, DIM);
-        let mut y = right.bottom() - 148.0;
+        self.draw_preview(Rect::new(right.x, right.y, right.w, right.h - 262.0));
+        let inside = Map::play_area_of(self.setup.map_size(), crate::map::BORDER).area();
+        let info = format!("{:.0} tiles inside the border (like {:.0} x {:.0})   seed {}", inside, inside.sqrt(), inside.sqrt(), self.seed);
+        draw_text(&info, right.x, right.bottom() - 244.0, 18.0, DIM);
         // The round doesn't change the map – no new preview needed.
-        for mut field in self.setup.round_fields() {
-            let (_, h) = field_slider(Rect::new(right.x, y, right.w.min(520.0), 28.0), &mut field);
-            help = help.or(h);
-            y += 31.0;
-        }
+        let mut round = Column { x: right.x, y: right.bottom() - 236.0, width: right.w.min(560.0) };
+        self.round_picks(&mut round, false);
         let half = (right.w - 8.0) / 2.0;
         let row1 = right.bottom() - 90.0;
         if button(Rect::new(right.x, row1, half, 36.0), "Random values", true) {
@@ -313,11 +431,20 @@ impl Home {
         let row2 = right.bottom() - 44.0;
         let mut action = HomeAction::Nothing;
         if button(Rect::new(right.x, row2, half, 40.0), "Back", true) {
-            self.page = Page::Main;
+            // The game came here from "New game" – back there (the picked map's values again).
+            match self.program {
+                Program::Game => self.open_new_game(),
+                Program::Editor => self.page = Page::Main,
+            }
         }
         if button(Rect::new(right.x + half + 8.0, row2, half, 40.0), start, true) {
             save_setup(&self.setup);
-            action = HomeAction::Start { seed: self.seed, setup: self.setup.clone() };
+            // Still the picked map? Only with all of its values – one changed by hand, and it's a map of its own.
+            let mut setup = self.setup.clone();
+            if !setup.map.is_empty() && picked_setup(&setup.map, &setup.round) != setup {
+                setup.map.clear();
+            }
+            action = HomeAction::Start { seed: self.seed, setup };
         }
         draw_rectangle_lines(right.x + half + 8.0, row2, half, 40.0, 2.0, ACCENT);
         if changed {
@@ -413,6 +540,24 @@ impl Home {
     }
 }
 
+/// A map of `data\game_maps.json` (an unknown name: the default map) with this round – the setup a new game starts
+/// with. `..`: every other field from the map's setup.
+fn picked_setup(map: &str, round: &RoundSetup) -> MapSetup {
+    let picked = data::get().game_map(map);
+    MapSetup { map: picked.name.clone(), round: round.clone(), ..picked.setup.clone() }
+}
+
+/// How long a round of `days` days takes at speed x1: "30 min", "2 h", "1 h 30 min".
+fn play_time(days: u32) -> String {
+    let minutes = (days as u64 * DAY_TICKS) as f32 / TICKS_PER_SECOND / 60.0;
+    let minutes = minutes.round() as u32;
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
+}
+
 /// The small line under a map's name: days, size, how long ago it was changed.
 fn details(entry: &Entry) -> String {
     let mut parts = Vec::new();
@@ -422,7 +567,7 @@ fn details(entry: &Entry) -> String {
         None => parts.push("can't be read".to_owned()),
     }
     if let Some(field) = entry.field {
-        parts.push(format!("{field} x {field} tiles"));
+        parts.push(format!("like {field} x {field} tiles"));
     }
     if let Some(age) = entry.age {
         parts.push(ago(age));

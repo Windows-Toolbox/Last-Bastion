@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::tools::{self, Tiles};
 use super::{Context, Field, Show, MATERIALS};
-use crate::map::Terrain;
+use crate::map::{Terrain, BORDER};
 use crate::noise::Noise;
 use crate::rng::Rng;
 
@@ -70,8 +70,10 @@ impl Params {
 pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
     let n = tiles.size as f32;
     let count = p.rings.round().max(1.0) as usize;
-    // From just outside the free space to just inside the world border (16 tiles ring + a bit).
-    let (inner, outer) = (ctx.keep_out + 6.0, n / 2.0 - 20.0);
+    // From just outside the free space to just inside the world border: in a straight line from the base to the
+    // middle of a side it's (n / 2 − ring) / √2 (the playing field is a diamond in the grid, `map.rs`).
+    let to_side = (n / 2.0 - BORDER as f32) * std::f32::consts::FRAC_1_SQRT_2;
+    let (inner, outer) = (ctx.keep_out + 6.0, to_side - 4.0);
     let radii: Vec<f32> = (0..count)
         .map(|i| if count == 1 { (inner + outer) / 2.0 } else { inner + (outer - inner) * i as f32 / (count - 1) as f32 })
         .collect();
@@ -103,9 +105,10 @@ pub fn generate(tiles: &mut Tiles, p: &Params, rng: &mut Rng, ctx: &Context) {
     let wet = Noise::new(rng.next_u64() as u32);
     for (x, y) in tiles.all() {
         let d = vec2(x as f32 + 0.5, y as f32 + 0.5) - ctx.center;
-        // Round (straight-line distance) blended with square (the larger of the two axes).
+        // Round (straight-line distance) blended with square – square on screen, like the world border: the larger of
+        // the two screen axes (|dx| + |dy|), in tiles.
         let round = d.length();
-        let square = d.x.abs().max(d.y.abs());
+        let square = (d.x.abs() + d.y.abs()) * std::f32::consts::FRAC_1_SQRT_2;
         let dist = round + (square - round) * p.square + (bump.fractal(x as f32, y as f32, 24.0, 3) - 0.5) * 2.0 * p.wobble;
         let mut terrain = Terrain::Grass;
         for (ring, &r) in radii.iter().enumerate() {

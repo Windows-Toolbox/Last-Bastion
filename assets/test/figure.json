@@ -2,10 +2,10 @@
   "image": "figure.png",
   "frame": [96, 128],
   "feet": [48, 108],
-  "pixels_per_tile": 128,
+  "pixels_per_tile": 256,
   "directions": 16,
   "tint": true,
   "idle": { "at": [0, 0], "frames": 4, "fps": 3 },
-  "walk": { "at": [4, 0], "frames": 6, "tiles": 0.6 },
+  "walk": { "at": [4, 0], "frames": 6, "tiles": 0.3 },
   "attack": { "at": [10, 0], "frames": 4, "fps": 8 }
 }

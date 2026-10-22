@@ -7,8 +7,9 @@
 //! before, the **ways in** (`lanes.rs`) – open lanes from every side to the base that the generator grows its
 //! terrain around; after, the ring outside the world border cleared to open ground (the zombies' way around the map),
 //! the spawners in it along every side, the free space around the base, a way from every open place that is still
-//! cut off (`tools::connect_pockets` – the safety net, so no zombie and no unit is ever stuck in a closed-off hole)
-//! and the ore patches (`ores.rs`).
+//! cut off (`tools::connect_pockets` – the safety net, so no zombie and no unit is ever stuck in a closed-off hole),
+//! the ore patches (`ores.rs`), the villages of doom and the loot (`villages.rs`), and last the dirt in patches on the
+//! open ground (`tools::scatter_dirt` – no farm grows there).
 //!
 //! The generators:
 //! - **Wild** (`wild.rs`): noise like in Factorio – lakes, mountain ridges, forests, winding rivers.
@@ -24,16 +25,18 @@ mod ores;
 mod regions;
 mod rings;
 mod tools;
+mod villages;
 mod wild;
 
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::map::{Map, Terrain, BORDER};
+use crate::map::{Map, Region, Terrain, BORDER};
 use crate::noise::Noise;
 use crate::rng::Rng;
 use lanes::Lanes;
 use tools::Tiles;
+pub use villages::HouseSpot;
 
 /// Which generator makes the map.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -142,7 +145,8 @@ pub const MATERIALS: &[&str] = &["Mountains", "Forest", "Mixed", "Water"];
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Common {
-    /// Edge length of the playing field inside the world border (TAB: 256).
+    /// How big the playing field inside the world border is: as many tiles as a square with this edge (TAB: 256).
+    /// On screen it's a rectangle twice as wide as high (`map.rs`).
     pub size: f32,
     /// Radius around the base where nothing grows (tiles).
     pub base_clear: f32,
@@ -151,10 +155,16 @@ pub struct Common {
     /// Setups saved before 2026-10-17 have none – `#[serde(default)]` gives them the defaults.
     pub ways_in: f32,
     pub way_width: f32,
-    /// Zombies roaming the map at the start, per 1,000 tiles (`World::scatter_roamers`). Not used by the generator
-    /// itself (they're no terrain), but by `World::generate`. Before 2026-10-17 it was "walkers" with 20 – the new name
-    /// means old saved setups start with the new default instead of the old, much lower number.
-    pub roamers: f32,
+    /// Villages of doom (a few houses full of sleeping zombies) and piles of loot (guarded by hidden zombies), per
+    /// 10,000 tiles (`villages.rs`). Setups saved before 2026-10-20 have none – they get the defaults.
+    pub villages: f32,
+    /// Houses in a village near the base and at the edge – many small villages or two huge ones is up to the map. The
+    /// difficulty makes villages and houses more or fewer (`World::generate`), how full the houses are too.
+    pub houses_near: f32,
+    pub houses_edge: f32,
+    pub loot_piles: f32,
+    /// Share of the open ground that is dirt – no farm grows there (`Terrain::Dirt`).
+    pub dirt: f32,
     /// Ore patches per 10,000 tiles (besides the three in the start area), their size and richness (`ores.rs`).
     pub ore_patches: f32,
     pub ore_size: f32,
@@ -172,7 +182,11 @@ impl Default for Common {
             spawners_per_side: 3.0,
             ways_in: 2.0,
             way_width: 7.0,
-            roamers: 60.0,
+            villages: 1.5,
+            houses_near: 3.0,
+            houses_edge: 6.0,
+            loot_piles: 6.0,
+            dirt: 0.4,
             ore_patches: 5.0,
             ore_size: 5.0,
             ore_richness: 1.0,
@@ -191,7 +205,7 @@ impl Common {
                 max: 256.0,
                 step: 32.0,
                 show: Show::Tiles,
-                help: "Edge of the playing field. TAB's survival maps are 256. Plus 16 tiles of spawn ring on each side.",
+                help: "Playing field as big as a square of this edge. TAB's survival maps are 256. Plus the spawn ring around it.",
             },
             Field {
                 label: "Free around base",
@@ -230,13 +244,49 @@ impl Common {
                 help: "How wide the ways in are on average - they get wider and narrower along the way. Narrow = easy to wall off.",
             },
             Field {
-                label: "Roaming zombies",
-                value: &mut self.roamers,
+                label: "Villages of doom",
+                value: &mut self.villages,
                 min: 0.0,
-                max: 150.0,
-                step: 5.0,
+                max: 8.0,
+                step: 0.25,
                 show: Show::Number,
-                help: "Zombies wandering the map from the start, per 1,000 tiles. Fewer near the base, more further out: walkers everywhere, runners further out, fat ones at the edge. 60 on 256 tiles: about 3,900.",
+                help: "Villages per 10,000 tiles, away from the base: ruined houses full of sleeping zombies - how full, the difficulty says (and it makes the villages more or fewer). Come close or shoot near them and they pour out. A destroyed house drops loot. 1.5 on 256 tiles: about 10 villages, 0.3: two.",
+            },
+            Field {
+                label: "Houses near base",
+                value: &mut self.houses_near,
+                min: 1.0,
+                max: 30.0,
+                step: 1.0,
+                show: Show::Number,
+                help: "Houses in a village close to the base - further out it grows to 'Houses at edge'. A big village spreads wider and keeps further from the others. The difficulty makes them more or fewer.",
+            },
+            Field {
+                label: "Houses at edge",
+                value: &mut self.houses_edge,
+                min: 1.0,
+                max: 30.0,
+                step: 1.0,
+                show: Show::Number,
+                help: "Houses in a village at the edge of the map. Many small villages: 2 and 3. Two huge ones: 'Villages of doom' 0.3, 15 and 25.",
+            },
+            Field {
+                label: "Loot",
+                value: &mut self.loot_piles,
+                min: 0.0,
+                max: 15.0,
+                step: 1.0,
+                show: Show::Number,
+                help: "Piles of gold, wood, stone, iron ore or coal per 10,000 tiles. Walk onto one to pick it up - but zombies lie hidden around it and come out when you get close. 6 on 256 tiles: about 40.",
+            },
+            Field {
+                label: "Dirt",
+                value: &mut self.dirt,
+                min: 0.0,
+                max: 0.8,
+                step: 0.05,
+                show: Show::Percent,
+                help: "Share of the open ground that is bare dirt, in patches. You walk and build on it like on grass - but no farm grows there.",
             },
             Field {
                 label: "Ore patches",
@@ -297,46 +347,23 @@ impl BlankParams {
     }
 }
 
-/// The round on this map (DESIGN.md 4.1, 10.1): how many days, how strong the waves. Like `roamers` not used by the
-/// generator itself, but by `World::generate` – it plans the waves from it (`sim::plan_waves`).
+/// The round on this map (DESIGN.md 4.1, 10.1), picked like in TAB: how many days (a duration of
+/// `data\game_durations.json`) and how hard (a difficulty of `data\game_difficulties.json`, by its name). Not used by
+/// the generator itself, but by `World::generate`: the zombies, the waves, what the colony starts with.
+/// Setups saved before the difficulties had a slider "waves" here – serde skips it.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RoundSetup {
-    /// The final wave comes on the last day. 1 day = 3 minutes.
+    /// The final wave comes on the last day. 1 day = 3 minutes. (A float: setups and map files have always kept it so.)
     pub days: f32,
-    /// All waves times this (1 = 100 %).
-    pub waves: f32,
+    /// `""`: the default one.
+    pub difficulty: String,
 }
 
 impl Default for RoundSetup {
     fn default() -> RoundSetup {
         // The mini round of DESIGN.md 13, step 4: 10 days ≈ 30 minutes, two waves and the final wave.
-        RoundSetup { days: 10.0, waves: 1.0 }
-    }
-}
-
-impl RoundSetup {
-    fn fields(&mut self) -> Vec<Field<'_>> {
-        vec![
-            Field {
-                label: "Days",
-                value: &mut self.days,
-                min: 3.0,
-                max: 80.0,
-                step: 1.0,
-                show: Show::Number,
-                help: "How long the round lasts - the final wave comes on the last day. 1 day = 3 minutes: 10 days = 30 min, 40 = 2 h.",
-            },
-            Field {
-                label: "Waves",
-                value: &mut self.waves,
-                min: 0.25,
-                max: 3.0,
-                step: 0.25,
-                show: Show::Percent,
-                help: "How many zombies every wave brings, the final wave too. From day 4 a wave every 3 days (data\\spawning.json).",
-            },
-        ]
+        RoundSetup { days: 10.0, difficulty: String::new() }
     }
 }
 
@@ -345,6 +372,9 @@ impl RoundSetup {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapSetup {
+    /// The map of `data\game_maps.json` it was picked as (home screen, like TAB) – `""` once a value was changed by
+    /// hand on the setup page.
+    pub map: String,
     pub generator: Generator,
     pub common: Common,
     pub wild: wild::Params,
@@ -359,6 +389,7 @@ pub struct MapSetup {
 impl Default for MapSetup {
     fn default() -> MapSetup {
         MapSetup {
+            map: String::new(),
             generator: Generator::Wild,
             common: Common::default(),
             wild: wild::Params::default(),
@@ -372,11 +403,6 @@ impl Default for MapSetup {
 }
 
 impl MapSetup {
-    /// Days and waves of the round.
-    pub fn round_fields(&mut self) -> Vec<Field<'_>> {
-        self.round.fields()
-    }
-
     /// The values of the chosen generator (without the common ones).
     pub fn generator_fields(&mut self) -> Vec<Field<'_>> {
         match self.generator {
@@ -411,13 +437,16 @@ impl MapSetup {
         }
     }
 
-    /// Edge length of the whole map (playing field + ring on both sides).
+    /// Edge length of the whole grid. The playing field is a diamond in it (`map.rs`) – as many tiles as a square of
+    /// `size` makes it `size / √2` steps of the screen axes to every side of the middle, then comes the ring.
     pub fn map_size(&self) -> usize {
-        self.common.size.round() as usize + 2 * BORDER
+        let half = (self.common.size / std::f32::consts::SQRT_2).round() as usize;
+        2 * (half + BORDER)
     }
 }
 
-/// A spawner as the generator plans it – `sim.rs` makes the real one out of it.
+/// A spawner as the generator plans it – `sim.rs` makes the real one out of it. A rectangle in the screen axes
+/// (`map::to_frame`), like the real one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpawnerSpot {
     pub name: String,
@@ -425,16 +454,26 @@ pub struct SpawnerSpot {
     pub size: (i32, i32),
 }
 
-/// A finished map and where its spawners go.
+impl SpawnerSpot {
+    pub fn region(&self) -> Region {
+        let min = vec2(self.min.0 as f32, self.min.1 as f32);
+        Region { min, max: min + vec2(self.size.0 as f32, self.size.1 as f32) }
+    }
+}
+
+/// A finished map and where its spawners, the houses of its villages of doom and its loot go.
 pub struct Generated {
     pub map: Map,
     pub spawners: Vec<SpawnerSpot>,
+    pub houses: Vec<HouseSpot>,
+    /// One tile per pile of loot.
+    pub loot: Vec<(i32, i32)>,
 }
 
-/// A start spawner: this deep and this far from the map edge (tiles) – inside the ring of `BORDER` tiles outside
-/// the world border. How long it is depends on how many share a side.
-const SPAWNER_DEPTH: i32 = 8;
-const SPAWNER_INSET: i32 = 4;
+/// A start spawner: this deep and this far from the edge of the map (steps of the screen axes) – inside the ring of
+/// `BORDER` steps outside the world border. How long it is depends on how many share a side.
+const SPAWNER_DEPTH: i32 = 10;
+const SPAWNER_INSET: i32 = 3;
 /// Beside a way in, features fade out within at most this many tiles (`Context::fade`).
 const LANE_FADE: f32 = 4.0;
 /// Open places smaller than this (tiles) are filled instead of connected – a hole of 5 tiles in a forest isn't
@@ -448,16 +487,17 @@ pub fn generate(seed: u64, setup: &MapSetup) -> Generated {
 }
 
 /// `generate`, and how many blocked tiles the safety net (`tools::connect_pockets`) still had to open – few is good:
-/// the ways in and the generators themselves should connect nearly everything (a test checks it).
-fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize) {
+/// the ways in and the generators themselves should connect nearly everything (a test checks it) – and the middle of
+/// every village of doom (the tests count them).
+fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize, Vec<Vec2>) {
     let size = setup.map_size();
     let mut rng = Rng::new(seed);
     let mut tiles = Tiles::new(size);
     let center = tiles.center();
     let center_point = vec2(center.0 as f32 + 0.5, center.1 as f32 + 0.5);
     let c = &setup.common;
-    // Inside the world border: what `Map::in_play` will say.
-    let (lo, hi) = (BORDER as i32, size as i32 - BORDER as i32);
+    // Inside the world border: what `Map::in_play` will say. Beyond `full` the corners of the grid are off the map.
+    let (play, full) = (Map::play_area_of(size, BORDER), Map::full_area_of(size));
     let ctx = Context { center: center_point, keep_out: c.base_clear, lanes: ways_in(seed, setup) };
     match setup.generator {
         Generator::Wild => wild::generate(&mut tiles, &setup.wild, &mut rng, &ctx),
@@ -471,7 +511,7 @@ fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize) {
     // spawner walk straight in where the field is open, or along the ring to the next opening (like a TAB swarm from
     // the north that comes in from the west because the north is blocked) – never through the terrain out there.
     // The spawners lie in it, so they are free as well.
-    tiles.clear_outside(lo, hi);
+    tiles.clear_outside(&play, &full);
     // What still lies in a way in – a river, the wall between two regions – is cleared: a ford, a pass.
     for (x, y) in tiles.all() {
         if ctx.lanes.is_open(x, y) {
@@ -480,16 +520,24 @@ fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize) {
     }
     tiles.clear_circle(ctx.center, ctx.keep_out);
     let rough = Noise::new(rng.next_u64() as u32);
-    let cut = tools::connect_pockets(&mut tiles, center, MIN_POCKET, &rough, |x, y| x >= lo && y >= lo && x < hi && y < hi);
+    let cut = tools::connect_pockets(&mut tiles, center, MIN_POCKET, &rough, |x, y| play.contains_tile(x, y), |x, y| full.contains_tile(x, y));
 
     let ore = ores::OreSettings { per_10k: c.ore_patches, size: c.ore_size, richness: c.ore_richness, oil_per_10k: c.oil_groups };
-    let deposits = ores::place(&tiles, &mut rng, &ctx, (lo, hi), &ore);
+    let deposits = ores::place(&tiles, &mut rng, &ctx, &play, &ore);
+    let village = villages::Settings { villages: c.villages, houses_near: c.houses_near, houses_edge: c.houses_edge, loot: c.loot_piles };
+    let places = villages::place(&tiles, &deposits, &mut rng, &ctx, &play, &village);
+    // Dirt last, so it doesn't move anything placed before. Its own noise: the dirt slider changes only the dirt. Not on
+    // Blank – that one is only grass.
+    if setup.generator != Generator::Blank {
+        let noise = Noise::new((seed ^ 0x4449_5254) as u32); // "DIRT"
+        tools::scatter_dirt(&mut tiles, &noise, c.dirt, |x, y| play.contains_tile(x, y));
+    }
     let mut map = Map::from_terrain(size, BORDER, tiles.into_terrain());
     for (x, y, deposit) in deposits {
         map.set_deposit(x, y, Some(deposit));
     }
-    let spawners = spawner_spots(size as i32, c.spawners_per_side.round() as i32);
-    (Generated { map, spawners }, cut)
+    let spawners = spawner_spots(size, c.spawners_per_side.round() as i32);
+    (Generated { map, spawners, houses: places.houses, loot: places.loot }, cut, places.villages)
 }
 
 /// The ways in of this map (`lanes.rs`) – none for the generators without them. They get their own random numbers:
@@ -503,7 +551,8 @@ fn ways_in(seed: u64, setup: &MapSetup) -> Lanes {
     let c = &setup.common;
     let center = vec2((size / 2) as f32 + 0.5, (size / 2) as f32 + 0.5);
     let mut rng = Rng::new(seed ^ 0x4C41_4E45); // "LANE"
-    Lanes::plan(&mut rng, size, BORDER as i32, center, c.base_clear, c.ways_in.round() as u32, c.way_width)
+    let play = Map::play_area_of(size as usize, BORDER);
+    Lanes::plan(&mut rng, size, &play, center, c.base_clear, c.ways_in.round() as u32, c.way_width)
 }
 
 /// What every generator needs to know besides its own values: where the base is, how much room it keeps, and
@@ -530,23 +579,28 @@ impl Context {
 }
 
 /// `per_side` spawners on every side, in the ring outside the world border. Side by side they cover the whole side
-/// (only a 2-tile gap between two, so the editor shows them apart): a wave from one side comes out of all of them –
-/// along the whole side like a TAB swarm, not out of a few points. Named after the side as you see it on screen (the
-/// map is a diamond: the side with y = 0 runs to the top right, "NE").
-fn spawner_spots(size: i32, per_side: i32) -> Vec<SpawnerSpot> {
+/// (only a gap of 2 between two, so the editor shows them apart): a wave from one side comes out of all of them –
+/// along the whole side like a TAB swarm, not out of a few points. Named after the side as you see it on screen.
+/// In the screen axes (`map::to_frame`), like the border: there every side is a straight line.
+fn spawner_spots(size: usize, per_side: i32) -> Vec<SpawnerSpot> {
     let (depth, inset) = (SPAWNER_DEPTH, SPAWNER_INSET);
-    let (lo, hi) = (BORDER as i32, size - BORDER as i32);
+    let (play, full) = (Map::play_area_of(size, BORDER), Map::full_area_of(size));
+    // The playing field and the whole map in whole steps: on the screen axes the middle of the map is (0, size).
+    let (lo, hi) = (play.min.x.round() as i32, play.max.x.round() as i32);
+    let (top, bottom) = (full.min.y.round() as i32, full.max.y.round() as i32);
+    let (left, right) = (full.min.x.round() as i32, full.max.x.round() as i32);
+    let shift = play.min.y.round() as i32 - lo; // the screen axis down (b) is the one across (a) moved by this much
     let mut spots = Vec::new();
-    for (side, name) in ["NE", "SW", "NW", "SE"].into_iter().enumerate() {
+    for (side, name) in ["N", "S", "W", "E"].into_iter().enumerate() {
         for k in 0..per_side {
-            // The k-th piece of the side, as long as the playing field is wide, 1 tile off at both ends.
+            // The k-th piece of the side, as long as the playing field is wide, 1 off at both ends.
             let from = lo + (hi - lo) * k / per_side + 1;
             let len = lo + (hi - lo) * (k + 1) / per_side - 1 - from;
             let (min, rect) = match side {
-                0 => ((from, inset), (len, depth)),
-                1 => ((from, size - inset - depth), (len, depth)),
-                2 => ((inset, from), (depth, len)),
-                _ => ((size - inset - depth, from), (depth, len)),
+                0 => ((from, top + inset), (len, depth)),
+                1 => ((from, bottom - inset - depth), (len, depth)),
+                2 => ((left + inset, from + shift), (depth, len)),
+                _ => ((right - inset - depth, from + shift), (depth, len)),
             };
             spots.push(SpawnerSpot { name: format!("{name} {}", k + 1), min, size: rect });
         }
@@ -557,6 +611,7 @@ fn spawner_spots(size: i32, per_side: i32) -> Vec<SpawnerSpot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::villages::village_radius;
 
     fn setup(generator: Generator) -> MapSetup {
         MapSetup { generator, common: Common { size: 128.0, ..Common::default() }, ..MapSetup::default() }
@@ -594,7 +649,7 @@ mod tests {
                 for y in c - r..=c + r {
                     for x in c - r..=c + r {
                         if (x - c) * (x - c) + (y - c) * (y - c) <= r * r {
-                            assert_eq!(map.terrain(x, y), Terrain::Grass, "{generator:?} seed {seed}: ({x}, {y}) at the base");
+                            assert!(!map.terrain(x, y).is_solid(), "{generator:?} seed {seed}: ({x}, {y}) at the base");
                         }
                     }
                 }
@@ -640,7 +695,10 @@ mod tests {
     fn size_and_randomize() {
         let mut s = MapSetup::default();
         s.common.size = 160.0;
-        assert_eq!(generate(1, &s).map.size, 160 + 2 * BORDER);
+        // As many tiles inside the border as a square of 160 – give or take the stairs along the edge.
+        let map = generate(1, &s).map;
+        let inside = (0..map.size as i32).flat_map(|y| (0..map.size as i32).map(move |x| (x, y))).filter(|&(x, y)| map.in_play(x, y)).count();
+        assert!((inside as f32 / (160.0 * 160.0) - 1.0).abs() < 0.03, "{inside} tiles inside the border");
         for generator in Generator::ALL {
             s.generator = generator;
             let (mut a, mut b) = (s.clone(), s.clone());
@@ -674,7 +732,8 @@ mod tests {
                     assert_eq!(cut, 0, "{generator:?} seed {seed}: {cut} tiles cut off for the {}", if units { "units" } else { "zombies" });
                     if !units {
                         for sp in &g.spawners {
-                            assert!(seen[(sp.min.1 * n + sp.min.0) as usize], "{generator:?} seed {seed}: spawner {} cut off", sp.name);
+                            let c = sp.region().center();
+                            assert!(seen[(c.y as i32 * n + c.x as i32) as usize], "{generator:?} seed {seed}: spawner {} cut off", sp.name);
                         }
                     }
                 }
@@ -700,7 +759,7 @@ mod tests {
         seen
     }
 
-    /// Ore: one patch of each kind right next to the base on every map, all of it on grass inside the world border,
+    /// Ore: one patch of each kind right next to the base on every map, all of it on open ground inside the border,
     /// patches further out richer – and the slider for patches really changes how many there are.
     #[test]
     fn ore_patches_start_near_the_base_and_get_richer_further_out() {
@@ -721,7 +780,7 @@ mod tests {
                     assert!(close, "{generator:?} seed {seed}: no {ore:?} near the base");
                 }
                 for &(x, y, _) in &deposits {
-                    assert!(map.in_play(x, y) && map.terrain(x, y) == Terrain::Grass, "{generator:?} seed {seed}: ore at ({x}, {y})");
+                    assert!(map.in_play(x, y) && !map.terrain(x, y).is_solid(), "{generator:?} seed {seed}: ore at ({x}, {y})");
                 }
                 // The richest tile near the base against the richest far out.
                 let richest = |far: bool| {
@@ -747,7 +806,7 @@ mod tests {
         assert!(count(10.0) > count(2.0) * 2, "the slider doesn't change the ore");
     }
 
-    /// Oil: only whole nodes of 2 × 2 grass tiles inside the border that never touch each other (not even at a
+    /// Oil: only whole nodes of 2 × 2 open tiles inside the border that never touch each other (not even at a
     /// corner), exactly one of them near the base – and the slider for oil groups really adds nodes.
     #[test]
     fn oil_lies_in_separate_two_by_two_nodes_with_one_near_the_base() {
@@ -761,7 +820,7 @@ mod tests {
                     if !oil(x, y) {
                         continue;
                     }
-                    assert!(map.in_play(x, y) && map.terrain(x, y) == Terrain::Grass, "seed {seed}: oil at ({x}, {y})");
+                    assert!(map.in_play(x, y) && !map.terrain(x, y).is_solid(), "seed {seed}: oil at ({x}, {y})");
                     // The top corner of a node: nothing above it or to its left.
                     if oil(x - 1, y) || oil(x, y - 1) {
                         continue;
@@ -804,47 +863,73 @@ mod tests {
             let s = MapSetup { generator, ..MapSetup::default() };
             let g = generate(4, &s);
             let n = g.map.size as i32;
+            let full = g.map.full_area();
             for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
-                if !g.map.in_play(x, y) {
+                if full.contains_tile(x, y) && !g.map.in_play(x, y) {
                     assert_eq!(g.map.terrain(x, y), Terrain::Grass, "{generator:?}: ({x}, {y}) outside the border");
                 }
             }
-            let play = n - 2 * BORDER as i32;
-            for side in ["NE", "SW", "NW", "SE"] {
+            let play = g.map.play_area();
+            let width = (play.max.x - play.min.x) as i32;
+            for side in ["N", "S", "W", "E"] {
                 let spots: Vec<_> = g.spawners.iter().filter(|sp| sp.name.starts_with(side)).collect();
                 assert_eq!(spots.len(), 3);
                 let length: i32 = spots.iter().map(|sp| sp.size.0.max(sp.size.1)).sum();
-                assert!(length * 10 >= play * 9, "{generator:?} {side}: spawners cover {length} of {play} tiles");
+                assert!(length * 10 >= width * 9, "{generator:?} {side}: spawners cover {length} of {width}");
                 for sp in spots {
-                    for (x, y) in [sp.min, (sp.min.0 + sp.size.0 - 1, sp.min.1 + sp.size.1 - 1)] {
-                        assert!(x >= 0 && y >= 0 && x < n && y < n && !g.map.in_play(x, y), "{side}: spawner not in the ring");
+                    for (y, xs) in sp.region().rows(0.0) {
+                        for x in xs {
+                            assert!(full.contains_tile(x, y) && !g.map.in_play(x, y), "{side}: spawner not in the ring at ({x}, {y})");
+                        }
                     }
                 }
             }
         }
     }
 
-    /// The ways in stay open – every tile of every lane is grass in the finished map (a river gets a ford there, a
-    /// region wall a pass) – and so the safety net hardly has to cut anything: less than 0.5 % of the playing field,
+    /// The map decides how many villages and how big – many small ones (4 per 10,000 tiles, 2–3 houses) or two huge
+    /// ones (0.3, 15–25 houses), on the same generator and seed. A huge village spreads wider: no house further from
+    /// its middle than its radius allows.
+    #[test]
+    fn many_small_villages_or_two_huge_ones() {
+        let mut small = MapSetup { generator: Generator::Regions, ..MapSetup::default() };
+        (small.common.villages, small.common.houses_near, small.common.houses_edge) = (4.0, 2.0, 3.0);
+        let mut huge = small.clone();
+        (huge.common.villages, huge.common.houses_near, huge.common.houses_edge) = (0.3, 15.0, 25.0);
+        let (s, _, small_villages) = generate_counting(5, &small);
+        let (h, _, huge_villages) = generate_counting(5, &huge);
+        assert!(small_villages.len() >= 15, "only {} small villages", small_villages.len());
+        assert_eq!(huge_villages.len(), 2);
+        let per_village = |g: &Generated, middles: &[Vec2]| g.houses.len() as f32 / middles.len() as f32;
+        assert!(per_village(&s, &small_villages) <= 3.0, "{} houses per small village", per_village(&s, &small_villages));
+        assert!(per_village(&h, &huge_villages) >= 15.0, "{} houses per huge village", per_village(&h, &huge_villages));
+        for house in &h.houses {
+            let near = huge_villages.iter().map(|m| (house.center() - *m).abs().max_element()).fold(f32::INFINITY, f32::min);
+            assert!(near <= village_radius(25) + 2.0, "a house {near} tiles from its village");
+        }
+    }
+
+    /// The ways in stay open – every tile of every lane is open ground in the finished map (a river gets a ford there,
+    /// a region wall a pass) – and so the safety net hardly has to cut anything: less than 0.5 % of the playing field,
     /// for the default values (before the ways in: up to 600 tiles = 0.9 % on Canyons, in 2-tile lines).
     #[test]
     fn ways_in_stay_open_and_the_safety_net_cuts_little() {
         for generator in Generator::ALL {
             for seed in 1..=4u64 {
                 let s = MapSetup { generator, ..MapSetup::default() };
-                let (g, cut) = generate_counting(seed, &s);
+                let (g, cut, _) = generate_counting(seed, &s);
                 let lanes = ways_in(seed, &s);
                 let n = g.map.size as i32;
                 let mut lane_tiles = 0;
                 for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
                     if lanes.is_open(x, y) {
                         lane_tiles += 1;
-                        assert_eq!(g.map.terrain(x, y), Terrain::Grass, "{generator:?} seed {seed}: ({x}, {y}) in a way in");
+                        assert!(!g.map.terrain(x, y).is_solid(), "{generator:?} seed {seed}: ({x}, {y}) in a way in");
                     }
                 }
                 assert_eq!(lane_tiles > 0, generator.has_ways_in(), "{generator:?}: ways in or not?");
-                let play = (n - 2 * BORDER as i32) as usize;
-                assert!(cut * 200 < play * play, "{generator:?} seed {seed}: the safety net opened {cut} tiles");
+                let play = g.map.play_area().area();
+                assert!((cut as f32) * 200.0 < play, "{generator:?} seed {seed}: the safety net opened {cut} tiles");
             }
         }
     }
@@ -875,7 +960,7 @@ mod tests {
                         if !map.in_play(xi, yi) {
                             c = Color::new(c.r * 0.6, c.g * 0.6, c.b * 0.6, 1.0);
                         }
-                        let spawner = g.spawners.iter().any(|sp| xi >= sp.min.0 && xi < sp.min.0 + sp.size.0 && yi >= sp.min.1 && yi < sp.min.1 + sp.size.1);
+                        let spawner = g.spawners.iter().any(|sp| sp.region().contains_tile(xi, yi));
                         if spawner {
                             c = Color::new(0.85, 0.25, 0.55, 1.0);
                         }

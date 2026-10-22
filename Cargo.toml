@@ -9,6 +9,8 @@ default-run = "last_bastion"
 [dependencies]
 libm = "0.2.16"
 macroquad = "0.4.16"
+# The zombies think side by side on all cores (`src\sim\zombies.rs`) – every one comes out as if worked out alone.
+rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 

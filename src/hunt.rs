@@ -21,6 +21,19 @@ use crate::map::Map;
 
 const UNSEEN: u16 = u16::MAX;
 
+/// What a step onto this tile costs a zombie – `None` if it can't go there at all (solid terrain, a house of doom, off
+/// the map, and with `Through::Never` also buildings). Also for the lure fields (`lure.rs`).
+pub fn step_cost(map: &Map, through: Through, x: i32, y: i32) -> Option<u16> {
+    if !map.is_blocked(x, y) {
+        return Some(1);
+    }
+    match through {
+        // Blocked, but no solid terrain and on the map: a building – one of yours, not an infected one.
+        Through::Cost(cost) if map.can_tear_down(x, y) => Some(cost),
+        _ => None,
+    }
+}
+
 /// What a building tile is on the way to a unit.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Through {
@@ -114,17 +127,8 @@ impl HuntMap {
         Some((self.unit[tile] as usize, best.1))
     }
 
-    /// What a step onto this tile costs – `None` if you can't go there at all (solid terrain, off the map,
-    /// when looking for a gap also buildings).
     fn cost(&self, map: &Map, x: i32, y: i32) -> Option<u16> {
-        if !map.is_blocked(x, y) {
-            return Some(1);
-        }
-        match self.through {
-            // Blocked, but no solid terrain and on the map: a building – one of yours, not an infected one.
-            Through::Cost(cost) if map.can_tear_down(x, y) => Some(cost),
-            _ => None,
-        }
+        step_cost(map, self.through, x, y)
     }
 
     /// Only call for tiles on the map (`cost` is `None` outside, that protects us).

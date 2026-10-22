@@ -21,7 +21,7 @@ use crate::menu::{Menu, MenuAction};
 use crate::overlay::{self, Action, Overlay, Switch};
 use crate::picture::{Extras, MapPicture};
 use crate::settings::Settings;
-use crate::sim::{day_and_hour, Order, Outcome, TimedWave, WaveFrom, World, TICK};
+use crate::sim::{day_and_hour, Breed, Order, Outcome, TimedWave, WaveFrom, World, TICK};
 use crate::sprites::Sprites;
 use crate::ui::Ui;
 use crate::vision::Vision;
@@ -89,7 +89,9 @@ impl Game {
     /// "Restart" or on the other PC in co-op.
     pub fn generate(seed: u64, setup: &MapSetup, settings: Settings, program: Program) -> Game {
         let world = World::generate(seed, setup);
-        let mut file = MapFile::from_world(&world, &mapfile::free_name(setup.generator.name()));
+        // Named after the picked map ("Green Valley 1"), or the generator if it was set up by hand ("Wild 1").
+        let name = if setup.map.is_empty() { setup.generator.name() } else { &setup.map };
+        let mut file = MapFile::from_world(&world, &mapfile::free_name(name));
         file.setup = Some(setup.clone());
         // `expect` stops the program with this text if it's an `Err`. It can't be one here: `from_world` writes
         // exactly what `to_world` reads.
@@ -283,7 +285,7 @@ impl Game {
         };
         let zombies: u32 = came.iter().map(|w| w.count * sides(w.from)).sum();
         let text = if came.iter().any(|w| w.final_wave) {
-            format!("THE FINAL WAVE is coming - {zombies} zombies!")
+            format!("THE FINAL WAVE is coming - {zombies} zombies, and every zombie on the map comes with it!")
         } else {
             format!("A wave is coming - {zombies} zombies!")
         };
@@ -461,13 +463,14 @@ impl Game {
             Outcome::Won { .. } => ("Victory", "The final wave is dead - the colony survived."),
             Outcome::Lost { .. } => ("Defeat", "The command center has fallen."),
         };
-        let mut col = Column::centered(title, 9, 500.0);
+        let mut col = Column::centered(title, 10, 500.0);
         col.note(line);
         let (day, hour) = day_and_hour(outcome.tick());
         let s = self.world.score;
         col.note(&format!("Day {day} of {}, {hour:02}:00", self.world.days));
         col.note(&format!("Zombies killed: {}", s.zombies_killed));
-        col.note(&format!("Units trained: {}   lost: {}", s.units_trained, s.units_lost));
+        col.note(&format!("Houses of doom destroyed: {}   loot found: {}", s.doom_razed, s.loot_found));
+        col.note(&format!("Units trained: {}   lost: {}   deserted: {}", s.units_trained, s.units_lost, s.units_deserted));
         col.note(&format!("Buildings built: {}   lost: {}", s.buildings_built, s.buildings_lost));
         col.note(&format!("Gold earned: {}   spent: {}", s.gold_earned, s.gold_spent));
         col.gap();
@@ -486,7 +489,7 @@ impl Game {
     fn draw(&mut self, dt: f32) {
         let world = &self.world;
         let draw_start = Instant::now();
-        clear_background(Color::from_rgba(20, 22, 28, 255));
+        clear_background(draw::BACKGROUND);
         let alpha = (self.accumulator / TICK).min(1.0);
         self.looks.update(world, dt);
         self.sprites.load_missing();
@@ -572,15 +575,41 @@ impl Game {
             .text(format!("FPS {}   frame {:.1} ms", get_fps(), dt * 1000.0))
             .text(format!("Simulation {:.2} ms per tick (budget 50 ms)", self.avg_tick_ms))
             .text(format!("Drawing {:.2} ms per frame (CPU only)", self.avg_draw_ms))
-            .text(format!("Zombies {}   units {}   buildings {}", world.zombies.len(), world.units.len(), world.buildings.len()))
+            .text(format!(
+                "Zombies {} awake, {} asleep   units {}   buildings {}",
+                world.zombies.len(),
+                world.sleep.len(),
+                world.units.len(),
+                world.buildings.len()
+            ))
+            .text(format!(
+                "Asleep {} in {} houses of doom, {} around {} loot",
+                world.doom.iter().map(|d| d.inside).sum::<u32>(),
+                world.doom.len(),
+                world.loot.iter().map(|l| l.guards).sum::<u32>(),
+                world.loot.len()
+            ))
+            .text(match world.loudest_sound() {
+                Some((at, level)) => format!("Loudest noise {level} at ({:.0}, {:.0}) - a walker comes at {}", at.x, at.y, Breed::Walker.threshold()),
+                None => "Quiet everywhere".to_owned(),
+            })
             .text(format!("Tick {}   speed x{} (+/-)", world.tick, ui.speed))
             .button(format!("Seed {}   map {} x {}   (click: copy)", world.seed, world.map.size, world.map.size), Action::CopySeed)
             .text(format!("Checksum now  {:016x}", world.checksum()))
             .text(format!("Checksum tick {CHECK_TICK}  {check}"))
             .text(match world.spawn_group() {
-                Some(g) => format!("Spawn: {}-{} {:?}s every {:.1} s", g.min, g.max, g.breed, g.every as f32 * TICK),
+                Some(g) => {
+                    let specials: String = g.specials.iter().map(|(b, s)| format!(", {:.0} % {:?}", s * 100.0, b)).collect();
+                    format!("Spawn: {}-{} {:?}s every {:.1} s{specials}", g.min, g.max, g.breed, g.every as f32 * TICK)
+                }
                 None => "Spawn: nothing yet (the constant spawn of the map)".to_owned(),
-            });
+            })
+            .text(format!(
+                "Unrest {} - every spawn group +{} (one more per {})",
+                world.unrest,
+                world.unrest_zombies(),
+                data::get().sound.unrest_per_zombie
+            ));
         o.section("switches", "Switches")
             .switch("Pause (Space)", ui.paused, Switch::Pause)
             .switch("Edge scrolling", ui.settings.edge_scroll, Switch::EdgeScroll)
@@ -600,13 +629,18 @@ impl Game {
             .text("  press Shift again: it's back")
             .text("Medic: T + click on a unit = beam at it");
         o.section("buildings", "Buildings")
-            .text("Command center: Q colonists (Q tent), S military (Q barracks),")
-            .text("  D defense (Q wall, W gate - R turns, E tower), W E A Y: planned")
-            .text("  (costs gold and workers, not within 4 tiles of a zombie, pushes")
-            .text("  your units aside). Right click / Esc: stop")
+            .text("Command center: Q colonists (Q tent, W stone house), W resources")
+            .text("  (Q hunter, W fishing, E sawmill, R mine), E energy (Q tesla,")
+            .text("  W windmill, E charcoal burner), A industry (Q wood, W stone")
+            .text("  workshop), S military (Q barracks, W munitions factory),")
+            .text("  D defense (Q wall, W gate - R turns, E tower, R stakes,")
+            .text("  A stone wall, D stone tower)")
+            .text("  (costs gold, wood, stone, workers; most need power - inside the")
+            .text("  blue circles; not within 4 tiles of a zombie, pushes your units")
+            .text("  aside). Right click / Esc: stop")
             .text("  B, Esc or select it again (click, group key): back to its main buttons")
             .text("Barracks: Q soldier, W ranger, R sniper, T medic, G rally")
-            .text("  (hold the key: again and again, Shift: 5 at once)")
+            .text("  (hold the key: again and again, Ctrl: 5 at once, Shift: on credit)")
             .text("Right click a tower with units: they go in. Tower selected: Q unload")
             .text("Any building: F repair (gold, all selected) - cures infected ones")
             .text("X (no units selected, or the button in the stock): repair all")

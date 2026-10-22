@@ -3,10 +3,10 @@
 //! and the map editor (`LastBastionEditor.exe`) opens it, changes it and saves it again. Maps made in the editor land
 //! in the same folder. JSON like the settings (DESIGN.md 12.4, question 14): readable, and you can change it by hand.
 //!
-//! What's in it: the round (how many days, the gold at the start), the constant spawn and the timeline of waves (with
-//! the final wave), the spawners, buildings, units, the zombies on the map, the ore deposits and the terrain (one
-//! letter per tile, one line of text per row – you can almost see the map in the file). Not in it: what happens during
-//! a round (hit points, commands, the clock) – the file is the round as it starts. Saving a round half-way through
+//! What's in it: the round (how many days, the gold at the start, the difficulty), the constant spawn and the timeline
+//! of waves (with the final wave), the spawners, buildings, units, the zombies on the map, the houses of the villages
+//! of doom and the loot, the ore deposits and the terrain (one letter per tile, one line of text per row – you can
+//! almost see the map in the file). Not in it: what happens during a round (hit points, commands, the clock) – the file is the round as it starts. Saving a round half-way through
 //! (DESIGN.md 11.5) comes later; then it goes into the same file.
 
 use std::fs;
@@ -17,15 +17,16 @@ use macroquad::math::vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::data::{self, ConstantSpawn};
-use crate::kinds::{BuildingKind, UnitKind};
+use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
-use crate::sim::{Breed, SpawnMode, TimedWave, World};
+use crate::sim::{Breed, LootKind, SpawnMode, TimedWave, World};
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
 /// 2 (2026-10-17): the round, the constant spawn, the setup, and waves with breed and final wave.
-const VERSION: u32 = 2;
+/// 3 (2026-10-20): dirt (`D`), the villages of doom, the loot – an older game can't read that, so it refuses the file.
+const VERSION: u32 = 3;
 
 /// The fields in the order they are in the file: the short ones on top, the terrain at the end.
 /// `#[serde(default …)]`: a field a file from version 1 doesn't have yet gets this value instead of an error.
@@ -50,6 +51,11 @@ pub struct MapFile {
     pub buildings: Vec<BuildingData>,
     pub units: Vec<UnitData>,
     pub zombies: Vec<ZombieData>,
+    /// The houses of the villages of doom and the loot – files from before 2026-10-20 have none.
+    #[serde(default)]
+    pub doom: Vec<DoomData>,
+    #[serde(default)]
+    pub loot: Vec<LootData>,
     /// Every tile with ore on it. `default`: files from before 2026-10-17 have none.
     #[serde(default)]
     pub deposits: Vec<DepositData>,
@@ -58,20 +64,38 @@ pub struct MapFile {
 }
 
 /// The round on this map.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(default)]
 pub struct RoundData {
     /// How many days the round lasts – the final wave comes on the last one. 0: no set length.
     pub days: u32,
-    /// The colony's gold at the start.
+    /// The colony's gold at the start …
     pub gold: u32,
+    /// … and its wood.
+    pub wood: u32,
+    /// The difficulty it was made with (`data\game_difficulties.json`): its zombies, waves and start are in this file
+    /// already – while the round runs, it says how close every breed may come (`World::keep_out`). Not in the list
+    /// (any more), or an older file: the default one.
+    pub difficulty: String,
 }
 
 impl Default for RoundData {
-    /// What a file without a round gets: no set length, the start gold of `data\colony.json`.
+    /// What a file without a round gets: no set length, the start gold and wood of the default difficulty.
     fn default() -> RoundData {
-        RoundData { days: 0, gold: data::get().colony.start_gold }
+        let difficulty = data::get().difficulty("");
+        RoundData { days: 0, gold: difficulty.start_gold, wood: difficulty.start_wood, difficulty: String::new() }
     }
+}
+
+/// The zombies of a map, awake and asleep (`sim/sleep.rs`) – the sleeping ones as wanderers, they lie down asleep again
+/// when the map is loaded. In order of where they stand, row by row: the same file whoever was awake or asleep when it
+/// was saved.
+fn zombie_data(world: &World) -> Vec<ZombieData> {
+    let awake = world.zombies.iter().map(|z| ZombieData { pos: (z.pos.x, z.pos.y), breed: z.breed, wander: world.is_wanderer(z) });
+    let asleep = world.sleep.iter().map(|s| ZombieData { pos: (s.pos.x, s.pos.y), breed: s.breed, wander: true });
+    let mut zombies: Vec<ZombieData> = awake.chain(asleep).collect();
+    zombies.sort_by(|a, b| a.pos.1.total_cmp(&b.pos.1).then(a.pos.0.total_cmp(&b.pos.0)));
+    zombies
 }
 
 /// For `#[serde(default = "default_constant")]` – it wants a function, not a value.
@@ -114,10 +138,28 @@ pub struct ZombieData {
     pub wander: bool,
 }
 
+/// A house of a village of doom: its top left tile, width and depth, and how many zombies sleep in it.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct DoomData {
+    pub house: (i32, i32),
+    pub size: (i32, i32),
+    pub zombies: u32,
+}
+
+/// A pile of loot: what, where, how much, and how many zombies lie hidden around it.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct LootData {
+    pub loot: LootKind,
+    pub pos: (f32, f32),
+    pub amount: u32,
+    pub guards: u32,
+}
+
 /// The letter of a terrain in the file.
 fn letter(terrain: Terrain) -> char {
     match terrain {
         Terrain::Grass => '.',
+        Terrain::Dirt => 'D',
         Terrain::Mountain => 'M',
         Terrain::Forest => 'F',
         Terrain::Tree => 'T',
@@ -128,6 +170,7 @@ fn letter(terrain: Terrain) -> char {
 fn from_letter(c: char) -> Option<Terrain> {
     match c {
         '.' => Some(Terrain::Grass),
+        'D' => Some(Terrain::Dirt),
         'M' => Some(Terrain::Mountain),
         'F' => Some(Terrain::Forest),
         'T' => Some(Terrain::Tree),
@@ -147,7 +190,7 @@ impl MapFile {
             seed: world.seed,
             size: world.map.size,
             border: world.map.border,
-            round: RoundData { days: world.days, gold: world.gold },
+            round: RoundData { days: world.days, gold: world.gold, wood: world.stock.get(Resource::Wood), difficulty: world.difficulty.clone() },
             constant_spawn: world.constant.clone(),
             waves: world.waves.clone(),
             setup: None,
@@ -158,10 +201,12 @@ impl MapFile {
                 .collect(),
             buildings: world.buildings.iter().map(|b| BuildingData { kind: b.kind, tile: b.tile, turned: b.turned }).collect(),
             units: world.units.iter().map(|u| UnitData { kind: u.kind, pos: (u.pos.x, u.pos.y) }).collect(),
-            zombies: world
-                .zombies
+            zombies: zombie_data(world),
+            doom: world.doom.iter().map(|d| DoomData { house: d.tile, size: d.size, zombies: d.inside }).collect(),
+            loot: world
+                .loot
                 .iter()
-                .map(|z| ZombieData { pos: (z.pos.x, z.pos.y), breed: z.breed, wander: world.is_wanderer(z) })
+                .map(|l| LootData { loot: l.kind, pos: (l.pos.x, l.pos.y), amount: l.amount, guards: l.guards })
                 .collect(),
             deposits: world.map.all_deposits().map(|(x, y, d)| DepositData { tile: (x, y), ore: d.ore, amount: d.amount }).collect(),
             terrain,
@@ -189,8 +234,10 @@ impl MapFile {
             map.set_deposit(d.tile.0, d.tile.1, Some(Deposit { ore: d.ore, amount: d.amount }));
         }
         let mut world = World::empty(self.seed, map);
+        world.set_difficulty(data::get().difficulty(&self.round.difficulty));
         world.days = self.round.days;
         world.gold = self.round.gold;
+        world.stock.set(Resource::Wood, self.round.wood);
         world.constant = self.constant_spawn.clone();
         for s in &self.spawners {
             world.add_spawner(s.name.clone(), s.min, s.size, s.mode);
@@ -201,23 +248,37 @@ impl MapFile {
         for u in &self.units {
             world.add_unit(u.kind, vec2(u.pos.0, u.pos.1));
         }
+        // Wanderers lie down asleep – the ones near your eyes wake when the world settles (`World::settle`).
         for z in &self.zombies {
-            world.add_zombie(vec2(z.pos.0, z.pos.1), z.breed, z.wander);
+            let pos = vec2(z.pos.0, z.pos.1);
+            if z.wander {
+                world.add_sleeper(pos, z.breed);
+            } else {
+                world.add_zombie(pos, z.breed, false);
+            }
+        }
+        for d in &self.doom {
+            world.add_doom(d.house, d.size, d.zombies);
+        }
+        for l in &self.loot {
+            world.add_loot(vec2(l.pos.0, l.pos.1), l.loot, l.amount, l.guards);
         }
         world.waves = self.waves.clone();
         world.settle();
         Ok(world)
     }
 
-    /// One line about the map: how it was made and how long its round is – for the editor's "Map" tab.
+    /// One line about the map: how it was made, how long its round is and how hard – for the editor's "Map" tab.
     pub fn info(&self) -> String {
         let made = match &self.setup {
+            Some(setup) if !setup.map.is_empty() => format!("{}, seed {}", setup.map, self.seed),
             Some(setup) => format!("{} map, seed {}", setup.generator.name(), self.seed),
             None => format!("Map from seed {}", self.seed),
         };
+        let difficulty = &data::get().difficulty(&self.round.difficulty).name;
         match self.round.days {
-            0 => made,
-            days => format!("{made} - {days} days"),
+            0 => format!("{made} - {difficulty}"),
+            days => format!("{made} - {days} days - {difficulty}"),
         }
     }
 
@@ -248,14 +309,15 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "seed", "size", "border", "round", "constant_spawn", "waves", "setup", "spawners", "buildings", "units", "zombies", "deposits", "terrain"] {
+    for key in ["name", "seed", "size", "border", "round", "constant_spawn", "waves", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
-    // One entry per line: waves start with "at", stages with "day", spawners with "name", buildings and units with "kind".
-    for first in ["at", "day", "name", "kind"] {
+    // One entry per line: waves start with "at", stages with "day", spawners with "name", buildings and units with
+    // "kind", houses of doom with "house", piles of loot with "loot".
+    for first in ["at", "day", "name", "kind", "house", "loot"] {
         text = text.replace(&format!("{{\"{first}\":"), &format!("\n  {{\"{first}\":"));
     }
-    // The terrain: rows only have the letters `. M F T W`, so between two rows there's always `","`.
+    // The terrain: rows only have the letters `. D M F T W`, so between two rows there's always `","`.
     if let Some(start) = text.find("\"terrain\":[") {
         let rows = text.split_off(start);
         text += &rows.replace("\",\"", "\",\n\"").replacen("[\"", "[\n\"", 1);
@@ -288,8 +350,8 @@ pub struct Entry {
     pub path: PathBuf,
     /// How long ago it was last changed – `None` if Windows doesn't say.
     pub age: Option<Duration>,
-    /// Days of its round (0: no set length) and the edge of the playing field inside the border – `None` if the file
-    /// can't be read.
+    /// Days of its round (0: no set length) and how big the playing field inside the border is (the edge of a square
+    /// with as many tiles) – `None` if the file can't be read.
     pub days: Option<u32>,
     pub field: Option<usize>,
 }
@@ -321,7 +383,7 @@ pub fn list() -> Vec<Entry> {
             let age = fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok());
             let summary: Option<Summary> = fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok());
             let (days, field) = match summary {
-                Some(s) => (Some(s.round.days), Some(s.size.saturating_sub(2 * s.border))),
+                Some(s) => (Some(s.round.days), Some(Map::play_area_of(s.size, s.border).area().sqrt().round() as usize)),
                 None => (None, None),
             };
             Some(Entry { name, path, age, days, field })
@@ -362,17 +424,18 @@ mod tests {
         world.step(&[
             Order::PaintTerrain { terrain: Terrain::Water, tiles: vec![(c + 20, c + 20), (c + 21, c + 20)] },
             Order::PlaceBuilding { kind: BuildingKind::Wall, tile: (c + 6, c), turned: false, editor: true },
-            Order::AddTimedWave(TimedWave { at: 1234, count: 300, from: WaveFrom::Sides(2), breed: Breed::Fat, final_wave: true }),
+            Order::AddTimedWave(TimedWave { at: 1234, count: 300, from: WaveFrom::Sides(2), breed: Breed::Fat, final_wave: true, reveal: true }),
             Order::PaintOre { ore: Some(Ore::Coal), tiles: vec![(c + 3, c + 9)] },
             Order::SetDays { days: 25 },
             Order::SetGold { gold: 777 },
+            Order::SetWood { wood: 55 },
             Order::SetExtraPerDay { extra: 2.5 },
         ]);
         let mut file = MapFile::from_world(&world, "Test: map?");
         file.setup = Some(MapSetup::default());
         assert!(file.deposits.len() > 20, "the generated ore isn't saved");
         assert!(file.deposits.iter().any(|d| d.tile == (c + 3, c + 9) && d.ore == Ore::Coal), "the painted ore isn't saved");
-        assert_eq!(file.round, RoundData { days: 25, gold: world.gold });
+        assert_eq!(file.round, RoundData { days: 25, gold: world.gold, wood: 55, difficulty: world.difficulty.clone() });
         let text = pretty(&serde_json::to_string(&file).unwrap());
         let back: MapFile = serde_json::from_str(&text).unwrap();
         assert_eq!(back, file);
@@ -382,9 +445,9 @@ mod tests {
         assert_eq!(loaded.spawners.len(), world.spawners.len());
         assert_eq!(loaded.buildings.len(), world.buildings.len());
         assert_eq!(loaded.units.len(), world.units.len());
-        assert_eq!(loaded.zombies.len(), world.zombies.len());
+        assert_eq!(loaded.zombies.len() + loaded.sleep.len(), world.zombies.len() + world.sleep.len());
         assert_eq!(loaded.waves, world.waves);
-        assert_eq!((loaded.days, loaded.gold), (25, world.gold));
+        assert_eq!((loaded.days, loaded.gold, loaded.stock.get(Resource::Wood)), (25, world.gold, 55));
         assert_eq!(loaded.constant, world.constant);
         let again = MapFile { setup: file.setup.clone(), ..MapFile::from_world(&loaded, "Test: map?") };
         assert_eq!(again, file, "saving the loaded map gives the same file");
@@ -407,17 +470,19 @@ mod tests {
     }
 
     /// A file of version 1 (before 2026-10-17: no round, no constant spawn, waves without breed) still loads: no set
-    /// length, the start gold and the constant spawn of `data\`, runners in its waves.
+    /// length, the start gold and wood of the default difficulty, the constant spawn of `data\`, runners in its waves.
     #[test]
     fn old_files_still_load() {
         let old = r#"{"version":1,"name":"Old","seed":7,"size":2,"border":0,"terrain":[".M",".."],
             "spawners":[],"buildings":[],"units":[],"zombies":[],"waves":[{"at":100,"count":20,"from":"OneSpawner"}]}"#;
         let file: MapFile = serde_json::from_str(old).unwrap();
-        assert_eq!(file.round, RoundData { days: 0, gold: data::get().colony.start_gold });
+        let normal = data::get().difficulty("");
+        assert_eq!(file.round, RoundData { days: 0, gold: normal.start_gold, wood: normal.start_wood, difficulty: String::new() });
         assert_eq!(file.constant_spawn, data::get().spawning.constant);
         assert_eq!((file.waves[0].breed, file.waves[0].final_wave), (Breed::Runner, false));
         let world = file.to_world().unwrap();
         assert_eq!(world.map.terrain(1, 0), Terrain::Mountain);
+        assert_eq!(world.keep_out, normal.keep_out, "an old file doesn't get the default difficulty");
     }
 
     /// A broken file gives a reason, not a crash.

@@ -6,19 +6,20 @@
 use macroquad::prelude::*;
 
 use crate::cursor::Cursor;
-use crate::draw::{draw_diamond, mark_color, ore_color, terrain_color, SpawnerShape, ZOMBIE};
+use crate::data;
+use crate::draw::{draw_diamond, mark_color, ore_color, terrain_color, SpawnerShape, TESLA_GLOW, ZOMBIE};
 use crate::editor::{Editor, Sight, Tool};
 use crate::formation::{self, Formation, Shape, MIN_DRAG};
 use crate::hud::{
-    menu_buttons, Button, HudHit, Layout, Submenu, BARRACKS_BUTTONS, COMMAND_CENTER_BUTTONS, REPAIR_BUTTONS, TOWER_BUTTONS,
-    UNIT_BUTTONS,
+    menu_buttons, Button, HudHit, Layout, Submenu, BARRACKS_BUTTONS, COMMAND_CENTER_BUTTONS, INN_BUTTONS, MARKET_BUTTONS,
+    MUNITIONS_BUTTONS, REPAIR_BUTTONS, TOWER_BUTTONS, UNIT_BUTTONS,
 };
 use crate::iso::{Camera, TILE_H, TILE_W};
-use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::{Ore, Region, Terrain};
+use crate::kinds::{BuildingKind, Resource, UnitKind};
+use crate::map::{from_frame, to_frame, Ore, Region, Terrain};
 use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
-use crate::sim::{Command, Mark, Order, Rally, Spawner, World};
+use crate::sim::{Command, Mark, Order, Rally, Spawner, SwitchBlock, World, MAX_PRODUCTION};
 
 /// One entry of the selection, as an index into the world's list of units or buildings.
 #[derive(Clone, Copy, PartialEq)]
@@ -72,18 +73,39 @@ struct LinePlan {
     short: Option<Short>,
 }
 
-/// What ran out.
+/// What ran out – or what has to stand first.
 #[derive(Clone, Copy)]
 enum Short {
     Gold,
+    /// Not enough gold – but the banks' credit would pay for it, with Shift.
+    GoldCredit,
+    /// No barrel in the munitions factories' store.
+    Barrels,
+    Wood,
+    Stone,
+    Coal,
     Workers,
+    /// Not enough spare power – switching a building on again (Y).
+    Power,
+    /// The gold coming in doesn't cover the upkeep – switching a building on again (Y).
+    Income,
+    /// This building has to stand first (`requires`).
+    Locked(BuildingKind),
 }
 
 impl Short {
-    fn alert(self) -> &'static str {
+    fn alert(self) -> String {
         match self {
-            Short::Gold => "Not enough gold",
-            Short::Workers => "Not enough workers - build tents",
+            Short::Gold => "Not enough gold".to_owned(),
+            Short::GoldCredit => "Not enough gold - hold Shift to buy on the banks' credit".to_owned(),
+            Short::Barrels => "No barrel in store - make some in the munitions factory".to_owned(),
+            Short::Wood => "Not enough wood - build a sawmill".to_owned(),
+            Short::Stone => "Not enough stone - build a mine on a stone patch".to_owned(),
+            Short::Coal => "Not enough coal - build a mine on a coal patch".to_owned(),
+            Short::Workers => "Not enough workers - build tents".to_owned(),
+            Short::Power => "Not enough power - build a windmill or a charcoal burner".to_owned(),
+            Short::Income => "Not enough gold income for its upkeep - build houses".to_owned(),
+            Short::Locked(needed) => format!("Build a {} first", needed.stats().name.to_lowercase()),
         }
     }
 }
@@ -175,7 +197,8 @@ impl Edges {
     const ALL: Edges = Edges { x_min: true, x_max: true, y_min: true, y_max: true };
 }
 
-/// A spawner being dragged in the editor (its edge or the whole spawner).
+/// A spawner being dragged in the editor (its edge or the whole spawner). Like the spawner itself in the screen axes
+/// (`map::to_frame`): x across the screen, y down.
 #[derive(Clone, Copy)]
 struct SpawnerDrag {
     spawner: u32,
@@ -187,13 +210,14 @@ struct SpawnerDrag {
 }
 
 impl SpawnerDrag {
-    /// Where the spawner lies with the mouse at `point`: the grabbed edges snap to the nearest tile border.
+    /// Where the spawner lies with the mouse at `point` (world): the grabbed edges snap to the nearest whole step.
     /// It never gets smaller than 1 × 1 – an edge can't be pulled across the opposite one.
     fn rect_at(&self, point: Vec2) -> ((i32, i32), (i32, i32)) {
         let (x0, y0) = self.min;
         let (x1, y1) = (x0 + self.size.0, y0 + self.size.1);
+        let point = to_frame(point);
         if self.edges == Edges::ALL {
-            let d = (point - self.start).round();
+            let d = (point - to_frame(self.start)).round();
             return ((x0 + d.x as i32, y0 + d.y as i32), self.size);
         }
         let (px, py) = (point.x.round() as i32, point.y.round() as i32);
@@ -206,6 +230,13 @@ impl SpawnerDrag {
     }
 }
 
+/// A house of a village of doom or a pile of loot clicked on (its `id`) – only to look at it, like a zombie.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Place {
+    Doom(u32),
+    Loot(u32),
+}
+
 pub struct Ui {
     /// The selected units (their `id`).
     pub selected: Vec<u32>,
@@ -214,6 +245,8 @@ pub struct Ui {
     /// A zombie clicked on (its `id`) – only to look at its values, like an enemy in StarCraft. Never together with
     /// your units or buildings, and gone once it's dead or out of sight.
     pub selected_zombie: Option<u32>,
+    /// The same for a house of doom or a pile of loot.
+    pub selected_place: Option<Place>,
     /// The Tab subgroup: which type of the selection is "in front" right now – its buttons are on the card.
     pub active: Option<Sub>,
     /// The build menu of the command center that is open (D, E, A) – `None`: its main buttons.
@@ -291,6 +324,7 @@ impl Ui {
             selected: Vec::new(),
             selected_buildings: Vec::new(),
             selected_zombie: None,
+            selected_place: None,
             active: None,
             submenu: None,
             paused: false,
@@ -393,13 +427,27 @@ impl Ui {
         }
     }
 
-    /// The pieces of a building line that would really be built: those that fit and – by the rules – that the gold
-    /// and the free workers pay for, one after the other. `world` is only read: the simulation pays when the orders
-    /// arrive (`orders.rs`).
-    fn affordable(&self, world: &World, kind: BuildingKind, tiles: &[(i32, i32)]) -> LinePlan {
+    /// The pieces of a building line that would really be built: those that fit and – by the rules – that the gold,
+    /// the wood, the stone and the free workers pay for, one after the other. `credit` (Shift): the gold may go into
+    /// the banks' credit. `world` is only read: the simulation pays when the orders arrive (`orders.rs`).
+    fn affordable(&self, world: &World, kind: BuildingKind, tiles: &[(i32, i32)], credit: bool) -> LinePlan {
         let free = self.rule_free();
-        let (mut gold, mut workers) = (world.gold, world.free_workers());
+        let (mut gold, mut workers) = (if credit { world.spendable_on_credit() } else { world.gold }, world.free_workers());
+        let mut barrels = world.barrels;
+        // Without Shift, but the credit would pay: say so.
+        let gold_short = if !credit && world.spendable_on_credit() > world.gold { Short::GoldCredit } else { Short::Gold };
+        let (mut wood, mut stone) = (world.stock.get(Resource::Wood), world.stock.get(Resource::Stone));
+        let mut coal = world.stock.get(Resource::Coal);
+        let stats = kind.stats();
         let mut plan = LinePlan { built: Vec::new(), cost: 0, workers: 0, short: None };
+        // Power: what the grids have to spare, and what the pieces planned so far take of it, per grid.
+        let power = world.power();
+        let mut taken = vec![0u32; power.made.len()];
+        let (w, h) = kind.footprint(self.turned);
+        if let Some(needed) = stats.requires.filter(|_| !free && !world.unlocked(kind)) {
+            plan.short = Some(Short::Locked(needed));
+            return plan;
+        }
         for &tile in tiles {
             if !self.fits(world, kind, tile) {
                 continue;
@@ -411,12 +459,46 @@ impl Ui {
             };
             // `get_or_insert`: only the first thing that runs out is remembered.
             if price > gold {
-                plan.short.get_or_insert(Short::Gold);
+                plan.short.get_or_insert(gold_short);
                 continue;
             }
             if needs > workers {
                 plan.short.get_or_insert(Short::Workers);
                 continue;
+            }
+            let energy = if free { 0 } else { world.build_energy(kind, tile, self.turned) };
+            let center = vec2(tile.0 as f32 + w as f32 / 2.0, tile.1 as f32 + h as f32 / 2.0);
+            let grid = world.spare_power_at(&power, center);
+            if energy > 0 && grid.is_none_or(|(g, spare)| taken[g] + energy > spare) {
+                plan.short.get_or_insert(Short::Power);
+                continue;
+            }
+            if let Some((g, _)) = grid {
+                taken[g] += energy;
+            }
+            if !free && stats.cost_wood > wood {
+                plan.short.get_or_insert(Short::Wood);
+                continue;
+            }
+            if !free && stats.cost_stone > stone {
+                plan.short.get_or_insert(Short::Stone);
+                continue;
+            }
+            if !free && stats.cost_coal > coal {
+                plan.short.get_or_insert(Short::Coal);
+                continue;
+            }
+            if !free && kind == BuildingKind::Barrel && barrels == 0 {
+                plan.short.get_or_insert(Short::Barrels);
+                continue;
+            }
+            if !free {
+                wood -= stats.cost_wood;
+                stone -= stats.cost_stone;
+                coal -= stats.cost_coal;
+                if kind == BuildingKind::Barrel {
+                    barrels -= 1;
+                }
             }
             gold -= price;
             workers -= needs;
@@ -438,6 +520,7 @@ impl Ui {
         self.selected.clear();
         self.selected_buildings.clear();
         self.selected_zombie = None;
+        self.selected_place = None;
         self.groups = Default::default();
         self.targeting = None;
         self.parked = None;
@@ -450,6 +533,60 @@ impl Ui {
         self.view_area(world).contains(p) && (self.sight() != Sight::Player || world.vision.sees(p))
     }
 
+    /// While a building is on the mouse (by the rules of the game): if it needs power, the reach of every grid – the
+    /// circles of the command center and the tesla towers; if it gathers, its circle, the tiles it would work and
+    /// what it would bring in per payout (at full power).
+    fn draw_economy_hints(&self, world: &World, camera: &Camera, kind: BuildingKind, tile: (i32, i32), mouse: Vec2) {
+        if self.rule_free() {
+            return;
+        }
+        if kind.on_grid() {
+            for (b, building) in world.buildings.iter().enumerate() {
+                if world.carries_power(b) {
+                    let radius = building.stats().power_radius;
+                    draw_ground_circle(camera, building.center(), radius, 2.0, Color { a: 0.55, ..TESLA_GLOW });
+                }
+            }
+        }
+        // A market: its area, the houses that would be its own, and what they'd bring (`sim/market.rs`).
+        if kind.stats().trade_range > 0 {
+            let (min, max) = kind.trade_area(tile);
+            draw_ground_frame(camera, tile_corner(min), tile_corner(max), 1.5, Color::new(1.0, 0.8, 0.4, 0.7));
+            let houses = world.market_houses((min, max), world.buildings.len());
+            for &h in &houses {
+                let house = &world.buildings[h];
+                draw_diamond(camera, house.corner(), house.far_corner() - house.corner(), Color::new(1.0, 0.85, 0.3, 0.35));
+            }
+            let stats = kind.stats();
+            let bonus: u32 = houses.iter().map(|&h| world.buildings[h].stats().gold * stats.house_bonus_percent / 100).sum();
+            let every = data::get().colony.economy_every_hours;
+            let text = format!(
+                "{} houses: +{bonus} gold, sells up to {} goods per payout ({every} h)",
+                houses.len(),
+                world.sell_limit(&houses)
+            );
+            draw_text(&text, mouse.x + 14.0, mouse.y + 14.0, 18.0, Color::new(1.0, 1.0, 0.7, 1.0));
+            return;
+        }
+        if kind.gathers().is_none() {
+            return;
+        }
+        let (min, max) = kind.gather_area(tile);
+        draw_ground_frame(camera, tile_corner(min), tile_corner(max), 1.5, Color::new(1.0, 1.0, 1.0, 0.5));
+        for (x, y) in world.worked_tiles(kind, tile, world.buildings.len()) {
+            draw_diamond(camera, vec2(x as f32 + 0.3, y as f32 + 0.3), Vec2::splat(0.4), Color::new(1.0, 1.0, 0.6, 0.6));
+        }
+        let rate = world.gather_rate(kind, tile, world.buildings.len(), 1000);
+        let parts: Vec<String> = Resource::ALL
+            .into_iter()
+            .filter(|r| rate[r.index()] > 0)
+            .map(|r| format!("+{:.1} {}", rate[r.index()] as f32 / 1000.0, r.name().to_lowercase()))
+            .collect();
+        let every = data::get().colony.economy_every_hours;
+        let text = if parts.is_empty() { "Nothing to gather here".to_owned() } else { parts.join(", ") + &format!(" per payout ({every} h)") };
+        draw_text(&text, mouse.x + 14.0, mouse.y + 14.0, 18.0, Color::new(1.0, 1.0, 0.7, 1.0));
+    }
+
     /// Is a command waiting for its target, a building for its spot, or is an editor tool in hand?
     /// Then right click and Esc cancel that.
     fn is_waiting(&self) -> bool {
@@ -459,7 +596,7 @@ impl Ui {
     /// Does Esc have something to do here – cancel, put away, deselect the spawner, stop typing, clear the selection?
     /// Then it doesn't open the menu.
     pub fn is_busy(&self) -> bool {
-        self.has_pending() || self.has_selection() || self.selected_zombie.is_some()
+        self.has_pending() || self.has_selection() || self.selected_zombie.is_some() || self.selected_place.is_some()
     }
 
     /// Everything Esc cancels before it gets to the selection: a waiting command or tool, a formation being drawn,
@@ -498,7 +635,8 @@ impl Ui {
                     Some(text) if selected => text.clone(),
                     _ => s.name.clone(),
                 };
-                SpawnerShape { min: tile_corner(min), size: tile_corner(size), name, selected }
+                let min = tile_corner(min);
+                SpawnerShape { region: Region { min, max: min + tile_corner(size) }, name, selected }
             })
             .collect()
     }
@@ -509,14 +647,33 @@ impl Ui {
             return Vec::new();
         }
         match self.active {
-            Some(Sub::Unit(_)) => UNIT_BUTTONS.to_vec(),
+            Some(Sub::Unit(_)) => {
+                let mut card = UNIT_BUTTONS.to_vec();
+                // Somebody carries a barrel: D puts it down.
+                if self.selected.iter().any(|&id| world.find_unit(id).is_some_and(|u| world.units[u].barrel)) {
+                    card.push(Button::Drop);
+                }
+                card
+            }
             Some(Sub::Building(BuildingKind::CommandCenter)) => match self.submenu {
                 None => COMMAND_CENTER_BUTTONS.to_vec(),
                 Some(menu) => menu_buttons(menu),
             },
-            Some(Sub::Building(BuildingKind::Barracks)) => BARRACKS_BUTTONS.to_vec(),
-            Some(Sub::Building(BuildingKind::Tower)) => TOWER_BUTTONS.to_vec(),
-            Some(Sub::Building(_)) => REPAIR_BUTTONS.to_vec(),
+            Some(Sub::Building(kind)) => {
+                let mut card = match kind {
+                    BuildingKind::Barracks => BARRACKS_BUTTONS.to_vec(),
+                    BuildingKind::Inn => INN_BUTTONS.to_vec(),
+                    BuildingKind::MunitionsFactory => MUNITIONS_BUTTONS.to_vec(),
+                    BuildingKind::Market => MARKET_BUTTONS.to_vec(),
+                    BuildingKind::Tower | BuildingKind::StoneTower => TOWER_BUTTONS.to_vec(),
+                    _ => REPAIR_BUTTONS.to_vec(),
+                };
+                // Everything that runs can be switched off (Y).
+                if kind.can_switch_off() {
+                    card.push(Button::Switch);
+                }
+                card
+            }
             None => Vec::new(),
         }
     }
@@ -527,6 +684,7 @@ impl Ui {
         self.selected = units;
         self.selected_buildings = buildings;
         self.selected_zombie = None;
+        self.selected_place = None;
         self.placing = None;
         self.parked = None;
         self.submenu = None;
@@ -592,7 +750,7 @@ impl Ui {
             self.repair(world, orders, (0..world.buildings.len()).collect());
         }
         if !typing {
-            self.command_keys(world, orders, &card, shift);
+            self.command_keys(world, orders, &card, shift, ctrl);
             self.selection_keys(world, camera, shift, ctrl);
             self.other_keys();
         }
@@ -638,6 +796,14 @@ impl Ui {
         let zombie_gone = |id: u32| world.find_zombie(id).is_none_or(|z| !self.shows_zombie(world, world.zombies[z].pos));
         if self.selected_zombie.is_some_and(zombie_gone) || self.has_selection() {
             self.selected_zombie = None;
+        }
+        // The house shot down, the loot picked up.
+        let place_gone = |place: Place| match place {
+            Place::Doom(id) => world.find_doom(id).is_none(),
+            Place::Loot(id) => world.find_loot(id).is_none(),
+        };
+        if self.selected_place.is_some_and(place_gone) || self.has_selection() {
+            self.selected_place = None;
         }
         // A removed spawner – but not one that has just been placed and isn't in the world yet.
         if let Some(id) = self.editor.spawner {
@@ -701,6 +867,10 @@ impl Ui {
             } else if let (Some(kind), None) = (self.placing, hit) {
                 // Building on the mouse: the line starts here. It's built on release.
                 self.place_start = Some(placement_tile(kind, self.turned, point));
+            } else if let (Some(Button::Scan), None | Some(HudHit::Minimap(_))) = (self.targeting, hit) {
+                // The scan waits for its spot – on the map or on the minimap.
+                orders.push(Order::Scan { at: point });
+                self.targeting = None;
             } else if let (Some(Button::Rally), None | Some(HudHit::Minimap(_))) = (self.targeting, hit) {
                 let rallying = self.rally_buildings(world, true);
                 self.set_rally(&rallying, world, camera, orders, mouse, point, hit.is_none());
@@ -737,7 +907,7 @@ impl Ui {
                             orders.push(Order::CancelTrain { building: world.buildings[b].id, index });
                         }
                     }
-                    Some(HudHit::Button(button)) => self.press(button, world, orders, shift),
+                    Some(HudHit::Button(button)) => self.press(button, world, orders, shift, ctrl),
                     Some(HudHit::Pause) => self.paused = !self.paused,
                     Some(HudHit::RepairAll) => self.repair(world, orders, (0..world.buildings.len()).collect()),
                     Some(HudHit::Panel) => {}
@@ -772,12 +942,14 @@ impl Ui {
                 // the mouse for the next line, until right click or Esc. In the editor without the rules of the game.
                 let end = placement_tile(kind, self.turned, camera.screen_to_world(mouse));
                 let (turned, editor) = (self.turned, self.rule_free());
-                let plan = self.affordable(world, kind, &placement_line(kind, start, end));
+                let plan = self.affordable(world, kind, &placement_line(kind, start, end), shift);
                 for tile in plan.built {
-                    orders.push(Order::PlaceBuilding { kind, tile, turned, editor });
+                    let order = Order::PlaceBuilding { kind, tile, turned, editor };
+                    // With Shift the gold may go into the banks' credit.
+                    orders.push(if shift && !editor { Order::Credit(Box::new(order)) } else { order });
                 }
                 if let Some(short) = plan.short {
-                    self.alert(short.alert());
+                    self.alert(&short.alert());
                 }
             }
             if let Some(start) = self.drag_start.take() {
@@ -823,14 +995,31 @@ impl Ui {
                 // Right click on the map: the "smart" command, depending on what is under the mouse. On the ground
                 // it waits for the release – dragged, the units line up along the line (formation).
                 None => {
-                    let tower = building_under_mouse(world, camera, mouse).filter(|&b| world.buildings[b].kind == BuildingKind::Tower);
+                    // A tower to go in, or a munitions factory to fetch a barrel from – walking there is the same.
+                    let tower = building_under_mouse(world, camera, mouse)
+                        .filter(|&b| world.buildings[b].kind.is_tower() || world.buildings[b].kind.makes_barrels());
                     if let Some(zombie) = self.zombie_at(world, camera, mouse) {
                         self.give(orders, Command::Attack(zombie), shift, point, None);
                     } else if let Some(i) = unit_under_mouse(world, camera, mouse) {
                         self.give(orders, Command::Follow(world.units[i].id), shift, point, None);
                     } else if let Some(b) = tower {
-                        // On a tower: go in (like loading a StarCraft bunker).
+                        // On a tower: go in (like loading a StarCraft bunker). On a munitions factory: each takes a
+                        // barrel.
                         self.give(orders, Command::Enter(world.buildings[b].id), shift, point, None);
+                    } else if let Some(place) = self.place_at(world, camera, mouse) {
+                        // On a house of doom: attack-move there – they shoot it once no zombie is in range. On loot:
+                        // walk right onto it, that picks it up.
+                        let (command, at) = match place {
+                            Place::Doom(id) => {
+                                let center = world.find_doom(id).map_or(point, |d| world.doom[d].center());
+                                (Command::AttackMove(center), center)
+                            }
+                            Place::Loot(id) => {
+                                let pos = world.find_loot(id).map_or(point, |l| world.loot[l].pos);
+                                (Command::Move(pos), pos)
+                            }
+                        };
+                        self.give(orders, command, shift, at, None);
                     } else if !self.selected.is_empty() {
                         self.form_drag = Some(FormDrag { from: point, button: Button::Move, mouse: MouseButton::Right });
                     }
@@ -872,7 +1061,7 @@ impl Ui {
     /// Left click in the editor (no tool): grab the edge of the selected spawner, or the inside of a spawner to
     /// move it. Returns whether a spawner was hit – if not, the selection box starts as usual.
     fn spawner_press(&mut self, world: &World, camera: &Camera, point: Vec2, orders: &mut Vec<Order>) -> bool {
-        let tolerance = (GRAB_PIXELS / (TILE_H * camera.zoom)).clamp(0.2, 1.5);
+        let tolerance = grab_tolerance(camera);
         let selected = self.editor.spawner.and_then(|id| world.find_spawner(id));
         let grabbed = match selected.and_then(|s| grab(&world.spawners[s], point, tolerance).map(|e| (s, e))) {
             Some(hit) => Some(hit),
@@ -903,11 +1092,18 @@ impl Ui {
             // The brush places its zombies tick by tick while the button is held (`brush_order`).
             Tool::ZombieBrush => self.brush_at = Some(point),
             Tool::Unit(kind) => orders.push(Order::SpawnUnit { kind, point }),
+            // A 3 × 3 house with its middle tile under the mouse.
+            Tool::Doom => {
+                let (x, y) = tile_of(point);
+                orders.push(Order::PlaceDoom { tile: (x - 1, y - 1), size: (3, 3) });
+            }
+            Tool::Loot => orders.push(Order::PlaceLoot { point }),
             Tool::Spawner => {
                 // Select the new spawner right away, so its edge can be dragged. Which number it will get:
                 // the next free one – plus the spawners placed while the game is paused (orders still waiting).
                 let waiting = orders.iter().filter(|o| matches!(o, Order::PlaceSpawner { .. })).count() as u32;
-                orders.push(Order::PlaceSpawner { center: tile_of(point) });
+                let center = to_frame(point).round();
+                orders.push(Order::PlaceSpawner { center: (center.x as i32, center.y as i32) });
                 self.editor.select_spawner(Some(world.next_spawner_id() + waiting), orders);
                 self.editor.tool = None;
             }
@@ -950,7 +1146,7 @@ impl Ui {
         }).collect() };
         picked
             .into_iter()
-            .filter(|&b| matches!(world.buildings[b].kind, BuildingKind::Barracks | BuildingKind::Tower))
+            .filter(|&b| world.buildings[b].kind == BuildingKind::Barracks || world.buildings[b].kind.is_tower())
             .map(|b| world.buildings[b].id)
             .collect()
     }
@@ -990,6 +1186,27 @@ impl Ui {
         zombie_under_mouse(world, camera, mouse, |p| self.shows_zombie(world, p))
     }
 
+    /// The house of doom or the pile of loot under the mouse – only one that has been seen (in the game view they stay
+    /// on the map once explored, like the terrain). Loot first: it lies in front of a house.
+    fn place_at(&self, world: &World, camera: &Camera, mouse: Vec2) -> Option<Place> {
+        let seen = |p: Vec2| {
+            self.view_area(world).contains(p) && (self.sight() != Sight::Player || world.vision.is_explored(p.x.floor() as i32, p.y.floor() as i32))
+        };
+        let reach = 12.0 * camera.zoom;
+        let loot = world.loot.iter().filter(|l| seen(l.pos)).find(|l| camera.world_to_screen(l.pos).distance(mouse) <= reach);
+        if let Some(loot) = loot {
+            return Some(Place::Loot(loot.id));
+        }
+        // Like `building_under_mouse`: the point on the ground below the mouse, and a bit lower – the house stands up.
+        for step in 0..=3 {
+            let ground = camera.screen_to_world(mouse + vec2(0.0, step as f32 * 0.25 * TILE_W * camera.zoom));
+            if let Some(d) = world.doom_at_point(ground).filter(|&d| seen(world.doom[d].center())) {
+                return Some(Place::Doom(world.doom[d].id));
+            }
+        }
+        None
+    }
+
     /// Sends a command to the selection and sets a marker at the target point. `formation`: the units line up in
     /// it at the target – it travels with the order, so it's the same on both PCs in co-op.
     fn give(&mut self, orders: &mut Vec<Order>, command: Command, queue: bool, point: Vec2, formation: Option<Formation>) {
@@ -1008,7 +1225,8 @@ impl Ui {
 
     /// A button of the command card – by key or by click. T, P, M, R wait for a target, B and V for a spot.
     /// The formation buttons only choose the shape – a command that is waiting keeps waiting.
-    fn press(&mut self, button: Button, world: &World, orders: &mut Vec<Order>, shift: bool) {
+    /// Training and barrels: `ctrl` 5 at once, `shift` the gold may go into the banks' credit.
+    fn press(&mut self, button: Button, world: &World, orders: &mut Vec<Order>, shift: bool, ctrl: bool) {
         if let Some(shape) = button.formation() {
             self.formation = shape;
             return;
@@ -1026,7 +1244,50 @@ impl Ui {
                 orders.push(Order::Command { units, command: Command::Hold, queue: shift, formation: None });
             }
             Button::Move | Button::Patrol | Button::Attack | Button::Rally => self.targeting = Some(button),
-            Button::PlaceBarracks | Button::PlaceTent | Button::PlaceWall | Button::PlaceGate | Button::PlaceTower => {
+            Button::Scan => match world.next_scan_in().filter(|_| world.scan_charges == 0) {
+                Some(seconds) => self.alert(&format!("No scan ready - the next one in {}:{:02}", seconds / 60, seconds % 60)),
+                None => self.targeting = Some(button),
+            },
+            Button::Drop => orders.push(Order::DropBarrels { units: self.selected.clone() }),
+            // All selected markets: if one of them sells, all stop – otherwise all sell again.
+            Button::Sell => {
+                let on = !self.selling(world);
+                let buildings = buildings.iter().map(|&b| world.buildings[b].id).collect();
+                orders.push(Order::SetSelling { buildings, on });
+            }
+            // Like training: each barrel to the factory with the shortest queue, Ctrl 5 at once, as many as the gold
+            // (with Shift also the credit) and the coal pay for.
+            Button::MakeBarrel => {
+                if self.editor.editing() && !self.editor.testing() {
+                    self.alert("No time passes while editing - make barrels in a test (F10)");
+                    return;
+                }
+                let blast = &data::get().buildings.blast;
+                let mut queued: Vec<(usize, u32)> =
+                    buildings.iter().map(|&b| (world.buildings[b].production.len(), world.buildings[b].id)).collect();
+                let mut gold = if shift { world.spendable_on_credit() } else { world.gold };
+                let mut coal = world.stock.get(Resource::Coal);
+                for _ in 0..if ctrl { 5 } else { 1 } {
+                    if gold < blast.cost {
+                        let credit = !shift && world.spendable_on_credit() >= blast.cost;
+                        self.alert(&if credit { Short::GoldCredit } else { Short::Gold }.alert());
+                        return;
+                    }
+                    if coal < blast.cost_coal {
+                        self.alert(&Short::Coal.alert());
+                        return;
+                    }
+                    let Some(shortest) = queued.iter_mut().filter(|(len, _)| *len < MAX_PRODUCTION).min_by_key(|(len, _)| *len) else {
+                        return;
+                    };
+                    let order = Order::MakeBarrel { building: shortest.1 };
+                    orders.push(if shift { Order::Credit(Box::new(order)) } else { order });
+                    shortest.0 += 1;
+                    gold -= blast.cost;
+                    coal -= blast.cost_coal;
+                }
+            }
+            Button::Place(_) => {
                 self.placing = button.places();
                 self.free_placing = false;
             }
@@ -1037,15 +1298,33 @@ impl Ui {
                 let selected = self.selected_building_indices(world);
                 self.repair(world, orders, selected);
             }
+            // All selected buildings that can be switched off: if one of them still runs, all go off – otherwise all
+            // on again (the simulation checks the workers once more, `switch_off`).
+            Button::Switch => {
+                let switchable: Vec<usize> = self.switchable(world);
+                let off = !self.switching_on(world);
+                // Why one of them stays off (each on its own – the simulation switches them on one after another).
+                let blocked = switchable.iter().filter(|_| !off).find_map(|&b| world.switch_on_blocked(b));
+                if let Some(block) = blocked {
+                    let short = match block {
+                        SwitchBlock::Workers => Short::Workers,
+                        SwitchBlock::Power => Short::Power,
+                        SwitchBlock::Income => Short::Income,
+                    };
+                    self.alert(&short.alert());
+                }
+                let buildings = switchable.iter().map(|&b| world.buildings[b].id).collect();
+                orders.push(Order::SwitchOff { buildings, off });
+            }
             Button::Unload => {
                 for b in buildings {
                     orders.push(Order::Unload { building: world.buildings[b].id });
                 }
             }
-            // With Shift 5 at once, like in StarCraft. Several barracks selected: each unit goes to the one
-            // with the shortest queue. Only as many as the gold and the free workers pay for (the simulation pays,
-            // `orders.rs`). Holding the key presses it again and again (`KeyRepeat`).
-            Button::TrainSoldier | Button::TrainRanger | Button::TrainSniper | Button::TrainMedic => {
+            // With Ctrl 5 at once (StarCraft has Shift – here Shift buys on the banks' credit). Several barracks
+            // selected: each unit goes to the one with the shortest queue. Only as many as the gold and the free workers
+            // pay for (the simulation pays, `orders.rs`). Holding the key presses it again and again (`KeyRepeat`).
+            Button::Train(_) => {
                 let Some(kind) = button.trains() else {
                     return;
                 };
@@ -1053,23 +1332,30 @@ impl Ui {
                     self.alert("No time passes while editing - train units in a test (F10)");
                     return;
                 }
+                if let Some(needed) = kind.stats().requires.filter(|_| !world.unit_unlocked(kind)) {
+                    self.alert(&Short::Locked(needed).alert());
+                    return;
+                }
                 let mut queued: Vec<(usize, u32)> =
                     buildings.iter().map(|&b| (world.buildings[b].production.len(), world.buildings[b].id)).collect();
-                let (mut gold, mut workers) = (world.gold, world.free_workers());
+                let gold = if shift { world.spendable_on_credit() } else { world.gold };
+                let (mut gold, mut workers) = (gold, world.free_workers());
                 let stats = kind.stats();
-                for _ in 0..if shift { 5 } else { 1 } {
+                for _ in 0..if ctrl { 5 } else { 1 } {
                     if gold < stats.cost {
-                        self.alert(Short::Gold.alert());
+                        let credit = !shift && world.spendable_on_credit() >= stats.cost;
+                        self.alert(&if credit { Short::GoldCredit } else { Short::Gold }.alert());
                         return;
                     }
                     if workers < stats.worker_cost {
-                        self.alert(Short::Workers.alert());
+                        self.alert(&Short::Workers.alert());
                         return;
                     }
                     let Some(shortest) = queued.iter_mut().min_by_key(|(len, _)| *len) else {
                         return;
                     };
-                    orders.push(Order::Train { building: shortest.1, kind });
+                    let order = Order::Train { building: shortest.1, kind };
+                    orders.push(if shift { Order::Credit(Box::new(order)) } else { order });
                     shortest.0 += 1;
                     gold -= stats.cost;
                     workers -= stats.worker_cost;
@@ -1077,6 +1363,25 @@ impl Ui {
             }
             Button::FormLine | Button::FormBox | Button::FormCircle => {} // handled above
         }
+    }
+
+    /// Do all selected markets sell (Q)? Then their button is lit.
+    pub fn selling(&self, world: &World) -> bool {
+        let markets: Vec<usize> = self.active_buildings(world);
+        !markets.is_empty() && markets.iter().all(|&b| world.buildings[b].selling)
+    }
+
+    /// The selected buildings that can be switched off (Y) – not infected ones.
+    fn switchable(&self, world: &World) -> Vec<usize> {
+        let can = |&b: &usize| world.buildings[b].kind.can_switch_off() && !world.buildings[b].infected;
+        self.selected_building_indices(world).into_iter().filter(can).collect()
+    }
+
+    /// Would Y switch the selection on again – is every one of them that can be switched off already off? Then its
+    /// button is lit, like a command waiting for its target.
+    pub fn switching_on(&self, world: &World) -> bool {
+        let switchable = self.switchable(world);
+        !switchable.is_empty() && switchable.iter().all(|&b| world.buildings[b].off)
     }
 
     /// The selected buildings (all types, not only the active one) – what F repairs.
@@ -1114,7 +1419,7 @@ impl Ui {
     }
 
     /// Keys of the command card. Only the buttons that are visible right now react.
-    fn command_keys(&mut self, world: &World, orders: &mut Vec<Order>, card: &[Button], shift: bool) {
+    fn command_keys(&mut self, world: &World, orders: &mut Vec<Order>, card: &[Button], shift: bool, ctrl: bool) {
         // Esc: first the waiting command or the building on the mouse, then the build menu (back to the main buttons).
         if is_key_pressed(KeyCode::Escape) {
             self.parked = None;
@@ -1137,9 +1442,10 @@ impl Ui {
             return;
         }
         for &button in card {
-            let pressed = if button.trains().is_some() { self.repeat.pressed(button.key()) } else { is_key_pressed(button.key()) };
+            let repeats = button.trains().is_some() || button == Button::MakeBarrel;
+            let pressed = if repeats { self.repeat.pressed(button.key()) } else { is_key_pressed(button.key()) };
             if pressed {
-                self.press(button, world, orders, shift);
+                self.press(button, world, orders, shift, ctrl);
                 break; // the card may change (a build menu opens) – one button per key press
             }
         }
@@ -1222,6 +1528,12 @@ impl Ui {
             if let Some(zombie) = self.zombie_at(world, camera, end).filter(|_| !shift && !ctrl) {
                 self.deselect();
                 self.selected_zombie = Some(zombie);
+                return;
+            }
+            // The same for a house of doom or a pile of loot.
+            if let Some(place) = self.place_at(world, camera, end).filter(|_| !shift && !ctrl) {
+                self.deselect();
+                self.selected_place = Some(place);
                 return;
             }
             // No unit, but a building: select it. Shift: add or take out. Ctrl or double click: all of its type on
@@ -1570,11 +1882,29 @@ impl Ui {
         if let Some(z) = self.hover_zombie.and_then(|id| world.find_zombie(id)) {
             ring(world.zombies[z].pos, RED);
         }
-        // The zombie clicked on: a thick red ring.
+        // The zombie clicked on: a thick red ring. A house of doom or loot: a red frame on the ground around it.
         if let Some(z) = self.selected_zombie.and_then(|id| world.find_zombie(id)) {
             let s = camera.world_to_screen(world.zombies[z].pos);
             let w = 0.8 * TILE_W * camera.zoom;
             draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 3.0, RED);
+            // Where it was lured to: a thin line there and a small cross.
+            if let Some(to) = world.zombies[z].lured_to() {
+                let t = camera.world_to_screen(to);
+                draw_line(s.x, s.y, t.x, t.y, 1.0, Color { a: 0.6, ..RED });
+                draw_line(t.x - 5.0, t.y - 5.0, t.x + 5.0, t.y + 5.0, 2.0, RED);
+                draw_line(t.x - 5.0, t.y + 5.0, t.x + 5.0, t.y - 5.0, 2.0, RED);
+            }
+        }
+        let frame = match self.selected_place {
+            Some(Place::Doom(id)) => world.find_doom(id).map(|d| (world.doom[d].corner(), world.doom[d].far_corner())),
+            Some(Place::Loot(id)) => world.find_loot(id).map(|l| (world.loot[l].pos - Vec2::splat(0.4), world.loot[l].pos + Vec2::splat(0.4))),
+            None => None,
+        };
+        if let Some((c, f)) = frame {
+            let corners = [c, vec2(f.x, c.y), f, vec2(c.x, f.y)].map(|p| camera.world_to_screen(p));
+            for k in 0..4 {
+                draw_line(corners[k].x, corners[k].y, corners[(k + 1) % 4].x, corners[(k + 1) % 4].y, 2.5, RED);
+            }
         }
         if let Some(i) = self.hover_unit.and_then(|id| world.find_unit(id)) {
             ring(world.units[i].pos, WHITE);
@@ -1620,10 +1950,8 @@ impl Ui {
             };
             // The zone free of zombies only counts by the rules of the game – the editor builds anywhere.
             let free = self.rule_free();
-            let corners = [min, vec2(max.x, min.y), max, vec2(min.x, max.y)];
-            for k in (0..4).filter(|_| !free) {
-                let (p, q) = (camera.world_to_screen(corners[k]), camera.world_to_screen(corners[(k + 1) % 4]));
-                draw_line(p.x, p.y, q.x, q.y, 1.5, frame);
+            if !free {
+                draw_ground_frame(camera, min, max, 1.5, frame);
             }
             let tiles = match self.place_start {
                 Some(start) => placement_line(kind, start, here),
@@ -1631,7 +1959,8 @@ impl Ui {
             };
             let (w, h) = kind.footprint(turned);
             // Green: it will be built – red: no room there, or the gold or the workers don't reach that far.
-            let plan = self.affordable(world, kind, &tiles);
+            let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+            let plan = self.affordable(world, kind, &tiles, shift);
             for tile in tiles {
                 let color = if plan.built.contains(&tile) {
                     Color::new(0.3, 0.9, 0.3, 0.45)
@@ -1647,7 +1976,18 @@ impl Ui {
             }
             // On walls the gate is cheaper – the text says so, so it doesn't look like a mistake.
             let on_walls = world.replaced_by(kind, here, turned).len();
+            let stats = kind.stats();
             let mut text = if free { "Free (editor)".to_owned() } else { format!("Cost {}", plan.cost) };
+            let pieces = plan.built.len().max(1) as u32;
+            if !free && stats.cost_wood > 0 {
+                text += &format!(", {} wood", stats.cost_wood * pieces);
+            }
+            if !free && stats.cost_stone > 0 {
+                text += &format!(", {} stone", stats.cost_stone * pieces);
+            }
+            if !free && stats.cost_coal > 0 {
+                text += &format!(", {} coal", stats.cost_coal * pieces);
+            }
             if plan.workers > 0 {
                 text += &format!(", {} worker{}", plan.workers, if plan.workers == 1 { "" } else { "s" });
             }
@@ -1656,7 +1996,13 @@ impl Ui {
             }
             match plan.short {
                 Some(Short::Gold) => text += &format!(" - not enough gold ({})", world.gold),
+                Some(Short::GoldCredit) => text += &format!(" - not enough gold ({}) - Shift: on credit", world.gold),
+                Some(Short::Barrels) => text += " - no barrel in store",
+                Some(Short::Wood) => text += &format!(" - not enough wood ({})", world.stock.get(Resource::Wood)),
+                Some(Short::Stone) => text += &format!(" - not enough stone ({})", world.stock.get(Resource::Stone)),
+                Some(Short::Coal) => text += &format!(" - not enough coal ({})", world.stock.get(Resource::Coal)),
                 Some(Short::Workers) => text += &format!(" - not enough workers ({} free)", world.free_workers()),
+                Some(short @ (Short::Locked(_) | Short::Power | Short::Income)) => text += &format!(" - {}", short.alert().to_lowercase()),
                 None => {}
             }
             if kind == BuildingKind::Gate {
@@ -1664,6 +2010,7 @@ impl Ui {
             }
             let color = if plan.short.is_some() { Color::new(1.0, 0.45, 0.4, 1.0) } else { WHITE };
             draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, color);
+            self.draw_economy_hints(world, camera, kind, here, mouse);
         }
         // Editor tool on the mouse: the brush in the colour of the terrain, or the name of what gets spawned.
         if let Some(tool) = self.editor.tool.filter(|_| !self.editor.contains(mouse)) {
@@ -1694,7 +2041,7 @@ impl Ui {
                     };
                     draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
                 }
-                Tool::Unit(_) | Tool::Spawner => {
+                Tool::Unit(_) | Tool::Spawner | Tool::Doom | Tool::Loot => {
                     draw_circle_lines(mouse.x, mouse.y, 10.0, 2.0, YELLOW);
                     draw_text(tool.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
                 }
@@ -1728,7 +2075,7 @@ impl Ui {
         // Editor: the edge of the selected spawner under the mouse (or being dragged) lights up white.
         if let Some(s) = self.editor.spawner.and_then(|id| world.find_spawner(id)).filter(|_| self.editor.editing()) {
             let point = camera.screen_to_world(mouse);
-            let tolerance = (GRAB_PIXELS / (TILE_H * camera.zoom)).clamp(0.2, 1.5);
+            let tolerance = grab_tolerance(camera);
             let edges = match self.spawner_drag {
                 Some(drag) => Some(drag.edges),
                 None if !self.editor.contains(mouse) && self.editor.tool.is_none() => grab(&world.spawners[s], point, tolerance),
@@ -1741,7 +2088,7 @@ impl Ui {
                 };
                 let (min, max) = (tile_corner(min), tile_corner(min) + tile_corner(size));
                 let line = |p: Vec2, q: Vec2| {
-                    let (p, q) = (camera.world_to_screen(p), camera.world_to_screen(q));
+                    let (p, q) = (camera.world_to_screen(from_frame(p)), camera.world_to_screen(from_frame(q)));
                     draw_line(p.x, p.y, q.x, q.y, 4.0, WHITE);
                 };
                 if edges.x_min {
@@ -1807,24 +2154,48 @@ fn tile_corner(tile: (i32, i32)) -> Vec2 {
     vec2(tile.0 as f32, tile.1 as f32)
 }
 
-/// Which edges of the spawner lie within `tolerance` tiles of `point` – at a corner two. Inside, away from the
-/// edges: all four (the whole spawner moves). `None` if the point lies outside.
-fn grab(spawner: &Spawner, point: Vec2, tolerance: f32) -> Option<Edges> {
-    let (min, size) = spawner.rect();
-    let max = min + size;
+/// The outline of a rectangle on the ground, from corner `min` to corner `max` (world) – on screen a diamond, like the
+/// tiles.
+fn draw_ground_frame(camera: &Camera, min: Vec2, max: Vec2, thickness: f32, color: Color) {
+    let corners = [min, vec2(max.x, min.y), max, vec2(min.x, max.y)];
+    for k in 0..4 {
+        let (p, q) = (camera.world_to_screen(corners[k]), camera.world_to_screen(corners[(k + 1) % 4]));
+        draw_line(p.x, p.y, q.x, q.y, thickness, color);
+    }
+}
+
+/// A circle on the ground around `center` (world), `radius` tiles – on screen a flat ellipse, like the tiles.
+fn draw_ground_circle(camera: &Camera, center: Vec2, radius: f32, thickness: f32, color: Color) {
+    let s = camera.world_to_screen(center);
+    let w = radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom;
+    draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, thickness, color);
+}
+
+/// How close to its edge (in steps of the screen axes, across and down) a spawner can be grabbed: `GRAB_PIXELS` on
+/// screen – a step across is twice as wide as a step down.
+fn grab_tolerance(camera: &Camera) -> Vec2 {
+    let down = (GRAB_PIXELS / (TILE_H / 2.0 * camera.zoom)).clamp(0.4, 3.0);
+    vec2(down / 2.0, down)
+}
+
+/// Which edges of the spawner lie within `tolerance` of the world point `point` – at a corner two. Inside, away from
+/// the edges: all four (the whole spawner moves). `None` if the point lies outside.
+fn grab(spawner: &Spawner, point: Vec2, tolerance: Vec2) -> Option<Edges> {
+    let Region { min, max } = spawner.region();
     let t = tolerance;
-    if point.x < min.x - t || point.y < min.y - t || point.x > max.x + t || point.y > max.y + t {
+    let p = to_frame(point);
+    if p.x < min.x - t.x || p.y < min.y - t.y || p.x > max.x + t.x || p.y > max.y + t.y {
         return None;
     }
-    let near = |a: f32, b: f32| (a - b).abs() < t;
-    let mut e = Edges { x_min: near(point.x, min.x), x_max: near(point.x, max.x), y_min: near(point.y, min.y), y_max: near(point.y, max.y) };
+    let near = |a: f32, b: f32, t: f32| (a - b).abs() < t;
+    let mut e = Edges { x_min: near(p.x, min.x, t.x), x_max: near(p.x, max.x, t.x), y_min: near(p.y, min.y, t.y), y_max: near(p.y, max.y, t.y) };
     // A small spawner: both edges close – take the closer one.
     if e.x_min && e.x_max {
-        let left_closer = (point.x - min.x).abs() < (point.x - max.x).abs();
+        let left_closer = (p.x - min.x).abs() < (p.x - max.x).abs();
         (e.x_min, e.x_max) = (left_closer, !left_closer);
     }
     if e.y_min && e.y_max {
-        let top_closer = (point.y - min.y).abs() < (point.y - max.y).abs();
+        let top_closer = (p.y - min.y).abs() < (p.y - max.y).abs();
         (e.y_min, e.y_max) = (top_closer, !top_closer);
     }
     if e.x_min || e.x_max || e.y_min || e.y_max {

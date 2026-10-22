@@ -99,6 +99,8 @@ The skeleton every system has to fit into. If a phase has nothing interesting ha
 - Phases and waves are planned as a **share of the round**, not in fixed minutes, so they stretch with the number of
   days. A longer round gives more time to build, but also brings more waves in between.
 - "Day" is only a unit of time here. A real day/night cycle is still in the [parking lot](#15-idea-parking-lot).
+- **In the prototype:** picked on "New game" like TAB – 10 / 20 / 40 / 60 / 80 days (`data\game_durations.json`), each
+  with its own wave rhythm and score %.
 
 ### 4.2 Phases
 
@@ -128,14 +130,14 @@ would pull the focus away from the army.
 
 | Tier | Item | Made from | Used for |
 |---|---|---|---|
-| Raw | **Wood** | Lumber camp (forest) | Early buildings, walls |
-| Raw | **Stone** | Quarry (rock) | Walls, towers |
-| Raw | **Iron ore** | Drill on ore patch | → Iron |
-| Raw | **Coal** | Drill on coal patch | Power plant, smelter fuel |
-| Raw | **Food** | Farm, fishery, hunter | Houses |
+| Raw | **Wood** | Sawmill (forest, trees) | Early buildings, walls, charcoal burner |
+| Raw | **Stone** | Mine on a stone patch (question 28) | Barracks, walls, towers |
+| Raw | **Iron ore** | Mine on an iron patch | → Iron |
+| Raw | **Coal** | Mine on a coal patch | Power plant, smelter fuel |
+| Raw | **Food** | Hunter cottage (forest), fishing hut (water), farm (grass – nothing grows on dirt) | Houses |
 | Raw | **Oil** | Oil pump on an oil node (2 × 2, 2026-10-18) | Oil burning generator, later more ❓ |
 | 1 | **Iron** | Smelter (ore + coal) | Buildings, tools, ammo |
-| 1 | **Energy** | Command center (a little), wood generator (early, inefficient), coal plant / later wind, solar | Machines, houses, towers |
+| 1 | **Energy** | Command center (a little), charcoal burner (early, burns wood), windmill (big, costs upkeep), coal plant / solar later | Machines, houses, towers |
 | 2 | **Tools** | Workshop (iron + wood) | Tier 2 houses, units |
 | 2 | ~~Ammo~~ | ~~Armory (iron + coal)~~ | **Free for now** (open question 6, 2026-10-15) – ammo as an item is parked |
 | 3 | **Medicine** | Lab – recipe later (tier 3 is far away) | Tier 3 houses, healing |
@@ -178,7 +180,10 @@ Houses link economy and army – this is what makes the Factorio part matter for
 - A house that isn't supplied stops paying gold. You can downgrade it if you have to. 
 - The same gold pays for the army's **upkeep** (7.2). There is no supply cap: the army is as big as your income
   allows, so every gold is a choice between growing the colony and growing the army.
-- Houses are delivered to by a **distribution radius** around a market/warehouse (TAB-like, simpler).
+- **The market** (2026-10-21, not TAB's): no supply radius houses depend on. Founded early, it grows with the colony –
+  houses whose middle lies within 2 tiles of it pay +50 % gold (one market per house), and it sells what lies above
+  80 % of the storage, 1 good per 4 colonists of its houses per payout. A dense, rich centre – and a juicy target for
+  an infection chain (pillar 1).
 - **Rough check ❓:** an army of 80 units at ≈ 3 gold upkeep each costs ≈ 240 gold/min. That's 24 apartments or 120
   tents. When in the round should the player get there (tier 2 from ≈ 30 % of the round, section 4.2), and does
   that work for 40 days as well as for 80? Check it in a spreadsheet before writing code (open question 14).
@@ -189,13 +194,21 @@ Houses link economy and army – this is what makes the Factorio part matter for
   inputs from it and put their outputs back. No belts, no item routing.
 - The Factorio part is in the **production chains** (ore + coal → iron → tools …) and the **power grid**, not in
   moving items around.
-- Warehouses raise the storage limit; markets supply houses within their radius (5.3).
+- Warehouses raise the storage limit of the goods, banks the gold's; markets sell the surplus (5.3). Two storage
+  types are enough – a third only with its own mechanic (an oil tank, when oil comes).
 
 ### 5.5 Power
 
 - Power poles connect machines into a grid (Factorio).
 - Not enough power → every machine on that grid slows down proportionally. Towers and houses on the grid suffer too.
 - Destroyed poles split the grid → a zombie breach in one corner can black out half the base. (Pillar 1.)
+- The poles are **tesla towers**: each covers a circle (like TAB's energy area) – a building that makes, takes or carries
+  power has to stand in one. Two circles where one tower stands in the other's are one grid.
+
+**In the prototype:** command center (+20, reaches 8 tiles like TAB's), tesla tower (reaches 7), windmill (+50, 8 gold upkeep –
+few big mills instead of TAB's mill farms), charcoal burner (+20, burns 1 wood per payout). Like TAB, nothing that
+takes power is built (or switched on again) without that much to spare in its grid. Grids and shares in `src/sim/economy.rs`. Short of power: gathering,
+the tents' gold and training slow down by the grid's share. Towers don't use power yet.
 
 ### 5.6 Colonists
 
@@ -203,7 +216,7 @@ Colonists exist twice: as a **resource** (a number) and as **people walking arou
 
 #### Colonists as a resource (open question 24, 2026-10-15)
 
-- Houses give **colonists** – they pay gold (5.3) – and **workers**, like TAB (2026-10-19: a tent 6 colonists and
+- Houses give **colonists** – they pay gold (5.3) – and **workers**, like TAB (a tent 4 colonists and
   2 workers). The command center gives some workers too (the founders, enough for the start units and a little more).
   The bottom bar shows colonists and free/all workers next to the gold (11.1).
 - **Every other building and every unit takes workers** for as long as it stands or lives (`worker_cost` in
@@ -211,7 +224,7 @@ Colonists exist twice: as a **resource** (a number) and as **people walking arou
   line would eat all of them.
 - **Later, when workers get lost** (an infected house) and there are fewer than in use, buildings are **switched
   off** until there are enough again (2026-10-15):
-  - **Gathering buildings first** (lumber camp, quarry, drill …), **spread over the resources**: one of each kind in
+  - **Gathering buildings first** (sawmill, mine, hunter …), **spread over the resources**: one of each kind in
     turn, so no single resource drops to zero while the others keep running.
   - **Farms and power generators come last** (2026-10-15). Switching off food or power would leave houses unsupplied
     → less gold, maybe fewer colonists → even more buildings switched off: a downward spiral like in TAB.
@@ -241,20 +254,21 @@ Costs and stats live in `data\buildings.json` (12.4).
 |---|---|---|
 | **Core** | Command center | Start building, small storage, losing it = losing the game. Builds everything, trains nothing |
 | **Housing** | Tent → stone house → apartment | Upgrade when the materials and the next tier's goods are there (5.3) |
-| **Gathering** | Hunter cottage, fishing hut, saw mill, quarry, oil pump, farm | Placed on/near the right tiles, work on their own |
-| **Production** | Foundry (smelter), wood workshop, stone workshop, lab | Take inputs from the colony stock (5.4) |
-| **Logistics** | Warehouse, market, road | Warehouse = storage; market = supply radius for houses; road = **units and zombies** faster |
-| **Power** | Tesla tower (pole), generator (wood), oil burning generator, coal plant, windmill, solar, battery | Wood generator early, cheap, inefficient; wind/solar quieter but weaker |
-| **Military** | Barracks, siege factory (vehicles), munitions factory (❓ 26), tech lab | Production queue + rally point |
-| **Defence** | Wall, gate, tower (4 units inside), mines, trip wire, ballista tower, MG tower, flame tower | Towers use energy |
-| **Special** | Radar, sound dampener, cleanser (removes creep/noise), beacon (lures zombies to a kill zone) | No menu yet |
+| **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – no quarry), oil pump, farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where ore lies in rock. A later stone mine can simply get a bigger range |
+| **Production** | Foundry (smelter), wood workshop, stone workshop, lab | Take inputs from the colony stock (5.4). The workshops make nothing yet: like TAB's, they unlock buildings (wood → stone → munitions) |
+| **Logistics and trade** | Warehouse, market, bank, road | Warehouse = storage; market = houses around it pay more, sells the surplus (5.3); bank = gold storage + credit (Dispo, 7.2); road = **units and zombies** faster |
+| **Power** | Tesla tower (pole), charcoal burner (wood), windmill, oil burning generator, coal plant, solar, battery | Charcoal burner early, eats wood; windmill big but with upkeep; solar quieter but weaker |
+| **Military** | Barracks, munitions factory, inn, siege factory (vehicles), tech lab | Barracks from the start. The munitions factory is a tech gate for firearms (question 26) and makes explosive barrels; the inn hires mercenaries (7.2); the foundry later the second weapon tier (MG tower, vehicles) |
+| **Defence** | Wall, gate, tower (4 units inside), stone wall, stone tower, stake trap, explosive barrel, ballista tower, MG tower, flame tower | Stone ones go on the wooden ones (upgrade). Stake trap like TAB's: walked over, hurts zombies, wears out. Barrel (instead of mines, 2026-10-21): any damage sets it off, blasts chain, hurt everyone, loud; set like a trap or carried by units |
+| **Special** | Radar, sound dampener, cleanser (removes creep/noise) | No menu yet. The command center scans like StarCraft's (2026-10-21). The beacon is out: a free, endless lure into the kill zone is too strong – a barrel lures once and costs |
 | **Wonders** | ❓ (29) | Most expensive, very strong buffs |
 
 - **Building like TAB** (open question 5): placed, paid at once, builds itself. No worker units.
 - **Infection** (from TAB): HP + shield; shield down = **infected** – colonists come out as zombies, more depending on
   the building. A breach should feel catastrophic. The infected building then belongs to the zombies: they stop
   hitting it, and its walls are broken – zombies and units walk right through it (changed 2026-10-18, before: around
-  it). **Repairing** it cures it.
+  it). **Repairing** it cures it. A building with **workers** that falls is infected too: its workers come out as
+  zombies where it stood. Every infection is very loud (8.3) – an outlying hunter cottage overrun draws the horde.
 - **Repair** (2026-10-18): F on any selected building, **X / "Repair all"** for every building (X only while no
   units are selected – then it's the Line formation). Costs its share of the building's `repair_cost` (gold now,
   later also wood/stone …), paid at once; the damage comes back over `repair_seconds` (full repair 10 s). Not enough
@@ -266,7 +280,16 @@ Costs and stats live in `data\buildings.json` (12.4).
   buildings already sit on their spot, greyed out.
 
 **In the prototype:** command center, tent, barracks (the only building that trains), wall, gate (3 × 1, door for
-your units), tower (up to 4 units, +2 range and sight, can't be hit). Placement rules all in `src/placement.rs`:
+your units), tower (up to 4 units, +2 range and sight, can't be hit), sawmill, mine, hunter cottage, fishing hut,
+farm (3 × 3, only on grass: plants the grass around it, dirt and ore give nothing), windmill, charcoal burner, tesla
+tower, wood workshop (unlocks mine, farm, windmill, tesla tower, stake trap, stone
+workshop), stone workshop (unlocks munitions factory, stone house, stone wall, stone tower), munitions factory
+(unlocks soldier and sniper – the ranger's bow needs nothing; makes barrels), stone house, stone wall, stone tower, stake trap,
+market, bank, inn (mercenaries), explosive barrel, the command center's scan (`src/sim/market.rs`, `debt.rs`, `blast.rs`,
+`scan.rs`). Start (2026-10-20,
+different from TAB): 4 rangers, 1 soldier, 100 gold, 20 wood. Prices in gold plus wood/stone (barracks 150 + 20 wood + 20 stone,
+wood workshop 40 wood). Every full hour: burners take wood, gatherers deliver, tents eat 4 food, soldiers 1 – fed, they pay gold
+(× power share), hungry, nothing. Placement rules all in `src/placement.rs`:
 drag a line (walls diagonal, 1 wide like TAB), gate over walls (walls refund 50 %, never a saving), 1 free tile between
 towers, no zombie within 4 tiles. Your own units may stand on the site – they're pushed off to the nearest free
 spot (like StarCraft). Costs gold and workers (5.6). No build time yet. Repair (F) on every building, cures infected
@@ -311,13 +334,24 @@ one active ability** (low APM, clear identity).
 | **Siege tank** | SC | 3 | 6 | Crude artillery, **only shoots sieged** (≈ 4 s to siege), minimum range | *Siege / unsiege* | Very loud | Hordes at range, nests | Anything up close |
 
 **In the prototype:** soldier, ranger, sniper, medic (beam only, no healing yet), no abilities. Values in
-`data\units.json`.
+`data\units.json`. Firearms (soldier, sniper) only with a munitions factory standing (`requires`); the ranger's bow
+and the medic need nothing.
 
 - **Upkeep instead of supply** (like TAB): every unit costs gold once and then every minute; **no supply cap**. Army
-  size = income. **Dismiss** stops the upkeep.
+  size = income. **Dismiss** stops the upkeep. Running buildings cost upkeep too (TAB's values); **switched off (Y)**
+  they cost nothing – no upkeep, workers or power – and do nothing.
+- **In the prototype:** upkeep per payout (`upkeep` in `data\`), debt and desertion as below (`src/sim/debt.rs`, values
+  in `data\colony.json`) – no veterans yet, no dismiss yet.
 - **Debt** (open question 12): gold can go below 0. 0 = nothing new; debt > 0 = −15 % damage and attack speed;
   > 1 min of upkeep = −30 % and slower; > 2 min = every ≈ 10 s one unit **deserts**, weighted
   `upkeep × (3 if not a veteran, else 1)`. Paying it off removes the penalties; deserters don't come back.
+- **Credit (Dispo, 2026-10-21):** every bank gives 500 – debt up to it brings no penalties, only what's beyond counts
+  for the stages; it costs 10 % interest per payout. Buying never slips into it by itself: 0 is the limit, unless gold
+  is all that's missing and Shift is held. A bank that falls takes its share of that debt with it (and the gold above
+  the smaller storage).
+- **Mercenaries (the inn, question 29):** a stronger take on the veteran base units – own look, 2.5 × the price,
+  double upkeep, **no workers**: their limit is the economy, nothing else. They work for gold: in debt they desert
+  first, already at the second stage. Losing the inn costs nothing but the place to hire them.
 - **Army size to plan for:** ≈ 50–120 units (likely 60–80).
 - **Noise per unit** links the army to 8.3: rangers can go out quietly, snipers and tanks give themselves away.
 - **Area damage hits everyone:** the player's splash/fire/mines hurt your own units and buildings; zombie area damage
@@ -345,37 +379,71 @@ one active ability** (low APM, clear identity).
 | **Walker** | Slow, weak, *lots* of them | The mass. Tests your walls. |
 | **Runner** | Fast, weak | Punishes gaps and lone units. |
 | **Brute** | Slow, huge HP, smashes walls | Needs focus fire (snipers). |
-| **Spitter** | Ranged acid, outranges short-range units | Forces you out instead of turtling. |
+| **Armored runner** (TAB's, shown as "Riot") | Fast like a runner, armor eats most of an arrow | Rangers alone can't hold it – soldiers and snipers can. |
+| **Spitter** (TAB's venom) | Ranged acid over walls, lands a moment later and splashes | Forces you out instead of turtling; step aside in time. |
+| **Infested** (StarCraft 2's infested marine) | Shoots back, just under a soldier's range | Your line takes fire too – no free kills from behind a wall. |
 | **Screamer** | Calls nearby zombies when it sees you | Kill it first! |
 | **Swarm** | Tiny, fast, many, explodes on contact | Counters clumped armies. |
 | **Giant** (like TAB's) | Rare, huge, slow, smashes through walls and buildings | Late waves and the final wave. No other bosses. |
 
-**In the prototype:** walker, runner and **fat** (TAB's "chubby": big, 600 HP) – values in `data\zombies.json`.
+**In the prototype:** walker, runner, **fat** (TAB's "chubby": big, 600 HP), armored runner ("Riot", armor 3),
+spitter (acid 3.5 tiles, flies, splashes 1 tile – units and buildings, never zombies), infested (shoots 4.5 tiles, the
+soldier 5) – values in `data\zombies.json`, the names too. The harder breeds lie further out (`mix` in `data\roaming.json`)
+and stroll further per trip (`stroll` per breed: walker 8 tiles … fat 30) – without a home they keep to (8.5).
 
 - **Sight** like TAB, per breed: 5–6 tiles, not through forests. **Hearing** 3 tiles. **Shot** → storms for 5 s.
-- **Noise** of every shot wakes all zombies around (ranger 1, soldier 3, sniper 10 tiles) for 20 s – the local part
-  of 8.3.
 - Having noticed a unit, it storms at it: around water and mountains, but **almost straight through walls** (tears
   them down). A shot zombie and its 3 neighbours look for the gap for 10 s instead.
-- Without a unit: the nearest building within 5 tiles, else the command center (buildings in the way only avoided if
-  the detour is short).
+- **Memory:** a zombie goes where it was lured – a noise it heard (8.3), or where it last saw one of your units – and
+  stays there if it finds nothing, strolling around. Only wave zombies head on for the command center.
+- Without anything else: the nearest building within 5 tiles; wave zombies the command center (buildings in the way
+  only avoided if the detour is short).
 - Sight is computed from the few units outwards, not from thousands of zombies.
 
 ### 8.2 Waves
 
-- **Ambient:** zombies roam from the start (more and tougher further out).
+- **Ambient:** zombies roam from the start (more and tougher further out) – as many as in TAB.
+- **Villages of doom and loot** (like TAB): houses full of sleeping zombies, and loot with zombies hidden around it.
+  A unit coming close lets a few out; **noise** rouses a house – its zombies pour out and go to the noise; every hit
+  lets one more out. A house shot down drops loot (9.1).
 - **Noise waves:** your noise attracts groups (8.3).
 - **Scripted waves:** on fixed days, growing, from an *announced* direction. Planned as a share of the round (4.1).
-- **Final wave:** on the last day, everything incl. giants; countdown visible, direction announced ≈ 2 days ahead.
-- **In the prototype:** waves planned from the days (`data\spawning.json`), final wave from all sides with fat, a
-  constant spawn from day 2. Killed zombies never come back.
+  The first ones only runners, then more and more specials.
+- **Final wave:** on the last day, everything incl. giants – and like TAB it **calls every zombie on the map**
+  (villages and loot guards too); they all belong to it. It also **reveals the map**. Countdown visible, direction
+  announced ≈ 2 days ahead.
+- **In the prototype:** waves planned from the duration (on which days, `data\game_durations.json`) and the difficulty
+  (how strong, `waves_percent`) – the rest in `data\spawning.json`: runners, from a share of the round on
+  riots, infested, spitters and fat ones along (out of the same spawners); the final wave from all sides with every
+  breed. In the editor every wave has two switches: **Final** (calls everyone, counts for the win) and **Reveal**.
+  Killed zombies never come back.
+- **Constant spawn:** walkers from day 2, runners instead from day 10, specials along from day 15 on (a
+  share of every group, `specials` in `data\spawning.json`). Each group comes crowded on one spot of a spawner, not
+  spread along a whole side. Bigger for good with the colony's unrest (8.3). Specials are only editable in the file
+  so far, not in the editor.
 
-### 8.3 Noise (Factorio's pollution × TAB's noise)
+### 8.3 Noise (TAB's noise)
 
-- Every machine, tower shot and explosion makes **noise**, spreading per map chunk like Factorio's pollution.
-- Zombies and nests "drink" it: enough noise → they move towards its source.
-- → Expanding makes you stronger **and** louder. Quiet tech (wind, solar, dampeners) is a real choice.
-- Noise overlay like Factorio's pollution map.
+- Everything that happens makes **noise** where it happens; it adds up while it goes on and fades once it's quiet.
+- Zombies and villages hear it: enough noise → they move towards its source.
+- → Expanding and fighting make you stronger **and** louder. Quiet tech (wind, solar, dampeners) is a real choice.
+- Noise overlay like Factorio's pollution map (later).
+
+**In the prototype (like TAB, numbers in `data\sound.json`):** noise adds up per cell of 4 × 4 tiles; after
+1 s of quiet it halves every second. Per shot ranger 1, soldier 3, sniper 10 (TAB's values); a zombie hit 1, a building
+placed 40, a unit dying 50, a building destroyed 100, a building infected 100 + 50 per zombie coming out – a building
+with workers that falls is infected (TAB's overrun hunter cottage). Zombies hear 4 × their sight and come at
+1000 / alertness (walker 2, runner/fat/riot/infested 3, spitter 4), by chance – the louder, the surer. Houses of doom
+and loot guards hear it too. Twice a second, `src/sim/sound.rs`; the way to the noise: a small field per place,
+`src/lure.rs`.
+
+**Machines and unrest (Factorio's pollution as TAB's noise):** every 10 s each working building makes its
+`noise` – hunter 50, sawmill and munitions factory 100, mine and charcoal burner 150, all at once, so neighbours add up
+per cell. One alone lures nobody; a mine field with a burner wakes a village 24 tiles away. Everything the colony makes
+(shots, machines, blasts, building – not the zombies' noise) also adds to the **unrest**, which never goes down: every
+50,000 of it, each group of the constant spawn brings one zombie more, for good. Luring the near zombies into the
+walls is fine – the noise brings new ones from the edge; a silenced army stays worth it to the end; tearing the
+factory down before the final wave undoes nothing.
 
 ### 8.4 Creep (like StarCraft's, but for the zombies)
 
@@ -383,6 +451,51 @@ one active ability** (low APM, clear identity).
 - On creep: no building, your units slowed, zombies regenerate.
 - Burning it (flamethrowers, cleanser) removes it; destroying the nest stops it.
 - Gives the army an offensive job.
+
+### 8.5 How a zombie lives – the rules
+
+Written down on purpose: if the zombies seem to behave strangely in a test, check it against this first.
+
+- **At the start** the roamers lie almost everywhere, in packs of 1–3 on a tile – never more than 3 (`pack` in
+  `data\roaming.json`). Near the base nearly only walkers, further out the harder breeds (TAB's balance: by breed, not
+  by how many). How many: the difficulty (`roaming_zombies`).
+- **How close each breed may come** – the difficulty's `keep_out`, in tiles from the command center (Normal: walkers
+  and runners 10, riots and infested 25, spitters 30, fat ones 35; Brutal: all 10). None lies closer at the start
+  (there it's a walker instead), none strolls closer – not even on the straight way to its goal. Lured ones and waves
+  may go closer. A lured one strolls on at random from where it is: every trip at most `inside_step` (3) tiles deeper,
+  trips further in are dropped – so it may come a little closer, but on the whole drifts back out. Nothing is kept
+  per zombie for it.
+- **Asleep:** whoever lies far from your eyes sleeps – only an entry per block of 8 × 8 tiles (`src/sim/sleep.rs`).
+  A sleeper doesn't see and costs next to nothing. In the editor's views "All" and "Zombies" they are drawn darker; in
+  the player's view you never see one.
+- **Sleepers stroll too:** trip after trip by the same rule and dice as an awake stroller (below) – a random free
+  spot up to `stroll` tiles away, never into its breed's ring around the command center. Nobody sees them, so they
+  arrive at once and then wait as long as the walk would have taken, plus the 1–5 s of standing. Something in the
+  straight way (water, a mountain): it stays. A trip that would end near your eyes wakes it where it starts, and it
+  walks the rest awake – into sight from outside, fading in. **So the zombies never run out where you are:** a place you
+  emptied (a loud border lured everything around) fills up again as the sleepers around drift in – holding it stays
+  work until the region around is thinned out.
+- **Waking** (whole blocks, or one by one for noise):
+  1. **Your eyes:** every 0.5 s every unit and building wakes all blocks within its sight **plus 8 tiles** – so they're
+     awake before you can see them.
+  2. **Noise:** a sound wakes a sleeper with exactly the rule and dice of the zombies awake (8.3) – it then goes where
+     the sound was. A fight wakes what would have heard it anyway.
+  3. **The scan** wakes its circle, **a barrel** going off wakes its radius (and then hits them).
+  4. **The final wave** wakes everyone, at least 2,000 a tick, the nearest to the base first. The round isn't won before
+     the last one is awake and dead.
+- **Seen:** in the picture a zombie fades in over 0.6 s when it comes into sight and fades out over 0.8 s when it
+  leaves it – nobody pops up at the edge of sight (like TAB).
+- **Strolling, without a radius:** an awake roamer with nothing to do strolls – each trip to a random spot up to
+  `stroll` tiles from where it stands now (walker 8 … fat 30, `data\zombies.json`), never into its breed's ring around
+  the command center (above). **No home it keeps to:** trip after trip it can get anywhere outside that ring. How
+  close the special breeds come is up to the difficulty.
+- **Calm is cheap:** a stroller that notices nothing thinks only every 8th tick and isn't pushed hard by the crowd –
+  calm crowds may overlap a little while they stroll.
+- **Falling asleep again:** a stroller that has been calm for **20 s** and is further than sight **+ 16 tiles** from
+  every eye falls asleep where it stands (its hit points kept) – and strolls on asleep. Never after the final wave's
+  call. Far away nothing costs anything, but the horde keeps moving.
+- **Lured** zombies (a sound, the place they last saw a unit) go there and then stroll from there; **wave** zombies head
+  for the command center. Neither falls asleep while busy.
 
 ---
 
@@ -392,7 +505,7 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 
 ### 9.1 Steps
 
-1. **Terrain** from noise → grassland, forest, rock, swamp, water, ruins.
+1. **Terrain** from noise → grassland, dirt (no farms), forest, rock, swamp, water, ruins.
 2. **Start area:** safe-ish, with wood, stone, small iron + coal patches, farmland, one oil node.
 3. **Resource patches:** Factorio-style, richer and larger further out.
 4. **Chokepoints:** rivers, cliffs, forests – obvious places to wall off.
@@ -404,7 +517,9 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 
 - **Generators:** Wild (Factorio-like noise), Regions (TAB-like, walls with passes), Rings, Canyons, Blank – each with
   its own sliders. Same seed + same values = same map.
-- **World border:** a ring of 16 tiles of open ground outside it. Units and the camera stop at the border.
+- **World border:** straight on screen like TAB's – the playing field is a rectangle twice as wide as high (a
+  diamond in the grid), the minimap too. Around it a ring of open ground (16 steps, ≈ 11 tiles); the grid corners
+  beyond are off the map. Units and the camera stop at the border. Spawners are rectangles on screen as well.
 - **Spawners:** zombies only come out of them – 3 per side in the ring, covering nearly the whole side. Mode per
   spawner: constant / periodic / off. Nests and wave directions can become spawners later.
 - **Ways in:** winding open lanes from every side to the base that join like branches – the places to wall off.
@@ -412,15 +527,23 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 - **Ore:** iron ore, coal, stone patches; one of each next to the base, bigger and richer further out.
 - **Oil (2026-10-18):** nodes of exactly **2 × 2 tiles** (an oil pump goes on one), never touching. One alone next to
   the base, further out groups of 2–6.
+- **Dirt:** patches on 40 % of the open ground – walk and build there like on grass, but no farm. Not on Blank.
+- **Villages of doom** (points of interest, step 6): far from the base. **How many and how big is the map's** (its
+  setup: villages per 10,000 tiles, houses near the base and at the edge – Open Plains many small ones, Broken Lands two
+  huge ones); the difficulty makes both more or fewer, and **every house as full as it says** (`doom_zombies`, Normal
+  250). A big village spreads wider and keeps further apart. A house keeps a ring of open ground, so it never cuts off
+  a way – more houses only take open ground, the terrain stays.
+- **Loot:** ≈ 6 piles per 10,000 tiles – 500 gold or 10 wood/stone/iron ore/coal, zombies hidden around each (Normal
+  8–50, more further out).
 - **Seed:** truly random per new map, `--seed N` on the command line, kept by "Restart".
 
 ### 9.2 Map sizes (first guess)
 
 | Size | Tiles | Zombies at peak |
 |---|---|---|
-| Small | 128 × 128 | ~1,000 |
-| Medium | 192 × 192 | ~3,000 |
-| Large | 256 × 256 | ~6,000 |
+| Small | 128 × 128 | ~2,500 |
+| Medium | 192 × 192 | ~7,000 |
+| Large | 256 × 256 | ~73,000 (like TAB's Caustic Lands): ≈ 65,000 roaming almost everywhere in packs of 1–3 per tile, never more than 3 – near the base only walkers, further out the harder breeds; ≈ 8,000 asleep in villages and around loot |
 
 - **Fog of war:** unexplored (black) / explored (dark, no zombies shown) / visible. Sight per unit and building,
   blocked by forests and trees, computed in the simulation (co-op players share it).
@@ -435,8 +558,12 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 - Region → **round setup:** map size, zombie density, final wave strength, **number of days**, starting resources.
   Every setting changes the **score multiplier** (TAB's %); fewer days = harder.
 - Buttons: *New round*, *Continue*, *Regions*, *Research*, *Records*, *Settings*.
+- **In the prototype:** "New game" like TAB – a **map** (`data\game_maps.json`, for now one generator with its values
+  each), a **difficulty** (`game_difficulties.json`: start, how many zombies, how close each breed comes, zombies per
+  house of doom, loot guards, waves, constant spawn) and a **duration** (`game_durations.json`). The score factor is the
+  three multiplied – shown, no score yet. "Custom setup" shows every value of the generator.
 
-### 10.2 Meta progression (like TAB, but without a campaign)
+### 10.2 Meta progression (like TAB)
 
 - **Research points** after every round (score-based, a few for a loss too) → persistent **research tree**.
 - **Regions unlock** by winning the previous one at ≥ a certain difficulty.
@@ -446,7 +573,11 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 
 - **Endless** (nice to have): the round goes on after the final wave.
 - **Co-op** (wanted): one player hosts, see 12.8.
-- No campaign, no daily challenge.
+- **Campaign** (wanted, far off): like TAB's – research inside the round (at the workshops) and **in-between tech**:
+  weaker early versions of buildings that research makes into the full ones (e.g. a small windmill first). The
+  survival mode (what's being built now) has none of it: everything comes at its **standard strength**, which keeps
+  development simple.
+- No daily challenge.
 
 ---
 
@@ -473,6 +604,7 @@ brass and dark wood until the real art (12.3). Later: noise/creep overlay on the
 | F2 | Whole army |
 | F5–F8 (Ctrl: save) | Camera bookmarks |
 | Backspace | Camera to the base |
+| Y (grid) | Selected buildings off / on again – no upkeep, workers, power (like TAB) |
 | Space | Pause (orders still possible, singleplayer only) |
 | Esc | Cancel → deselect → game menu |
 | Tab | Next type in the selection (planned: noise/creep overlay elsewhere) |
@@ -524,6 +656,17 @@ brass and dark wood until the real art (12.3). Later: noise/creep overlay on the
   furthest visible "anchor" like Theta\*) – any angle, taut around corners, 2–4 ms per field.
 - **Options for later:** Theta\* for single units, HPA\*/flow field tiles for big maps, a density cost field or
   continuum crowds so the horde flows around jams, RVO/ORCA for smoother crowds at gates.
+- **A big horde (`src/sim/zombies.rs`, `src/grid.rs`):** a tick of the simulation has 50 ms.
+  - *Calm zombies are cheap:* a stroller with nothing to notice thinks only every 8th tick (each on another one) and
+    walks on with what it decided; it isn't pushed by the crowd either – that's only for the busy ones.
+  - *Neighbours in memory:* every 2 s the list of zombies is sorted by where they stand, and the grid keeps each one's
+    position, size and number in it, tile after tile – looking at the neighbours finds them in the processor's cache.
+  - *All cores:* what each zombie wants and how it's pushed apart is worked out side by side (`rayon`) – only reading,
+    collected in order, so the result is the same on every PC and the checksum doesn't change.
+  - *Asleep far away* (8.5): zombies far from your eyes are plain entries per 8 × 8 tiles and cost nothing until your
+    eyes, a sound, the scan or the final wave wakes them; calm ones far from everything fall asleep again.
+  - Measured (256, `horde_tick_time`): 65,000 zombies, ≈ 2,200 of them awake near the base ≈ 0.4 ms per tick; ≈ 10 ms
+    when the final wave has called them all (before all this: 16,000 took ≈ 6 ms, all called ≈ 8 ms).
 
 ### 12.2 Language and library
 
@@ -580,6 +723,7 @@ A 2–4 hour round is far too slow to test by playing.
 - **Map editor** (`LastBastionEditor.exe`, own program since 2026-10-17, like TAB's): opens a map file, paints terrain,
   ore and oil, places units, buildings, zombies and spawners, edits the waves and the round, **Edit** (no time) /
   **Test** (the round runs, afterwards the map is as before). Every change is an order, so it stays deterministic.
+  The rework towards TAB + SC2 is planned in 12.9.
 - **One game = one file:** every new round writes its map file to `%APPDATA%\Last Bastion\maps\`; "Restart" reads it.
 
 ### 12.7 Repository and toolbox
@@ -628,6 +772,41 @@ Same seed + same orders → **the same state, bit for bit**. Rules for the simul
 - **Everyone can save** (and continue alone), **only the host loads**. A dropped player can rejoin; if the host
   leaves, the round ends.
 
+### 12.9 Map editor: TAB first, then SC2 (plan)
+
+Goal: far more settings per map. TAB's editor (Info, Painter, Entities, Events) is the model for the first steps,
+StarCraft 2's (regions, triggers, players and AI, data) for what follows.
+
+- **Waves today:** a new round turns `spawning.json` + duration + difficulty into a concrete list – `waves` in the map
+  file (tick, count, breed, from where, final, reveal; one entry per breed and moment) – and a copy of the constant
+  spawn (`constant_spawn`). From then on the file counts: the editor's "Waves" tab edits that list, `data\` only
+  changes new maps. Changing the days in the editor moves only the final wave.
+- **Steps:**
+  1. **UI foundation:** fields to type numbers and text into, drop-downs, scrolling lists, a properties panel, dialogs –
+     the column of +/- buttons doesn't carry many settings. Own widgets or egui (editor only) ❓. **Undo/redo.**
+  2. **Map settings (TAB's Info):** every value of the difficulty and duration per map (start, `keep_out`, zombies per
+     house, wave plan – planned anew from rules or by hand), description; the constant spawn's specials.
+  3. **Properties of what's placed (TAB's Entities):** select one or many and edit – zombies per house and their breeds,
+     loot, a zombie's breed and state, HP, owner; move, copy, delete.
+  4. **Painter:** line, rectangle, fill, noise brush, a generator on a part of the map, copy and paste areas.
+  5. **Regions and points (SC2):** named areas and spots – what triggers talk about ("north gate", "village 3").
+  6. **Triggers (SC2):** events + conditions + actions, variables. Events: a time, a unit in a region, built/destroyed,
+     zombies killed, a wave, noise in a region, a house razed. Actions: waves and zombies at a region, messages and
+     objectives, reveal, resources, wait, victory/defeat, orders to allies. Edited as sentences ("When a unit enters
+     North gate: 200 runners from spawner 2"). Checked in the simulation every tick in a fixed order – deterministic
+     for co-op.
+  7. **Players and ally AIs (SC2):** the colony (1–2 humans), ally AIs with colour, start units and buildings, shared
+     vision or not; zombies against everyone. Behaviours: hold a region, patrol, guard, attack-move, retreat (building
+     later). Steered by triggers ("Ally 1: defend West") and reacting to events ("ally base attacked").
+     **Owner of everything placed:** today a unit in the map file is only type and place, a building type, tile and
+     turn – everything is the colony's. Then each gets an `owner`: colony (old files), an ally, or **neutral** – can't
+     be selected, ordered, repaired or built over, costs and pays nothing; whether zombies go for it is set per thing.
+     A trigger can hand it over ("rescue the outpost": neutral → colony).
+  8. **Data per map (SC2's data editor, light):** a map overrides values of `data\` for itself.
+- **Hooks:** allies need an **owner on every unit and building** – it reaches combat, vision, selection, upkeep. Co-op
+  (12.8) needs the same, so build it once, early. Triggers must stay deterministic (integers, fixed order). Players and
+  triggers make map format 4.
+
 ---
 
 ## 13. Prototype roadmap
@@ -647,8 +826,8 @@ before step 6.
 | **5. Co-op mini round** | 2 players, direct IP, orders per tick, desync check | No desync to the end | |
 | **6. Production chains** | Drill → stock → smelter → workshop, with power | A small chain runs by itself | |
 | **7. Houses, gold, upkeep** | Houses consume and pay, units cost upkeep | Economy and army linked | |
-| **8. Map generation** | Terrain, patches, nests, POIs, fog | Two seeds feel different | Partly (generators, ore, oil, fog) |
-| **9. Noise and creep** | Noise attracts waves, nests spread creep | Expanding is a decision | Local noise only |
+| **8. Map generation** | Terrain, patches, nests, POIs, fog | Two seeds feel different | Partly (generators, ore, oil, fog, villages of doom, loot, dirt) |
+| **9. Noise and creep** | Noise attracts waves, nests spread creep | Expanding is a decision | Noise like TAB (adds up, lures, villages) – creep missing |
 | **10. Full round** | Section 4 timeline, save and load | A 40-day round playable | |
 | **11. Home screen and meta** | Regions, setup, score %, research | "One more round" | |
 | **12. Polish** | Sounds, effects, alerts, balancing, tutorial | Someone else can play it | |
@@ -664,10 +843,8 @@ before step 6.
 | 18 | How long is a day? | First guess 3 min, decide by playtesting |
 | 21 | Which era / technology? | Open – decides the look, towers, air units |
 | 22 | Where do the pictures come from? | Open – Blender / packs / artist / AI |
-| 26 | Ammo after all? (re-opens 6) | Open – munitions factory planned just in case |
 | 27 | Two tesla towers (power pole vs. weapon)? | Open – one needs another name |
-| 28 | What gets iron ore and coal out of their patches? | Open – a mine/drill in the resources menu? |
-| 29 | What do the Inn and the wonders do? | Open |
+| 29 | What do the wonders do? (The inn: mercenaries, 2026-10-21) | Open |
 
 **Decided** (number = question, referenced elsewhere):
 
@@ -676,8 +853,11 @@ before step 6.
   pause, singleplayer only · **8** hero parked · **9** saving like Factorio · **10** research tree like TAB ·
   **11** name *Last Bastion* · **12** debt in stages, then desertion · **13** the TAB side is the heart ·
   **15** own repo · **16** settings in `%APPDATA%\Last Bastion` · **19** one shared colony · **20** direct IP /
-  Tailscale, Steam if released · **23** first power: command center + wood generators · **24** colonists are a
-  resource · **25** a unit is free again when idle and in no control group.
+  Tailscale, Steam if released · **23** first power: command center + charcoal burners (wood) · **24** colonists are a
+  resource · **25** a unit is free again when idle and in no control group · **26** no ammo item: the munitions factory only unlocks firearms, after the stone workshop
+  (2026-10-20) · **28** one mine for every ore patch
+  (iron, coal, stone), no quarry (2026-10-20) · **30** the final wave calls every zombie on the map, villages and loot
+  guards too · **31** the waves bring the special breeds, more and more over the round (both 2026-10-20).
 
 ---
 
@@ -690,7 +870,6 @@ Ideas that don't serve a pillar yet, or are too big for now.
 - **Trains** between distant ore fields, **drones** delivering items.
 - **Refugees** mid-round – maybe infected. 😈
 - **Mutations:** a random horde modifier per round.
-- **Editor triggers** and scripted events like StarCraft 2's.
 - **Mod support** via the JSON files. **Replays** (seed + orders, almost free with lockstep).
 - **Air units** (until the era is clear – a hot-air balloon would fit low tech).
 - **Rally point into a control group.**

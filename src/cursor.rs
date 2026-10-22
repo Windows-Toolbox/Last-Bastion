@@ -26,17 +26,18 @@ impl Cursor {
             self.release(); // another window in front (e.g. Alt+Tab): release the mouse right away
             return None;
         };
-        if confine {
+        let (w, h) = win::client_size(window);
+        let inside = win::cursor_in_client(window).filter(|&(x, y)| x >= 0 && y >= 0 && x < w && y < h);
+        // Only hold the mouse once it is inside. On the title bar or the frame (moving or resizing the window) it stays
+        // free – otherwise Windows pushes it down into the window area, the dragged window follows it down, the mouse
+        // gets pushed again, and so on: the window slides down and can't be pulled up again.
+        if confine && inside.is_some() {
             win::clip_to_client(window);
             self.clipped = true;
         } else {
             self.release();
         }
-        let (x, y) = win::cursor_in_client(window)?;
-        let (w, h) = win::client_size(window);
-        if x < 0 || y < 0 || x >= w || y >= h {
-            return None;
-        }
+        let (x, y) = inside?;
         // Windows counts in screen pixels, macroquad divides by the DPI factor.
         Some(vec2(x as f32, y as f32) / macroquad::window::screen_dpi_scale())
     }

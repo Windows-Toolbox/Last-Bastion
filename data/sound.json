@@ -1,0 +1,14 @@
+{
+  "threshold": 1000,
+  "hearing": 4.0,
+  "quiet_seconds": 1.0,
+  "halve_seconds": 1.0,
+  "zombie_hit": 1,
+  "unit_dies": 50,
+  "building_placed": 40,
+  "building_destroyed": 100,
+  "building_infected": 100,
+  "per_infected": 50,
+  "work_every_seconds": 10.0,
+  "unrest_per_zombie": 50000
+}

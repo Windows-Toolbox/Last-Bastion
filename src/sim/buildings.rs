@@ -8,7 +8,7 @@ use macroquad::math::{vec2, Vec2};
 use super::commands::Command;
 use super::terrain::free_point_near;
 use super::zombies::Breed;
-use super::{World, HOUR_TICKS, TICKS_PER_SECOND};
+use super::{payout_ticks, World, TICKS_PER_SECOND};
 use crate::data;
 use crate::kinds::{BuildingKind, BuildingStats, UnitKind};
 
@@ -29,14 +29,65 @@ pub struct Building {
     pub shield: u32,
     /// The shield broke: its colonists came out as zombies, it pays no more gold, everyone walks through it.
     pub infected: bool,
+    /// Switched off (Y, like in TAB – `BuildingKind::can_switch_off`): it does nothing and costs nothing – no upkeep,
+    /// no workers, no power, and what it `requires` for others doesn't count either.
+    pub off: bool,
     /// Points (hit points, then shield) that are paid for and still come back – a little every tick (`repair`).
     pub repair_left: u32,
-    /// Production queue: in front the unit currently being built.
-    pub production: VecDeque<UnitKind>,
+    /// Production queue: in front what's being made right now – a unit, or a barrel in the munitions factory.
+    pub production: VecDeque<Product>,
     /// How many ticks the front unit has been built for.
     pub progress: u32,
+    /// Thousandths of a tick of building, collected while the power isn't enough: every tick it gets its power share
+    /// (`Power::share`), and every full 1000 the front unit is built one tick further.
+    charge: u32,
+    /// A charcoal burner: did it get its wood for this hour (`World::fuel`)? Without it, it makes no power.
+    pub fuelled: bool,
+    /// A house: did its colonists get their food at the last payout – and the gold they paid then (`economy_payout`).
+    pub fed: bool,
+    pub paid: u32,
     /// Where new units go (right click with the building selected).
     pub rally: Option<Rally>,
+    /// A barrel that went off (`blast.rs`) – it's gone at the end of the tick. Damage that takes all of a barrel's
+    /// hit points at once must still set it off: that's why this is kept apart from `hp`.
+    pub blown: bool,
+    /// A market: does it sell (Q, `market.rs`) – and what it sold at the last payout: goods, and the gold for them.
+    pub selling: bool,
+    pub sold_goods: u32,
+    pub sold_gold: u32,
+}
+
+/// What a production queue makes: a unit (barracks, inn) or a barrel (munitions factory, `blast.rs`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Product {
+    Unit(UnitKind),
+    Barrel,
+}
+
+impl Product {
+    /// Its price in gold – paid when it goes into the queue, back in full if it's cancelled.
+    pub fn cost(self) -> u32 {
+        match self {
+            Product::Unit(kind) => kind.stats().cost,
+            Product::Barrel => data::get().buildings.blast.cost,
+        }
+    }
+
+    /// The workers it takes, from the queue on (a barrel: none).
+    pub fn worker_cost(self) -> u32 {
+        match self {
+            Product::Unit(kind) => kind.stats().worker_cost,
+            Product::Barrel => 0,
+        }
+    }
+
+    /// Ticks to make it, at full power.
+    pub fn build_time(self) -> u32 {
+        match self {
+            Product::Unit(kind) => kind.stats().build_time,
+            Product::Barrel => data::get().buildings.blast.build_time,
+        }
+    }
 }
 
 impl Building {
@@ -77,16 +128,18 @@ impl Building {
         (y0..y0 + h).flat_map(|y| (x0..x0 + w).map(move |x| (x, y))).collect()
     }
 
-    /// A zombie hits it: first the shield, once that is gone the hit points. `true` if this hit broke the shield –
+    /// A zombie hits it – minus its `armor`, at least 1: first the shield, once that is gone the hit points. `true` if this hit broke the shield –
     /// then the building is infected now (`World::infect` lets the zombies out). What's left over of a hit that
     /// breaks the shield is lost, like in TAB a hit only ever goes to one of the two.
     pub fn take_damage(&mut self, damage: u32) -> bool {
+        let damage = damage.saturating_sub(self.stats().armor).max(1);
         if self.shield == 0 {
             self.hp = self.hp.saturating_sub(damage);
             return false;
         }
         self.shield = self.shield.saturating_sub(damage);
-        let broke = self.shield == 0 && self.stats().colonists > 0;
+        // The command center is never infected – its shield is just more life, it falls when its hit points are gone.
+        let broke = self.shield == 0 && self.stats().colonists > 0 && self.kind != BuildingKind::CommandCenter;
         self.infected |= broke;
         broke
     }
@@ -129,10 +182,26 @@ impl Building {
         false
     }
 
-    /// Gold per hour: every colonist pays – as long as the building isn't infected.
-    pub fn income(&self) -> u32 {
-        if self.infected { 0 } else { self.stats().colonists * data::get().colony.gold_per_colonist_per_hour }
+    /// Do the zombies leave it alone – infected (it's theirs) or a trap (they walk over it)? Then they don't notice
+    /// it, don't hit it, and everyone walks through (`Map::set_taken`).
+    pub fn zombies_ignore(&self) -> bool {
+        self.infected || self.kind.is_trap()
     }
+
+    /// Gold per payout when it's fed and has all its power: its `gold` – as long as the building isn't infected. What it really paid last hour: `paid`.
+    pub fn full_income(&self) -> u32 {
+        if self.infected { 0 } else { self.stats().gold }
+    }
+}
+
+/// What keeps a switched off building from going on again (`World::switch_on_blocked`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SwitchBlock {
+    Workers,
+    /// Not enough spare power in its grid – or no grid reaches it.
+    Power,
+    /// The houses' gold doesn't cover the upkeep with it.
+    Income,
 }
 
 /// What a repair of some buildings would do right now (`World::repair_plan`) – the buttons show it, the UI sends it.
@@ -191,10 +260,19 @@ impl World {
             hp: kind.stats().hp,
             shield: kind.stats().max_shield(),
             infected: false,
+            off: false,
             repair_left: 0,
             production: VecDeque::new(),
             progress: 0,
+            charge: 0,
+            fuelled: false,
+            fed: true,
+            paid: 0,
             rally: None,
+            blown: false,
+            selling: true,
+            sold_goods: 0,
+            sold_gold: 0,
         });
         // Block the map right away – the next building in the same tick must not go on the same spot.
         let size = kind.footprint(turned);
@@ -202,6 +280,10 @@ impl World {
         // The gate: its middle tile is the door – open for your units.
         if kind == BuildingKind::Gate {
             self.map.set_door(tile.0 + size.0 / 2, tile.1 + size.1 / 2);
+        }
+        // A trap lies on the ground: everyone walks over it, like over an infected building.
+        if kind.is_trap() {
+            self.map.set_taken(tile.0, tile.1, size, true);
         }
         self.map_changed = true;
     }
@@ -228,11 +310,17 @@ impl World {
     }
 
     /// Destroyed buildings: free their tiles, then recompute the index and the zombies' path.
-    /// Whoever was in a fallen tower now stands on the ground where it was. Returns whether a command center fell –
-    /// the round may be lost (`round.rs`).
+    /// Whoever was in a fallen tower now stands on the ground where it was. Every fallen building makes noise
+    /// (`building_destroyed`), and one with workers in it is infected as it falls, like in TAB: they come out as zombies
+    /// where it stood – and that is loud (`infected_come_out`). An overrun hunter cottage far out brings the horde.
+    /// Returns whether a command center fell – the round may be lost (`round.rs`).
     pub(super) fn remove_destroyed_buildings(&mut self) -> bool {
         let before = self.buildings.len();
+        // A barrel that went off did its job – it isn't counted as lost.
+        let blown = self.buildings.iter().filter(|b| b.hp == 0 && b.blown).count();
         let mut command_center_fell = false;
+        // (middle, its tiles, its workers) of every fallen building – they come out after the list is cleaned up.
+        let mut fallen = Vec::new();
         for building in &self.buildings {
             if building.hp == 0 {
                 self.map.set_occupied(building.tile.0, building.tile.1, building.footprint(), false);
@@ -240,27 +328,32 @@ impl World {
                     unit.inside = None;
                 }
                 command_center_fell |= building.kind == BuildingKind::CommandCenter;
+                // Switched off, nobody works in it – nobody comes out.
+                let workers = if building.infected || building.off { 0 } else { building.stats().worker_cost };
+                fallen.push((building.center(), building.tiles(), workers));
             }
         }
         self.buildings.retain(|b| b.hp > 0);
         if self.buildings.len() != before {
-            self.score.buildings_lost += (before - self.buildings.len()) as u32;
+            self.score.buildings_lost += (before - self.buildings.len() - blown) as u32;
             self.refresh_map();
+        }
+        for (center, tiles, workers) in fallen {
+            self.make_sound(center, data::get().sound.building_destroyed);
+            let free: Vec<(i32, i32)> = tiles.into_iter().filter(|&(x, y)| !self.map.is_blocked(x, y)).collect();
+            self.infected_come_out(center, &free, workers);
         }
         command_center_fell
     }
 
-    /// Building `b` has just been infected: its colonists come out as zombies right next to it (DESIGN.md 6). For a
-    /// tent with 6: 2–4 runners, the rest walkers. Not wandering – they go for the next target right away.
-    /// From now on it belongs to the zombies: they don't hit it anymore, and its broken walls let everyone through
+    /// Building `b` has just been infected: its colonists come out as zombies right next to it (DESIGN.md 6). From now
+    /// on it belongs to the zombies: they don't hit it anymore, and its broken walls let everyone through
     /// (`Map::set_taken`) – so the threat map and their way to the command center are computed anew.
     pub(super) fn infect(&mut self, b: usize) {
         let (tile, size) = (self.buildings[b].tile, self.buildings[b].footprint());
         self.buildings[b].repair_left = 0; // a repair underway is lost with it
         self.map.set_taken(tile.0, tile.1, size, true);
         self.refresh_map();
-        let colonists = self.buildings[b].stats().colonists;
-        let runners = colonists.min(2 + self.rng.below(3));
         // Free tiles in the ring around the building – for zombies, so not on walls or water.
         let building = &self.buildings[b];
         let (w, h) = building.footprint();
@@ -274,30 +367,47 @@ impl World {
                 }
             }
         }
-        if ring.is_empty() {
-            return; // walled in all around: they can't get out
+        let (center, colonists) = (building.center(), building.stats().colonists);
+        self.infected_come_out(center, &ring, colonists);
+    }
+
+    /// `count` infected people of a building at `center` come out as zombies, on random spots of these free `tiles` –
+    /// 2–4 runners, the rest walkers. Not wandering: they go for the next target right away. And it's loud, like in
+    /// TAB: `building_infected` plus `per_infected` for every one of them (`sound.rs`). No tile free (walled in all
+    /// around): they can't get out – but it's still heard.
+    fn infected_come_out(&mut self, center: Vec2, tiles: &[(i32, i32)], count: u32) {
+        if count == 0 {
+            return;
         }
-        for i in 0..colonists {
-            let (x, y) = ring[self.rng.below(ring.len() as u32) as usize];
+        let sound = &data::get().sound;
+        self.make_sound(center, sound.building_infected + sound.per_infected * count);
+        if tiles.is_empty() {
+            return;
+        }
+        let runners = count.min(2 + self.rng.below(3));
+        for i in 0..count {
+            let (x, y) = tiles[self.rng.below(tiles.len() as u32) as usize];
             let pos = vec2(x as f32 + self.rng.unit_f32(), y as f32 + self.rng.unit_f32());
             let breed = if i < runners { Breed::Runner } else { Breed::Walker };
             self.spawn_zombie_as(pos, breed, false);
         }
     }
 
-    /// Gold per hour of all buildings together – what the HUD shows next to the gold.
+    /// The gold all buildings paid at the last payout – what the HUD shows next to the gold. Infected since then:
+    /// nothing.
     pub fn income(&self) -> u32 {
-        self.buildings.iter().map(|b| b.income()).sum()
+        self.buildings.iter().filter(|b| !b.infected).map(|b| b.paid).sum()
     }
 
     /// Workers like in TAB (DESIGN.md 5.6): houses and the command center give them (`workers`), every other building
     /// and every unit takes some (`worker_cost`) – for as long as it stands or lives. Units in a production queue
-    /// already count: they take them when they go in, like their gold. Infected buildings give none.
+    /// already count: they take them when they go in, like their gold. Infected buildings give none, switched off
+    /// ones take none.
     /// Counted anew every time instead of kept in a number – that way they can't get out of step with what stands on
     /// the map, and map files don't need them. Returns (in use, all there are).
     pub fn workers(&self) -> (u32, u32) {
-        let buildings = self.buildings.iter().map(|b| b.stats().worker_cost);
-        let queued = self.buildings.iter().flat_map(|b| b.production.iter().map(|kind| kind.stats().worker_cost));
+        let buildings = self.buildings.iter().filter(|b| !b.off).map(|b| b.stats().worker_cost);
+        let queued = self.buildings.iter().flat_map(|b| b.production.iter().map(|p| p.worker_cost()));
         let units = self.units.iter().map(|u| u.stats().worker_cost);
         let used = buildings.chain(queued).chain(units).sum();
         let all: u32 = self.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().workers).sum();
@@ -313,30 +423,109 @@ impl World {
         all.saturating_sub(used)
     }
 
-    /// Every full hour of the round each building pays its gold (colonists × `gold_per_colonist_per_hour`,
-    /// `data\colony.json`). Then repairs go on, and the production queues. Finished units come out next to the
-    /// building.
+    /// Every payout (`payout_ticks`) the economy does its round (`economy.rs`: gathering, burning, eating, the houses'
+    /// gold, the upkeep). Then repairs go on, and the production queues – as fast as the power allows, not at all
+    /// while switched off. Finished units come out next to the building, finished barrels go into the store – with
+    /// the store full, the next one waits.
     pub(super) fn update_buildings(&mut self) {
-        if (self.tick + 1) % HOUR_TICKS == 0 {
-            let income = self.income();
-            self.gold += income;
-            self.score.gold_earned += income;
+        if (self.tick + 1).is_multiple_of(payout_ticks()) {
+            self.economy_payout();
+        }
+        if (self.tick + 1).is_multiple_of(data::get().buildings.trap_every.max(1) as u64) {
+            self.spring_traps();
+        }
+        if (self.tick + 1).is_multiple_of(data::get().sound.work_every.max(1) as u64) {
+            self.machines_work(); // sound.rs
         }
         for b in 0..self.buildings.len() {
             if self.buildings[b].repair() {
                 self.cure(b);
             }
         }
+        // The grids only when something is being trained – most ticks nothing is.
+        let power = self.buildings.iter().any(|b| !b.production.is_empty()).then(|| self.power());
         for b in 0..self.buildings.len() {
-            let Some(&kind) = self.buildings[b].production.front() else {
+            let Some(&product) = self.buildings[b].production.front().filter(|_| !self.buildings[b].off) else {
                 continue;
             };
-            self.buildings[b].progress += 1;
-            if self.buildings[b].progress >= kind.stats().build_time {
+            if product == Product::Barrel && self.barrels >= self.barrel_room() {
+                continue;
+            }
+            let share = power.as_ref().map_or(1000, |p| p.share(self, b));
+            let building = &mut self.buildings[b];
+            building.charge += share;
+            if building.charge < 1000 {
+                continue;
+            }
+            building.charge -= 1000;
+            building.progress += 1;
+            if self.buildings[b].progress >= product.build_time() {
                 self.buildings[b].production.pop_front();
                 self.buildings[b].progress = 0;
-                self.finish_unit(b, kind);
+                match product {
+                    Product::Unit(kind) => self.finish_unit(b, kind),
+                    Product::Barrel => self.barrels += 1,
+                }
             }
+        }
+    }
+
+    /// Switches building `b` off or on again (`Order::SwitchOff`). On again only if nothing blocks it
+    /// (`switch_on_blocked`) – otherwise it stays off. A charcoal burner switched on lights up right away if there's
+    /// wood, like a new one.
+    pub(super) fn switch_off(&mut self, b: usize, off: bool) {
+        let building = &self.buildings[b];
+        if !building.kind.can_switch_off() || building.infected || building.off == off {
+            return;
+        }
+        if !off && self.switch_on_blocked(b).is_some() {
+            return;
+        }
+        self.buildings[b].off = off;
+        if !off {
+            self.fuel(b);
+        }
+    }
+
+    /// Why switched off building `b` can't go on again right now – `None`: it can. It needs its workers free, the
+    /// power it takes spare in the grid where it stands, and as much gold coming in as everything costs with it
+    /// (the gold of the last payout ≥ upkeep now + its own).
+    pub fn switch_on_blocked(&self, b: usize) -> Option<SwitchBlock> {
+        let building = &self.buildings[b];
+        let stats = building.stats();
+        if stats.worker_cost > self.free_workers() {
+            return Some(SwitchBlock::Workers);
+        }
+        // Switched off it's in no grid – `spare_power_at` finds the one reaching it.
+        if stats.energy_use > 0 && self.spare_power_at(&self.power(), building.center()).map_or(0, |(_, spare)| spare) < stats.energy_use {
+            return Some(SwitchBlock::Power);
+        }
+        if stats.upkeep > 0 && self.income() < self.upkeep() + stats.upkeep {
+            return Some(SwitchBlock::Income);
+        }
+        None
+    }
+
+    /// Every trap hurts every zombie standing on it (minus its armor, at least 1), and every hit wears the trap down by
+    /// `trap_wear` – at 0 hit points it's gone like any destroyed building (`remove_destroyed_buildings`).
+    fn spring_traps(&mut self) {
+        if !self.buildings.iter().any(|b| b.kind.is_trap()) {
+            return;
+        }
+        for z in 0..self.zombies.len() {
+            let pos = self.zombies[z].pos;
+            let Some(b) = self.building_at_point(pos) else {
+                continue;
+            };
+            let trap = &mut self.buildings[b];
+            let stats = trap.stats();
+            if !trap.kind.is_trap() || trap.hp == 0 || !self.zombies[z].is_alive() {
+                continue;
+            }
+            trap.hp = trap.hp.saturating_sub(stats.trap_wear);
+            let zombie = &mut self.zombies[z];
+            let damage = stats.trap_damage.saturating_sub(zombie.breed.stats().armor).max(1);
+            zombie.hp = zombie.hp.saturating_sub(damage);
         }
     }
 
@@ -443,6 +632,6 @@ impl World {
     /// Is this building a tower with a free spot?
     pub(super) fn has_room(&self, b: usize) -> bool {
         let building = &self.buildings[b];
-        building.kind == BuildingKind::Tower && self.garrison(building.id).len() < data::get().buildings.tower_slots
+        building.kind.is_tower() && self.garrison(building.id).len() < data::get().buildings.tower_slots
     }
 }

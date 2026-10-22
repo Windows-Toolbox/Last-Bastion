@@ -18,7 +18,8 @@ const W: u32 = 96;
 const H: u32 = 128;
 /// … and where the feet stand in it.
 const FEET: Vec2 = vec2(48.0, 108.0);
-/// This many pixels are one tile width – `pixels_per_tile` in the JSON.
+/// This many pixels are one tile width while drawing the picture. The JSON's `pixels_per_tile` may be bigger – then the
+/// figure is drawn that much smaller in the game (`figure.json`: 256, half the size).
 const PPT: f32 = 128.0;
 const DIRECTIONS: u32 = 16;
 /// The animations side by side, each with its number of frames: idle, walk, attack.

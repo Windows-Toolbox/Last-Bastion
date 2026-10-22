@@ -16,6 +16,8 @@ pub const HOVER: Color = Color::new(0.22, 0.24, 0.30, 1.0);
 pub const BORDER: Color = Color::new(0.30, 0.32, 0.38, 1.0);
 pub const DIM: Color = Color::new(0.55, 0.57, 0.62, 1.0);
 pub const ON: Color = Color::new(0.30, 0.65, 0.35, 1.0);
+/// The picked one of a group of buttons.
+pub const LIT: Color = Color::new(0.25, 0.35, 0.20, 1.0);
 pub const ACCENT: Color = Color::new(0.95, 0.62, 0.20, 1.0);
 
 /// A column of rows: every call of `row()` gives the rectangle of the next row.
@@ -75,6 +77,24 @@ impl Column {
         draw_text(text, self.x, self.y + 16.0, 16.0, DIM);
         self.y += 22.0;
     }
+
+    /// A note as long as it needs to be – broken into lines as wide as the column (texts from `data\`, which can be
+    /// any length).
+    pub fn wrap(&mut self, text: &str) {
+        let mut line = String::new();
+        for word in text.split_whitespace() {
+            let longer = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+            if !line.is_empty() && measure_text(&longer, None, 16, 1.0).width > self.width {
+                self.note(&line);
+                line = word.to_owned();
+            } else {
+                line = longer;
+            }
+        }
+        if !line.is_empty() {
+            self.note(&line);
+        }
+    }
 }
 
 pub fn mouse() -> Vec2 {
@@ -90,7 +110,7 @@ pub fn button(r: Rect, label: &str, enabled: bool) -> bool {
 pub fn button_lit(r: Rect, label: &str, enabled: bool, lit: bool) -> bool {
     let hover = enabled && r.contains(mouse());
     let bg = if lit {
-        Color::new(0.25, 0.35, 0.20, 1.0)
+        LIT
     } else if hover {
         HOVER
     } else {
@@ -100,6 +120,25 @@ pub fn button_lit(r: Rect, label: &str, enabled: bool, lit: bool) -> bool {
     draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if lit { GREEN } else { BORDER });
     let w = measure_text(label, None, 20, 1.0).width;
     draw_text(label, r.x + (r.w - w) / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, if enabled { WHITE } else { DIM });
+    hover && is_mouse_button_pressed(MouseButton::Left)
+}
+
+/// One of a list to pick from (the maps of a new game): its name on the left, a detail on the right (what it's worth) –
+/// lit when it's the picked one. Returns `true` if it was clicked in this frame.
+pub fn pick(r: Rect, label: &str, detail: &str, lit: bool) -> bool {
+    let hover = r.contains(mouse());
+    let bg = if lit {
+        LIT
+    } else if hover {
+        HOVER
+    } else {
+        BOX
+    };
+    draw_rectangle(r.x, r.y, r.w, r.h, bg);
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if lit { GREEN } else { BORDER });
+    draw_text(label, r.x + 12.0, r.y + r.h / 2.0 + 6.0, 20.0, WHITE);
+    let w = measure_text(detail, None, 18, 1.0).width;
+    draw_text(detail, r.right() - w - 12.0, r.y + r.h / 2.0 + 6.0, 18.0, DIM);
     hover && is_mouse_button_pressed(MouseButton::Left)
 }
 

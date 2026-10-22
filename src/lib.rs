@@ -19,6 +19,7 @@ mod hud;
 mod hunt;
 mod iso;
 mod kinds;
+mod lure;
 mod map;
 mod mapfile;
 mod mapgen;

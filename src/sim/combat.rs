@@ -1,5 +1,5 @@
-//! Combat of your units: whom they aim at (the nearest zombie in sight, for medics the nearest hurt unit) and
-//! shooting. Zombies hitting back is part of their walking (`zombies.rs`).
+//! Combat of your units: whom they aim at (the nearest zombie in sight, with none in range a house of a village of
+//! doom, for medics the nearest hurt unit) and shooting. Zombies hitting back is part of their walking (`zombies.rs`).
 //!
 //! A shot goes like in StarCraft, with the times from `data\units.json`:
 //! 1. **turn** to face the target (`turn_around_seconds` for 180°),
@@ -15,12 +15,19 @@ use macroquad::math::Vec2;
 use super::units::Intent;
 use super::World;
 
+/// The noise of one shot (`noise` in `data\units.json`), as a whole number for the sound grid.
+fn shot_noise(noise: f32) -> u32 {
+    (noise + 0.5).floor().max(0.0) as u32
+}
+
 /// What a unit aims at this tick: a zombie (shoot) or – medics – one of its own (beam).
 /// The number is the index in the respective list.
 #[derive(Clone, Copy)]
 pub(super) enum Target {
     Zombie(usize),
     Ally(usize),
+    /// A house of a village of doom (`doom.rs`).
+    Doom(usize),
 }
 
 /// What a unit has been aiming at – by `id`, because it's kept from tick to tick and the indices change when the
@@ -29,12 +36,15 @@ pub(super) enum Target {
 pub(super) enum Aim {
     Zombie(u32),
     Ally(u32),
+    Doom(u32),
 }
 
 impl World {
     /// Turn, reload, aim, shoot (see the top of the file) – or, for medics, beam – at what each unit wants to aim at
     /// this tick (`intent`).
     pub(super) fn shoot(&mut self, intents: &[Intent]) {
+        // In debt the units shoot slower and weaker (`debt.rs`) – read before `unit` borrows `self`.
+        let keep = self.army_keep;
         for (i, intent) in intents.iter().enumerate() {
             // Reloading goes on whatever the unit does – walking, turning, nothing.
             self.units[i].cooldown = self.units[i].cooldown.saturating_sub(1);
@@ -43,6 +53,9 @@ impl World {
                     (Aim::Zombie(self.zombies[z].id), self.zombies[z].pos)
                 }
                 Some(Target::Ally(a)) => (Aim::Ally(self.units[a].id), self.units[a].pos),
+                Some(Target::Doom(d)) if self.doom[d].hp > 0 => {
+                    (Aim::Doom(self.doom[d].id), self.doom[d].closest_point(self.units[i].pos))
+                }
                 // No target (or already finished off by another unit this tick): stop aiming.
                 _ => {
                     let unit = &mut self.units[i];
@@ -73,13 +86,14 @@ impl World {
             }
             // 4. Shoot.
             unit.aim = 0;
-            unit.cooldown = stats.cooldown;
+            unit.cooldown = stats.cooldown * 1000 / keep;
+            let damage = (stats.damage * keep / 1000).max(1);
             match intent.target {
                 Some(Target::Zombie(z)) => {
                     self.shots.push((unit.pos, to));
                     let zombie = &mut self.zombies[z];
                     // The same as `shot_damage` – here `self` is already borrowed through `unit` and `zombie`.
-                    let damage = stats.damage.saturating_sub(zombie.breed.stats().armor).max(1);
+                    let damage = damage.saturating_sub(zombie.breed.stats().armor).max(1);
                     zombie.hp = zombie.hp.saturating_sub(damage);
                     if !zombie.is_alive() {
                         unit.kills += 1;
@@ -88,11 +102,18 @@ impl World {
                     // is one (`zombies.rs`). The ones around it noticed even if it fell.
                     let from = unit.pos;
                     self.start_seeking(z);
-                    // And everyone who heard the shot comes too (TAB's noise).
-                    self.make_noise(from, stats.noise);
+                    // And the shot makes noise where it was fired – it adds up (TAB's noise, `sound.rs`).
+                    self.make_colony_sound(from, shot_noise(stats.noise));
                 }
                 // For now only the beam – healing comes later.
                 Some(Target::Ally(_)) => self.beams.push((unit.pos, to)),
+                // A house of doom: hit – a few more come out of it (`doom.rs`) – and the shot makes noise like any other.
+                Some(Target::Doom(d)) => {
+                    self.shots.push((unit.pos, to));
+                    let from = unit.pos;
+                    self.hit_house(d, damage, from);
+                    self.make_colony_sound(from, shot_noise(stats.noise));
+                }
                 None => {}
             }
         }
@@ -115,6 +136,10 @@ impl World {
                     other.hp < other.stats().hp && !other.is_inside() && self.in_shot(unit.pos, other.pos, unit.range())
                 })
                 .map(Target::Ally),
+            Aim::Doom(id) => self
+                .find_doom(id)
+                .filter(|&d| self.doom[d].hp > 0 && self.in_shot(unit.pos, self.doom[d].closest_point(unit.pos), unit.range()))
+                .map(Target::Doom),
         }
     }
 
@@ -157,14 +182,31 @@ impl World {
             if let Some(z) = pick {
                 aimed[z] += self.shot_damage(i, z);
             }
-            targets[i] = pick.map(Target::Zombie);
+            // No zombie in range: a house of a village of doom, if one is.
+            targets[i] = pick.map(Target::Zombie).or_else(|| self.nearest_doom(unit.pos, unit.range()).map(Target::Doom));
         }
         targets
     }
 
-    /// What one shot of unit `i` does to zombie `z`: the damage minus the zombie's armor, at least 1.
+    /// The nearest house of doom still standing whose walls are within `range` and in sight. There are only a few
+    /// dozen – all of them are checked. Equally far: the lower index.
+    fn nearest_doom(&self, pos: Vec2, range: f32) -> Option<usize> {
+        let mut best: Option<(f32, usize)> = None;
+        for (d, house) in self.doom.iter().enumerate() {
+            let d_to = house.distance_to(pos);
+            if house.hp == 0 || d_to > range || best.is_some_and(|(best_d, _)| best_d <= d_to) {
+                continue;
+            }
+            if self.map.clear_sight(pos, house.closest_point(pos)) {
+                best = Some((d_to, d));
+            }
+        }
+        best.map(|(_, d)| d)
+    }
+
+    /// What one shot of unit `i` does to zombie `z`: the damage (less in debt) minus the zombie's armor, at least 1.
     fn shot_damage(&self, i: usize, z: usize) -> u32 {
-        self.units[i].stats().damage.saturating_sub(self.zombies[z].breed.stats().armor).max(1)
+        self.army_damage(self.units[i].stats().damage).saturating_sub(self.zombies[z].breed.stats().armor).max(1)
     }
 
     /// The nearest living zombie within `range` that's in sight and that `accept` takes (by its index).
@@ -174,8 +216,7 @@ impl World {
         let mut best: Option<(f32, usize)> = None;
         for dy in -r..=r {
             for dx in -r..=r {
-                for &z in self.grid.cell(cx + dx, cy + dy) {
-                    let z = z as usize;
+                for z in self.grid.cell(cx + dx, cy + dy) {
                     if !self.zombies[z].is_alive() || !accept(z) {
                         continue;
                     }

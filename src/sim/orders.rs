@@ -3,14 +3,14 @@
 
 use macroquad::math::{vec2, Vec2};
 
-use super::buildings::{Rally, MAX_PRODUCTION};
+use super::buildings::{Product, Rally, MAX_PRODUCTION};
 use super::commands::Command;
 use super::spawning::{SpawnMode, TimedWave, WaveFrom, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
-use crate::data::Stage;
+use crate::data::{self, Stage};
 use crate::formation::Formation;
-use crate::kinds::{BuildingKind, UnitKind};
+use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Ore, Terrain};
 
 /// How much ore the editor's brush puts on a tile – about the middle of a patch near the base (`mapgen/ores.rs`).
@@ -52,7 +52,7 @@ pub enum Order {
     PaintTerrain { terrain: Terrain, tiles: Vec<(i32, i32)> },
     /// Editor: ore on these tiles (only where there's grass) – `None` takes it away.
     PaintOre { ore: Option<Ore>, tiles: Vec<(i32, i32)> },
-    /// A new spawner centred on this tile (named "Spawner" + its number).
+    /// A new spawner centred on this point of the screen axes (`map::to_frame`), named "Spawner" + its number.
     PlaceSpawner { center: (i32, i32) },
     /// Move a spawner or change its size – it always stays on the map and at least 1 × 1.
     ResizeSpawner { spawner: u32, min: (i32, i32), size: (i32, i32) },
@@ -60,7 +60,13 @@ pub enum Order {
     /// Constantly / periodically / off. Periodic starts counting from 0 again.
     SetSpawnMode { spawner: u32, mode: SpawnMode },
     RemoveSpawner { spawner: u32 },
-    /// Editor eraser: everything on these tiles goes – buildings standing on one of them, units, zombies, the dead.
+    /// Editor: a house of a village of doom (top left tile, width and depth) with as many zombies inside as the generator
+    /// would put there (`World::doom_zombies`). Only inside the world border, on open ground nothing else takes.
+    PlaceDoom { tile: (i32, i32), size: (i32, i32) },
+    /// Editor: a pile of loot at this point – what lies in it and how many guards, rolled like the generator does.
+    PlaceLoot { point: Vec2 },
+    /// Editor eraser: everything on these tiles goes – buildings standing on one of them, houses of doom, units,
+    /// zombies, loot, the dead.
     RemoveAt { tiles: Vec<(i32, i32)> },
 
     // --- The round (editor) ---
@@ -68,6 +74,8 @@ pub enum Order {
     SetDays { days: u32 },
     /// The colony's gold right now – in the editor that's the gold the map starts with.
     SetGold { gold: u32 },
+    /// The wood in the stock right now – in the editor the wood the map starts with.
+    SetWood { wood: u32 },
     /// The constant spawn: a stage onto it, change one (`index` in `World::constant.stages`), take one off – the
     /// stages stay in order of time. And how much bigger every group gets per day after the last stage.
     AddStage(Stage),
@@ -77,22 +85,39 @@ pub enum Order {
 
     // --- Buildings ---
     /// Build a building, `tile` = top left tile, `turned` by 90° (gate). Invalid spots are ignored (`can_place`),
-    /// so is a building you can't pay for (`build_cost`) or that there aren't enough free workers for
-    /// (`build_workers`).
+    /// so is a building you can't pay for (`build_cost`, `can_afford_goods`), that there aren't enough free workers
+    /// (`build_workers`) or spare power (`has_power_for`, like in TAB) for, or whose `requires` doesn't stand yet
+    /// (`unlocked`).
     /// `editor`: without the rules of the game and for free – anywhere on the map that no other building takes
     /// (`can_place_anywhere`).
     PlaceBuilding { kind: BuildingKind, tile: (i32, i32), turned: bool, editor: bool },
     /// Everyone out of this tower.
     Unload { building: u32 },
     /// Put a unit at the end of a building's production queue – paid right away, if there's enough gold and a free
-    /// worker for it.
+    /// worker for it, what it `requires` stands (firearms: the munitions factory) and it's this building that trains
+    /// it (`trained_in`: barracks or inn).
     Train { building: u32, kind: UnitKind },
-    /// Take an entry out of the production queue (`index`: position in the queue). Its gold and its worker come back.
+    /// A barrel at the end of a munitions factory's queue – paid right away, gold and coal (`blast.rs`).
+    MakeBarrel { building: u32 },
+    /// Take an entry out of the production queue (`index`: position in the queue). Its gold (and coal) and its worker
+    /// come back.
     CancelTrain { building: u32, index: usize },
+    /// Markets: sell what's above the mark (`on`) – or not (`market.rs`).
+    SetSelling { buildings: Vec<u32>, on: bool },
+    /// The same order, but gold may go below 0 into the banks' credit (Shift, `debt.rs`) – everything else it needs
+    /// has to be there as always. `Box`: an order inside an order needs a fixed size.
+    Credit(Box<Order>),
+    /// The command center's scan: show a circle of the map around this point for a while (`scan.rs`).
+    Scan { at: Vec2 },
+    /// These units put their barrels down where they stand (`blast.rs`).
+    DropBarrels { units: Vec<u32> },
     SetRally { building: u32, rally: Rally },
     /// Repair these buildings – each one only if it may be repaired now and the gold is still enough for it
     /// (`start_repair`), in this order.
     Repair { buildings: Vec<u32> },
+    /// Switch these buildings off (`off`) or on again (Y) – only those that can be (`can_switch_off`), not infected
+    /// ones. On again only if there are enough free workers for it, in this order.
+    SwitchOff { buildings: Vec<u32>, off: bool },
 }
 
 impl World {
@@ -153,7 +178,11 @@ impl World {
                     self.waves.remove(*index);
                 }
             }
-            Order::ClearZombies => self.zombies.clear(),
+            Order::ClearZombies => {
+                self.zombies.clear();
+                self.sleep.clear();
+                self.spits.clear();
+            }
             Order::SpawnUnit { kind, point } => {
                 if !self.map.blocks_unit(point.x.floor() as i32, point.y.floor() as i32) {
                     self.spawn_unit(*kind, *point);
@@ -199,9 +228,29 @@ impl World {
                 }
             }
             Order::RemoveSpawner { spawner } => self.spawners.retain(|s| s.id != *spawner),
+            Order::PlaceDoom { tile, size } => {
+                let free = (tile.1..tile.1 + size.1)
+                    .all(|y| (tile.0..tile.0 + size.0).all(|x| self.map.in_play(x, y) && !self.map.is_solid(x, y) && !self.map.is_built(x, y)));
+                if free {
+                    // As full as every house of the map's difficulty.
+                    let zombies = data::get().difficulty(&self.difficulty).doom_zombies;
+                    self.add_doom(*tile, *size, zombies);
+                }
+            }
+            Order::PlaceLoot { point } => {
+                if self.map.in_play(point.x.floor() as i32, point.y.floor() as i32) && !self.map.is_blocked(point.x.floor() as i32, point.y.floor() as i32) {
+                    let guards = data::get().difficulty(&self.difficulty).loot_guards;
+                    let (kind, amount, guards) = self.roll_loot(*point, guards);
+                    self.add_loot(*point, kind, amount, guards);
+                }
+            }
             Order::RemoveAt { tiles } => self.remove_at(tiles),
             Order::SetDays { days } => self.set_days(*days),
-            Order::SetGold { gold } => self.gold = *gold,
+            Order::SetGold { gold } => {
+                self.gold = *gold;
+                self.debt = 0;
+            }
+            Order::SetWood { wood } => self.stock.set(Resource::Wood, *wood),
             Order::AddStage(stage) => {
                 self.constant.stages.push(*stage);
                 self.constant_spawn_changed();
@@ -223,12 +272,19 @@ impl World {
                 // The price is worked out before building: built over walls, the gate gets part of theirs back.
                 let cost = self.build_cost(*kind, *tile, *turned);
                 let workers = self.build_workers(*kind, *tile, *turned) <= self.free_workers();
-                if self.can_place(*kind, *tile, *turned) && self.gold >= cost && workers {
-                    self.gold -= cost;
+                let paid = self.spendable() >= cost && self.can_afford_goods(*kind) && workers && self.has_power_for(*kind, *tile, *turned);
+                if paid && self.unlocked(*kind) && self.can_place(*kind, *tile, *turned) {
+                    self.pay_gold(cost);
+                    self.pay_goods(*kind);
                     self.score.gold_spent += cost;
                     self.score.buildings_built += 1;
                     self.replace_buildings(*kind, *tile, *turned);
                     self.add_building(*kind, *tile, *turned);
+                    // A charcoal burner lights up right away if there's wood – not only at the next full hour.
+                    self.fuel(self.buildings.len() - 1);
+                    // Building is loud work (`sound.rs`).
+                    let center = self.buildings[self.buildings.len() - 1].center();
+                    self.make_colony_sound(center, data::get().sound.building_placed);
                 }
             }
             Order::PlaceBuilding { kind, tile, turned, editor: true } => {
@@ -269,19 +325,33 @@ impl World {
                 if let Some(b) = self.find_building(*building) {
                     let cost = kind.stats().cost;
                     // Before `&mut self.buildings[b]`: while that borrow lives, `self` can't be read as a whole.
-                    let workers = kind.stats().worker_cost <= self.free_workers();
-                    // Two different fields of `self` at the same time – `buildings` and `gold`: the compiler allows
-                    // that, because it can see they don't overlap.
+                    let workers = kind.stats().worker_cost <= self.free_workers() && self.unit_unlocked(*kind);
+                    let gold = self.spendable() >= cost;
                     let building = &mut self.buildings[b];
-                    // Only the barracks trains units (`BuildingKind::trains`).
-                    let room = building.kind.trains() && building.production.len() < MAX_PRODUCTION;
-                    if room && self.gold >= cost && workers {
-                        building.production.push_back(*kind);
-                        self.gold -= cost;
+                    // Only where it's trained: soldiers in the barracks, mercenaries in the inn (`trained_in`).
+                    let room = building.kind == kind.stats().trained_in && building.production.len() < MAX_PRODUCTION;
+                    if room && gold && workers {
+                        building.production.push_back(Product::Unit(*kind));
                         self.score.gold_spent += cost;
+                        self.pay_gold(cost);
                     }
                 }
             }
+            Order::MakeBarrel { building } => self.make_barrel(*building),
+            Order::SetSelling { buildings, on } => {
+                for &id in buildings {
+                    if let Some(b) = self.find_building(id).filter(|&b| self.buildings[b].kind == BuildingKind::Market) {
+                        self.buildings[b].selling = *on;
+                    }
+                }
+            }
+            Order::Credit(order) => {
+                self.on_credit = true;
+                self.apply(order);
+                self.on_credit = false;
+            }
+            Order::Scan { at } => self.scan(*at),
+            Order::DropBarrels { units } => self.drop_barrels(units),
             Order::Repair { buildings } => {
                 for &id in buildings {
                     if let Some(b) = self.find_building(id) {
@@ -289,18 +359,29 @@ impl World {
                     }
                 }
             }
+            Order::SwitchOff { buildings, off } => {
+                for &id in buildings {
+                    if let Some(b) = self.find_building(id) {
+                        self.switch_off(b, *off);
+                    }
+                }
+            }
             Order::CancelTrain { building, index } => {
                 if let Some(b) = self.find_building(*building) {
                     let building = &mut self.buildings[b];
-                    if let Some(kind) = building.production.remove(*index) {
+                    if let Some(product) = building.production.remove(*index) {
                         if *index == 0 {
                             building.progress = 0; // the front one had been started – from the beginning
                         }
                         // The gold comes back in full, like in StarCraft – the worker too (`workers` counts the
-                        // queue, so it's free again by itself).
-                        let cost = kind.stats().cost;
+                        // queue, so it's free again by itself), and the coal of a barrel.
+                        let cost = product.cost();
                         self.gold += cost;
                         self.score.gold_spent = self.score.gold_spent.saturating_sub(cost);
+                        if product == Product::Barrel {
+                            let coal = data::get().buildings.blast.cost_coal;
+                            self.stock.add(Resource::Coal, coal, self.storage(Resource::Coal));
+                        }
                     }
                 }
             }
@@ -330,8 +411,21 @@ impl World {
         for id in gone {
             self.take_down(id);
         }
+        // Houses of doom on the tiles: gone, their tiles open again.
+        let map = &mut self.map;
+        let before = self.doom.len();
+        self.doom.retain(|d| {
+            let hit = (d.tile.1..d.tile.1 + d.size.1).any(|y| (d.tile.0..d.tile.0 + d.size.0).any(|x| on_tile(x, y)));
+            if hit {
+                map.set_doom(d.tile.0, d.tile.1, d.size, false);
+            }
+            !hit
+        });
+        self.map_changed |= self.doom.len() != before;
         self.units.retain(|u| !on(u.pos));
         self.zombies.retain(|z| !on(z.pos));
+        self.sleep.remove(on);
+        self.loot.retain(|l| !on(l.pos));
         self.corpses.retain(|c| !on(c.pos));
     }
 }

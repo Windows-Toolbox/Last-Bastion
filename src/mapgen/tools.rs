@@ -7,7 +7,7 @@ use std::collections::BinaryHeap;
 use macroquad::math::{vec2, Vec2};
 
 use super::{Context, Field, Show};
-use crate::map::Terrain;
+use crate::map::{Map, Region, Terrain};
 use crate::noise::Noise;
 use crate::rng::Rng;
 
@@ -48,11 +48,13 @@ impl Tiles {
         (0..size).flat_map(move |y| (0..size).map(move |x| (x, y)))
     }
 
-    /// Grass on every tile outside the square `lo` … `hi` (on both axes, `hi` itself is outside) – the ring outside
-    /// the world border.
-    pub fn clear_outside(&mut self, lo: i32, hi: i32) {
+    /// Grass on every tile of `full` outside `play` – the ring outside the world border. The corners of the grid
+    /// beyond `full` are off the map: mountain, so no step of the generator mistakes them for open ground.
+    pub fn clear_outside(&mut self, play: &Region, full: &Region) {
         for (x, y) in self.all() {
-            if x < lo || y < lo || x >= hi || y >= hi {
+            if !full.contains_tile(x, y) {
+                self.set(x, y, Terrain::Mountain);
+            } else if !play.contains_tile(x, y) {
                 self.set(x, y, Terrain::Grass);
             }
         }
@@ -182,6 +184,26 @@ pub fn trees_field(value: &mut f32) -> Field<'_> {
     }
 }
 
+/// Bare dirt in patches (`Terrain::Dirt` – no farm grows there): on the grass tiles `inside`, wherever a slow noise is
+/// lowest – exactly `share` of them, because the cut is the noise value at that share of all of them, sorted. The noise
+/// is smooth, so the dirt comes in patches of a few to a few dozen tiles across instead of single tiles.
+pub fn scatter_dirt(tiles: &mut Tiles, noise: &Noise, share: f32, inside: impl Fn(i32, i32) -> bool) {
+    let grass: Vec<(i32, i32)> = tiles.all().filter(|&(x, y)| inside(x, y) && tiles.get(x, y) == Terrain::Grass).collect();
+    let count = (grass.len() as f32 * share.clamp(0.0, 1.0)) as usize;
+    if count == 0 {
+        return;
+    }
+    let value = |(x, y): (i32, i32)| noise.fractal(x as f32, y as f32, 18.0, 3);
+    let mut values: Vec<f32> = grass.iter().map(|&t| value(t)).collect();
+    values.sort_unstable_by(f32::total_cmp);
+    let cut = values[count - 1];
+    for t in grass {
+        if value(t) <= cut {
+            tiles.set(t.0, t.1, Terrain::Dirt);
+        }
+    }
+}
+
 /// Single trees on open grass, `density` = chance per tile, three times as likely right next to a forest.
 pub fn scatter_trees(tiles: &mut Tiles, rng: &mut Rng, density: f32) {
     if density <= 0.0 {
@@ -231,12 +253,9 @@ impl Warp {
 /// (`normalize`, only `sqrt`). That keeps it exact on every PC.
 pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meander: f32) {
     let n = tiles.size as f32;
-    let edge_point = |side: u32, t: f32| match side {
-        0 => vec2(t * n, 0.0),
-        1 => vec2(t * n, n),
-        2 => vec2(0.0, t * n),
-        _ => vec2(n, t * n),
-    };
+    // The sides of the map as you see them – a river from a corner of the grid would flow through nothing.
+    let full = Map::full_area_of(tiles.size as usize);
+    let edge_point = |side: u32, t: f32| full.side_point(side, t);
     let from_side = rng.below(4);
     // Mostly to the opposite side (0 ↔ 1, 2 ↔ 3), sometimes round the corner.
     let opposite = from_side ^ 1;
@@ -261,7 +280,7 @@ pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meande
         }
         pos += dir.normalize_or_zero() * step;
         tiles.disc(pos, width / 2.0, Terrain::Water);
-        let outside = pos.x < -1.0 || pos.y < -1.0 || pos.x > n + 1.0 || pos.y > n + 1.0;
+        let outside = !full.contains(pos);
         if pos.distance(end) < 1.0 || (k > 20 && outside) {
             break;
         }
@@ -270,7 +289,7 @@ pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meande
 
 /// Makes sure every open place (grass) can be reached from `from` on foot, in two passes:
 /// 1. **Inside** the world border (`inside`), only through tiles inside it – that's where your units walk.
-/// 2. **Everywhere**, the ring outside the border too – the zombies' way in. Since the ring is open ground (`generate`)
+/// 2. **On the whole map** (`on_map`), the ring outside the border too – the zombies' way in. Since the ring is open ground (`generate`)
 ///    and every way in starts at the border, there is normally nothing left to do here; it's the guarantee.
 ///
 /// In this order: before 2026-10-17 it was the other way round, and a meadow closed in by forest got two cuts – first
@@ -286,8 +305,15 @@ pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meande
 ///
 /// Walking counts only straight steps (4 neighbours): stricter than the units, who also go diagonally – so whatever
 /// is connected here is certainly connected in the game.
-pub fn connect_pockets(tiles: &mut Tiles, from: (i32, i32), min_pocket: usize, rough: &Noise, inside: impl Fn(i32, i32) -> bool) -> usize {
-    connect_area(tiles, from, min_pocket, rough, &inside) + connect_area(tiles, from, min_pocket, rough, &|_, _| true)
+pub fn connect_pockets(
+    tiles: &mut Tiles,
+    from: (i32, i32),
+    min_pocket: usize,
+    rough: &Noise,
+    inside: impl Fn(i32, i32) -> bool,
+    on_map: impl Fn(i32, i32) -> bool,
+) -> usize {
+    connect_area(tiles, from, min_pocket, rough, &inside) + connect_area(tiles, from, min_pocket, rough, &on_map)
 }
 
 /// One pass of `connect_pockets`: everything open within `area` reachable from `from`, ways only within `area`.
@@ -428,7 +454,7 @@ mod tests {
                 }
             }
         }
-        connect_pockets(&mut tiles, (10, 10), 5, &Noise::new(1), |_, _| true);
+        connect_pockets(&mut tiles, (10, 10), 5, &Noise::new(1), |_, _| true, |_, _| true);
         let mut seen = vec![false; 1600];
         flood(&tiles, (10, 10), &mut seen, &|t: &Tiles, x, y| t.inside(x, y) && !t.get(x, y).is_solid());
         assert!(seen[30 * 40 + 30], "the room is connected");

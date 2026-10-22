@@ -4,7 +4,8 @@
 //! Either way you see the whole map, including the ring outside the border where the zombies come from.
 //!
 //! The panel has tabs like TAB's map editor (DESIGN.md 12.6):
-//! - **Map** – name, save, close, a new map – and the round: how many days, the gold at the start (TAB's "Info").
+//! - **Map** – name, save, close, a new map – and the round: how many days, the gold and wood at the start (TAB's
+//!   "Info").
 //! - **Terrain** – paint mountains, forest, trees, water, erase, ore (TAB's painter).
 //! - **Entities** – units, buildings (without the rules of the game), zombies, spawners, the eraser.
 //! - **Waves** – send waves now, the **timeline** (waves that come by themselves on a given day and hour, like TAB's
@@ -18,7 +19,7 @@
 use macroquad::prelude::*;
 
 use crate::data::Stage;
-use crate::kinds::{BuildingKind, UnitKind};
+use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Ore, Terrain};
 use crate::sim::{day_and_hour, stage_start, Breed, Order, SpawnMode, TimedWave, WaveFrom, World, DAY_TICKS, HOUR_TICKS};
 use crate::widgets::type_into;
@@ -88,6 +89,10 @@ pub enum Tool {
     Unit(UnitKind),
     /// A new spawner at the click.
     Spawner,
+    /// A house of a village of doom (3 × 3) at the click – with as many zombies inside as the generator would put there.
+    Doom,
+    /// A pile of loot at the click – what lies in it and its hidden guards rolled like the generator does.
+    Loot,
     /// A building, without the rules of the game. Not really held by the editor: `ui.rs` hangs it on the mouse
     /// like a building of the command center (`placing`), so dragging lines and turning (R) work the same.
     Building(BuildingKind),
@@ -105,6 +110,8 @@ impl Tool {
             Tool::ZombieDrop => "Drop",
             Tool::Unit(kind) => &kind.stats().name,
             Tool::Spawner => "+ Spawner",
+            Tool::Doom => "Doom house",
+            Tool::Loot => "Loot",
             Tool::Building(BuildingKind::CommandCenter) => "CC",
             Tool::Building(kind) => &kind.stats().name,
         }
@@ -177,9 +184,12 @@ pub enum EditorButton {
     Days(i32),
     /// … how many (shown) …
     DaysShow,
-    /// … and the gold at the start.
+    /// … the gold at the start …
     Gold(i32),
     GoldShow,
+    /// … and the wood.
+    Wood(i32),
+    WoodShow,
 
     // --- Waves tab ---
     /// 1,000 zombies spread over all spawners.
@@ -194,8 +204,10 @@ pub enum EditorButton {
     TimedTime(usize, i32),
     /// … its time (shown) …
     TimedShow(usize),
-    /// … part of the final wave or not …
+    /// … part of the final wave or not (it calls every zombie on the map) …
     TimedFinal(usize),
+    /// … whether it shows the whole map when it comes …
+    TimedReveal(usize),
     /// … fewer / more zombies …
     TimedCount(usize, i32),
     /// … how many (shown) …
@@ -276,6 +288,8 @@ const WAVE_STEPS: [u32; 15] = [5, 10, 15, 25, 50, 100, 150, 200, 300, 400, 500, 
 const WAVE_FROM: [WaveFrom; 5] = [WaveFrom::OneSpawner, WaveFrom::Sides(1), WaveFrom::Sides(2), WaveFrom::Sides(3), WaveFrom::Sides(4)];
 /// The gold a map starts with.
 const GOLD_STEPS: [u32; 16] = [0, 50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000, 50000];
+/// The wood a map starts with.
+const WOOD_STEPS: [u32; 12] = [0, 10, 20, 30, 40, 50, 75, 100, 150, 200, 500, 1000];
 /// How big a group of the constant spawn is: from … to … zombies.
 const GROUP_STEPS: [[u32; 2]; 13] = [[1, 1], [1, 2], [1, 3], [2, 4], [3, 5], [4, 5], [5, 8], [8, 10], [10, 15], [15, 20], [20, 30], [30, 50], [50, 100]];
 /// How much the groups grow per day after the last stage.
@@ -567,7 +581,16 @@ impl Editor {
                 orders.push(Order::SetDays { days });
             }
             EditorButton::Gold(dir) => orders.push(Order::SetGold { gold: next_step(&GOLD_STEPS, world.gold, dir) }),
-            EditorButton::Info | EditorButton::Status | EditorButton::Clock | EditorButton::DaysShow | EditorButton::GoldShow => {}
+            EditorButton::Wood(dir) => {
+                let wood = next_step(&WOOD_STEPS, world.stock.get(Resource::Wood), dir);
+                orders.push(Order::SetWood { wood });
+            }
+            EditorButton::Info
+            | EditorButton::Status
+            | EditorButton::Clock
+            | EditorButton::DaysShow
+            | EditorButton::GoldShow
+            | EditorButton::WoodShow => {}
             EditorButton::EdgeZombies => orders.push(Order::SpawnZombies { count: 1000 }),
             EditorButton::Wave(wave) => orders.push(wave.order()),
             EditorButton::ClearZombies => orders.push(Order::ClearZombies),
@@ -575,12 +598,13 @@ impl Editor {
                 // A day after the last wave (or after now), on the full hour – but before a final wave.
                 let last = world.waves.iter().filter(|w| !w.final_wave).map(|w| w.at).max().unwrap_or(0).max(world.tick);
                 let at = (last + DAY_TICKS) / HOUR_TICKS * HOUR_TICKS;
-                orders.push(Order::AddTimedWave(TimedWave { at, count: 200, from: WaveFrom::Sides(1), breed: Breed::Runner, final_wave: false }));
+                orders.push(Order::AddTimedWave(TimedWave { at, count: 200, from: WaveFrom::Sides(1), breed: Breed::Runner, final_wave: false, reveal: false }));
             }
             // In a pattern with `|` every alternative has to bind the same names – here only `i`, the number of the wave.
             EditorButton::TimedTime(i, _)
             | EditorButton::TimedCount(i, _)
             | EditorButton::TimedFinal(i)
+            | EditorButton::TimedReveal(i)
             | EditorButton::TimedBreed(i)
             | EditorButton::TimedFrom(i)
             | EditorButton::TimedRemove(i) => self.timed_click(button, i, world, shift, orders),
@@ -642,6 +666,7 @@ impl Editor {
             }
             B::TimedCount(_, dir) => TimedWave { count: next_step(&WAVE_STEPS, wave.count, dir), ..wave },
             B::TimedFinal(_) => TimedWave { final_wave: !wave.final_wave, ..wave },
+            B::TimedReveal(_) => TimedWave { reveal: !wave.reveal, ..wave },
             B::TimedBreed(_) => TimedWave { breed: next_breed(wave.breed), ..wave },
             B::TimedFrom(_) => {
                 let at = WAVE_FROM.iter().position(|&f| f == wave.from).unwrap_or(0);
@@ -723,13 +748,14 @@ impl Editor {
                 EditorButton::Breed(breed) => self.breed == breed,
                 EditorButton::Wander(wander) => self.wander == wander,
                 EditorButton::TimedFinal(i) => world.waves.get(i).is_some_and(|w| w.final_wave),
+                EditorButton::TimedReveal(i) => world.waves.get(i).is_some_and(|w| w.reveal),
                 _ => false,
             };
             // Fields that only show something have no box.
             let plain = matches!(
                 button,
                 B::Info | B::Status | B::Clock | B::TimedShow(_) | B::TimedCountShow(_) | B::Show(_) | B::DaysShow | B::GoldShow
-                    | B::StageShow(_) | B::StageEveryShow(_) | B::StageGroupShow(_) | B::ExtraShow
+                    | B::WoodShow | B::StageShow(_) | B::StageEveryShow(_) | B::StageGroupShow(_) | B::ExtraShow
             );
             if !plain {
                 let bg = if active {
@@ -804,9 +830,10 @@ impl Editor {
                     rows.push(buttons(&[B::Status]));
                 }
                 rows.extend([
-                    Row::Heading("Round - days, start gold"),
+                    Row::Heading("Round - days, start gold and wood"),
                     buttons(&[B::Days(-1), B::DaysShow, B::Days(1)]),
                     buttons(&[B::Gold(-1), B::GoldShow, B::Gold(1)]),
+                    buttons(&[B::Wood(-1), B::WoodShow, B::Wood(1)]),
                 ]);
                 rows
             }
@@ -814,8 +841,8 @@ impl Editor {
                 let mut rows = vec![
                     Row::Heading("Paint - hold and drag"),
                     buttons(&[B::Tool(Tool::Paint(Terrain::Mountain)), B::Tool(Tool::Paint(Terrain::Forest)), B::Tool(Tool::Paint(Terrain::Tree))]),
-                    buttons(&[B::Tool(Tool::Paint(Terrain::Water)), B::Tool(Tool::Paint(Terrain::Grass))]),
-                    Row::Heading("Ore - only on grass (oil: one 2 x 2 node)"),
+                    buttons(&[B::Tool(Tool::Paint(Terrain::Water)), B::Tool(Tool::Paint(Terrain::Dirt)), B::Tool(Tool::Paint(Terrain::Grass))]),
+                    Row::Heading("Ore - only on open ground (oil: one 2 x 2 node)"),
                     buttons(&[B::Tool(Tool::Ore(Some(Ore::Iron))), B::Tool(Tool::Ore(Some(Ore::Coal))), B::Tool(Tool::Ore(Some(Ore::Stone)))]),
                     buttons(&[B::Tool(Tool::Ore(Some(Ore::Oil))), B::Tool(Tool::Ore(None))]),
                 ];
@@ -827,6 +854,8 @@ impl Editor {
                     Row::Heading(UNITS),
                     buttons(&[B::Tool(Tool::Unit(UnitKind::Soldier)), B::Tool(Tool::Unit(UnitKind::Ranger))]),
                     buttons(&[B::Tool(Tool::Unit(UnitKind::Sniper)), B::Tool(Tool::Unit(UnitKind::Medic))]),
+                    buttons(&[B::Tool(Tool::Unit(UnitKind::MercSoldier)), B::Tool(Tool::Unit(UnitKind::MercRanger))]),
+                    buttons(&[B::Tool(Tool::Unit(UnitKind::MercSniper))]),
                     Row::Heading("Buildings - free, R turns"),
                     buttons(&[
                         B::Tool(Tool::Building(BuildingKind::CommandCenter)),
@@ -838,14 +867,48 @@ impl Editor {
                         B::Tool(Tool::Building(BuildingKind::Tower)),
                         B::Tool(Tool::Building(BuildingKind::Barracks)),
                     ]),
+                    buttons(&[
+                        B::Tool(Tool::Building(BuildingKind::Sawmill)),
+                        B::Tool(Tool::Building(BuildingKind::Mine)),
+                        B::Tool(Tool::Building(BuildingKind::HunterCottage)),
+                    ]),
+                    buttons(&[
+                        B::Tool(Tool::Building(BuildingKind::FishingHut)),
+                        B::Tool(Tool::Building(BuildingKind::Windmill)),
+                        B::Tool(Tool::Building(BuildingKind::CharcoalBurner)),
+                    ]),
+                    buttons(&[
+                        B::Tool(Tool::Building(BuildingKind::WoodWorkshop)),
+                        B::Tool(Tool::Building(BuildingKind::StoneWorkshop)),
+                        B::Tool(Tool::Building(BuildingKind::MunitionsFactory)),
+                    ]),
+                    buttons(&[
+                        B::Tool(Tool::Building(BuildingKind::TeslaTower)),
+                        B::Tool(Tool::Building(BuildingKind::StoneHouse)),
+                        B::Tool(Tool::Building(BuildingKind::Stakes)),
+                    ]),
+                    buttons(&[
+                        B::Tool(Tool::Building(BuildingKind::StoneWall)),
+                        B::Tool(Tool::Building(BuildingKind::StoneTower)),
+                        B::Tool(Tool::Building(BuildingKind::Farm)),
+                    ]),
+                    buttons(&[
+                        B::Tool(Tool::Building(BuildingKind::Market)),
+                        B::Tool(Tool::Building(BuildingKind::Bank)),
+                        B::Tool(Tool::Building(BuildingKind::Inn)),
+                    ]),
+                    buttons(&[B::Tool(Tool::Building(BuildingKind::Barrel))]),
                     Row::Heading("Remove - hold and drag (brush)"),
                     buttons(&[B::Tool(Tool::Remove)]),
                     Row::Heading("Zombies - brush: hold, drop: click"),
                     buttons(&[B::Tool(Tool::ZombieBrush), B::Tool(Tool::ZombieDrop)]),
                     buttons(&[B::Breed(Breed::Walker), B::Breed(Breed::Runner), B::Breed(Breed::Fat)]),
+                    buttons(&[B::Breed(Breed::Armored), B::Breed(Breed::Spitter), B::Breed(Breed::Infested)]),
                     buttons(&[B::Wander(false), B::Wander(true)]),
                     buttons(&[B::Rate(-1), B::Show(Value::Rate), B::Rate(1)]),
                     buttons(&[B::Drop(-1), B::Show(Value::Drop), B::Drop(1)]),
+                    Row::Heading("Villages of doom and loot - click"),
+                    buttons(&[B::Tool(Tool::Doom), B::Tool(Tool::Loot)]),
                 ];
                 rows.extend(brush);
                 rows.extend([Row::Heading("Spawners - click to place or select"), buttons(&[B::Tool(Tool::Spawner)])]);
@@ -872,7 +935,7 @@ impl Editor {
                     buttons(&[B::Clock]),
                 ];
                 for i in 0..self.wave_count {
-                    rows.push(buttons(&[B::TimedTime(i, -1), B::TimedShow(i), B::TimedTime(i, 1), B::TimedFinal(i)]));
+                    rows.push(buttons(&[B::TimedTime(i, -1), B::TimedShow(i), B::TimedTime(i, 1), B::TimedFinal(i), B::TimedReveal(i)]));
                     rows.push(buttons(&[
                         B::TimedCount(i, -1),
                         B::TimedCountShow(i),
@@ -1022,6 +1085,7 @@ impl Editor {
                 days => format!("{days} days"),
             },
             EditorButton::GoldShow => format!("{} gold at the start", world.gold),
+            EditorButton::WoodShow => format!("{} wood at the start", world.stock.get(Resource::Wood)),
             EditorButton::Clock => {
                 let (day, hour) = world.clock();
                 format!("Now: day {day}, {hour:02}:00")
@@ -1072,10 +1136,11 @@ fn weight(button: EditorButton) -> f32 {
         | B::Drop(_)
         | B::Days(_)
         | B::Gold(_)
+        | B::Wood(_)
         | B::Extra(_) => 1.0,
         // The value between a − and a +.
         B::TimedShow(_) | B::StageShow(_) => 4.0,
-        B::Show(_) | B::DaysShow | B::GoldShow | B::ExtraShow | B::StageEveryShow(_) => 3.5,
+        B::Show(_) | B::DaysShow | B::GoldShow | B::WoodShow | B::ExtraShow | B::StageEveryShow(_) => 3.5,
         B::TimedCountShow(_) | B::StageGroupShow(_) => 2.0,
         _ => 2.5,
     }
@@ -1156,6 +1221,7 @@ fn label(button: EditorButton) -> String {
         EditorButton::AddTimed => "+ Add wave".to_owned(),
         EditorButton::AddStage => "+ Add stage".to_owned(),
         EditorButton::TimedFinal(_) => "Final".to_owned(),
+        EditorButton::TimedReveal(_) => "Reveal".to_owned(),
         EditorButton::TimedRemove(_) | EditorButton::StageRemove(_) => "x".to_owned(),
         EditorButton::TimedTime(_, dir)
         | EditorButton::TimedCount(_, dir)
@@ -1168,6 +1234,7 @@ fn label(button: EditorButton) -> String {
         | EditorButton::Drop(dir)
         | EditorButton::Days(dir)
         | EditorButton::Gold(dir)
+        | EditorButton::Wood(dir)
         | EditorButton::Extra(dir) => if dir < 0 { "-" } else { "+" }.to_owned(),
         EditorButton::Sends(Sends::Constant) => "Constant".to_owned(),
         EditorButton::Sends(Sends::Periodic) => "Periodic".to_owned(),
@@ -1184,6 +1251,7 @@ fn label(button: EditorButton) -> String {
         | EditorButton::Clock
         | EditorButton::DaysShow
         | EditorButton::GoldShow
+        | EditorButton::WoodShow
         | EditorButton::TimedShow(_)
         | EditorButton::TimedCountShow(_)
         | EditorButton::TimedBreed(_)

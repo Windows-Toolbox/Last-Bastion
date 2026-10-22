@@ -11,10 +11,10 @@ use macroquad::math::{vec2, Vec2};
 
 use crate::kinds::UnitKind;
 
-/// Distance between two neighbours in a formation (tiles, centre to centre). A unit is 0.7 tiles wide.
-pub const SPACING: f32 = 1.0;
+/// Distance between two neighbours in a formation (tiles, centre to centre). A unit is 0.35 tiles wide.
+pub const SPACING: f32 = 0.5;
 /// A long line with few units: they spread out, but never further apart than this.
-const MAX_SPACING: f32 = 2.5;
+const MAX_SPACING: f32 = 1.25;
 /// Dragged less than this: counts as a click.
 pub const MIN_DRAG: f32 = 0.75;
 
@@ -170,17 +170,17 @@ mod tests {
         spots.iter().enumerate().all(|(i, a)| spots[i + 1..].iter().all(|b| a.distance(*b) >= min - 0.001))
     }
 
-    /// Dragged line of 6 tiles with 10 units: 7 in the front row exactly on the line, 3 behind it – on the side
+    /// Dragged line of 3 tiles with 10 units: 7 in the front row exactly on the line, 3 behind it – on the side
     /// the units come from. Nobody stands on anyone else.
     #[test]
     fn line_follows_the_drag_and_rows_go_backwards() {
         let units = group(&[UnitKind::Soldier; 10]);
-        let f = Formation { shape: Shape::Line, from: vec2(10.0, 10.0), to: vec2(16.0, 10.0) };
+        let f = Formation { shape: Shape::Line, from: vec2(10.0, 10.0), to: vec2(13.0, 10.0) };
         let spots = spots(f, &units);
         assert_eq!(spots.len(), 10);
         assert_eq!(spots.iter().filter(|p| (p.y - 10.0).abs() < 0.01).count(), 7);
-        // The units stand at y = 30, so the second row is at y = 11 (towards them), not y = 9.
-        assert_eq!(spots.iter().filter(|p| (p.y - 11.0).abs() < 0.01).count(), 3);
+        // The units stand at y = 30, so the second row is at y = 10.5 (towards them), not y = 9.5.
+        assert_eq!(spots.iter().filter(|p| (p.y - 10.0 - SPACING).abs() < 0.01).count(), 3);
         assert!(no_two_closer_than(&spots, SPACING));
     }
 
@@ -189,7 +189,7 @@ mod tests {
     fn soldiers_go_in_front() {
         use UnitKind::*;
         let units = group(&[Medic, Sniper, Soldier, Sniper, Soldier, Soldier]);
-        let f = Formation { shape: Shape::Line, from: vec2(10.0, 10.0), to: vec2(12.0, 10.0) };
+        let f = Formation { shape: Shape::Line, from: vec2(10.0, 10.0), to: vec2(11.0, 10.0) };
         let spots = spots(f, &units);
         for (i, (_, kind)) in units.iter().enumerate() {
             let front = (spots[i].y - 10.0).abs() < 0.01;
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn box_is_square() {
         let units = group(&[UnitKind::Soldier; 9]);
-        let f = Formation { shape: Shape::Box, from: vec2(20.0, 10.0), to: vec2(22.0, 10.0) };
+        let f = Formation { shape: Shape::Box, from: vec2(20.0, 10.0), to: vec2(21.0, 10.0) };
         let spots = spots(f, &units);
         let rows: std::collections::BTreeSet<i32> = spots.iter().map(|p| (p.y * 100.0).round() as i32).collect();
         let cols: std::collections::BTreeSet<i32> = spots.iter().map(|p| (p.x * 100.0).round() as i32).collect();
@@ -209,14 +209,14 @@ mod tests {
         assert!(no_two_closer_than(&spots, SPACING));
     }
 
-    /// Circle dragged with radius 4: everyone on the ring (12 units fit on it easily).
+    /// Circle dragged with radius 2: everyone on the ring (12 units fit on it easily).
     #[test]
     fn circle_puts_everyone_on_the_ring() {
         let units = group(&[UnitKind::Soldier; 12]);
         let center = vec2(50.0, 50.0);
-        let f = Formation { shape: Shape::Circle, from: center, to: center + vec2(4.0, 0.0) };
+        let f = Formation { shape: Shape::Circle, from: center, to: center + vec2(2.0, 0.0) };
         let spots = spots(f, &units);
-        assert!(spots.iter().all(|p| (p.distance(center) - 4.0).abs() < 0.01));
+        assert!(spots.iter().all(|p| (p.distance(center) - 2.0).abs() < 0.01));
         assert!(no_two_closer_than(&spots, SPACING));
     }
 
@@ -226,12 +226,13 @@ mod tests {
     fn small_circle_gets_inner_rings() {
         let units = group(&[UnitKind::Soldier; 30]);
         let center = vec2(50.0, 50.0);
-        let f = Formation { shape: Shape::Circle, from: center, to: center + vec2(2.0, 0.0) };
+        let f = Formation { shape: Shape::Circle, from: center, to: center + vec2(1.0, 0.0) };
         let spots = spots(f, &units);
         assert_eq!(spots.len(), 30);
-        let radii: std::collections::BTreeSet<i32> = spots.iter().map(|p| p.distance(center).round() as i32).collect();
+        // The rings lie `SPACING` apart.
+        let radii: std::collections::BTreeSet<i32> = spots.iter().map(|p| (p.distance(center) / SPACING).round() as i32).collect();
         assert!(radii.len() >= 2, "only one ring: {radii:?}");
-        assert!(no_two_closer_than(&spots, 0.9));
+        assert!(no_two_closer_than(&spots, SPACING * 0.9));
     }
 
     /// One unit simply goes where you clicked.

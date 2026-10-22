@@ -1,7 +1,13 @@
 {
-  "start_gold": 300,
-  "gold_per_colonist_per_hour": 1,
-  "start_soldiers": 8,
-  "start_snipers": 4,
-  "start_rangers": 4
+  "storage_gold": 2000,
+  "storage_goods": 50,
+  "storage_food": 100,
+  "economy_every_hours": 8,
+  "debt_penalty_percent": 15,
+  "deep_debt_payouts": 1,
+  "deep_debt_penalty_percent": 30,
+  "deep_debt_slow_percent": 15,
+  "desert_debt_payouts": 2,
+  "desert_every_seconds": 10,
+  "credit_interest_percent": 10
 }

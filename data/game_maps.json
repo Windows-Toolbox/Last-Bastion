@@ -1,0 +1,35 @@
+{
+  "default": "Green Valley",
+  "maps": [
+    {
+      "name": "Green Valley",
+      "about": "Lakes, ridges, forests and rivers - the ways in are easy to read",
+      "score_percent": 100,
+      "setup": { "generator": "wild" }
+    },
+    {
+      "name": "Broken Lands",
+      "about": "Regions walled off by rock and forest - hold the passes. Two huge villages of doom",
+      "score_percent": 110,
+      "setup": { "generator": "regions", "common": { "villages": 0.3, "houses_near": 15, "houses_edge": 25 } }
+    },
+    {
+      "name": "Old Fortress",
+      "about": "Rings of rock around the base - the openings never line up",
+      "score_percent": 90,
+      "setup": { "generator": "rings", "common": { "villages": 1.0, "houses_near": 4, "houses_edge": 8 } }
+    },
+    {
+      "name": "Red Canyons",
+      "about": "Winding canyons through solid rock - long ways, little room to build",
+      "score_percent": 120,
+      "setup": { "generator": "canyons" }
+    },
+    {
+      "name": "Open Plains",
+      "about": "Grass and lone trees - nothing walls you in, nothing walls them out. Many small villages",
+      "score_percent": 160,
+      "setup": { "generator": "blank", "common": { "villages": 4.0, "houses_near": 2, "houses_edge": 3 }, "blank": { "trees": 0.02 } }
+    }
+  ]
+}

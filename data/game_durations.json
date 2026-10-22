@@ -1,0 +1,10 @@
+{
+  "default_days": 10,
+  "durations": [
+    { "days": 10, "score_percent": 140, "first_wave_day": 4, "wave_every_days": 3 },
+    { "days": 20, "score_percent": 120, "first_wave_day": 4, "wave_every_days": 3 },
+    { "days": 40, "score_percent": 100, "first_wave_day": 5, "wave_every_days": 4 },
+    { "days": 60, "score_percent": 90, "first_wave_day": 6, "wave_every_days": 5 },
+    { "days": 80, "score_percent": 80, "first_wave_day": 6, "wave_every_days": 5 }
+  ]
+}

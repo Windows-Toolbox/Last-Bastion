@@ -1,7 +1,7 @@
 //! Commands as the player gives them (DESIGN.md 7.1) and what becomes of them: a queue of tasks per unit, each with
 //! its target point and the flow field to it – shared by the whole group (magic box, formations).
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use macroquad::math::Vec2;
 
@@ -66,16 +66,16 @@ pub(super) enum Task {
 pub(super) struct Waypoint {
     /// Where exactly this unit should go.
     pub(super) point: Vec2,
-    /// `Rc`: all units of one command share the same flow field – it leads to the middle of the
+    /// `Arc`: all units of one command share the same flow field – it leads to the middle of the
     /// group at the target. Every unit has its own spot `point` there (magic box).
-    pub(super) field: Rc<FlowField>,
+    pub(super) field: Arc<FlowField>,
     /// Closer to `point` than this: straight to its own spot instead of following the field to the middle.
     pub(super) straight: f32,
 }
 
 impl Waypoint {
     pub(super) fn new(map: &Map, point: Vec2) -> Waypoint {
-        Waypoint { point, field: Rc::new(FlowField::new(map, point)), straight: 0.0 }
+        Waypoint { point, field: Arc::new(FlowField::new(map, point)), straight: 0.0 }
     }
 }
 
@@ -132,15 +132,15 @@ impl World {
     pub(super) fn reroute_units(&mut self) {
         let map = &self.map;
         // (old, new): which fields have already been renewed.
-        let mut renewed: Vec<(Rc<FlowField>, Rc<FlowField>)> = Vec::new();
+        let mut renewed: Vec<(Arc<FlowField>, Arc<FlowField>)> = Vec::new();
         let mut renew = |way: &mut Waypoint| {
-            let field = match renewed.iter().find(|(old, _)| Rc::ptr_eq(old, &way.field)) {
-                Some((_, new)) => Rc::clone(new),
+            let field = match renewed.iter().find(|(old, _)| Arc::ptr_eq(old, &way.field)) {
+                Some((_, new)) => Arc::clone(new),
                 None => {
                     // The target itself may have been painted over: then go next to it.
                     let target = free_point_near(map, way.field.target()).unwrap_or(way.field.target());
-                    let new = Rc::new(FlowField::new(map, target));
-                    renewed.push((Rc::clone(&way.field), Rc::clone(&new)));
+                    let new = Arc::new(FlowField::new(map, target));
+                    renewed.push((Arc::clone(&way.field), Arc::clone(&new)));
                     new
                 }
             };
@@ -191,12 +191,13 @@ impl World {
             _ => command.point(),
         };
         // In a formation every unit has its own spot – otherwise everyone walks to the point. Outside the world
-        // border means: at the border.
+        // border means: at the border – a bit more than one step of the screen axes inside it, so the spot's tile
+        // is inside too (`Region::clamp`).
         let area = self.map.play_area();
         let spots: Option<Vec<Vec2>> = match (point, formation) {
             (Some(_), Some(f)) if units.len() > 1 => {
                 let group: Vec<(Vec2, UnitKind)> = units.iter().zip(&starts).map(|(&i, &s)| (s, self.units[i].kind)).collect();
-                Some(formation::spots(f, &group).into_iter().map(|p| area.clamp(p, 0.5)).collect())
+                Some(formation::spots(f, &group).into_iter().map(|p| area.clamp(p, 1.05)).collect())
             }
             _ => None,
         };
@@ -204,12 +205,12 @@ impl World {
         // all units share it. A click on solid terrain or a building aims at the nearest free spot next to it.
         let center = match (&spots, point) {
             (Some(spots), _) => Some(spots.iter().sum::<Vec2>() / spots.len() as f32),
-            (None, Some(p)) => Some(area.clamp(p, 0.5)),
+            (None, Some(p)) => Some(area.clamp(p, 1.05)),
             (None, None) => None,
         };
         let target = match center {
             Some(p) => match free_point_near(&self.map, p) {
-                Some(p) => Some((Rc::new(FlowField::new(&self.map, p)), p)),
+                Some(p) => Some((Arc::new(FlowField::new(&self.map, p)), p)),
                 None => return, // nothing free far and wide: ignore
             },
             None => None,
@@ -220,7 +221,7 @@ impl World {
         let back = match command {
             Command::Patrol(_) if !starts.is_empty() => {
                 let middle = starts.iter().sum::<Vec2>() / starts.len() as f32;
-                free_point_near(&self.map, middle).map(|p| (Rc::new(FlowField::new(&self.map, p)), p))
+                free_point_near(&self.map, middle).map(|p| (Arc::new(FlowField::new(&self.map, p)), p))
             }
             _ => None,
         };
@@ -265,12 +266,12 @@ impl World {
     /// A unit's target point: its spot in the formation – or, without one, the middle. The unit follows the
     /// shared field to the middle until it's close enough to its spot, then walks straight there.
     /// If its spot is on blocked ground (a tree in the line), it takes the nearest free spot next to it.
-    fn waypoint(&self, field: &Rc<FlowField>, center: Vec2, spot: Option<Vec2>) -> Waypoint {
+    fn waypoint(&self, field: &Arc<FlowField>, center: Vec2, spot: Option<Vec2>) -> Waypoint {
         match spot.and_then(|p| free_point_near(&self.map, p)) {
             Some(point) if point != center => {
-                Waypoint { point, field: Rc::clone(field), straight: point.distance(center) + 2.0 }
+                Waypoint { point, field: Arc::clone(field), straight: point.distance(center) + 2.0 }
             }
-            _ => Waypoint { point: center, field: Rc::clone(field), straight: 0.0 },
+            _ => Waypoint { point: center, field: Arc::clone(field), straight: 0.0 },
         }
     }
 }

@@ -48,6 +48,28 @@ impl Vision {
         }
     }
 
+    /// A circle visible – and so explored – on top of what the eyes see, over forests too: the command center's scan
+    /// (`sim/scan.rs`).
+    pub fn reveal_circle(&mut self, at: Vec2, radius: f32) {
+        let r = radius.ceil() as i32;
+        let (cx, cy) = (at.x.floor() as i32, at.y.floor() as i32);
+        for y in cy - r..=cy + r {
+            for x in cx - r..=cx + r {
+                let center = vec2(x as f32 + 0.5, y as f32 + 0.5);
+                if let Some(i) = self.index(x, y).filter(|_| center.distance(at) <= radius) {
+                    self.visible[i] = true;
+                    self.explored[i] = true;
+                }
+            }
+        }
+    }
+
+    /// Everything visible – and so explored – at once: the map is shown (a wave that reveals it, `World::revealed`).
+    pub fn reveal_all(&mut self) {
+        self.visible.fill(true);
+        self.explored.fill(true);
+    }
+
     /// Does someone see this tile right now? Outside the map: no.
     pub fn is_visible(&self, x: i32, y: i32) -> bool {
         self.index(x, y).is_some_and(|i| self.visible[i])

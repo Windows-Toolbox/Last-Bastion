@@ -12,6 +12,7 @@
 
 use macroquad::math::{vec2, Vec2};
 
+use crate::map::Region;
 use crate::noise::Noise;
 use crate::rng::Rng;
 
@@ -37,28 +38,22 @@ impl Lanes {
         Lanes { size, clearance: vec![f32::INFINITY; (size * size) as usize] }
     }
 
-    /// `per_side` lanes from every side of a map `size` tiles across to the base at `center`, `width` tiles wide on
-    /// average. They start at the world border (`border` tiles from the map edge) and end at `stop` tiles from the
+    /// `per_side` lanes from every side of `play` (the playing field of a map `size` tiles across) to the base at
+    /// `center`, `width` tiles wide on average. They start at the world border and end at `stop` tiles from the
     /// base – the free space there is open anyway.
-    pub fn plan(rng: &mut Rng, size: i32, border: i32, center: Vec2, stop: f32, per_side: u32, width: f32) -> Lanes {
+    pub fn plan(rng: &mut Rng, size: i32, play: &Region, center: Vec2, stop: f32, per_side: u32, width: f32) -> Lanes {
         let mut lanes = Lanes::none(size);
         if per_side == 0 {
             return lanes;
         }
         let (bend, thickness) = (Noise::new(rng.next_u64() as u32), Noise::new(rng.next_u64() as u32));
-        let (lo, n) = (border as f32, size as f32);
-        let piece = (n - 2.0 * lo) / per_side as f32;
+        let piece = 1.0 / per_side as f32;
         let mut number = 0.0;
         for side in 0..4 {
             for k in 0..per_side {
                 // The middle of the k-th piece of the side, give or take a quarter piece.
-                let along = lo + piece * (k as f32 + 0.5 + (rng.unit_f32() - 0.5) * 0.5);
-                let start = match side {
-                    0 => vec2(along, lo),
-                    1 => vec2(along, n - lo),
-                    2 => vec2(lo, along),
-                    _ => vec2(n - lo, along),
-                };
+                let along = piece * (k as f32 + 0.5 + (rng.unit_f32() - 0.5) * 0.5);
+                let start = play.side_point(side, along);
                 // Each lane reads the noise in its own row, so they all bend differently.
                 lanes.walk(start, center, stop, width, &bend, &thickness, number * 100.0);
                 number += 1.0;
@@ -128,15 +123,17 @@ impl Lanes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::{to_frame, Map};
 
     /// From the base along the lanes alone (plus the free space around the base) you get to the border on every
     /// side – the ways in are there before any terrain is painted. Wider lanes, more open tiles.
     #[test]
     fn lanes_lead_from_every_side_to_the_base() {
-        let (size, border, stop) = (288, 16, 14.0);
+        let (size, stop) = (288, 14.0);
         let center = vec2(144.5, 144.5);
+        let play = Map::play_area_of(size as usize, 16);
         for seed in 1..=8u64 {
-            let lanes = Lanes::plan(&mut Rng::new(seed), size, border, center, stop, 2, 6.0);
+            let lanes = Lanes::plan(&mut Rng::new(seed), size, &play, center, stop, 2, 6.0);
             let open = |x: i32, y: i32| lanes.is_open(x, y) || vec2(x as f32 + 0.5, y as f32 + 0.5).distance(center) <= stop;
             let mut seen = vec![false; (size * size) as usize];
             let mut stack = vec![(144, 144)];
@@ -149,20 +146,27 @@ mod tests {
                     }
                 }
             }
-            let reached = |x: i32, y: i32| seen[(y * size + x) as usize];
-            let (lo, hi) = (border, size - border - 1);
-            assert!((lo..=hi).any(|x| reached(x, lo)), "seed {seed}: no way in from the top");
-            assert!((lo..=hi).any(|x| reached(x, hi)), "seed {seed}: no way in from the bottom");
-            assert!((lo..=hi).any(|y| reached(lo, y)), "seed {seed}: no way in from the left");
-            assert!((lo..=hi).any(|y| reached(hi, y)), "seed {seed}: no way in from the right");
+            // Every side has a reached tile inside the border right at it (its middle within 2 steps of the side).
+            let mut sides = [false; 4];
+            for (x, y) in (0..size).flat_map(|y| (0..size).map(move |x| (x, y))) {
+                let f = to_frame(vec2(x as f32 + 0.5, y as f32 + 0.5));
+                if seen[(y * size + x) as usize] && play.contains_tile(x, y) {
+                    for (side, near) in [f.y - play.min.y, play.max.y - f.y, f.x - play.min.x, play.max.x - f.x].into_iter().enumerate() {
+                        sides[side] |= near < 2.0;
+                    }
+                }
+            }
+            for (side, name) in ["top", "bottom", "left", "right"].into_iter().enumerate() {
+                assert!(sides[side], "seed {seed}: no way in from the {name}");
+            }
         }
         let count = |width: f32| {
-            let lanes = Lanes::plan(&mut Rng::new(3), size, border, center, stop, 2, width);
+            let lanes = Lanes::plan(&mut Rng::new(3), size, &play, center, stop, 2, width);
             (0..size).flat_map(|y| (0..size).map(move |x| (x, y))).filter(|&(x, y)| lanes.is_open(x, y)).count()
         };
         assert!(count(10.0) > count(4.0) * 2, "the width doesn't change the lanes");
         assert_eq!(count(6.0), count(6.0), "not repeatable");
-        let none = Lanes::plan(&mut Rng::new(3), size, border, center, stop, 0, 6.0);
+        let none = Lanes::plan(&mut Rng::new(3), size, &play, center, stop, 0, 6.0);
         assert!(!none.is_open(144, 20) && none.clearance(144, 20).is_infinite());
     }
 }

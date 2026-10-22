@@ -17,7 +17,7 @@
 //! Not for zombies: they come from outside the border, and to them a building tile only costs a lot of extra
 //! steps – if the detour is longer, their path goes right through it, and they tear the building down.
 
-use std::cell::Cell;
+use std::sync::OnceLock;
 
 use macroquad::math::{vec2, Vec2};
 
@@ -62,9 +62,10 @@ pub struct FlowField {
     /// Per tile: could the walker go there freely when the field was made? The anchors need it later – and the map
     /// may have changed by then (a field is renewed when it does, but it shouldn't depend on that).
     free: Vec<bool>,
-    /// Per tile: the point to walk straight at (see the top of the file) – `None` until someone asks.
-    /// `Cell`: it's filled in while the field is only being read (`&self`), see `anchor`.
-    anchor: Vec<Cell<Option<Vec2>>>,
+    /// Per tile: the point to walk straight at (see the top of the file) – empty until someone asks.
+    /// `OnceLock`: it's filled in while the field is only being read (`&self`) – even by several threads at once (the
+    /// zombies think side by side, `sim/zombies.rs`). Each of them works out the same point; the first one keeps it.
+    anchor: Vec<OnceLock<Vec2>>,
 }
 
 impl FlowField {
@@ -180,7 +181,12 @@ impl FlowField {
         }
 
         // 2. Anchors: the goal tiles lead to the target point itself – the rest is worked out when asked (`anchor`).
-        let anchor = (0..size * size).map(|i| Cell::new((dist[i] == 0).then_some(target))).collect();
+        let anchor = (0..size * size)
+            .map(|i| match dist[i] {
+                0 => OnceLock::from(target),
+                _ => OnceLock::new(),
+            })
+            .collect();
         FlowField { size, target, dist, next, free, anchor }
     }
 
@@ -188,7 +194,7 @@ impl FlowField {
     /// tile that already has one, and work back from there – each tile sees the anchor of the next one, or the next
     /// tile itself becomes its anchor. Always the same result, whoever asks first.
     fn anchor(&self, i: usize) -> Vec2 {
-        if let Some(a) = self.anchor[i].get() {
+        if let Some(&a) = self.anchor[i].get() {
             return a;
         }
         let mut chain = vec![i];
@@ -204,12 +210,13 @@ impl FlowField {
         };
         for &k in chain.iter().rev() {
             let n = self.next[k] as usize;
-            let after = self.anchor[n].get().unwrap_or(self.target);
+            let after = self.anchor[n].get().copied().unwrap_or(self.target);
             // A building on the way (zombies): walk at the building – nothing can be seen through it.
             let a = if self.free[n] && Map::line_is_clear(center(k), after, blocked) { after } else { center(n) };
-            self.anchor[k].set(Some(a));
+            // Another thread was quicker: it has put the same point there already.
+            let _ = self.anchor[k].set(a);
         }
-        self.anchor[i].get().unwrap_or(self.target)
+        self.anchor[i].get().copied().unwrap_or(self.target)
     }
 
     /// Where to go from `pos`: straight at the anchor of its tile. Length 1 – or 0 when standing on the anchor

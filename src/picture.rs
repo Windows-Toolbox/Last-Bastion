@@ -1,5 +1,6 @@
-//! A picture of the whole map – one pixel per tile, kept as a texture on the graphics card. Drawn as a diamond
-//! (like the map itself) on the minimap, in the preview of the setup screen and behind the home screen.
+//! A picture of the whole grid – one pixel per tile, kept as a texture on the graphics card. Drawn turned like the map
+//! itself (only a straight rectangle of it shows, `draw`) on the minimap, in the preview of the setup screen and behind
+//! the home screen.
 //!
 //! Before, the minimap drew one small diamond per tile, every frame. On a 256 map that's up to 80,000 diamonds
 //! (160,000 triangles) per frame just for the minimap. Now the picture is painted only when something changed
@@ -32,8 +33,8 @@ pub struct MapPicture {
 pub struct Extras<'a> {
     /// Fog of war: unexplored tiles black.
     pub fog: Option<&'a Vision>,
-    /// Spawners (top left tile, size) – shown in previews.
-    pub spawners: &'a [((i32, i32), (i32, i32))],
+    /// Spawners – shown in previews.
+    pub spawners: &'a [Region],
     /// Mark the base in the middle (previews).
     pub base: bool,
     /// Darken the ring outside the world border (previews).
@@ -83,9 +84,9 @@ impl MapPicture {
                 self.image.bytes[i..i + 4].copy_from_slice(&rgba(c));
             }
         };
-        for &(min, size) in extras.spawners {
-            for y in min.1..min.1 + size.1 {
-                for x in min.0..min.0 + size.0 {
+        for spawner in extras.spawners {
+            for (y, xs) in spawner.rows(0.0) {
+                for x in xs {
                     dot(x, y, SPAWNER);
                 }
             }
@@ -112,14 +113,13 @@ impl MapPicture {
     }
 
     /// Draws the part `area` of the map. `to_screen` turns a world point into a screen point – the four corners of
-    /// `area` become the four corners of a diamond, and the picture is stretched over it.
+    /// `area` become the four corners of a rectangle, and that piece of the picture is stretched over it.
     pub fn draw(&self, area: Region, to_screen: impl Fn(Vec2) -> Vec2) {
         let Some(texture) = &self.texture else {
             return;
         };
         let n = texture.width();
-        let corners = [area.min, vec2(area.max().x, area.min.y), area.max(), vec2(area.min.x, area.max().y)];
-        let vertices = corners
+        let vertices = area.corners()
             .iter()
             .map(|&c| {
                 let s = to_screen(c);

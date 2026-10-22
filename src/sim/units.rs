@@ -45,6 +45,8 @@ pub struct Unit {
     pub(super) aim_at: Option<Aim>,
     /// In a tower (its `id`): it stands in the middle of it, can't be hit, shoots and sees further, isn't drawn.
     pub inside: Option<u32>,
+    /// Carries a barrel (`blast.rs`): slower, doesn't shoot – and if it dies, the barrel goes off.
+    pub barrel: bool,
 }
 
 impl Unit {
@@ -173,6 +175,7 @@ impl World {
             aim: 0,
             aim_at: None,
             inside: None,
+            barrel: false,
         });
     }
 
@@ -212,12 +215,13 @@ impl World {
     }
 
     /// Attack, heal and follow: where is the target now? Dead → command done. Moved on → new way.
-    /// Enter: tower gone or full → done. Otherwise the way to the free tile next to it that is closest.
+    /// Enter: tower gone or full – or a munitions factory with no barrel left to fetch (`blast.rs`) → done. Otherwise
+    /// the way to the free tile next to it that is closest.
     fn refresh_chase(&mut self, i: usize) {
         let unit = &self.units[i];
         let pos = unit.pos;
         if let Some(Task::Enter { building, chase }) = unit.queue.front() {
-            let tower = self.find_building(*building).filter(|&b| self.has_room(b));
+            let tower = self.find_building(*building).filter(|&b| self.has_room(b) || self.can_fetch(i, b));
             match tower {
                 None => {
                     self.units[i].queue.pop_front();
@@ -304,7 +308,11 @@ impl World {
             Some(Task::Enter { chase, .. }) => (chase.as_ref(), None),
         };
 
-        let step = stats.speed * TICK;
+        // Carrying a barrel: hands full, it doesn't shoot (`blast.rs`).
+        let target = if unit.barrel { None } else { target };
+        // Deep in debt they drag their feet (`debt.rs`) – and a barrel is heavy.
+        let carrying = if unit.barrel { (100 - data::get().buildings.blast.carry_slow_percent.min(100)) as f32 / 100.0 } else { 1.0 };
+        let step = stats.speed * TICK * (self.army_pace as f32 / 1000.0) * carrying;
         let mut velocity = match walk_to {
             Some(to) => {
                 let to_goal = to.point - unit.pos;
@@ -355,6 +363,7 @@ impl World {
 
     /// Close enough to the tower it's heading for, and there's still room: climb in. It stands in the middle
     /// of the tower from now on, and its command queue is empty – only "unload" gets it out again.
+    /// At a munitions factory: it takes a barrel from the store and goes on with its next command (`blast.rs`).
     fn try_enter(&mut self, i: usize) {
         let Some(Task::Enter { building, .. }) = self.units[i].queue.front() else {
             return;
@@ -362,8 +371,16 @@ impl World {
         let Some(b) = self.find_building(*building) else {
             return;
         };
+        if self.buildings[b].distance_to(self.units[i].pos) > ENTER_REACH {
+            return;
+        }
+        if self.can_fetch(i, b) {
+            self.fetch(i);
+            self.units[i].queue.pop_front();
+            return;
+        }
         let tower = &self.buildings[b];
-        if tower.distance_to(self.units[i].pos) > ENTER_REACH || !self.has_room(b) {
+        if !self.has_room(b) {
             return;
         }
         let (id, center) = (tower.id, tower.center());
@@ -395,8 +412,7 @@ impl World {
         let (cx, cy) = (pos.x.floor() as i32, pos.y.floor() as i32);
         for dy in -1..=1 {
             for dx in -1..=1 {
-                for &z in self.grid.cell(cx + dx, cy + dy) {
-                    let zombie = &self.zombies[z as usize];
+                for zombie in self.grid.bodies(cx + dx, cy + dy) {
                     push += push_apart(pos, zombie.pos, UNIT_RADIUS + zombie.radius) * 0.5;
                 }
             }

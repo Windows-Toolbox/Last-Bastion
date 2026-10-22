@@ -29,7 +29,7 @@ Die Bilder der Zombies und Einheiten – vorgerenderte **Sprite-Sheets** wie in 
 | `image` | Das PNG, neben der JSON-Datei. Mehrere JSONs dürfen dasselbe Bild nehmen (`fat.json` = dieselbe Figur, größer) |
 | `frame` | Breite und Höhe **eines** Einzelbilds in Pixeln |
 | `feet` | Wo im Einzelbild die **Füße** sind (Pixel von oben links). Dieser Punkt steht auf der Position der Figur |
-| `pixels_per_tile` | So viele Pixel sind eine Kachelbreite. Kleiner = größer gezeichnet. 128 = bei größtem Zoom scharf |
+| `pixels_per_tile` | So viele Pixel sind eine Kachelbreite. Kleiner = größer gezeichnet. 128 = bei größtem Zoom scharf. Die Testfiguren stehen auf 256 (Fat 150): halb so groß, wie sie gemalt sind – so groß wie die Figuren auf den Türmen |
 | `directions` | Richtungen pro Animation (8 oder 16). **Eine Zeile pro Richtung:** Zeile 0 schaut nach rechts unten (+x auf der Karte), dann im Uhrzeigersinn |
 | `tint` | `true` = in der Farbe ihrer Art eingefärbt (für ein graues Testbild). Echte Bilder: weglassen |
 | `idle` | Pflicht. Stehen |

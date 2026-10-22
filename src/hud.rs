@@ -5,22 +5,22 @@
 
 use macroquad::prelude::*;
 
-use crate::draw::{breed_color, building_color, kind_color, ZOMBIE};
+use crate::draw::{breed_color, building_color, kind_color, loot_color, ZOMBIE};
 use crate::formation::Shape;
-use crate::iso::{iso, iso_inverse, Camera, TILE_W};
+use crate::iso::Camera;
 use crate::editor::Sight;
 use crate::data;
-use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::Region;
+use crate::kinds::{BuildingKind, Resource, Source, UnitKind};
+use crate::map::{from_frame, to_frame, Region};
 use crate::picture::MapPicture;
-use crate::sim::{Building, RepairPlan, World, Zombie, MAX_PRODUCTION, TICKS_PER_SECOND};
-use crate::ui::{Pick, Sub, Ui};
+use crate::sim::{DebtStage, LootKind, Power, Product, RepairPlan, World, Zombie, MAX_PRODUCTION, TICKS_PER_SECOND};
+use crate::ui::{Pick, Place, Sub, Ui};
 
 pub const PANEL_H: f32 = 200.0;
 const PAD: f32 = 8.0;
 /// Between two parts of the panel.
 const GAP: f32 = 8.0;
-const MINIMAP_W: f32 = 260.0; // the minimap is a diamond, twice as wide as high
+const MINIMAP_W: f32 = 260.0; // the minimap is twice as wide as high, like the map on screen
 const CLOCK_W: f32 = 104.0;
 const GROUPS_W: f32 = 46.0;
 const STOCK_W: f32 = 224.0;
@@ -38,6 +38,9 @@ const CARD_ROWS: usize = 3;
 const PANEL_BG: Color = Color::new(0.09, 0.07, 0.05, 0.97);
 const SECTION_BG: Color = Color::new(0.05, 0.04, 0.03, 1.0);
 const BOX_BG: Color = Color::new(0.15, 0.11, 0.07, 1.0);
+/// The fill of a storage bar in the stock – and full, when what comes in is lost.
+const STORAGE: Color = Color::new(0.36, 0.27, 0.12, 1.0);
+const STORAGE_FULL: Color = Color::new(0.55, 0.22, 0.12, 1.0);
 const HOVER_BG: Color = Color::new(0.25, 0.19, 0.11, 1.0);
 const WAIT_BG: Color = Color::new(0.22, 0.32, 0.14, 1.0);
 const BORDER: Color = Color::new(0.45, 0.32, 0.16, 1.0);
@@ -47,6 +50,8 @@ const GLOW: Color = Color::new(0.62, 0.95, 0.40, 1.0);
 const KEY: Color = Color::new(1.0, 0.85, 0.40, 1.0);
 const TOO_DEAR: Color = Color::new(1.0, 0.35, 0.3, 1.0);
 const FINAL: Color = Color::new(1.0, 0.6, 0.5, 1.0);
+/// The villages of doom on the minimap – red like TAB's.
+const DOOM_MINIMAP: Color = Color::new(0.85, 0.12, 0.10, 1.0);
 
 /// The buttons of the command card. Which ones are visible depends on the selection (`Ui::card`).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -61,22 +66,25 @@ pub enum Button {
     FormLine,
     FormBox,
     FormCircle,
-    // Barracks
-    TrainSoldier,
-    TrainRanger,
-    TrainSniper,
-    TrainMedic,
+    // Barracks and inn
+    /// Train this unit (its building: `trained_in`).
+    Train(UnitKind),
     Rally,
+    /// Munitions factory: a barrel into its queue (`sim/blast.rs`).
+    MakeBarrel,
+    /// Market: selling on or off (`sim/market.rs`).
+    Sell,
+    /// Command center: show a circle of the map for a while (`sim/scan.rs`).
+    Scan,
+    /// Units carrying a barrel: put it down where they stand.
+    Drop,
     // Command center
     /// Open one of the build menus – the card then shows its buildings (`Ui::submenu`).
     Open(Submenu),
     /// Back from a build menu to the main buttons of its building – B (its spot in the grid) or Esc.
     Back,
-    PlaceTent,
-    PlaceBarracks,
-    PlaceWall,
-    PlaceGate,
-    PlaceTower,
+    /// Put this building on the mouse, to place it.
+    Place(BuildingKind),
     /// A building that's planned but not in the game yet – the index in `PLANNED`. Its button already sits where
     /// it will be, greyed out.
     Planned(usize),
@@ -84,6 +92,8 @@ pub enum Button {
     Unload,
     /// Every building: repair the selected buildings (F, like "fix").
     Repair,
+    /// Buildings that run (`can_switch_off`): switch the selected ones off – or on again (Y, like in TAB).
+    Switch,
 }
 
 /// The build menus of the command center – the keys on the left of the keyboard, like TAB's build categories.
@@ -136,27 +146,13 @@ const fn plan(menu: Submenu, slot: usize, short: &'static str, name: &'static st
 }
 
 /// All planned buildings, menu by menu. When one gets built, its line goes and a real button takes its spot.
-pub const PLANNED: [Planned; 20] = [
-    plan(Submenu::Colonists, 1, "Stone h.", "Stone house", "Tier 2 house: more colonists and gold, needs wood, stone and tools (DESIGN.md 5.3)."),
-    plan(Submenu::Resources, 0, "Hunter", "Hunter cottage", "1 x 1. Food from the game in the forest around it."),
-    plan(Submenu::Resources, 1, "Fishing", "Fishing hut", "1 x 1, at the water. Food from the fish."),
-    plan(Submenu::Resources, 2, "Saw mill", "Saw mill", "2 x 2, next to the forest. Wood."),
-    plan(Submenu::Resources, 3, "Quarry", "Quarry", "2 x 2. Stone."),
+pub const PLANNED: [Planned; 6] = [
     plan(Submenu::Resources, 4, "Oil pump", "Oil pump", "2 x 2, right on an oil node (the dark pools - one next to the base, groups further out). Oil."),
-    plan(Submenu::Energy, 0, "Tesla", "Tesla tower", "Carries the electricity further: more of the base is covered."),
-    plan(Submenu::Energy, 1, "Windmill", "Windmill", "Quiet, but little power."),
-    plan(Submenu::Energy, 2, "Generator", "Generator", "Burns wood: cheap, inefficient, loud - the first power after the command center's."),
     plan(Submenu::Energy, 3, "Oil gen.", "Oil burning generator", "Burns oil: a lot of power."),
-    plan(Submenu::Industry, 0, "Wood sh.", "Wood workshop", "Works wood into goods (recipes come with the economy)."),
-    plan(Submenu::Industry, 1, "Stone sh.", "Stone workshop", "Works stone into goods (recipes come with the economy)."),
     plan(Submenu::Industry, 2, "Foundry", "Foundry", "Iron ore and coal become iron."),
-    plan(Submenu::Industry, 3, "Inn", "The Inn", "Like the inn in They Are Billions - what it does here is still open."),
-    plan(Submenu::Military, 1, "Munitions", "Munitions factory", "Makes ammunition from resources - if units need ammunition instead of only gold (open question 6: ammo is free for now)."),
     plan(Submenu::Military, 2, "Siege", "Siege factory", "Vehicles and siege weapons."),
-    plan(Submenu::Defense, 3, "Mines", "Mines", "Go off under zombies - and under your own units: area damage hits everyone."),
-    plan(Submenu::Defense, 4, "Trip wire", "Trip wire", "Stretched across a way: whoever walks into it sets it off."),
-    plan(Submenu::Defense, 5, "Ballista", "Ballista tower", "Heavy tower: a big bolt, slow and strong."),
-    plan(Submenu::Defense, 6, "MG tower", "Machine gun tower", "Fast fire against crowds - needs power."),
+    plan(Submenu::Defense, 8, "Ballista", "Ballista tower", "Heavy tower: a big bolt, slow and strong."),
+    plan(Submenu::Defense, 9, "MG tower", "Machine gun tower", "Fast fire against crowds - needs power and the foundry's iron."),
 ];
 
 /// The buttons for units – top row like in StarCraft, the formations at the bottom.
@@ -170,9 +166,9 @@ pub const UNIT_BUTTONS: [Button; 8] = [
     Button::FormBox,
     Button::FormCircle,
 ];
-/// The buttons of the command center: one per build menu, Q W E / A S D / Y – and F repair. It builds, the
+/// The buttons of the command center: one per build menu, Q W E / A S D / Y – F repair, C scan. It builds, the
 /// barracks trains.
-pub const COMMAND_CENTER_BUTTONS: [Button; 8] = [
+pub const COMMAND_CENTER_BUTTONS: [Button; 9] = [
     Button::Open(Submenu::Colonists),
     Button::Open(Submenu::Resources),
     Button::Open(Submenu::Energy),
@@ -181,10 +177,29 @@ pub const COMMAND_CENTER_BUTTONS: [Button; 8] = [
     Button::Open(Submenu::Defense),
     Button::Open(Submenu::Wonders),
     Button::Repair,
+    Button::Scan,
 ];
 /// The buttons of the barracks.
-pub const BARRACKS_BUTTONS: [Button; 6] =
-    [Button::TrainSoldier, Button::TrainRanger, Button::TrainSniper, Button::TrainMedic, Button::Rally, Button::Repair];
+pub const BARRACKS_BUTTONS: [Button; 6] = [
+    Button::Train(UnitKind::Soldier),
+    Button::Train(UnitKind::Ranger),
+    Button::Train(UnitKind::Sniper),
+    Button::Train(UnitKind::Medic),
+    Button::Rally,
+    Button::Repair,
+];
+/// The buttons of the inn – the mercenaries on the keys of their kind in the barracks.
+pub const INN_BUTTONS: [Button; 5] = [
+    Button::Train(UnitKind::MercSoldier),
+    Button::Train(UnitKind::MercRanger),
+    Button::Train(UnitKind::MercSniper),
+    Button::Rally,
+    Button::Repair,
+];
+/// The buttons of the munitions factory.
+pub const MUNITIONS_BUTTONS: [Button; 2] = [Button::MakeBarrel, Button::Repair];
+/// The buttons of a market.
+pub const MARKET_BUTTONS: [Button; 2] = [Button::Sell, Button::Repair];
 /// The buttons of a tower.
 pub const TOWER_BUTTONS: [Button; 3] = [Button::Unload, Button::Rally, Button::Repair];
 /// Buildings that do nothing else (tent, wall, gate): only repair.
@@ -192,14 +207,19 @@ pub const REPAIR_BUTTONS: [Button; 1] = [Button::Repair];
 
 /// What a build menu shows: the buildings that are in the game, the planned ones (greyed out) and "back".
 pub fn menu_buttons(menu: Submenu) -> Vec<Button> {
-    let built: &[Button] = match menu {
-        Submenu::Colonists => &[Button::PlaceTent],
-        Submenu::Military => &[Button::PlaceBarracks],
-        Submenu::Defense => &[Button::PlaceWall, Button::PlaceGate, Button::PlaceTower],
-        _ => &[],
+    use BuildingKind::*;
+    let built: &[BuildingKind] = match menu {
+        Submenu::Colonists => &[Tent, StoneHouse],
+        Submenu::Resources => &[HunterCottage, FishingHut, Sawmill, Mine, Farm],
+        Submenu::Energy => &[TeslaTower, Windmill, CharcoalBurner],
+        Submenu::Industry => &[WoodWorkshop, StoneWorkshop, Inn, Market, Bank],
+        Submenu::Military => &[Barracks, MunitionsFactory],
+        Submenu::Defense => &[Wall, Gate, Tower, Stakes, Barrel, StoneWall, StoneTower],
+        Submenu::Wonders => &[],
     };
+    let built = built.iter().map(|&kind| Button::Place(kind));
     let planned = (0..PLANNED.len()).filter(|&i| PLANNED[i].menu == menu).map(Button::Planned);
-    built.iter().copied().chain(planned).chain([Button::Back]).collect()
+    built.chain(planned).chain([Button::Back]).collect()
 }
 
 /// StarCraft's grid layout: the keys of the 15 spots of the command card, row by row – the left part of the
@@ -224,11 +244,12 @@ impl Button {
             Button::FormLine => "Line",
             Button::FormBox => "Box",
             Button::FormCircle => "Circle",
-            Button::TrainSoldier => "Soldier",
-            Button::TrainRanger => "Ranger",
-            Button::TrainSniper => "Sniper",
-            Button::TrainMedic => "Medic",
+            Button::Train(kind) => &kind.stats().name,
             Button::Rally => "Rally",
+            Button::MakeBarrel => "Barrel",
+            Button::Sell => "Selling",
+            Button::Scan => "Scan",
+            Button::Drop => "Drop",
             Button::Open(Submenu::Colonists) => "Colonists",
             Button::Open(Submenu::Resources) => "Resources",
             Button::Open(Submenu::Energy) => "Energy",
@@ -237,14 +258,21 @@ impl Button {
             Button::Open(Submenu::Defense) => "Defense",
             Button::Open(Submenu::Wonders) => "Wonders",
             Button::Back => "Back",
-            Button::PlaceTent => "Tent",
-            Button::PlaceBarracks => "Barracks",
-            Button::PlaceWall => "Wall",
-            Button::PlaceGate => "Gate",
-            Button::PlaceTower => "Tower",
+            Button::Place(BuildingKind::HunterCottage) => "Hunter",
+            Button::Place(BuildingKind::FishingHut) => "Fishing",
+            Button::Place(BuildingKind::CharcoalBurner) => "Charcoal",
+            Button::Place(BuildingKind::WoodWorkshop) => "Wood sh.",
+            Button::Place(BuildingKind::TeslaTower) => "Tesla",
+            Button::Place(BuildingKind::StoneWorkshop) => "Stone sh.",
+            Button::Place(BuildingKind::MunitionsFactory) => "Munitions",
+            Button::Place(BuildingKind::StoneHouse) => "Stone h.",
+            Button::Place(BuildingKind::StoneTower) => "St. tower",
+            Button::Place(BuildingKind::Stakes) => "Stakes",
+            Button::Place(kind) => &kind.stats().name,
             Button::Planned(i) => PLANNED[i].short,
             Button::Unload => "Unload",
             Button::Repair => "Repair",
+            Button::Switch => "On/Off",
         }
     }
 
@@ -252,6 +280,7 @@ impl Button {
     pub fn title(self) -> &'static str {
         match self {
             Button::Planned(i) => PLANNED[i].name,
+            Button::Place(kind) => &kind.stats().name,
             Button::Open(Submenu::Industry) => "Industry and trade",
             _ => self.name(),
         }
@@ -268,6 +297,7 @@ impl Button {
             Button::FormLine => KeyCode::X,
             Button::FormBox => KeyCode::C,
             Button::FormCircle => KeyCode::V,
+            Button::Drop => KeyCode::D,
             _ => GRID_KEYS[self.slot()],
         }
     }
@@ -283,6 +313,7 @@ impl Button {
             Button::FormLine => "X",
             Button::FormBox => "C",
             Button::FormCircle => "V",
+            Button::Drop => "D",
             _ => GRID_LABELS[self.slot()],
         }
     }
@@ -290,15 +321,19 @@ impl Button {
     /// Spot on the command card: 0–4 top row, 5–9 middle, 10–14 bottom. For buildings this also decides the key.
     fn slot(self) -> usize {
         match self {
-            Button::Move | Button::TrainSoldier | Button::Unload => 0,
-            Button::PlaceTent | Button::PlaceBarracks | Button::PlaceWall => 0,
-            Button::Stop | Button::TrainRanger | Button::PlaceGate => 1,
-            Button::Hold | Button::PlaceTower => 2,
-            Button::Patrol | Button::TrainSniper => 3,
-            Button::Attack | Button::TrainMedic => 4,
+            Button::Move | Button::Unload | Button::MakeBarrel | Button::Sell => 0,
+            Button::Train(kind) => train_slot(kind),
+            Button::Place(kind) => place_slot(kind),
+            Button::Stop => 1,
+            Button::Hold => 2,
+            Button::Patrol => 3,
+            Button::Attack => 4,
+            Button::Drop => 7,
+            Button::Scan => 12,
             Button::Open(menu) => menu.slot(),
             Button::Planned(i) => PLANNED[i].slot,
             Button::Repair => 8,
+            Button::Switch => 10,
             Button::Rally => 9,
             Button::FormLine => 10,
             Button::FormBox => 11,
@@ -320,19 +355,17 @@ impl Button {
     /// Which unit this button trains – `None` for all other buttons.
     pub fn trains(self) -> Option<UnitKind> {
         match self {
-            Button::TrainSoldier => Some(UnitKind::Soldier),
-            Button::TrainRanger => Some(UnitKind::Ranger),
-            Button::TrainSniper => Some(UnitKind::Sniper),
-            Button::TrainMedic => Some(UnitKind::Medic),
+            Button::Train(kind) => Some(kind),
             _ => None,
         }
     }
 
-    /// What the button costs in gold – the unit it trains or the building it places (`None`: it costs nothing).
+    /// What the button costs in gold – the unit it trains, the building it places, a barrel (`None`: it costs nothing).
     pub fn cost(self) -> Option<u32> {
         match (self.trains(), self.places()) {
             (Some(kind), _) => Some(kind.stats().cost),
             (_, Some(kind)) => Some(kind.stats().cost),
+            _ if self == Button::MakeBarrel => Some(data::get().buildings.blast.cost),
             _ => None,
         }
     }
@@ -349,11 +382,7 @@ impl Button {
     /// Which building this button puts on the grid – `None` for all other buttons.
     pub fn places(self) -> Option<BuildingKind> {
         match self {
-            Button::PlaceBarracks => Some(BuildingKind::Barracks),
-            Button::PlaceTent => Some(BuildingKind::Tent),
-            Button::PlaceWall => Some(BuildingKind::Wall),
-            Button::PlaceGate => Some(BuildingKind::Gate),
-            Button::PlaceTower => Some(BuildingKind::Tower),
+            Button::Place(kind) => Some(kind),
             _ => None,
         }
     }
@@ -368,28 +397,95 @@ impl Button {
             Button::FormLine => "Formation: rows along the line you drag with the right mouse button. Soldiers in front.",
             Button::FormBox => "Formation: a square block, the dragged line is its front. Soldiers in front.",
             Button::FormCircle => "Formation: a ring around where you start dragging, the drag is the radius. Soldiers outside.",
-            Button::TrainSoldier => "Tough, short range, aims quickly, loud. Build time: 5 s. Shift: 5 at once, hold the key: more.",
-            Button::TrainRanger => "Fast and weak, draws the bow a while before every arrow, quiet. Build time: 4 s. Shift: 5 at once, hold the key: more.",
-            Button::TrainSniper => "Long range, one big shot - very loud. Build time: 8 s. Shift: 5 at once, hold the key: more.",
-            Button::TrainMedic => "No attack. Beams at hurt units nearby (healing comes later). Build time: 6 s.",
+            Button::Train(kind) => train_help(kind),
             Button::Rally => "Where new units go (tower: where units go when unloaded). On a unit: follow it. Also with right click.",
-            Button::Open(Submenu::Colonists) => "Houses for your colonists: the tent - later the stone house.",
-            Button::Open(Submenu::Resources) => "Gathering - all still planned: hunter cottage, fishing hut, saw mill, quarry, oil pump.",
-            Button::Open(Submenu::Energy) => "Power - all still planned: tesla tower, windmill, generator, oil burning generator.",
-            Button::Open(Submenu::Industry) => "All still planned: wood workshop, stone workshop, foundry, the inn.",
-            Button::Open(Submenu::Military) => "The barracks - later the munitions factory and the siege factory.",
-            Button::Open(Submenu::Defense) => "Wall, gate, tower - later mines, trip wires, ballista and machine gun towers.",
+            Button::MakeBarrel => "An explosive barrel into the store (6 per factory). Set it from the defence menu, or right click the factory with units: each takes one along. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
+            Button::Sell => "Selling on/off. On (lit): at every payout the market sells what lies above 80 % of the storage - up to 1 good per 4 colonists of its houses. Off: it keeps everything, its houses still pay more.",
+            Button::Scan => "Click anywhere on the map: a circle of 10 tiles is shown for 10 s, over forests too - no noise. 2 charges, a new one every 120 s - while one charges, the command center takes 30 power from its grid.",
+            Button::Drop => "Put the barrels down where the units stand. Any damage and a barrel goes off - and a unit carrying one goes off when it dies.",
+            Button::Open(Submenu::Colonists) => "Houses for your colonists: the tent and the stone house.",
+            Button::Open(Submenu::Resources) => "Gathering: hunter cottage, fishing hut, sawmill, mine, farm - later the oil pump.",
+            Button::Open(Submenu::Energy) => "Power: tesla tower, windmill, charcoal burner - later the oil burning generator.",
+            Button::Open(Submenu::Industry) => "The wood and the stone workshop, the inn (mercenaries), the market and the bank - later the foundry.",
+            Button::Open(Submenu::Military) => "The barracks and the munitions factory - later the siege factory.",
+            Button::Open(Submenu::Defense) => "Wall, gate, tower, stake trap, explosive barrel, stone wall, stone tower - later ballista and machine gun towers.",
             Button::Open(Submenu::Wonders) => "The most expensive buildings, with very strong buffs - none designed yet.",
             Button::Back => "Back to the main buttons (B or Esc).",
-            Button::PlaceTent => "Tent (2 x 2). 6 colonists pay gold, 2 workers for your buildings and units; shield down = infected. Drag: a line. Right click / Esc: stop building.",
-            Button::PlaceBarracks => "Barracks (3 x 3, 800 HP). Trains soldiers, rangers, snipers and medics - the only building that does. Right click / Esc: stop building.",
-            Button::PlaceWall => "Wall (1 x 1, 400 HP). Zombies have to tear it down. Drag: a line, diagonal too. Right click / Esc: stop building.",
-            Button::PlaceGate => "Gate (3 x 1, 400 HP). Your units walk through the middle, zombies don't. Can go on walls (cheaper there, but walls + gate still cost more than the gate alone). R: turn. Right click / Esc: stop building.",
-            Button::PlaceTower => "Tower (1 x 1, 600 HP). Right click it with units: up to 4 go in, shoot and see 2 tiles further and can't be hit. Needs 1 free tile to the next tower. Drag: a line.",
+            Button::Place(kind) => place_help(kind),
             Button::Planned(i) => PLANNED[i].help,
             Button::Unload => "Everyone out of the tower - on the side of the rally point, then they walk there.",
             Button::Repair => "Repair all selected buildings: pay gold for what's missing, it comes back over a few seconds. An infected building is cured once it's whole - it's yours again and pays gold.",
+            Button::Switch => "Switch the selected buildings off: no upkeep, no workers, no power - and they do nothing. Again: on - if there are enough free workers, spare power and gold income for its upkeep.",
         }
+    }
+}
+
+/// The spot of a building's button in its build menu (`menu_buttons`).
+fn place_slot(kind: BuildingKind) -> usize {
+    use BuildingKind::*;
+    match kind {
+        Tent | Barracks | Wall | HunterCottage | TeslaTower | WoodWorkshop | CommandCenter => 0,
+        Gate | FishingHut | Windmill | StoneHouse | StoneWorkshop | MunitionsFactory => 1,
+        Tower | Sawmill | CharcoalBurner => 2,
+        Mine | Stakes | Inn => 3,
+        Market | Barrel => 4,
+        // Below their wooden ones – and the farm below the hunter, the other food. The bank next to the market.
+        StoneWall | Farm | Bank => 5,
+        StoneTower => 7,
+    }
+}
+
+/// The spot of a unit's button: the mercenaries on the key of their kind in the barracks.
+fn train_slot(kind: UnitKind) -> usize {
+    match kind {
+        UnitKind::Soldier | UnitKind::MercSoldier => 0,
+        UnitKind::Ranger | UnitKind::MercRanger => 1,
+        UnitKind::Sniper | UnitKind::MercSniper => 3,
+        UnitKind::Medic => 4,
+    }
+}
+
+/// The tooltip of a unit's button.
+fn train_help(kind: UnitKind) -> &'static str {
+    match kind {
+        UnitKind::Soldier => "Tough, short range, aims quickly, loud. Firearm: needs a munitions factory. Build time: 5 s. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
+        UnitKind::Ranger => "Fast and weak, draws the bow a while before every arrow, quiet. Build time: 4 s. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
+        UnitKind::Sniper => "Long range, one big shot - very loud. Firearm: needs a munitions factory. Build time: 8 s. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
+        UnitKind::Medic => "No attack. Beams at hurt units nearby (healing comes later). Build time: 6 s.",
+        UnitKind::MercSoldier => "Mercenary soldier: half again as tough, hits harder and shoots faster than a soldier. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Needs a munitions factory. Ctrl: 5 at once, Shift: on credit.",
+        UnitKind::MercRanger => "Mercenary ranger: half again as tough, hits harder and shoots faster than a ranger, quiet. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Ctrl: 5 at once, Shift: on credit.",
+        UnitKind::MercSniper => "Mercenary sniper: half again as tough and a bigger shot than a sniper - very loud. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Needs a munitions factory. Ctrl: 5 at once, Shift: on credit.",
+    }
+}
+
+/// The tooltip of a building's button: what it does. The price is in the title above it.
+fn place_help(kind: BuildingKind) -> &'static str {
+    match kind {
+        BuildingKind::Tent => "Tent (2 x 2). 4 colonists eat food at every payout and then pay gold, 2 workers for your buildings and units; shield down = infected. Needs power. Drag: a line.",
+        BuildingKind::Barracks => "Barracks (3 x 3, 800 HP). Trains soldiers, rangers, snipers and medics - the only building that does. Needs power: without enough it trains slower.",
+        BuildingKind::Wall => "Wall (1 x 1, 400 HP). Zombies have to tear it down. Drag: a line, diagonal too. Right click / Esc: stop building.",
+        BuildingKind::Gate => "Gate (3 x 1, 600 HP). Your units walk through the middle, zombies don't. Can go on walls (cheaper there, but walls + gate still cost more than the gate alone). R: turn.",
+        BuildingKind::Tower => "Tower (1 x 1, 800 HP). Right click it with units: up to 4 go in, shoot and see 2 tiles further and can't be hit. Needs 1 free tile to the next tower. Drag: a line.",
+        BuildingKind::Sawmill => "Sawmill (2 x 2). Wood from the forest and trees around it - the frame shows how far. Two sawmills share the trees they both reach. Needs power.",
+        BuildingKind::Mine => "Mine (2 x 2). Iron ore, coal and stone - whatever lies under it and up to 2 tiles around it (6 x 6, the frame). Put it right on the ore. Needs power and a wood workshop.",
+        BuildingKind::HunterCottage => "Hunter cottage (1 x 1). Food from the game in the forest around it. Needs power.",
+        BuildingKind::FishingHut => "Fishing hut (1 x 1). Food from the water around it. Needs power.",
+        BuildingKind::Farm => "Farm (3 x 3). Plants fields on the grass around it - food, a lot of it on open grass. Nothing grows on dirt (brown) or ore, and the farm itself has to stand on grass. Needs power and a wood workshop.",
+        BuildingKind::Windmill => "Windmill (2 x 2). A lot of power, needs nothing but its upkeep. Has to stand inside the grid. Needs a wood workshop.",
+        BuildingKind::CharcoalBurner => "Charcoal burner (2 x 2). Power, but it burns wood at every payout - without wood, none. Has to stand inside the grid.",
+        BuildingKind::WoodWorkshop => "Wood workshop (2 x 2). Makes nothing, but while one stands you can build the mine, the windmill and the tesla tower. Needs power.",
+        BuildingKind::TeslaTower => "Tesla tower (1 x 1). Carries the power further: a new circle of the grid around it. Has to stand inside the grid. Needs a wood workshop.",
+        BuildingKind::StoneWorkshop => "Stone workshop (2 x 2). Makes nothing, but while one stands you can build the munitions factory, the stone house, stone walls and stone towers. Needs power and a wood workshop.",
+        BuildingKind::MunitionsFactory => "Munitions factory (2 x 2). Makes nothing (ammunition is free), but while one stands the barracks can train soldiers and snipers - firearms. Needs power and a stone workshop.",
+        BuildingKind::StoneHouse => "Stone house (2 x 2). 16 colonists eat 8 food at every payout and pay gold, 8 workers. Goes on a tent too (an upgrade). Needs power and a stone workshop.",
+        BuildingKind::StoneWall => "Stone wall (1 x 1, 1000 HP). Goes on a wall too (an upgrade). Drag: a line. Needs a stone workshop.",
+        BuildingKind::StoneTower => "Stone tower (1 x 1, 2000 HP). Like the tower - up to 4 units inside - but much tougher. Goes on a tower too. Needs a stone workshop.",
+        BuildingKind::Stakes => "Stake trap (1 x 1). Zombies walk over it without attacking it and get hurt; every hit wears it down. Your units walk over it unharmed. Drag: a line. Needs a wood workshop.",
+        BuildingKind::CommandCenter => "The heart of the colony.",
+        BuildingKind::Market => "Market (3 x 3). Houses whose middle lies within 2 tiles of it pay +50 % gold (one market per house). At every payout it also sells what lies above 80 % of the storage - 1 good per 4 colonists of its houses (Q on it: selling on/off). Grows with your houses.",
+        BuildingKind::Bank => "Bank (2 x 2, 1200 HP). +2000 gold storage and 500 credit: when only gold is missing, hold Shift and you buy into it - no debt penalties, but 10 % interest per payout. If it falls, its share of that debt is gone - and the gold above the smaller storage. Can't be switched off. Needs a stone workshop.",
+        BuildingKind::Inn => "Inn (3 x 3). Hires mercenaries: stronger than veterans, dearer, double upkeep - but they need no workers. In debt they are the first to leave. Needs power and a stone workshop.",
+        BuildingKind::Barrel => "Explosive barrel (1 x 1). Takes one from the munitions factory's store. Any damage and it goes off: 200 damage to everyone within 2.5 tiles - other barrels too - and very loud. Drag: a line.",
     }
 }
 
@@ -416,7 +512,7 @@ pub enum HudHit {
 /// Where everything lies on screen, from left to right. Computed anew every frame, in case the window changes size.
 pub struct Layout {
     pub panel: Rect,
-    /// The diamond of the minimap (its frame is as high as the panel).
+    /// The minimap (its frame is as high as the panel).
     minimap: Rect,
     clock: Rect,
     groups: Rect,
@@ -458,7 +554,7 @@ impl Layout {
             return None;
         }
         if self.minimap.contains(mouse) {
-            // Also in the corners next to the diamond: limit to the area.
+            // Right at its edge: limit to the area.
             let p = self.minimap_to_world(mouse, area);
             return Some(HudHit::Minimap(area.clamp(p, 0.01)));
         }
@@ -493,28 +589,20 @@ impl Layout {
         Some(HudHit::Panel)
     }
 
-    // --- Minimap: the same isometric diamond as the map, only small – showing `area` ---
-
-    fn minimap_scale(&self, area: Region) -> f32 {
-        self.minimap.w / (area.size * TILE_W)
-    }
-
-    /// Where the corner `area.min` lies on the minimap: at the top in the middle.
-    fn minimap_origin(&self) -> Vec2 {
-        vec2(self.minimap.x + self.minimap.w / 2.0, self.minimap.y)
-    }
+    // --- Minimap: the map turned the same way as on screen, only small – `area` fills it exactly (both are twice as
+    // wide as high) ---
 
     fn world_to_minimap(&self, p: Vec2, area: Region) -> Vec2 {
-        self.minimap_origin() + iso(p - area.min) * self.minimap_scale(area)
+        self.minimap.point() + (to_frame(p) - area.min) / (area.max - area.min) * self.minimap.size()
     }
 
     fn minimap_to_world(&self, m: Vec2, area: Region) -> Vec2 {
-        iso_inverse((m - self.minimap_origin()) / self.minimap_scale(area)) + area.min
+        from_frame(area.min + (m - self.minimap.point()) / self.minimap.size() * (area.max - area.min))
     }
 
     // --- Where the individual fields lie ---
 
-    /// The frame around the minimap: as high as the other parts, the diamond in its middle.
+    /// The frame around the minimap: as high as the other parts, the minimap in its middle.
     fn minimap_frame(&self) -> Rect {
         Rect::new(self.minimap.x, self.clock.y, self.minimap.w, self.clock.h)
     }
@@ -638,11 +726,26 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
         let color = if ui.selected_buildings.contains(&building.id) { WHITE } else { building_color(building.kind) };
         diamond(building.corner(), building.far_corner() - building.corner(), color);
     }
+    // The villages of doom in red and the loot in its colour, like in TAB – once explored (in the editor all of them).
+    let explored = |p: Vec2| !fog || world.vision.is_explored(p.x.floor() as i32, p.y.floor() as i32);
+    for house in world.doom.iter().filter(|d| explored(d.center())) {
+        diamond(house.corner() - Vec2::splat(0.5), house.far_corner() - house.corner() + Vec2::ONE, DOOM_MINIMAP);
+    }
+    for loot in world.loot.iter().filter(|l| explored(l.pos)) {
+        let m = to_mini(loot.pos);
+        draw_rectangle(m.x - 1.0, m.y - 1.0, 2.5, 2.5, loot_color(loot.kind));
+    }
 
-    // Zombies only where someone sees them right now (in the editor all of them).
+    // Zombies only where someone sees them right now (in the editor all of them – the sleeping ones too, darker).
     for zombie in world.zombies.iter().filter(|z| area.contains(z.pos) && (!fog || world.vision.sees(z.pos))) {
         let m = to_mini(zombie.pos);
         draw_rectangle(m.x - 1.0, m.y - 1.0, 2.0, 2.0, ZOMBIE);
+    }
+    if !fog {
+        for sleeper in world.sleep.iter().filter(|s| area.contains(s.pos)) {
+            let m = to_mini(sleeper.pos);
+            draw_rectangle(m.x - 1.0, m.y - 1.0, 2.0, 2.0, Color { a: 0.5, ..ZOMBIE });
+        }
     }
     for unit in world.units.iter().filter(|u| !u.is_inside()) {
         let m = to_mini(unit.pos);
@@ -730,6 +833,7 @@ fn draw_selection(layout: &Layout, world: &World, ui: &Ui) {
     match view.as_slice() {
         [] => match ui.selected_zombie.and_then(|id| world.find_zombie(id)) {
             Some(z) => draw_zombie(layout, world, &world.zombies[z]),
+            None if ui.selected_place.is_some_and(|place| draw_place(layout, world, place)) => {}
             None => {
                 let inner = layout.info_inner();
                 draw_text("Nothing selected", inner.x + 4.0, inner.y + 20.0, 20.0, DIM);
@@ -738,7 +842,7 @@ fn draw_selection(layout: &Layout, world: &World, ui: &Ui) {
             }
         },
         [Pick::Unit(i)] => draw_single(layout, world, *i),
-        [Pick::Building(b)] => draw_building(layout, world, &world.buildings[*b]),
+        [Pick::Building(b)] => draw_building(layout, world, *b),
         _ => draw_icons(layout, world, ui, &view),
     }
 }
@@ -794,7 +898,19 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
     draw_fitted_left(&order, text.x, y, text.w, 15.0, WHITE);
     draw_wrapped(unit_text(unit.kind), text.x, y + 16.0, text.w, 14.0, 1, DIM);
 
-    let mut cells = vec![("HP", format!("{}/{}", unit.hp, stats.hp)), ("Damage", stats.damage.to_string()), ("Armor", stats.armor.to_string())];
+    let mut cells = vec![
+        ("HP", format!("{}/{}", unit.hp, stats.hp)),
+        ("Damage", world.army_damage(stats.damage).to_string()),
+        ("Armor", stats.armor.to_string()),
+        ("Upkeep", format!("-{}", stats.upkeep)),
+    ];
+    if stats.food > 0 {
+        cells.push(("Food", format!("-{}", stats.food)));
+    }
+    // Carrying a barrel: it doesn't shoot – D puts it down.
+    if unit.barrel {
+        cells.insert(0, ("Barrel", "D: drop".to_owned()));
+    }
     if stats.heals {
         cells.push(("Beam", format!("{}", stats.range)));
     } else {
@@ -819,6 +935,9 @@ fn unit_text(kind: UnitKind) -> &'static str {
         UnitKind::Ranger => "Fast and weak, draws the bow before every arrow, quiet.",
         UnitKind::Sniper => "Long range, one big shot - very loud.",
         UnitKind::Medic => "No attack. Beams at hurt units (healing comes later).",
+        UnitKind::MercSoldier => "Mercenary: tougher and stronger than a soldier, no worker - double upkeep, first to leave in debt.",
+        UnitKind::MercRanger => "Mercenary: tougher and stronger than a ranger, no worker - double upkeep, first to leave in debt.",
+        UnitKind::MercSniper => "Mercenary: tougher and stronger than a sniper, no worker - double upkeep, first to leave in debt.",
     }
 }
 
@@ -832,24 +951,86 @@ fn draw_zombie(layout: &Layout, world: &World, zombie: &Zombie) {
     draw_wrapped(world.zombie_doing(zombie), text.x, y, text.w, 15.0, 2, WHITE);
 
     let zombies = &data::get().zombies;
-    draw_cells(
-        layout,
-        &[
-            ("HP", format!("{}/{}", zombie.hp(), stats.hp)),
-            ("Damage", stats.damage.to_string()),
-            ("Armor", stats.armor.to_string()),
-            ("Hits", format!("{:.1} s", seconds(zombies.hit_cooldown))),
-            ("Speed", format!("{:.2}", zombie.speed())),
-            ("Sight", format!("{}", stats.sight)),
-            ("Hearing", format!("{}", zombies.hearing)),
-        ],
-    );
+    let mut cells = vec![
+        ("HP", format!("{}/{}", zombie.hp(), stats.hp)),
+        ("Damage", stats.damage.to_string()),
+        ("Armor", stats.armor.to_string()),
+        ("Hits", format!("{:.1} s", seconds(zombie.breed.attack_ticks()))),
+    ];
+    if zombie.breed.is_ranged() {
+        cells.push(("Range", format!("{}", stats.range)));
+    }
+    if stats.splash > 0.0 {
+        cells.push(("Splash", format!("{}", stats.splash)));
+    }
+    cells.extend([
+        ("Speed", format!("{:.2}", zombie.speed())),
+        ("Sight", format!("{}", stats.sight)),
+        ("Hearing", format!("{}", zombies.hearing)),
+    ]);
+    draw_cells(layout, &cells);
+}
+
+/// A house of doom or a pile of loot clicked on: what it is, what it holds and what it does. Returns `false` if it's
+/// gone (shot down, picked up) – then nothing is drawn.
+fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
+    let text = layout.text_column();
+    match place {
+        Place::Doom(id) => {
+            let Some(d) = world.find_doom(id) else {
+                return false;
+            };
+            let house = &world.doom[d];
+            let doom = &data::get().doom;
+            draw_portrait(layout, DOOM_MINIMAP, "!", RED);
+            let y = draw_title(layout, "Village of doom", (house.hp, doom.hp), (0, 0));
+            let about = if house.is_stirring() {
+                "STIRRING - a sound roused it, its zombies pour out and go there. Shoot it down and the rest come out at once - then it drops loot.".to_owned()
+            } else if house.inside > 0 {
+                format!("Asleep. Within {} tiles a few come out; noise nearby (shots, fights) and they pour out. Every hit lets one more out. Shoot it down for loot.", doom.wake_radius)
+            } else {
+                "Empty - shoot it down for its loot.".to_owned()
+            };
+            draw_wrapped(&about, text.x, y, text.w, 15.0, 3, WHITE);
+            let (w, h) = house.size;
+            draw_cells(
+                layout,
+                &[
+                    ("HP", format!("{}/{}", house.hp, doom.hp)),
+                    ("Inside", house.inside.to_string()),
+                    ("Armor", doom.armor.to_string()),
+                    ("Wakes", format!("{}", doom.wake_radius)),
+                    ("Size", format!("{w} x {h}")),
+                ],
+            );
+        }
+        Place::Loot(id) => {
+            let Some(l) = world.find_loot(id) else {
+                return false;
+            };
+            let loot = &world.loot[l];
+            let letter = if loot.kind == LootKind::Gold { "$" } else { &loot.kind.name()[..1] };
+            draw_portrait(layout, loot_color(loot.kind), letter, BORDER);
+            draw_text(&format!("Loot: {} {}", loot.amount, loot.kind.name().to_lowercase()), text.x, text.y + 18.0, 22.0, BRASS);
+            let about = if loot.guards > 0 {
+                format!("Walk onto it to pick it up - but zombies lie hidden around it and come out within {} tiles.", data::get().loot.wake_radius)
+            } else {
+                "Walk onto it to pick it up (right click it with your units).".to_owned()
+            };
+            draw_wrapped(&about, text.x, text.y + 44.0, text.w, 15.0, 3, WHITE);
+            let guarded = if loot.guards > 0 { "yes" } else { "no" };
+            draw_cells(layout, &[(loot.kind.name(), loot.amount.to_string()), ("Guarded", guarded.to_owned())]);
+        }
+    }
+    true
 }
 
 /// One building selected: picture, health, what it does – for the barracks the production queue, for a tower who
 /// sits in it – and its values below.
-fn draw_building(layout: &Layout, world: &World, building: &Building) {
+fn draw_building(layout: &Layout, world: &World, b: usize) {
+    let building = &world.buildings[b];
     let stats = building.stats();
+    let power = world.power();
     draw_portrait(layout, building_color(building.kind), &stats.letter, BORDER);
     let text = layout.text_column();
     let y = draw_title(layout, &stats.name, (building.hp, stats.hp), (building.shield, stats.max_shield()));
@@ -858,28 +1039,94 @@ fn draw_building(layout: &Layout, world: &World, building: &Building) {
     if stats.max_shield() > 0 {
         cells.push(("Shield", format!("{} %", building.shield * 100 / stats.max_shield())));
     }
+    // Every + and - in these boxes is per payout (`economy_every_hours`).
     if stats.colonists > 0 {
         cells.push(("Colonists", stats.colonists.to_string()));
-        cells.push(("Gold/h", format!("+{}", building.income())));
+    }
+    if stats.gold > 0 {
+        cells.push(("Gold", format!("+{}", building.paid)));
+    }
+    if stats.food > 0 {
+        cells.push(("Food", format!("-{}", stats.food)));
+    }
+    if stats.food_made > 0 {
+        cells.push(("Food", format!("+{}", stats.food_made)));
+    }
+    if stats.armor > 0 {
+        cells.push(("Armor", stats.armor.to_string()));
+    }
+    // What it gathers per payout, right now.
+    let rate = world.gather_rate(building.kind, building.tile, b, power.share(world, b));
+    for r in Resource::ALL.into_iter().filter(|r| rate[r.index()] > 0) {
+        cells.push((r.name(), format!("+{}", per_hour(rate[r.index()] as i64))));
+    }
+    // A market: its houses, the colonists in them, what it may sell and what it sold at the last payout. A house: what
+    // its market adds.
+    if building.kind == BuildingKind::Market {
+        let houses = world.market_houses(BuildingKind::Market.trade_area(building.tile), b);
+        cells.push(("Houses", houses.len().to_string()));
+        cells.push(("Buyers", world.customers(&houses).to_string()));
+        cells.push(("Limit", world.sell_limit(&houses).to_string()));
+        cells.push(("Sold", format!("+{}", building.sold_gold)));
+    }
+    if stats.colonists > 0 && world.market_bonus(b) > 0 {
+        cells.push(("Market", format!("+{} %", world.market_bonus(b))));
+    }
+    if stats.gold_storage > 0 {
+        cells.push(("Storage", format!("+{}", stats.gold_storage)));
+    }
+    if stats.credit > 0 {
+        cells.push(("Credit", stats.credit.to_string()));
+        cells.push(("Interest", format!("{} %", data::get().colony.credit_interest_percent)));
+    }
+    if building.kind == BuildingKind::CommandCenter {
+        cells.push(("Scans", format!("{}/{}", world.scan_charges, data::get().buildings.scan.charges)));
+        if let Some(seconds) = world.next_scan_in() {
+            cells.push(("Next", format!("{}:{:02}", seconds / 60, seconds % 60)));
+        }
+    }
+    // Machines: the noise it makes every few seconds while it works (`sim/sound.rs`).
+    if stats.noise > 0 {
+        cells.push(("Noise", stats.noise.to_string()));
+    }
+    // How far it gathers: tiles around its site, and whether the tiles under it count (`gather_range`, `gather_below`).
+    if building.kind.gathers().is_some() {
+        cells.push(("Range", stats.gather_range.to_string()));
+        cells.push(("Below", if stats.gather_below { "yes" } else { "no" }.to_owned()));
+    }
+    // Power: what it makes, how much of what it takes it gets, how far it carries it.
+    if stats.energy > 0 {
+        let made = if stats.burns_wood > 0 && !building.fuelled { 0 } else { stats.energy };
+        cells.push(("Power", format!("+{made}")));
+    }
+    if stats.burns_wood > 0 {
+        cells.push(("Wood", format!("-{}", stats.burns_wood)));
+    }
+    if stats.energy_use > 0 {
+        cells.push(("Power", format!("{} %", power.share(world, b) / 10)));
+    }
+    if stats.power_radius > 0.0 {
+        cells.push(("Reach", format!("{}", stats.power_radius)));
+    }
+    if stats.upkeep > 0 {
+        let upkeep = if building.off || building.infected { 0 } else { stats.upkeep };
+        cells.push(("Upkeep", format!("-{upkeep}")));
     }
     // What it gives (infected: nothing) or takes.
     if stats.workers > 0 {
         cells.push(("Workers", format!("+{}", if building.infected { 0 } else { stats.workers })));
     }
     if stats.worker_cost > 0 {
-        cells.push(("Workers", format!("-{}", stats.worker_cost)));
+        cells.push(("Workers", format!("-{}", if building.off { 0 } else { stats.worker_cost })));
     }
     cells.push(("Sight", format!("{}", stats.sight)));
     let (w, h) = stats.size;
     cells.push(("Size", format!("{w} x {h}")));
-    if stats.cost > 0 {
-        cells.push(("Cost", stats.cost.to_string()));
-    }
     if building.repair_left > 0 {
         cells.insert(1, ("Repair", format!("+{}", building.repair_left)));
     }
 
-    if building.kind == BuildingKind::Tower {
+    if building.kind.is_tower() {
         // One box per spot: the unit in it, or empty.
         let inside = world.garrison(building.id);
         for k in 0..data::get().buildings.tower_slots {
@@ -898,8 +1145,8 @@ fn draw_building(layout: &Layout, world: &World, building: &Building) {
         draw_cells(layout, &cells);
         return;
     }
-    if !building.kind.trains() {
-        draw_wrapped(&building_text(building), text.x, y, text.w, 15.0, 3, DIM);
+    if !building.kind.trains() && !building.kind.makes_barrels() {
+        draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 15.0, 3, DIM);
         draw_cells(layout, &cells);
         return;
     }
@@ -907,36 +1154,97 @@ fn draw_building(layout: &Layout, world: &World, building: &Building) {
     for i in 0..MAX_PRODUCTION {
         let r = layout.queue_rect(i);
         match building.production.get(i) {
-            Some(&kind) => {
-                draw_rectangle(r.x, r.y, r.w, r.h, kind_color(kind));
-                draw_centered(&kind.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+            Some(&product) => {
+                let (color, letter, name) = match product {
+                    Product::Unit(kind) => (kind_color(kind), kind.stats().letter.as_str(), kind.stats().name.as_str()),
+                    Product::Barrel => {
+                        let barrel = BuildingKind::Barrel.stats();
+                        (building_color(BuildingKind::Barrel), barrel.letter.as_str(), barrel.name.as_str())
+                    }
+                };
+                draw_rectangle(r.x, r.y, r.w, r.h, color);
+                draw_centered(letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
                 if i == 0 {
-                    let t = building.progress as f32 / kind.stats().build_time as f32;
+                    let t = building.progress as f32 / product.build_time().max(1) as f32;
                     draw_rectangle(r.x, r.bottom() - 5.0, r.w * t, 5.0, GREEN);
                 }
                 if r.contains(Vec2::from(mouse_position())) {
-                    draw_tooltip(&[&format!("{} - click to cancel", kind.stats().name)], r.x, layout.panel.y - 4.0);
+                    draw_tooltip(&[&format!("{name} - click to cancel")], r.x, layout.panel.y - 4.0);
                 }
             }
             None => draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER),
         }
     }
     cells.insert(1, ("Queue", format!("{}/{MAX_PRODUCTION}", building.production.len())));
-    cells.insert(2, ("Rally", if building.rally.is_some() { "set" } else { "none" }.to_owned()));
+    if building.kind.trains() {
+        cells.insert(2, ("Rally", if building.rally.is_some() { "set" } else { "none" }.to_owned()));
+    } else {
+        cells.insert(2, ("Barrels", format!("{}/{}", world.barrels, world.barrel_room())));
+    }
     draw_cells(layout, &cells);
 }
 
-/// What a building does, in a sentence or two – like TAB's text next to the portrait.
-fn building_text(building: &Building) -> String {
+/// What a building does, in a sentence or two – like TAB's text next to the portrait. What's wrong with it comes
+/// first, in capitals: infected, no power, hungry, out of wood.
+fn building_text(world: &World, power: &Power, b: usize) -> String {
+    let building = &world.buildings[b];
     let stats = building.stats();
+    let share = power.share(world, b);
+    if building.infected {
+        return "INFECTED - its colonists came out as zombies, everyone walks through it. Repair (F) cures it.".to_owned();
+    }
+    if building.off {
+        return "SWITCHED OFF - no upkeep, no workers, no power, and it does nothing. On/Off (Y) switches it on again.".to_owned();
+    }
+    if building.kind.on_grid() && power.grid_of[b].is_none() {
+        return "NO POWER - it stands outside the grid (its command center or tesla tower is gone).".to_owned();
+    }
+    if share < 1000 {
+        let g = power.grid_of[b].unwrap_or(0);
+        return format!("LOW POWER - its grid makes {} but needs {}: it works at {} %. Build a windmill or a charcoal \
+            burner.", power.made[g], power.used[g], share / 10);
+    }
+    if stats.colonists > 0 && !building.fed {
+        return "HUNGRY - no food last hour, so no gold. Build a hunter cottage, a fishing hut or a farm.".to_owned();
+    }
+    if stats.burns_wood > 0 && !building.fuelled {
+        return "OUT OF WOOD - no power until it gets wood again (it takes some at every payout).".to_owned();
+    }
+    if let Some((source, _)) = building.kind.gathers() {
+        let tiles = world.worked_tiles(building.kind, building.tile, b).len();
+        let what = match source {
+            Source::Forest => "forest",
+            Source::Water => "water",
+            Source::Ore => "ore",
+            Source::Fertile => "grass",
+        };
+        let place = if stats.gather_below { "under and around" } else { "around" };
+        return format!("Works {tiles} {what} tiles {place} it. Tiles another one of its kind already works don't count.");
+    }
     match building.kind {
-        BuildingKind::CommandCenter => "The heart of the colony - it builds everything. Lose it and the round is lost.".to_owned(),
+        BuildingKind::CommandCenter => "The heart of the colony - it builds everything and its power reaches far. Lose it and the round is lost.".to_owned(),
         BuildingKind::Wall => "Holds zombies back - they have to tear it down.".to_owned(),
         BuildingKind::Gate => "Your units walk through the middle - zombies have to tear it down.".to_owned(),
-        _ if building.infected => "INFECTED - its colonists came out as zombies, everyone walks through it. Repair (F) cures it.".to_owned(),
-        _ if stats.colonists > 0 => format!("{} colonists live here and pay gold. Shield down = infected.", stats.colonists),
+        BuildingKind::WoodWorkshop => "While it stands, the mine, the windmill, the tesla tower and the stake trap can be built.".to_owned(),
+        BuildingKind::StoneWorkshop => "While it stands, the munitions factory and the stone buildings can be built.".to_owned(),
+        BuildingKind::MunitionsFactory => "While it stands, the barracks can train soldiers and snipers. Makes barrels (Q) - right click it with units: each takes one along.".to_owned(),
+        BuildingKind::Market if !building.selling => "SELLING OFF - it keeps every good (Q switches selling on). Its houses still pay more.".to_owned(),
+        BuildingKind::Market => format!("Its houses pay +{} % gold. It sells what lies above {} % of the storage - at the last payout {} goods for {} gold.", stats.house_bonus_percent, data::get().buildings.sell_from_percent, building.sold_goods, building.sold_gold),
+        BuildingKind::Bank => format!("More room for gold, and {} credit: with Shift you may buy into it when only gold is missing - no penalties, {} % interest per payout. Falls: its share of that debt is gone.", stats.credit, data::get().colony.credit_interest_percent),
+        BuildingKind::Barrel => "Any damage and it goes off - hurting everyone around it, loudly.".to_owned(),
+        BuildingKind::Stakes => "Hurts every zombie walking over it - every hit wears it down.".to_owned(),
+        BuildingKind::TeslaTower => "Carries the power further - a circle of the grid around it.".to_owned(),
+        BuildingKind::Windmill | BuildingKind::CharcoalBurner => "Makes power for its grid.".to_owned(),
+        _ if stats.colonists > 0 => format!("{} colonists live here, eat and pay gold. Shield down = infected.", stats.colonists),
         _ => "Does nothing yet - but blocks the way.".to_owned(),
     }
+}
+
+/// Thousandths per payout as a short number: "2.5", "12".
+fn per_hour(milli: i64) -> String {
+    let tenths = (milli.abs() + 50) / 100;
+    let sign = if milli < 0 { "-" } else { "" };
+    if tenths % 10 == 0 { format!("{sign}{}", tenths / 10) } else { format!("{sign}{}.{}", tenths / 10, tenths % 10) }
 }
 
 /// What an icon in the selection shows: type (for Tab), colour, letter, name, hit points, shield.
@@ -1028,7 +1336,9 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
         // Highlighted: the command waiting for its target, the building on the mouse, the chosen formation.
         let waiting = ui.targeting == Some(button)
             || (button.places().is_some() && ui.placing == button.places())
-            || button.formation().is_some_and(|shape| shape == ui.formation);
+            || button.formation().is_some_and(|shape| shape == ui.formation)
+            || (button == Button::Switch && ui.switching_on(world))
+            || (button == Button::Sell && ui.selling(world));
         let bg = if waiting {
             WAIT_BG
         } else if hover {
@@ -1041,7 +1351,9 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
         // Too expensive right now – gold or workers: the name dims and the price turns red (like StarCraft's missing
         // minerals or supply). Planned: everything dim – the button only shows where it will be.
         let cost = shown_cost(button, world, ui);
-        let affordable = cost.is_none_or(|cost| cost <= world.gold) && button.workers() <= free_workers;
+        let goods = button.places().is_none_or(|kind| world.can_afford_goods(kind) && world.unlocked(kind))
+            && button.trains().is_none_or(|kind| world.unit_unlocked(kind));
+        let affordable = cost.is_none_or(|cost| cost <= world.gold) && button.workers() <= free_workers && goods;
         // Repair with nothing to repair: dim like a planned button.
         let idle = button == Button::Repair && cost.is_none();
         let text = if planned || idle || !affordable { DIM } else { GLOW };
@@ -1063,11 +1375,7 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
     // Tooltip above the command card, like in StarCraft – with the price.
     if let Some(button) = hovered {
         let title = match (shown_cost(button, world, ui), button) {
-            (Some(cost), _) => match button.workers() {
-                0 => format!("{} ({}) - {cost} gold", button.title(), button.key_label()),
-                1 => format!("{} ({}) - {cost} gold, 1 worker", button.title(), button.key_label()),
-                n => format!("{} ({}) - {cost} gold, {n} workers", button.title(), button.key_label()),
-            },
+            (Some(cost), _) => format!("{} ({}) - {}", button.title(), button.key_label(), price_text(button, cost, world)),
             (None, Button::Repair) => {
                 let plan = world.repair_plan(ui.selected_building_indices(world));
                 format!("{} ({}) - {}", button.title(), button.key_label(), nothing_to_repair(&plan))
@@ -1077,6 +1385,43 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
         };
         draw_tooltip(&[&title, button.help()], layout.card.x, layout.panel.y - 4.0);
     }
+}
+
+/// The whole price of a button for its tooltip: gold, wood, stone, workers – and what has to stand first.
+fn price_text(button: Button, gold: u32, world: &World) -> String {
+    let mut parts = vec![format!("{gold} gold")];
+    if let Some(kind) = button.places() {
+        let s = kind.stats();
+        if s.cost_wood > 0 {
+            parts.push(format!("{} wood", s.cost_wood));
+        }
+        if s.cost_stone > 0 {
+            parts.push(format!("{} stone", s.cost_stone));
+        }
+        if s.cost_coal > 0 {
+            parts.push(format!("{} coal", s.cost_coal));
+        }
+    }
+    match button.workers() {
+        0 => {}
+        1 => parts.push("1 worker".to_owned()),
+        n => parts.push(format!("{n} workers")),
+    }
+    let upkeep = button.places().map(|kind| kind.stats().upkeep).or(button.trains().map(|kind| kind.stats().upkeep));
+    if let Some(upkeep) = upkeep.filter(|&u| u > 0) {
+        parts.push(format!("{upkeep} gold/h upkeep"));
+    }
+    if let Some(food) = button.trains().map(|kind| kind.stats().food).filter(|&f| f > 0) {
+        parts.push(format!("{food} food/h"));
+    }
+    let mut text = parts.join(", ");
+    let building = button.places().filter(|&kind| !world.unlocked(kind)).and_then(|kind| kind.stats().requires);
+    let unit = button.trains().filter(|&kind| !world.unit_unlocked(kind)).and_then(|kind| kind.stats().requires);
+    let needed = building.or(unit);
+    if let Some(needed) = needed {
+        text += &format!(" - needs a {} first", needed.stats().name.to_lowercase());
+    }
+    text
 }
 
 /// The price on a button: what it trains or places – for Repair what repairing the selection costs right now
@@ -1119,8 +1464,8 @@ fn draw_repair_all(layout: &Layout, world: &World) {
     }
 }
 
-/// The colony's stock on the right, like TAB's: people on the left, goods with a bar on the right. Only colonists
-/// and gold exist yet – the rest is shown dim until the economy comes (DESIGN.md 5).
+/// The colony's stock on the right, like TAB's: people, food and power on the left, goods with a bar on the right –
+/// with what comes in (or goes out) per payout.
 fn draw_stock(layout: &Layout, world: &World) {
     let r = layout.stock;
     let mouse = Vec2::from(mouse_position());
@@ -1130,52 +1475,74 @@ fn draw_stock(layout: &Layout, world: &World) {
     let (right_x, right_w) = (left_x + left_w + 8.0, r.right() - 10.0 - (left_x + left_w + 8.0));
     let mut tooltip: Option<[&str; 2]> = None;
 
-    // People: colonists and workers (real), the rest later.
+    let power = world.power();
+    let flow = world.flow(&power);
+    // People, food, power.
     let colonists: u32 = world.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().colonists).sum();
     let (used, workers) = world.workers();
     let workers_help = "Free / all. Tents (and the command center) give them, every unit and most buildings take some \
         as long as they live or stand. None free: nothing new. An infected tent gives none.";
-    let people: [(&str, Option<String>, &str); 4] = [
-        ("Colonists", Some(colonists.to_string()), "The colonists living in your houses - each pays gold every hour."),
-        ("Workers", Some(format!("{}/{workers}", workers.saturating_sub(used))), workers_help),
-        ("Food", None, "Feeds the houses - comes with the economy."),
-        ("Energy", None, "Powers houses, machines and towers - comes with the economy."),
+    let (made, needed): (u32, u32) = (power.made.iter().sum(), power.used.iter().sum());
+    let food = world.stock.get(Resource::Food);
+    let food_flow = flow[Resource::Food.index()];
+    let food_text = if food_flow == 0 { food.to_string() } else { format!("{food} ({})", signed(food_flow)) };
+    let power_help = "Needed / made in all grids. The command center makes some, windmills and charcoal burners more. \
+        Not enough: every building in that grid works slower.";
+    let people: [(&str, String, bool, &str); 4] = [
+        ("Colonists", colonists.to_string(), false, "The colonists living in your houses (and the command center) - fed, they pay gold at every payout."),
+        ("Workers", format!("{}/{workers}", workers.saturating_sub(used)), false, workers_help),
+        ("Food", food_text, food_flow < 0 && food < 10, "Every house and every soldier eats some at every payout. The command center, hunter cottages, fishing huts and farms bring it in - what doesn't fit in the storage is lost."),
+        ("Energy", format!("{needed}/{made}"), needed > made, power_help),
     ];
-    for (k, (label, value, help)) in people.into_iter().enumerate() {
+    for (k, (label, text, short, help)) in people.into_iter().enumerate() {
         let y = row(k);
         draw_text(label, left_x, y + 13.0, 13.0, DIM);
-        let (text, color) = match value {
-            Some(v) => (v, GLOW),
-            None => ("-".to_owned(), BORDER),
-        };
-        draw_text(&text, left_x, y + 31.0, 19.0, color);
+        draw_fitted_left(&text, left_x, y + 31.0, left_w, 19.0, if short { TOO_DEAR } else { GLOW });
         if Rect::new(left_x, y, left_w, row_h).contains(mouse) {
             tooltip = Some([label, help]);
         }
     }
 
-    // Goods: gold (real) with what comes in per hour, the rest later.
-    let gold_help = "Pays for units and buildings. The houses pay it every hour.";
-    let goods: [(&str, Option<u32>, &str); 5] = [
-        ("Gold", Some(world.gold), gold_help),
-        ("Wood", None, "From the saw mill - comes with the economy."),
-        ("Stone", None, "From the quarry - comes with the economy."),
-        ("Iron", None, "From the foundry - comes with the economy."),
-        ("Oil", None, "From oil pumps on the oil nodes - comes with the economy."),
+    // Goods: gold and the stock, with what comes in (or goes out) per payout. Gold: what was paid last payout minus
+    // the upkeep now – in debt it shows the debt, red.
+    let credit_help = format!("IN THE BANKS' CREDIT ({} of {}) - no penalties, but {} gold interest at the next payout. New gold pays it off first. With Shift you can buy into the rest of it.", world.debt.min(world.credit_line()), world.credit_line(), world.interest_due());
+    let gold_help = match world.debt_stage() {
+        DebtStage::None if world.debt > 0 => credit_help.as_str(),
+        DebtStage::None => "Pays for units and buildings. The command center and fed houses pay it at every payout, units and running buildings cost upkeep. What doesn't fit in the storage (more with banks) is lost.",
+        DebtStage::Debt => "IN DEBT - the upkeep was more than your gold. Units do less damage and shoot slower. Switch buildings off (Y)?",
+        DebtStage::Deep => "DEEP IN DEBT - units do much less damage, shoot and walk slower. Soon they desert.",
+        DebtStage::Desert => "UNITS DESERT - every few seconds one leaves for good, until the debt is smaller.",
+    };
+    let net = (world.income() as i64 - world.upkeep() as i64) * 1000;
+    let good = |r: Resource| (world.stock.get(r), world.storage(r), flow[r.index()]);
+    let goods: [(&str, (u32, u32, i64), &str); 5] = [
+        ("Gold", (world.gold, world.gold_storage(), net), gold_help),
+        ("Wood", good(Resource::Wood), "From sawmills. Buildings cost it, charcoal burners burn it."),
+        ("Stone", good(Resource::Stone), "From mines on stone patches. Buildings cost it."),
+        ("Iron ore", good(Resource::Iron), "From mines on iron patches - the foundry will make iron of it."),
+        ("Coal", good(Resource::Coal), "From mines on coal patches - for the foundry and the coal plant later."),
     ];
-    for (k, (label, value, help)) in goods.into_iter().enumerate() {
+    for (k, (label, (value, limit, per_hour), help)) in goods.into_iter().enumerate() {
         let y = row(k);
         draw_text(label, right_x, y + 13.0, 13.0, DIM);
-        if k == 0 {
-            draw_right(&format!("+{}/h", world.income()), right_x + right_w, y + 13.0, 13.0, GLOW);
+        if per_hour != 0 {
+            let color = if per_hour < 0 { TOO_DEAR } else { GLOW };
+            let every = data::get().colony.economy_every_hours;
+            draw_right(&format!("{}/{every}h", signed(per_hour)), right_x + right_w, y + 13.0, 13.0, color);
         }
         let bar = Rect::new(right_x, y + 17.0, right_w, 16.0);
         draw_rectangle(bar.x, bar.y, bar.w, bar.h, BOX_BG);
+        // How full the storage is – full, and what comes in is lost.
+        let full = (value as f32 / limit.max(1) as f32).min(1.0);
+        draw_rectangle(bar.x, bar.y, bar.w * full, bar.h, if value >= limit { STORAGE_FULL } else { STORAGE });
         draw_rectangle_lines(bar.x, bar.y, bar.w, bar.h, 1.0, BORDER);
-        match value {
-            Some(v) => draw_centered(&v.to_string(), bar.x + bar.w / 2.0, bar.bottom() - 3.0, 16.0, WHITE),
-            None => draw_centered("-", bar.x + bar.w / 2.0, bar.bottom() - 3.0, 16.0, BORDER),
-        }
+        // In debt the gold shows the debt: yellow while it's all inside the banks' credit, red beyond it.
+        let (value, color) = match label {
+            "Gold" if world.debt > 0 && world.penalty_debt() == 0 => (format!("-{} of {}", world.debt, world.credit_line()), KEY),
+            "Gold" if world.debt > 0 => (format!("-{}", world.debt), TOO_DEAR),
+            _ => (format!("{value}/{limit}"), WHITE),
+        };
+        draw_centered(&value, bar.x + bar.w / 2.0, bar.bottom() - 3.0, 16.0, color);
         if Rect::new(right_x, y, right_w, row_h).contains(mouse) {
             tooltip = Some([label, help]);
         }
@@ -1183,6 +1550,11 @@ fn draw_stock(layout: &Layout, world: &World) {
     if let Some(lines) = tooltip {
         draw_tooltip(&lines, r.x, layout.panel.y - 4.0);
     }
+}
+
+/// Thousandths per payout with a sign: "+2.5", "-1".
+fn signed(milli: i64) -> String {
+    if milli > 0 { format!("+{}", per_hour(milli)) } else { per_hour(milli) }
 }
 
 /// A box with text above the panel. `x`: left edge (or right edge if there's not enough room),
@@ -1297,6 +1669,10 @@ mod tests {
     fn no_two_buttons_share_a_spot() {
         let mut cards: Vec<Vec<Button>> =
             vec![UNIT_BUTTONS.to_vec(), COMMAND_CENTER_BUTTONS.to_vec(), BARRACKS_BUTTONS.to_vec(), TOWER_BUTTONS.to_vec()];
+        // Every building's card gets On/Off when it can be switched off (`Ui::card`).
+        for card in [BARRACKS_BUTTONS.as_slice(), &TOWER_BUTTONS, &REPAIR_BUTTONS] {
+            cards.push(card.iter().copied().chain([Button::Switch]).collect());
+        }
         let menus = [Submenu::Colonists, Submenu::Resources, Submenu::Energy, Submenu::Industry, Submenu::Military, Submenu::Defense, Submenu::Wonders];
         cards.extend(menus.map(menu_buttons));
         for card in &cards {
