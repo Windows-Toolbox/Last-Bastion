@@ -13,7 +13,8 @@
 use macroquad::math::Vec2;
 
 use super::units::Intent;
-use super::World;
+use super::zombies::Breed;
+use super::{slide, World, TICKS_PER_SECOND};
 
 /// The noise of one shot (`noise` in `data\units.json`), as a whole number for the sound grid.
 fn shot_noise(noise: f32) -> u32 {
@@ -87,7 +88,7 @@ impl World {
             // 4. Shoot.
             unit.aim = 0;
             unit.cooldown = stats.cooldown * 1000 / keep;
-            let damage = (stats.damage * keep / 1000).max(1);
+            let damage = (unit.damage() * keep / 1000).max(1);
             match intent.target {
                 Some(Target::Zombie(z)) => {
                     self.shots.push((unit.pos, to));
@@ -97,6 +98,13 @@ impl World {
                     zombie.hp = zombie.hp.saturating_sub(damage);
                     if !zombie.is_alive() {
                         unit.kills += 1;
+                    } else if stats.knockback > 0.0 {
+                        // The spear pushes it back – a big one less: as big as a walker the whole way, a fat one about
+                        // half, a giant a quarter. It slides along what's in the way, like walking.
+                        let away = (zombie.pos - unit.pos).normalize_or_zero();
+                        let size = Breed::Walker.stats().radius / zombie.breed.stats().radius;
+                        let push = stats.knockback * size.min(1.0);
+                        zombie.pos = slide(zombie.pos, away * push, |x, y| self.map.is_blocked(x, y));
                     }
                     // Whoever survives the shot comes for you – it and a few around it through the gap, if there
                     // is one (`zombies.rs`). The ones around it noticed even if it fell.
@@ -105,8 +113,11 @@ impl World {
                     // And the shot makes noise where it was fired – it adds up (TAB's noise, `sound.rs`).
                     self.make_colony_sound(from, shot_noise(stats.noise));
                 }
-                // For now only the beam – healing comes later.
-                Some(Target::Ally(_)) => self.beams.push((unit.pos, to)),
+                // The beam always shows whom it's on – it heals only out of the fight (`heal`).
+                Some(Target::Ally(a)) => {
+                    self.beams.push((unit.pos, to));
+                    self.heal(i, a);
+                }
                 // A house of doom: hit – a few more come out of it (`doom.rs`) – and the shot makes noise like any other.
                 Some(Target::Doom(d)) => {
                     self.shots.push((unit.pos, to));
@@ -117,6 +128,22 @@ impl World {
                 None => {}
             }
         }
+    }
+
+    /// Medic `m` beams at unit `a`: it heals `heal_per_second` – but only if `a` hasn't been hit for
+    /// `heal_after_seconds`. Not like StarCraft's medic, who keeps a whole army standing in the middle of a fight: here
+    /// the wounded have to step back first. Up to its full hit points (a veteran's more).
+    fn heal(&mut self, m: usize, a: usize) {
+        let stats = self.units[m].stats();
+        if self.tick.saturating_sub(self.units[a].hurt_at) < stats.heal_after as u64 {
+            return;
+        }
+        let medic = &mut self.units[m];
+        medic.heal += (stats.heal_per_second * 1000.0 / TICKS_PER_SECOND) as u32;
+        let whole = medic.heal / 1000;
+        medic.heal %= 1000;
+        let other = &mut self.units[a];
+        other.hp = (other.hp + whole).min(other.max_hp());
     }
 
     /// The target the unit has been aiming at, if it's still worth it: alive, in range and in sight (and for medics
@@ -133,7 +160,7 @@ impl World {
                 .find_unit(id)
                 .filter(|&a| {
                     let other = &self.units[a];
-                    other.hp < other.stats().hp && !other.is_inside() && self.in_shot(unit.pos, other.pos, unit.range())
+                    other.hp < other.max_hp() && !other.is_inside() && self.in_shot(unit.pos, other.pos, unit.range())
                 })
                 .map(Target::Ally),
             Aim::Doom(id) => self
@@ -204,9 +231,10 @@ impl World {
         best.map(|(_, d)| d)
     }
 
-    /// What one shot of unit `i` does to zombie `z`: the damage (less in debt) minus the zombie's armor, at least 1.
+    /// What one shot of unit `i` does to zombie `z`: the damage (a veteran's more, less in debt) minus the zombie's
+    /// armor, at least 1.
     fn shot_damage(&self, i: usize, z: usize) -> u32 {
-        self.army_damage(self.units[i].stats().damage).saturating_sub(self.zombies[z].breed.stats().armor).max(1)
+        self.army_damage(self.units[i].damage()).saturating_sub(self.zombies[z].breed.stats().armor).max(1)
     }
 
     /// The nearest living zombie within `range` that's in sight and that `accept` takes (by its index).
@@ -246,7 +274,7 @@ impl World {
         let mut best: Option<(f32, usize)> = None;
         for (i, other) in self.units.iter().enumerate() {
             let d = other.pos.distance(pos);
-            if i == me || other.hp >= other.stats().hp || d > range || other.is_inside() {
+            if i == me || other.hp >= other.max_hp() || d > range || other.is_inside() {
                 continue;
             }
             if best.is_none_or(|(best_d, _)| d < best_d) && self.map.clear_sight(pos, other.pos) {
@@ -256,7 +284,7 @@ impl World {
         best.map(|(_, i)| i)
     }
 
-    /// Can a unit at `from` shoot (or beam) at `to`: in range and no forest or tree in between?
+    /// Can a unit at `from` shoot (or beam) at `to`: in range and no forest in between?
     pub(super) fn in_shot(&self, from: Vec2, to: Vec2, range: f32) -> bool {
         from.distance(to) <= range && self.map.clear_sight(from, to)
     }

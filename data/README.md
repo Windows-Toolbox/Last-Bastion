@@ -24,8 +24,9 @@ Wert fehlt), läuft das Spiel mit den alten Werten weiter und zeigt oben links e
 
 ## `units.json` – Einheiten
 
-Ein Block pro Typ: `soldier`, `ranger`, `sniper`, `medic` – und die Söldner `merc_soldier`, `merc_ranger`,
-`merc_sniper` (aus dem Gasthaus). Die Werte sind (fast) die aus *They Are Billions*.
+Ein Block pro Typ: `soldier`, `ranger`, `sniper`, `medic`, `spearman` (der Speerträger) – und die Söldner
+`merc_soldier`, `merc_ranger`, `merc_sniper` (aus dem Gasthaus). Die Werte sind (fast) die aus *They Are Billions*.
+Dazu der Block `veterans` (unten).
 
 Ein Schuss geht wie in StarCraft: **drehen** (bis die Einheit zum Ziel schaut) → **nachladen** abwarten (zählt ab dem
 letzten Schuss) → **zielen** → Schuss. Ein Schuss dauert also `aim_seconds + cooldown_seconds` – so viel kleiner als
@@ -52,8 +53,20 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 | `trained_in` | Wo sie ausgebildet wird: `"Barracks"` (weglassen) oder `"Inn"` (die Söldner) |
 | `mercenary` | `true` = Söldner: bei Schulden geht er zuerst, schon ab Stufe 2 (`colony.json`), und trägt eine goldene Marke. Weglassen = `false` |
 | `noise` | **Lärm pro Schuss** wie in TAB (Ranger 1, Soldat 3, Scharfschütze 10). Er sammelt sich dort, wo geschossen wird – ein langer Kampf wird immer lauter (siehe `sound.json`) |
-| `heals` | `true` = schießt nicht, sondern richtet den Strahl auf eigene Einheiten (Medic) |
+| `heals` | `true` = schießt nicht, sondern richtet den Strahl auf eigene Einheiten (Medic) … |
+| `heal_per_second` | … und heilt so viele HP pro Sekunde … |
+| `heal_after_seconds` | … aber nur eine Einheit, die so lange nicht getroffen wurde – kein Heilen mitten im Kampf (nicht wie SC2) |
+| `knockback` | Nahkampf (Speerträger): jeder Treffer stößt den Zombie so viele Kacheln zurück – einen großen weniger (Walker-Größe ganz, Fat ≈ halb, Riese ≈ ein Viertel). Weglassen = 0 |
 | `sprite` | Nur die Optik: ihr Bild in `assets\` (`"test/figure"` = `assets\test\figure.json`, siehe `assets\README.md`). Weglassen = Kästchen |
+
+**Veteranen** (`veterans`): jeder Zombie, der stirbt, gibt seine Erfahrung (`xp` in `zombies.json`), geteilt unter
+deinen Einheiten im Umkreis – ein Veteran nimmt einen halben Anteil. Söldner nehmen nichts (sie sind schon besser).
+
+| Wert | Bedeutung |
+|---|---|
+| `xp` | So viel Erfahrung, und die Einheit ist **Veteran** – silberne Marke, desertiert bei Schulden dreimal seltener |
+| `share_radius` | Einheiten in so vielen Kacheln um den toten Zombie teilen sich seine Erfahrung |
+| `hp_percent`, `damage_percent` | So viel Prozent mehr HP (kommen sofort dazu) und Schaden hat ein Veteran |
 
 ## `buildings.json` – Gebäude
 
@@ -90,7 +103,8 @@ Pfahlfalle), `market`, `bank`, `inn` (das Gasthaus – bildet die Söldner aus),
 | `gold_storage`, `credit` | Bank: so viel mehr Gold passt ins Lager, und so viel **Dispo** gibt sie – mit Shift darf man so weit ins Minus kaufen, ohne Schuldenstrafen (Zinsen: `colony.json`) |
 | `barrel_storage` | Munitionsfabrik: so viele Sprengfässer fasst ihr Lager |
 | `noise` | **Lärm pro Arbeitstakt** (`work_every_seconds` in `sound.json`), solange es arbeitet – mal Stromanteil, aus/infiziert/ohne Holz still. Jägerhütte 50, Sägewerk und Munitionsfabrik 100, Mine und Köhlerei 150. Weglassen = 0 |
-| `gather_per_tile` | Sammler: so viel bringt jede passende Kachel pro Abrechnung (bei vollem Strom). Was passt, steht im Code: Sägewerk und Jäger Wald + Bäume, Fischer Wasser, Mine Erz (auch unter sich), Farm Gras (nicht Erde, nicht Erz – und sie selbst steht nur auf Gras) |
+| `gather_per_tile` | Sammler: so viel bringt jede passende Kachel pro Abrechnung (bei vollem Strom). Was passt, steht im Code: Sägewerk und Jäger Wald, Fischer Wasser, Mine Erz (auch unter sich), Farm Gras (nicht Erde, nicht Erz – und sie selbst steht nur auf Gras) |
+| `build_seconds` | **Bauzeit** wie TAB: so lange baut es sich selbst, nachdem es platziert ist – kurz, länger je größer und je höher im Techtree. Bis dahin tut es nichts (keine Arbeiter, kein Gold, kein Strom, keine Ausbildung), nimmt aber schon seine Arbeiter, und Zombies können es treffen. Weglassen oder 0 = steht sofort. Im Editor steht alles sofort |
 | `repair_cost` | Gold für eine **volle** Reparatur (von 0 auf volle HP + Schild); eine kleinere kostet ihren Anteil. Bezahlt beim Start. Später kommen Holz, Stein … dazu |
 | `sight` | Sichtweite ab der Mitte |
 | `height` | Nur die Optik: wie hoch es gezeichnet wird |
@@ -105,6 +119,7 @@ Dazu für alle:
 | `zombie_free_radius` | So viele Kacheln um einen Bauplatz darf kein Zombie stehen |
 | `replace_refund_percent` | Wird ein Gebäude überbaut (Tor auf Mauern), kommt so viel Prozent seines Preises zurück. Unter 100 bleiben, sonst wären „erst Mauern, dann Tor“ billiger als das Tor |
 | `repair_seconds` | So viele Sekunden dauert eine volle Reparatur – eine kleinere entsprechend kürzer |
+| `build_start_percent` | Ein Gebäude im Bau fängt mit so viel Prozent seiner HP an und wächst bis voll; den Schild hat es erst fertig. Ein Treffer im Bau bleibt (später reparieren) |
 | `trap_every_seconds` | So oft treffen Fallen die Zombies auf ihnen |
 | `sell_from_percent`, `sell_prices` | Märkte verkaufen nur, was über so viel Prozent des Lagers liegt, zu diesen Preisen (Gold pro Einheit: `wood`, `stone`, `iron`, `coal`, `food`) |
 | `blast` | Sprengfass: `cost` Gold + `cost_coal` Kohle und `build_seconds` in der Munitionsfabrik. Geht es hoch: `damage` an allen bis `radius` Kacheln (Zombies und Einheiten minus Rüstung, Gebäude wie ein Treffer, Häuser der Dörfer wie ein Schuss), so laut wie `noise`. Wer eins trägt, läuft `carry_slow_percent` langsamer und schießt nicht |
@@ -113,7 +128,8 @@ Dazu für alle:
 ## `zombies.json` – Zombies
 
 `walker`, `runner`, `fat` (TABs „Chubby“), `armored` (TABs gepanzerter Runner, im Spiel „Riot“), `spitter` (TABs
-Venom) und `infested` (StarCraft 2s Infested Marine), je mit:
+Venom), `infested` (StarCraft 2s Infested Marine), `screamer` (schreit, wenn er dich sieht) und `giant` (TABs Riese,
+etwas kleiner – wie viele: `giants` der Schwierigkeit), je mit:
 
 | Wert | Bedeutung |
 |---|---|
@@ -123,13 +139,15 @@ Venom) und `infested` (StarCraft 2s Infested Marine), je mit:
 | `hp` | Lebenspunkte |
 | `armor` | Wird von jedem Schuss abgezogen (mindestens 1 Schaden kommt immer durch) |
 | `damage` | Schaden pro Treffer – beim Spitter an jedem im Spritzer |
-| `sight` | So weit sieht er Einheiten (nicht durch Wald und Bäume). TAB: Walker 5, Runner 6, Fat 5 |
+| `sight` | So weit sieht er Einheiten (nicht durch Wald). TAB: Walker 5, Runner 6, Fat 5 |
 | `stroll` | Als **Wanderer** geht er pro Ausflug höchstens so weit (Kacheln, in x und y) – von da, wo er gerade steht, ohne festen Platz: mit der Zeit überall hin. Je seltener die Art, desto weiter: Walker 8, Runner 14, Riot 18, Infested 22, Spitter 24, Fat 30. Nie näher ans Kommandozentrum als `keep_out` seiner Art in der Schwierigkeit (`game_difficulties.json`) |
 | `radius` | Wie groß er ist (Kacheln): so weit halten andere Zombies und Einheiten Abstand, und so viel weiter reicht er |
 | `range` | **Fernkampf**: so weit schießt er (Kacheln) – über Mauern, nicht durch Wald. Weglassen = 0: er muss dich berühren. Infested 4,5 = knapp unter dem Soldaten (5) |
 | `splash` | Sein Schuss trifft jeden so nah am Einschlag (Spitter): Einheiten und Gebäude, keine Zombies. Weglassen = nur das Ziel |
 | `attack_seconds` | Zeit zwischen zwei Angriffen. Weglassen = `hit_every_seconds` |
 | `projectile_speed` | Sein Schuss fliegt so viele Kacheln pro Sekunde und landet, wo das Ziel stand – wer rechtzeitig weggeht, wird nicht getroffen (Spitter). Weglassen = trifft sofort |
+| `xp` | Erfahrung, wenn er stirbt – geteilt unter deinen Einheiten in der Nähe (`veterans` in `units.json`). Weglassen = 1 |
+| `scream`, `scream_every_seconds` | Screamer: sieht er eine Einheit, schreit er – so viel Lärm, wo er steht (holt die Zombies um ihn, weckt Schlafende; zählt nicht zur Unruhe) –, und frühestens nach so vielen Sekunden wieder. Weglassen = 0, schreit nicht |
 | `sprite` | Nur die Optik: sein Bild in `assets\`, wie bei den Einheiten. Weglassen = Kästchen |
 
 Dazu für alle:
@@ -175,6 +193,7 @@ etwas sie weckt (DESIGN.md 8.5).
 | `inside_step` | Wer **im Ring** seiner Art steht (`keep_out` der Schwierigkeit – angelockt, Pech gehabt), bummelt von dort zufällig weiter: pro Ausflug höchstens so viele Kacheln näher ans Kommandozentrum. Ausflüge weiter hinein fallen weg – im Ganzen bummelt er also wieder hinaus. Pro Zombie wird dafür nichts gespeichert |
 | `pack` | `[wenigste, meiste]`: sie liegen in Grüppchen auf je einer Kachel, eine Gruppe pro Kachel – also nie mehr als `meiste` auf einer Kachel (wie TAB: bis 3). `[3, 3]` = überall genau 3 (dann ≈ doppelt so viele möglich, Regler bis 2.000 reicht dann nicht mehr ganz) |
 | `mix` | Welche Arten außer Walkern: je `breed` (Name wie in den Dateien), `from` (ab so weit draußen) und `share` (so ein Anteil der Zombies dort). Der Rest sind Walker. Gilt auch für die Villages of Doom und die Wächter der Beute. Näher am Kommandozentrum als `keep_out` ihrer Art (Schwierigkeit) wird eine Art zum Walker |
+| `giants_from` | Die Riesen (`giants` der Schwierigkeit) liegen mindestens so weit draußen (Anteil des Wegs wie `from`) – schlafend, sie bummeln und wachen wie alle |
 
 ## `doom.json` – Villages of Doom
 
@@ -275,9 +294,10 @@ gewählt ist – und für eine Karte, deren Schwierigkeit es nicht (mehr) gibt. 
 | `start_gold`, `start_wood` | Gold und Holz zu Beginn (der übrige Vorrat startet leer). Im Editor pro Karte änderbar |
 | `start_soldiers`, `start_rangers`, `start_snipers` | Einheiten zu Beginn |
 | `roaming_zombies` | Streuner zu Beginn, pro 1.000 Kacheln, auf denen sie stehen können – in Grüppchen von `pack` (`roaming.json`), also füllen ≈ 2.000 fast jede Kachel |
-| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`): so nah ans Kommandozentrum (Kacheln) kommt keiner – nicht zu Beginn, nicht beim Bummeln (auch nicht auf dem Weg zum Ziel). Wer angelockt oder mit einer Welle kommt, kümmert sich nicht darum – und bummelt danach wieder hinaus |
+| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `screamer`, `giant`): so nah ans Kommandozentrum (Kacheln) kommt keiner – nicht zu Beginn, nicht beim Bummeln (auch nicht auf dem Weg zum Ziel). Wer angelockt oder mit einer Welle kommt, kümmert sich nicht darum – und bummelt danach wieder hinaus |
 | `villages_percent`, `village_houses_percent` | So viel Prozent so viele Villages of Doom, wie die Karte hat (`villages`), und so viel Prozent ihrer Häuser (`houses_near`, `houses_edge`) |
 | `doom_zombies` | So viele Zombies schlafen in **jedem** Haus der Villages of Doom – fest, egal wie weit draußen |
+| `giants` | So viele **Riesen** liegen auf einer Karte von TABs Größe (256) – auf größeren mehr, auf kleineren weniger (mindestens einer). Weit draußen (`giants_from` in `roaming.json`); die Schlusswelle ruft auch sie |
 | `loot_guards` | `[nahe der Basis, am Rand]`: so viele Zombies liegen um einen Haufen Beute versteckt |
 | `waves_percent` | Jede Welle (auch die Schlusswelle) so viel Prozent der Zahlen in `spawning.json` |
 | `constant_spawn_percent` | Jede Gruppe des konstanten Spawns so viel Prozent so groß |

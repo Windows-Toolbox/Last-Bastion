@@ -142,7 +142,7 @@ impl World {
         for b in 0..self.buildings.len() {
             let building = &self.buildings[b];
             let stats = building.stats();
-            let idle = building.off || building.infected || (stats.burns_wood > 0 && !building.fuelled);
+            let idle = !building.works() || (stats.burns_wood > 0 && !building.fuelled);
             if stats.noise == 0 || idle {
                 continue;
             }

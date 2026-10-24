@@ -52,9 +52,23 @@ pub struct Units {
     pub ranger: Stats,
     pub sniper: Stats,
     pub medic: Stats,
+    pub spearman: Stats,
     pub merc_soldier: Stats,
     pub merc_ranger: Stats,
     pub merc_sniper: Stats,
+    /// Veterans (DESIGN.md 7.3, `sim/veterans.rs`).
+    pub veterans: Veterans,
+}
+
+/// How a unit becomes a veteran: every killed zombie gives its `xp` (`data\zombies.json`), split among your units
+/// within `share_radius` tiles – a veteran takes half a share. `xp` of it and the unit is a veteran: `hp_percent` more hit
+/// points, `damage_percent` more damage. Mercenaries don't take a share – they are better than veterans already.
+#[derive(Deserialize)]
+pub struct Veterans {
+    pub xp: u32,
+    pub share_radius: f32,
+    pub hp_percent: u32,
+    pub damage_percent: u32,
 }
 
 /// `data\buildings.json`
@@ -106,6 +120,9 @@ pub struct Buildings {
     pub replace_refund_percent: u32,
     /// A repair from nothing to full takes this many seconds – a smaller one less (`BuildingStats::repair_cost`).
     pub repair_seconds: f32,
+    /// A building being built starts with this many percent of its hit points and grows to full until it's finished,
+    /// like in TAB – its shield comes when it's finished (`build_seconds` of every building).
+    pub build_start_percent: u32,
 }
 
 /// Gold per unit of every good – what a market gets for it.
@@ -157,6 +174,8 @@ pub struct Zombies {
     pub armored: BreedStats,
     pub spitter: BreedStats,
     pub infested: BreedStats,
+    pub screamer: BreedStats,
+    pub giant: BreedStats,
     /// Time between two hits (read in seconds, kept in ticks) – for every breed without its own `attack_seconds`.
     #[serde(rename = "hit_every_seconds", deserialize_with = "seconds")]
     pub hit_cooldown: u32,
@@ -206,6 +225,8 @@ pub struct Roaming {
     /// villages of doom and the guards of loot are mixed the same way. Closer than its `keep_out` (difficulty) a breed
     /// never lies – there it's a walker.
     pub mix: Vec<Mix>,
+    /// The giants (`giants` of the difficulty) lie at least this far out – share of the way, like `from`.
+    pub giants_from: f32,
 }
 
 /// `data\sound.json`: sound like in TAB (`sim/sound.rs`): every event adds noise where it happens; it adds up while it
@@ -300,7 +321,7 @@ pub struct BreedStats {
     pub armor: u32,
     /// Per hit – a spitter: on everyone in its splash.
     pub damage: u32,
-    /// How far it sees your units (tiles) – not through forests and trees.
+    /// How far it sees your units (tiles) – not through forest.
     pub sight: f32,
     /// A wanderer strolls at most this far per trip (tiles, in x and y), from wherever it stands – it has no home it
     /// keeps to, so over time it may get anywhere but the ring around the command center its difficulty keeps it out
@@ -320,6 +341,15 @@ pub struct BreedStats {
     /// Its shot flies this many tiles per second – you can step out of the way. Left out: 0 – it hits at once.
     #[serde(default)]
     pub projectile_speed: f32,
+    /// Experience it gives when it dies, split among your units nearby (`sim/veterans.rs`). Left out: 1.
+    #[serde(default = "one")]
+    pub xp: u32,
+    /// A screamer: seeing one of your units it screams – this much noise where it stands (`sim/sound.rs`) …
+    #[serde(default)]
+    pub scream: u32,
+    /// … and again at the earliest after this long (read in seconds, kept in ticks).
+    #[serde(default, rename = "scream_every_seconds", deserialize_with = "seconds")]
+    pub scream_every: u32,
     /// Its picture: a sprite in `assets\` (`sprites.rs`), e.g. `"test/figure"`. Missing: a box.
     pub sprite: Option<String>,
 }
@@ -448,6 +478,9 @@ pub struct Difficulty {
     pub village_houses_percent: u32,
     /// … and this many zombies asleep in every house – the same in each.
     pub doom_zombies: u32,
+    /// Giants on a map of TAB's size (256) – more on a bigger one, fewer on a smaller one, far out (`place_giants`).
+    #[serde(default)]
+    pub giants: u32,
     /// Zombies hidden around a pile of loot: `[near the base, at the edge]` – in between it grows with the distance.
     pub loot_guards: [u32; 2],
     /// Every wave this many percent of the counts in `spawning.json` …
@@ -465,6 +498,8 @@ pub struct KeepOut {
     pub armored: f32,
     pub spitter: f32,
     pub infested: f32,
+    pub screamer: f32,
+    pub giant: f32,
 }
 
 impl KeepOut {
@@ -476,6 +511,8 @@ impl KeepOut {
             Breed::Armored => self.armored,
             Breed::Spitter => self.spitter,
             Breed::Infested => self.infested,
+            Breed::Screamer => self.screamer,
+            Breed::Giant => self.giant,
         }
     }
 
@@ -543,6 +580,7 @@ impl GameData {
             UnitKind::Ranger => &self.units.ranger,
             UnitKind::Sniper => &self.units.sniper,
             UnitKind::Medic => &self.units.medic,
+            UnitKind::Spearman => &self.units.spearman,
             UnitKind::MercSoldier => &self.units.merc_soldier,
             UnitKind::MercRanger => &self.units.merc_ranger,
             UnitKind::MercSniper => &self.units.merc_sniper,
@@ -607,6 +645,8 @@ impl GameData {
             Breed::Armored => &self.zombies.armored,
             Breed::Spitter => &self.zombies.spitter,
             Breed::Infested => &self.zombies.infested,
+            Breed::Screamer => &self.zombies.screamer,
+            Breed::Giant => &self.zombies.giant,
         }
     }
 
@@ -734,6 +774,11 @@ pub fn folder(name: &str) -> Option<PathBuf> {
 pub fn seconds<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let s = f32::deserialize(d)?;
     Ok((s * TICKS_PER_SECOND + 0.5).floor() as u32)
+}
+
+/// 1 – for values that are 1 when they're left out (`#[serde(default = "one")]`).
+fn one() -> u32 {
+    1
 }
 
 /// `seconds` for a value that may be left out (`#[serde(default)]` gives `None` then – this is only called when it's

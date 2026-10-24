@@ -6,8 +6,8 @@
 //! 1. any debt: less damage, slower shots,
 //! 2. more than `deep_debt_payouts` of upkeep: even less, and the units walk slower,
 //! 3. more than `desert_debt_payouts`: every `desert_every_seconds` one unit deserts – gone for good. DESIGN.md 7.2:
-//!    weighted `upkeep × (3 if not a veteran, else 1)` – the dear ones first, veterans a third as likely. There are no
-//!    veterans yet, so only the upkeep counts.
+//!    weighted `upkeep × (3 if not a veteran, else 1)` – the dear ones first, veterans a third as likely
+//!    (`veterans.rs`).
 //!
 //! **Mercenaries** (from the inn) work for gold: they are the first to go, and they go already at stage 2.
 //!
@@ -37,7 +37,7 @@ pub enum DebtStage {
 impl World {
     /// The credit all banks give together – infected ones none.
     pub fn credit_line(&self) -> u32 {
-        self.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().credit).sum()
+        self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().credit).sum()
     }
 
     /// The debt beyond the credit – the part that brings the penalties.
@@ -94,7 +94,7 @@ impl World {
     /// building that runs – not switched off, not infected.
     pub fn upkeep(&self) -> u32 {
         let units: u32 = self.units.iter().map(|u| u.stats().upkeep).sum();
-        let buildings: u32 = self.buildings.iter().filter(|b| !b.off && !b.infected).map(|b| b.stats().upkeep).sum();
+        let buildings: u32 = self.buildings.iter().filter(|b| b.works()).map(|b| b.stats().upkeep).sum();
         units + buildings
     }
 
@@ -153,14 +153,15 @@ impl World {
         }
     }
 
-    /// One unit leaves – picked at random, weighted by its upkeep (one without upkeep still counts a little). It just
-    /// goes: no corpse, it doesn't rise. Its workers are free again by themselves (`workers` counts the living).
-    /// While there are mercenaries, one of them goes – they work for gold.
+    /// One unit leaves – picked at random, weighted by its upkeep (one without upkeep still counts a little), a veteran
+    /// a third as likely: it stays loyal longer. It just goes: no corpse, it doesn't rise. Its workers are free again by
+    /// themselves (`workers` counts the living). While there are mercenaries, one of them goes – they work for gold.
     fn desert(&mut self) {
         let mercenaries = self.units.iter().any(|u| u.stats().mercenary);
         let weight = |i: usize| {
-            let stats = self.units[i].stats();
-            if mercenaries && !stats.mercenary { 0 } else { stats.upkeep.max(1) }
+            let unit = &self.units[i];
+            let loyal = if unit.veteran { 1 } else { 3 };
+            if mercenaries && !unit.stats().mercenary { 0 } else { unit.stats().upkeep.max(1) * loyal }
         };
         let total: u32 = (0..self.units.len()).map(weight).sum();
         if total == 0 {

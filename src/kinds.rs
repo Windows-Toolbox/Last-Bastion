@@ -14,8 +14,10 @@ pub enum UnitKind {
     /// Like TAB's ranger: fast, weak, long wind-up (drawing the bow) before every arrow.
     Ranger,
     Sniper,
-    /// Like StarCraft's medic: no attack. For now its beam is only shown – healing comes later.
+    /// Like StarCraft's medic: no attack – it heals with its beam, but only units that are out of the fight.
     Medic,
+    /// Early melee: a spear, a push back with every hit, nearly silent – holds a line, but dies to spitters and infested.
+    Spearman,
     /// Mercenaries from the inn (`trained_in`): stronger than a veteran, dearer, double upkeep, no workers – they
     /// aren't colonists. They fight for gold: in debt they are the first to go (`sim/debt.rs`).
     MercSoldier,
@@ -48,7 +50,7 @@ pub struct Stats {
     pub damage: u32,
     /// Range in tiles.
     pub range: f32,
-    /// How far it sees, in tiles – at least as far as it shoots (forests and trees block the view).
+    /// How far it sees, in tiles – at least as far as it shoots (forest blocks the view).
     pub sight: f32,
     /// Ticks for turning around once (180°) – like StarCraft's turn rate. A unit only aims once it faces its target.
     /// In the file in seconds (`turn_around_seconds`).
@@ -82,8 +84,18 @@ pub struct Stats {
     /// How loud a shot is, like in TAB: this much noise where it's fired – who hears it and comes: `data\sound.json`
     /// (`sim/sound.rs`). Ranger quiet, sniper loud. Not blocked by forests or walls.
     pub noise: f32,
-    /// Medic: doesn't shoot at zombies – its "shot" is a beam at your own units (DESIGN.md 6).
+    /// Medic: doesn't shoot at zombies – its "shot" is a beam at your own units (DESIGN.md 6) …
     pub heals: bool,
+    /// … that heals this many hit points per second …
+    #[serde(default)]
+    pub heal_per_second: f32,
+    /// … but only a unit that hasn't been hit for this long – no healing in the thick of a fight, not like StarCraft's
+    /// medic (read in seconds, kept in ticks).
+    #[serde(default, rename = "heal_after_seconds", deserialize_with = "data::seconds")]
+    pub heal_after: u32,
+    /// Melee (the spearman): every hit pushes the zombie back this many tiles – a big one less (`combat.rs`). 0: none.
+    #[serde(default)]
+    pub knockback: f32,
     /// Its picture: a sprite in `assets\` (`sprites.rs`), e.g. `"test/figure"`. Missing: a box.
     pub sprite: Option<String>,
 }
@@ -94,11 +106,12 @@ impl UnitKind {
     }
 
     /// All types, in the order of the selection panel.
-    pub const ALL: [UnitKind; 7] = [
+    pub const ALL: [UnitKind; 8] = [
         UnitKind::Soldier,
         UnitKind::Ranger,
         UnitKind::Sniper,
         UnitKind::Medic,
+        UnitKind::Spearman,
         UnitKind::MercSoldier,
         UnitKind::MercRanger,
         UnitKind::MercSniper,
@@ -221,7 +234,7 @@ pub fn in_area(((x0, y0), (x1, y1)): Area, (x, y): (i32, i32)) -> bool {
 /// What a gathering building works – the tiles of its `gather_area`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
-    /// Forest and single trees.
+    /// Forest – a single tile of it too.
     Forest,
     Water,
     /// Grass without ore on it – the fields of a farm (`Terrain::is_fertile`).
@@ -331,6 +344,11 @@ pub struct BuildingStats {
     /// … and how many of its hit points every such hit costs it.
     #[serde(default)]
     pub trap_wear: u32,
+    /// Ticks from placing it until it's finished – it builds itself, like in TAB (`World::start_construction`). In the
+    /// file in seconds (`build_seconds`): short, longer the bigger it is and the higher in the tech tree. Left out: 0,
+    /// it stands at once.
+    #[serde(default, rename = "build_seconds", deserialize_with = "data::seconds")]
+    pub build_time: u32,
     /// Gold for a full repair – from nothing to full hit points and shield; a smaller repair pays its share of it.
     /// Paid when the repair starts. Repairing an infected building cures it (DESIGN.md 6). Once buildings cost wood
     /// and stone, repairs take their share of those too.

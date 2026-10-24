@@ -33,6 +33,9 @@ const FAT: Color = Color::new(0.58, 0.52, 0.34, 1.0);
 const ARMORED: Color = Color::new(0.40, 0.47, 0.60, 1.0);
 const SPITTER: Color = Color::new(0.50, 0.74, 0.20, 1.0);
 const INFESTED: Color = Color::new(0.64, 0.34, 0.50, 1.0);
+/// A screamer: sickly yellow, easy to pick out of the crowd – it's the one to shoot first.
+const SCREAMER: Color = Color::new(0.90, 0.82, 0.35, 1.0);
+const GIANT: Color = Color::new(0.45, 0.22, 0.18, 1.0);
 /// The spitters' acid in flight, and the infested's shots.
 const ACID: Color = Color::new(0.62, 0.95, 0.20, 1.0);
 const ZOMBIE_SHOT: Color = Color::new(0.85, 0.45, 0.75, 0.8);
@@ -52,6 +55,8 @@ const SWITCHED_OFF: Color = Color::new(0.12, 0.12, 0.12, 1.0);
 pub const TESLA_GLOW: Color = Color::new(0.55, 0.85, 1.0, 1.0);
 /// The mercenaries' gold – in their colour and their mark.
 const MERC_GOLD: Color = Color::new(0.95, 0.78, 0.28, 1.0);
+/// The mark of a veteran (`sim/veterans.rs`).
+const VETERAN_SILVER: Color = Color::new(0.85, 0.88, 0.92, 1.0);
 /// The dark band round a barrel.
 const BARREL_BAND: Color = Color::new(0.25, 0.10, 0.08, 1.0);
 /// A fallen unit lies flat on the ground until it rises.
@@ -79,8 +84,8 @@ const DOOR_COLOR: Color = Color::new(0.45, 0.31, 0.17, 1.0);
 /// Spawners in the editor, and the glowing edge of the selected one.
 const SPAWNER: Color = Color::new(0.85, 0.25, 0.55, 1.0);
 const SPAWNER_GLOW: Color = Color::new(1.0, 0.85, 0.30, 1.0);
-const TREE_CROWN: Color = Color::new(0.13, 0.42, 0.16, 1.0);
-const TREE_TRUNK: Color = Color::new(0.35, 0.24, 0.14, 1.0);
+/// A building being built is mixed with this – fresh timber, scaffolding.
+const SCAFFOLD: Color = Color::new(0.85, 0.75, 0.55, 1.0);
 
 /// What the picture should show – everything that isn't in the world itself.
 pub struct View<'a> {
@@ -198,9 +203,6 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // Every tile that shows at least a bit of itself inside the area – what sticks out over its straight edge is
     // covered at the end (`cover_outside`).
     let rows: Vec<(i32, std::ops::Range<i32>)> = area.rows(1.0).collect();
-    // Trees stand up out of their tile: the crown reaches over the tile behind – at the edge of the map even out of it.
-    // So they come after the fog, darkened like their own tile (`draw_tree`), and not at all where nobody has looked.
-    let mut trees = Vec::new();
     for (y, xs) in rows.iter().cloned() {
         for x in xs {
             let terrain = world.map.terrain(x, y);
@@ -226,10 +228,6 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
                 }
                 continue;
             }
-            if terrain == Terrain::Tree {
-                trees.push((x, y));
-                continue;
-            }
             draw_diamond(camera, corner, Vec2::ONE, terrain_color(terrain));
             // Forest: a darker smaller diamond in the middle as a "treetop", so it doesn't look like grass.
             if terrain == Terrain::Forest {
@@ -250,9 +248,6 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // always visible (your own units and buildings see themselves).
     if !matches!(view.fog, Fog::Off) {
         draw_fog(camera, &rows, |x, y| fog_cover(world, &view.fog, x, y));
-    }
-    for (x, y) in trees {
-        draw_tree(camera, vec2(x as f32, y as f32) + 0.5, fog_cover(world, &view.fog, x, y));
     }
     for spawner in &view.spawners {
         draw_spawner(camera, spawner);
@@ -376,6 +371,11 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             let mark = Prism(rect(p - Vec2::splat(0.05), Vec2::splat(0.1)), height + 0.12, height + 0.2, MERC_GOLD);
             things.push((p.x + p.y + 0.01, Thing::Body(mark)));
         }
+        // A veteran: a silver bar above its head – wider and flatter than the mercenaries' gold mark.
+        if unit.veteran {
+            let mark = Prism(rect(p - vec2(0.09, 0.03), vec2(0.18, 0.06)), height + 0.1, height + 0.14, VETERAN_SILVER);
+            things.push((p.x + p.y + 0.01, Thing::Body(mark)));
+        }
         if unit.barrel {
             let back = p - vec2(unit.facing.cos(), unit.facing.sin()) * 0.12;
             let drum = Prism(rect(back - Vec2::splat(0.07), Vec2::splat(0.14)), height * 0.3, height * 0.85, building_color(BuildingKind::Barrel));
@@ -464,7 +464,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
 
     // --- Health bars above hurt and selected units, just above the block ---
     for unit in world.units.iter().filter(|u| !u.is_inside()) {
-        let max = unit.stats().hp;
+        let max = unit.max_hp();
         if unit.hp == max && !view.always_bars && !selected.contains(&unit.id) {
             continue;
         }
@@ -541,25 +541,6 @@ fn draw_fog(camera: &Camera, rows: &[(i32, std::ops::Range<i32>)], cover: impl F
             }
         }
     }
-}
-
-/// A single tree standing on the middle of its tile: a short trunk and a round crown above it. `cover`: the fog on its
-/// tile – the tree is darkened the same way, and under black fog it isn't drawn at all.
-fn draw_tree(camera: &Camera, center: Vec2, cover: Option<Color>) {
-    let feet = camera.world_to_screen(center);
-    if !on_screen(feet, 40.0) || cover.is_some_and(|fog| fog.a >= 1.0) {
-        return;
-    }
-    let shade = |color: Color| match cover {
-        Some(fog) => mix(color, fog, fog.a),
-        None => color,
-    };
-    let unit = TILE_W * camera.zoom;
-    let crown = feet - vec2(0.0, 0.42 * unit);
-    draw_ellipse(feet.x, feet.y, 0.22 * unit, 0.11 * unit, 0.0, Color::new(0.0, 0.0, 0.0, 0.3)); // shadow
-    draw_line(feet.x, feet.y, crown.x, crown.y, (0.06 * unit).max(1.0), shade(TREE_TRUNK));
-    draw_circle(crown.x, crown.y, 0.24 * unit, shade(TREE_CROWN));
-    draw_circle(crown.x - 0.06 * unit, crown.y - 0.07 * unit, 0.10 * unit, shade(Color::new(0.22, 0.55, 0.24, 1.0)));
 }
 
 /// Everything on screen outside the straight rectangle of `area` gets the background colour again: four bars
@@ -667,7 +648,10 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
     // Infected: the colour turns sickly – like the dark-green rot on TAB's infected buildings.
     let color = if building.infected { mix(color, INFECTED, 0.6) } else { color };
     let color = if building.off { mix(color, SWITCHED_OFF, 0.55) } else { color };
-    let height = building.stats().height;
+    // Being built: pale like fresh timber, and it grows out of the ground until it's finished.
+    let built = 1.0 - building.construction as f32 / building.stats().build_time.max(1) as f32;
+    let color = if building.is_built() { color } else { mix(color, SCAFFOLD, 0.5) };
+    let height = building.stats().height * (0.2 + 0.8 * built);
     // Pieces of wall look like a wall – also those of a tower or a gate.
     let (wall_height, wall_color) = (BuildingKind::Wall.stats().height, building_color(BuildingKind::Wall));
     // The pieces of wall from the middle of a tile to its neighbours. `skip`: not in this direction.
@@ -828,6 +812,7 @@ pub fn unit_shape(kind: UnitKind) -> (f32, f32) {
         UnitKind::Ranger => (0.17, 0.28),
         UnitKind::Sniper => (0.18, 0.33),
         UnitKind::Medic => (0.21, 0.25),
+        UnitKind::Spearman => (0.20, 0.30),
         UnitKind::MercSoldier => unit_shape(UnitKind::Soldier),
         UnitKind::MercRanger => unit_shape(UnitKind::Ranger),
         UnitKind::MercSniper => unit_shape(UnitKind::Sniper),
@@ -876,7 +861,6 @@ pub fn terrain_color(terrain: Terrain) -> Color {
         Terrain::Dirt => Color::new(0.33, 0.27, 0.19, 1.0),
         Terrain::Mountain => Color::new(0.33, 0.31, 0.29, 1.0),
         Terrain::Forest => Color::new(0.10, 0.30, 0.12, 1.0),
-        Terrain::Tree => TREE_CROWN,
         Terrain::Water => Color::new(0.16, 0.34, 0.58, 1.0),
     }
 }
@@ -940,6 +924,8 @@ pub fn kind_color(kind: UnitKind) -> Color {
         UnitKind::Sniper => Color::new(0.75, 0.50, 0.95, 1.0),
         // White like StarCraft's medic (DESIGN.md 6).
         UnitKind::Medic => Color::new(0.92, 0.92, 0.90, 1.0),
+        // Bronze like a spearhead.
+        UnitKind::Spearman => Color::new(0.80, 0.55, 0.30, 1.0),
         // The mercenaries: the colour of their kind, with gold in it – they work for gold.
         UnitKind::MercSoldier => mix(kind_color(UnitKind::Soldier), MERC_GOLD, 0.45),
         UnitKind::MercRanger => mix(kind_color(UnitKind::Ranger), MERC_GOLD, 0.45),
@@ -956,6 +942,8 @@ pub fn breed_color(breed: Breed) -> Color {
         Breed::Armored => ARMORED,
         Breed::Spitter => SPITTER,
         Breed::Infested => INFESTED,
+        Breed::Screamer => SCREAMER,
+        Breed::Giant => GIANT,
     }
 }
 

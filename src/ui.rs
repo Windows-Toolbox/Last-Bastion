@@ -1249,6 +1249,7 @@ impl Ui {
                 None => self.targeting = Some(button),
             },
             Button::Drop => orders.push(Order::DropBarrels { units: self.selected.clone() }),
+            Button::Dismiss => orders.push(Order::Dismiss { units: self.selected.clone() }),
             // All selected markets: if one of them sells, all stop – otherwise all sell again.
             Button::Sell => {
                 let on = !self.selling(world);
@@ -1373,7 +1374,7 @@ impl Ui {
 
     /// The selected buildings that can be switched off (Y) – not infected ones.
     fn switchable(&self, world: &World) -> Vec<usize> {
-        let can = |&b: &usize| world.buildings[b].kind.can_switch_off() && !world.buildings[b].infected;
+        let can = |&b: &usize| world.buildings[b].kind.can_switch_off() && !world.buildings[b].infected && world.buildings[b].is_built();
         self.selected_building_indices(world).into_iter().filter(can).collect()
     }
 

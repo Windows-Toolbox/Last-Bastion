@@ -4,7 +4,7 @@
 //! - **explored**: seen before, but nobody is looking right now – the terrain shows darkened, zombies don't,
 //! - **unexplored**: never seen – black.
 //!
-//! Everyone looks around in a circle (sight range), but not through forests and trees (`Map::clear_sight`).
+//! Everyone looks around in a circle (sight range), but not through forest (`Map::clear_sight`).
 //! Computed in the simulation, so it's the same on every PC – in co-op both players share the view.
 
 use macroquad::math::{vec2, Vec2};

@@ -2,6 +2,16 @@
   "default": "Green Valley",
   "maps": [
     {
+      "name": "Peaceful Lowlands",
+      "about": "Wide dry plains, green meadows with groves, big lakes - lots of room for farms, but wide fronts to hold",
+      "score_percent": 100,
+      "setup": {
+        "generator": "wild",
+        "common": { "base_clear": 8, "dirt": 0.55 },
+        "wild": { "scale": 44, "wobble": 20, "water": 0.14, "shore_detail": 3, "mountains": 0.02, "ridges": 0.0, "forest": 0.10, "forest_size": 8, "trees": 0.01, "rivers": 0 }
+      }
+    },
+    {
       "name": "Green Valley",
       "about": "Lakes, ridges, forests and rivers - the ways in are easy to read",
       "score_percent": 100,

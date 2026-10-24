@@ -162,7 +162,6 @@ fn letter(terrain: Terrain) -> char {
         Terrain::Dirt => 'D',
         Terrain::Mountain => 'M',
         Terrain::Forest => 'F',
-        Terrain::Tree => 'T',
         Terrain::Water => 'W',
     }
 }
@@ -172,8 +171,8 @@ fn from_letter(c: char) -> Option<Terrain> {
         '.' => Some(Terrain::Grass),
         'D' => Some(Terrain::Dirt),
         'M' => Some(Terrain::Mountain),
-        'F' => Some(Terrain::Forest),
-        'T' => Some(Terrain::Tree),
+        // `T` was a single tree in files before 2026-10-24 – now that's simply forest.
+        'F' | 'T' => Some(Terrain::Forest),
         'W' => Some(Terrain::Water),
         _ => None,
     }

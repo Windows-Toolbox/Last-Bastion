@@ -29,7 +29,7 @@ pub struct Blast {
 impl World {
     /// How many barrels the stores hold together: `barrel_storage` of every munitions factory that runs.
     pub fn barrel_room(&self) -> u32 {
-        self.buildings.iter().filter(|b| !b.off && !b.infected).map(|b| b.stats().barrel_storage).sum()
+        self.buildings.iter().filter(|b| b.works()).map(|b| b.stats().barrel_storage).sum()
     }
 
     /// A barrel into the queue of munitions factory `id` – if there's room in the queue and the gold and coal pay for
@@ -40,7 +40,7 @@ impl World {
         };
         let blast = &data::get().buildings.blast;
         let factory = &self.buildings[b];
-        let room = factory.kind.makes_barrels() && !factory.infected && factory.production.len() < MAX_PRODUCTION;
+        let room = factory.kind.makes_barrels() && !factory.infected && factory.is_built() && factory.production.len() < MAX_PRODUCTION;
         if room && self.spendable() >= blast.cost && self.stock.get(Resource::Coal) >= blast.cost_coal {
             self.stock.take(Resource::Coal, blast.cost_coal);
             self.score.gold_spent += blast.cost;
@@ -51,7 +51,7 @@ impl World {
 
     /// Can unit `i` fetch a barrel at building `b` – a munitions factory with one in the store, and its hands free?
     pub(super) fn can_fetch(&self, i: usize, b: usize) -> bool {
-        self.buildings[b].kind.makes_barrels() && !self.buildings[b].infected && self.barrels > 0 && !self.units[i].barrel
+        self.buildings[b].kind.makes_barrels() && !self.buildings[b].infected && self.buildings[b].is_built() && self.barrels > 0 && !self.units[i].barrel
     }
 
     /// Unit `i` takes a barrel from the store.
@@ -118,8 +118,9 @@ impl World {
         for zombie in self.zombies.iter_mut().filter(|z| z.is_alive() && z.pos.distance(at) <= radius) {
             zombie.hp = zombie.hp.saturating_sub(damage.saturating_sub(zombie.breed.stats().armor).max(1));
         }
+        let tick = self.tick;
         for unit in self.units.iter_mut().filter(|u| !u.is_inside() && u.hp > 0 && u.pos.distance(at) <= radius) {
-            unit.hp = unit.hp.saturating_sub(damage.saturating_sub(unit.stats().armor).max(1));
+            unit.take_hit(damage, tick);
         }
         let mut infected = Vec::new();
         for (b, building) in self.buildings.iter_mut().enumerate() {

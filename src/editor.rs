@@ -6,7 +6,7 @@
 //! The panel has tabs like TAB's map editor (DESIGN.md 12.6):
 //! - **Map** – name, save, close, a new map – and the round: how many days, the gold and wood at the start (TAB's
 //!   "Info").
-//! - **Terrain** – paint mountains, forest, trees, water, erase, ore (TAB's painter).
+//! - **Terrain** – paint mountains, forest, water, erase, ore (TAB's painter).
 //! - **Entities** – units, buildings (without the rules of the game), zombies, spawners, the eraser.
 //! - **Waves** – send waves now, the **timeline** (waves that come by themselves on a given day and hour, like TAB's
 //!   events "32d 12h", the final wave among them) and the **constant spawn**.
@@ -840,8 +840,8 @@ impl Editor {
             Tab::Terrain => {
                 let mut rows = vec![
                     Row::Heading("Paint - hold and drag"),
-                    buttons(&[B::Tool(Tool::Paint(Terrain::Mountain)), B::Tool(Tool::Paint(Terrain::Forest)), B::Tool(Tool::Paint(Terrain::Tree))]),
-                    buttons(&[B::Tool(Tool::Paint(Terrain::Water)), B::Tool(Tool::Paint(Terrain::Dirt)), B::Tool(Tool::Paint(Terrain::Grass))]),
+                    buttons(&[B::Tool(Tool::Paint(Terrain::Mountain)), B::Tool(Tool::Paint(Terrain::Forest)), B::Tool(Tool::Paint(Terrain::Water))]),
+                    buttons(&[B::Tool(Tool::Paint(Terrain::Dirt)), B::Tool(Tool::Paint(Terrain::Grass))]),
                     Row::Heading("Ore - only on open ground (oil: one 2 x 2 node)"),
                     buttons(&[B::Tool(Tool::Ore(Some(Ore::Iron))), B::Tool(Tool::Ore(Some(Ore::Coal))), B::Tool(Tool::Ore(Some(Ore::Stone)))]),
                     buttons(&[B::Tool(Tool::Ore(Some(Ore::Oil))), B::Tool(Tool::Ore(None))]),
@@ -904,6 +904,7 @@ impl Editor {
                     buttons(&[B::Tool(Tool::ZombieBrush), B::Tool(Tool::ZombieDrop)]),
                     buttons(&[B::Breed(Breed::Walker), B::Breed(Breed::Runner), B::Breed(Breed::Fat)]),
                     buttons(&[B::Breed(Breed::Armored), B::Breed(Breed::Spitter), B::Breed(Breed::Infested)]),
+                    buttons(&[B::Breed(Breed::Screamer), B::Breed(Breed::Giant)]),
                     buttons(&[B::Wander(false), B::Wander(true)]),
                     buttons(&[B::Rate(-1), B::Show(Value::Rate), B::Rate(1)]),
                     buttons(&[B::Drop(-1), B::Show(Value::Drop), B::Drop(1)]),

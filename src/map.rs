@@ -1,6 +1,6 @@
-//! The map: a square grid of tiles. Every tile has a terrain (grass, dirt, mountain, forest, tree, water), and
+//! The map: a square grid of tiles. Every tile has a terrain (grass, dirt, mountain, forest, water), and
 //! buildings can stand on it (they come and go), or a house of a village of doom (`sim/doom.rs`). Everything except
-//! bare ground – grass and dirt – blocks the way, and forests and trees also block the view: nobody sees or shoots
+//! bare ground – grass and dirt – blocks the way, and forests also block the view: nobody sees or shoots
 //! through them. Farms only grow on grass (`Terrain::is_fertile`).
 //!
 //! Around the playing field lies a ring outside the **world border**: your units can't go there and in the
@@ -24,7 +24,7 @@ pub const BORDER: usize = 16;
 // with it, buildings set and clear theirs. One bit is still free (power coverage, DESIGN.md 5.5, will be it).
 /// Solid terrain – everything but grass and dirt: nobody walks here, and zombies can't tear it down.
 const SOLID: u8 = 1 << 0;
-/// Forest or tree: nobody sees or shoots through it.
+/// Forest: nobody sees or shoots through it.
 const BLOCKS_SIGHT: u8 = 1 << 1;
 /// A building stands here.
 const BUILT: u8 = 1 << 2;
@@ -48,9 +48,8 @@ pub enum Terrain {
     /// Bare ground: walk and build on it like on grass – only no farm grows here (`is_fertile`).
     Dirt,
     Mountain,
+    /// Also a single tile on its own – it looks like any forest, there is no separate "tree".
     Forest,
-    /// A single tree on grass: blocks like a forest tile, only drawn as one tree.
-    Tree,
     Water,
 }
 
@@ -65,9 +64,9 @@ impl Terrain {
         self == Terrain::Grass
     }
 
-    /// Can nobody see (and so shoot) through it? Forests and trees – over mountains and water you can look.
+    /// Can nobody see (and so shoot) through it? Forests – over mountains and water you can look.
     pub fn blocks_sight(self) -> bool {
-        matches!(self, Terrain::Forest | Terrain::Tree)
+        self == Terrain::Forest
     }
 
     pub fn name(self) -> &'static str {
@@ -76,7 +75,6 @@ impl Terrain {
             Terrain::Dirt => "Dirt",
             Terrain::Mountain => "Mountain",
             Terrain::Forest => "Forest",
-            Terrain::Tree => "Tree",
             Terrain::Water => "Water",
         }
     }
@@ -102,8 +100,8 @@ pub enum Ore {
 }
 
 impl Ore {
-    /// The ores that lie in patches – oil lies in nodes.
-    pub const PATCHES: [Ore; 3] = [Ore::Iron, Ore::Coal, Ore::Stone];
+    /// The ores that lie in patches – oil lies in nodes. Stone first: the start area places it first and closest.
+    pub const PATCHES: [Ore; 3] = [Ore::Stone, Ore::Iron, Ore::Coal];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -352,12 +350,12 @@ impl Map {
         (flags & BUILT) != 0 && (flags & (SOLID | TAKEN)) == 0
     }
 
-    /// Forest or tree on this tile – you can't see through it.
+    /// Forest on this tile – you can't see through it.
     pub fn blocks_sight(&self, x: i32, y: i32) -> bool {
         self.has(x, y, BLOCKS_SIGHT)
     }
 
-    /// Can you see from `from` to `to` – is there no forest or tree **between** them? The tiles of the two
+    /// Can you see from `from` to `to` – is there no forest **between** them? The tiles of the two
     /// points themselves don't count: you can see the edge of a forest, just not into it.
     pub fn clear_sight(&self, from: Vec2, to: Vec2) -> bool {
         Map::line_is_clear(from, to, |x, y| self.blocks_sight(x, y))
@@ -547,33 +545,37 @@ impl Map {
 mod tests {
     use super::*;
 
-    /// A map made with the default values of "Wild" has water, mountains, forests and single trees.
+    /// A map made with the default values of "Wild" has water, mountains, forests and single forest tiles on their own.
     #[test]
     fn default_map_has_everything() {
         use crate::mapgen::{self, MapSetup};
         for seed in 1..=5 {
             let map = mapgen::generate(seed, &MapSetup::default()).map;
-            let count = |t: Terrain| (0..map.size as i32).flat_map(|y| (0..map.size as i32).map(move |x| (x, y)))
-                .filter(|&(x, y)| map.terrain(x, y) == t)
-                .count();
-            for (t, at_least) in [(Terrain::Water, 1000), (Terrain::Mountain, 1000), (Terrain::Forest, 2000), (Terrain::Tree, 300)] {
+            let tiles = || (0..map.size as i32).flat_map(|y| (0..map.size as i32).map(move |x| (x, y)));
+            let count = |t: Terrain| tiles().filter(|&(x, y)| map.terrain(x, y) == t).count();
+            for (t, at_least) in [(Terrain::Water, 1000), (Terrain::Mountain, 1000), (Terrain::Forest, 2000)] {
                 assert!(count(t) > at_least, "seed {seed}: only {} {}", count(t), t.name());
             }
+            let forest = |x: i32, y: i32| map.terrain(x, y) == Terrain::Forest;
+            let alone = tiles()
+                .filter(|&(x, y)| forest(x, y) && ![(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dy)| forest(x + dx, y + dy)))
+                .count();
+            assert!(alone > 200, "seed {seed}: only {alone} single forest tiles");
         }
     }
 
-    /// A tree between two points blocks the view – a tree at either end doesn't (you see the edge of the forest).
+    /// A forest tile between two points blocks the view – one at either end doesn't (you see the edge of the forest).
     #[test]
-    fn trees_block_the_view_only_in_between() {
+    fn forest_blocks_the_view_only_in_between() {
         let mut map = Map::blank(160, BORDER);
         let c = map.size as i32 / 2;
         let p = |x: i32, y: i32| vec2(x as f32 + 0.5, y as f32 + 0.5);
         assert!(map.clear_sight(p(c, c), p(c + 6, c + 3)));
-        map.set_terrain(c + 3, c, Terrain::Tree);
-        assert!(!map.clear_sight(p(c, c), p(c + 6, c)), "straight through the tree");
+        map.set_terrain(c + 3, c, Terrain::Forest);
+        assert!(!map.clear_sight(p(c, c), p(c + 6, c)), "straight through the forest");
         assert!(!map.clear_sight(p(c + 6, c), p(c, c)), "the same the other way round");
-        assert!(map.clear_sight(p(c, c), p(c + 3, c)), "the tree itself is visible");
-        assert!(map.clear_sight(p(c, c), p(c + 6, c + 4)), "past the tree");
+        assert!(map.clear_sight(p(c, c), p(c + 3, c)), "the forest tile itself is visible");
+        assert!(map.clear_sight(p(c, c), p(c + 6, c + 4)), "past the forest tile");
         // Mountains don't block the view.
         map.set_terrain(c, c + 3, Terrain::Mountain);
         assert!(map.clear_sight(p(c, c), p(c, c + 6)));

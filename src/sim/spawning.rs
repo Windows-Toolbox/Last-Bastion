@@ -234,6 +234,34 @@ impl World {
         }
     }
 
+    /// The giants (DESIGN.md 8.1, like TAB's): only a few per map – `giants` of the difficulty on a map of TAB's size
+    /// (256 × 256 tiles inside the border), more on a bigger one, fewer on a smaller one (at least one, if any). Far out
+    /// (`giants_from` in `data\roaming.json`, and never inside their `keep_out`), asleep like the roamers: they stroll
+    /// and wake like any zombie – and the final wave calls them too.
+    pub(super) fn place_giants(&mut self, giants: u32) {
+        if giants == 0 {
+            return;
+        }
+        let size = self.map.size as i32;
+        let from = data::get().roaming.giants_from;
+        let keep_out = self.keep_out.of(Breed::Giant);
+        let open: Vec<Vec2> = (0..size)
+            .flat_map(|y| (0..size).map(move |x| (x, y)))
+            .filter(|&(x, y)| self.map.in_play(x, y) && !self.map.is_blocked(x, y))
+            .map(|(x, y)| vec2(x as f32 + 0.5, y as f32 + 0.5))
+            .filter(|&p| self.way_out(p) >= from && p.distance(self.base) >= keep_out)
+            .collect();
+        if open.is_empty() {
+            return;
+        }
+        let area = self.map.play_area().area();
+        let count = ((giants as f32 * area / (256.0 * 256.0)).round() as u32).max(1);
+        for _ in 0..count {
+            let pos = open[self.rng.below(open.len() as u32) as usize];
+            self.lay_to_sleep(pos, Breed::Giant);
+        }
+    }
+
     /// How far out a point lies: its share of the way from the base to the middle of a side of the playing field, in a
     /// straight line – 0 at the base, 1 at the edge (the corners count as edge too).
     pub(super) fn way_out(&self, pos: Vec2) -> f32 {

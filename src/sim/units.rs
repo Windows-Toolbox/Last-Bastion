@@ -47,6 +47,15 @@ pub struct Unit {
     pub inside: Option<u32>,
     /// Carries a barrel (`blast.rs`): slower, doesn't shoot – and if it dies, the barrel goes off.
     pub barrel: bool,
+    /// Experience in thousandths, from the zombies killed near it (`veterans.rs`) – enough, and it's a veteran.
+    pub xp: u32,
+    /// A veteran (DESIGN.md 7.3): more hit points and damage (`veterans` in `data\units.json`), a mark over its head,
+    /// less likely to desert.
+    pub veteran: bool,
+    /// The tick it was last hit – a medic only heals a unit that hasn't been hit for a while (`heal_after_seconds`).
+    pub(super) hurt_at: u64,
+    /// Medic: thousandths of a hit point healed but not given yet – `heal_per_second` is rarely whole per tick.
+    pub(super) heal: u32,
 }
 
 impl Unit {
@@ -56,6 +65,24 @@ impl Unit {
 
     pub fn is_inside(&self) -> bool {
         self.inside.is_some()
+    }
+
+    /// Full hit points – a veteran has `hp_percent` more (`veterans` in `data\units.json`).
+    pub fn max_hp(&self) -> u32 {
+        let bonus = if self.veteran { data::get().units.veterans.hp_percent } else { 0 };
+        self.stats().hp * (100 + bonus) / 100
+    }
+
+    /// Damage of one shot before the debt's penalty – a veteran's `damage_percent` more.
+    pub fn damage(&self) -> u32 {
+        let bonus = if self.veteran { data::get().units.veterans.damage_percent } else { 0 };
+        self.stats().damage * (100 + bonus) / 100
+    }
+
+    /// A hit of `damage` – minus its armor, at least 1 always gets through – at `tick` (a medic waits a while after it).
+    pub(super) fn take_hit(&mut self, damage: u32, tick: u64) {
+        self.hp = self.hp.saturating_sub(damage.saturating_sub(self.stats().armor).max(1));
+        self.hurt_at = tick;
     }
 
     /// Range and sight – in a tower both are longer.
@@ -176,6 +203,10 @@ impl World {
             aim_at: None,
             inside: None,
             barrel: false,
+            xp: 0,
+            veteran: false,
+            hurt_at: 0,
+            heal: 0,
         });
     }
 

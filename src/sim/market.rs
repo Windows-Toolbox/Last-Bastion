@@ -18,7 +18,7 @@ impl World {
     /// Does building `m` work as a market right now – a market, not switched off, not infected?
     fn runs_market(&self, m: usize) -> bool {
         let b = &self.buildings[m];
-        b.kind == BuildingKind::Market && !b.off && !b.infected
+        b.kind == BuildingKind::Market && b.works()
     }
 
     /// Is building `h` a house (colonists live in it) whose middle lies in `area`? A middle on the edge counts: the
@@ -28,7 +28,7 @@ impl World {
         let ((x0, y0), (x1, y1)) = area;
         let c = house.center();
         let inside = c.x >= x0 as f32 && c.y >= y0 as f32 && c.x <= x1 as f32 && c.y <= y1 as f32;
-        house.stats().colonists > 0 && !house.infected && inside
+        house.stats().colonists > 0 && !house.infected && house.is_built() && inside
     }
 
     /// The houses (indices) a market with this `area` would have: the ones in it that no running market further up the

@@ -130,7 +130,7 @@ would pull the focus away from the army.
 
 | Tier | Item | Made from | Used for |
 |---|---|---|---|
-| Raw | **Wood** | Sawmill (forest, trees) | Early buildings, walls, charcoal burner |
+| Raw | **Wood** | Sawmill (forest) | Early buildings, walls, charcoal burner |
 | Raw | **Stone** | Mine on a stone patch (question 28) | Barracks, walls, towers |
 | Raw | **Iron ore** | Mine on an iron patch | → Iron |
 | Raw | **Coal** | Mine on a coal patch | Power plant, smelter fuel |
@@ -282,8 +282,8 @@ Costs and stats live in `data\buildings.json` (12.4).
 **In the prototype:** command center, tent, barracks (the only building that trains), wall, gate (3 × 1, door for
 your units), tower (up to 4 units, +2 range and sight, can't be hit), sawmill, mine, hunter cottage, fishing hut,
 farm (3 × 3, only on grass: plants the grass around it, dirt and ore give nothing), windmill, charcoal burner, tesla
-tower, wood workshop (unlocks mine, farm, windmill, tesla tower, stake trap, stone
-workshop), stone workshop (unlocks munitions factory, stone house, stone wall, stone tower), munitions factory
+tower (the mine and the tesla tower need no workshop, like TAB – the barracks needs stone, 2026-10-24), wood
+workshop (unlocks farm, windmill, stake trap, stone workshop), stone workshop (unlocks munitions factory, stone house, stone wall, stone tower), munitions factory
 (unlocks soldier and sniper – the ranger's bow needs nothing; makes barrels), stone house, stone wall, stone tower, stake trap,
 market, bank, inn (mercenaries), explosive barrel, the command center's scan (`src/sim/market.rs`, `debt.rs`, `blast.rs`,
 `scan.rs`). Start (2026-10-20,
@@ -292,7 +292,10 @@ wood workshop 40 wood). Every full hour: burners take wood, gatherers deliver, t
 (× power share), hungry, nothing. Placement rules all in `src/placement.rs`:
 drag a line (walls diagonal, 1 wide like TAB), gate over walls (walls refund 50 %, never a saving), 1 free tile between
 towers, no zombie within 4 tiles. Your own units may stand on the site – they're pushed off to the nearest free
-spot (like StarCraft). Costs gold and workers (5.6). No build time yet. Repair (F) on every building, cures infected
+spot (like StarCraft). Costs gold and workers (5.6). **Build time** like TAB (2026-10-24, `build_seconds` per building):
+short, longer the bigger and the higher in the tech tree; it starts at 10 % of its hit points and grows, gets its shield
+when finished, does nothing until then (no workers given, no gold, power or training) but takes its workers already and
+can be hit. Repair (F) on every building, cures infected
 ones.
 
 ---
@@ -326,6 +329,7 @@ one active ability** (low APM, clear identity).
 | Unit | From | Tier | Upkeep (gold/min) | Role | Ability | Noise | Counters | Weak against |
 |---|---|---|---|---|---|---|---|---|
 | **Ranger** | TAB | 1 | 1 | Fast, cheap, bow, weak damage | *Sprint* ❓ | Silent | Single runners, scouting | Masses, brutes |
+| **Spearman** | – (2026-10-24) | 1 | 1 | Cheap melee, every hit pushes back | ❓ | Nearly silent | Walkers and runners at a gate | Spitters, infested, giants |
 | **Soldier** | TAB | 1 | 2 | Rifle all-rounder, the backbone | *Stim*: faster, costs HP | Loud | Walkers, runners | Clumped swarms, brutes |
 | **Sniper** | TAB | 2 | 3 | Very long range, slow, huge damage | *Headshot* | Very loud | Brutes, spitters, screamers | Anything that reaches it |
 | **Flamethrower** | TAB (Lucifer) | 2 | 3 | Short cone, burns the ground | *Burn ground* (also removes creep) | Loud | Swarms | Spitters, brutes |
@@ -333,15 +337,22 @@ one active ability** (low APM, clear identity).
 | **Machine gunner** | – (mech) | 3 | 5 | Walker with a gun that **spins up** (25 % → 100 % in ≈ 3 s) | *Keep spinning* (energy + constant noise) | Very loud | Large hordes, holding a line | Brutes, surprises |
 | **Siege tank** | SC | 3 | 6 | Crude artillery, **only shoots sieged** (≈ 4 s to siege), minimum range | *Siege / unsiege* | Very loud | Hordes at range, nests | Anything up close |
 
-**In the prototype:** soldier, ranger, sniper, medic (beam only, no healing yet), no abilities. Values in
-`data\units.json`. Firearms (soldier, sniper) only with a munitions factory standing (`requires`); the ranger's bow
-and the medic need nothing.
+**In the prototype:** soldier, ranger, sniper, medic, spearman, no abilities. Values in `data\units.json`. Firearms
+(soldier, sniper) only with a munitions factory standing (`requires`); the ranger's bow, the spear and the medic need
+nothing.
+
+- **Medic (2026-10-24):** heals with its beam (4 HP/s), but only a unit that hasn't been hit for 3 s – not StarCraft's
+  medic who keeps a whole army standing in the middle of a fight: the wounded have to be pulled back.
+- **Spearman (2026-10-24):** the early melee unit next to the ranger – cheap, short reach (1.2 tiles), every hit pushes
+  the zombie back (less a big one), **nearly silent** (pillar: noise – 2 per hit: a little more than a zombie's hit,
+  less than a rifle). Holds a gate or a line early on; spitters and infested
+  shoot it to pieces.
 
 - **Upkeep instead of supply** (like TAB): every unit costs gold once and then every minute; **no supply cap**. Army
   size = income. **Dismiss** stops the upkeep. Running buildings cost upkeep too (TAB's values); **switched off (Y)**
   they cost nothing – no upkeep, workers or power – and do nothing.
 - **In the prototype:** upkeep per payout (`upkeep` in `data\`), debt and desertion as below (`src/sim/debt.rs`, values
-  in `data\colony.json`) – no veterans yet, no dismiss yet.
+  in `data\colony.json`). **Dismiss** (Del, 2026-10-24): the units leave – no gold back.
 - **Debt** (open question 12): gold can go below 0. 0 = nothing new; debt > 0 = −15 % damage and attack speed;
   > 1 min of upkeep = −30 % and slower; > 2 min = every ≈ 10 s one unit **deserts**, weighted
   `upkeep × (3 if not a veteran, else 1)`. Paying it off removes the penalties; deserters don't come back.
@@ -367,6 +378,9 @@ and the medic need nothing.
 - Veterans count as half a share, so fresh units next to them still level at a sensible pace:
   `XP × own share / sum of shares`.
 - Makes losing a squad hurt; veterans are less likely to desert (7.2).
+- **In the prototype (2026-10-24, `src/sim/veterans.rs`):** walker 1, riot/spitter/infested/screamer 3, fat 10, giant
+  100 XP, shared within 8 tiles of where the zombie fell; at 20 a unit is a veteran: +25 % HP, +20 % damage, a silver
+  mark. Mercenaries take no share – they are better than veterans already.
 
 ---
 
@@ -388,7 +402,10 @@ and the medic need nothing.
 
 **In the prototype:** walker, runner, **fat** (TAB's "chubby": big, 600 HP), armored runner ("Riot", armor 3),
 spitter (acid 3.5 tiles, flies, splashes 1 tile – units and buildings, never zombies), infested (shoots 4.5 tiles, the
-soldier 5) – values in `data\zombies.json`, the names too. The harder breeds lie further out (`mix` in `data\roaming.json`)
+soldier 5), **screamer** (2026-10-24: sees 8 tiles, screams when it spots a unit – noise 1,500 that brings everything
+around and wakes the sleepers, again after 10 s), **giant** (2026-10-24, TAB's a bit smaller: 3,000 HP, armor 6, a wall
+in 3 hits – only a few per map, far out, `giants` of the difficulty; not in the waves, but the final wave calls them)
+– values in `data\zombies.json`, the names too. The harder breeds lie further out (`mix` in `data\roaming.json`)
 and stroll further per trip (`stroll` per breed: walker 8 tiles … fat 30) – without a home they keep to (8.5).
 
 - **Sight** like TAB, per breed: 5–6 tiles, not through forests. **Hearing** 3 tiles. **Shot** → storms for 5 s.
@@ -516,7 +533,17 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 **In the prototype:**
 
 - **Generators:** Wild (Factorio-like noise), Regions (TAB-like, walls with passes), Rings, Canyons, Blank – each with
-  its own sliders. Same seed + same values = same map.
+  its own sliders. Same seed + same values = same map. The maps of `data\game_maps.json` are presets of them, like
+  Factorio's: **Peaceful Lowlands** (2026-10-24, after TAB's) is Wild with small groves, smooth lakes and lots of dry
+  land.
+- **Wild like Factorio (2026-10-24):** one moisture noise decides – wet = forest ("Forest size": big forests or many
+  groves), next to it green meadow, the driest open ground dirt. Lakes from a height noise ("Shore detail": smooth to
+  frayed).
+- **Start area like Factorio's (2026-10-24, `mapgen/start.rs`):** first look, then help – if a sawmill inside the
+  command center's grid would work fewer than 20 forest tiles, groves grow at the edge of the grid until it does (the
+  clearing stays free; is it wider than the grid, one tesla tower further). The start patches of ore are planned with
+  the grid too: stone one tesla tower out (the barracks needs it), iron ore and coal one or two. A test checks every
+  map with 10 seeds.
 - **World border:** straight on screen like TAB's – the playing field is a rectangle twice as wide as high (a
   diamond in the grid), the minimap too. Around it a ring of open ground (16 steps, ≈ 11 tiles); the grid corners
   beyond are off the map. Units and the camera stop at the border. Spawners are rectangles on screen as well.
@@ -527,7 +554,8 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 - **Ore:** iron ore, coal, stone patches; one of each next to the base, bigger and richer further out.
 - **Oil (2026-10-18):** nodes of exactly **2 × 2 tiles** (an oil pump goes on one), never touching. One alone next to
   the base, further out groups of 2–6.
-- **Dirt:** patches on 40 % of the open ground – walk and build there like on grass, but no farm. Not on Blank.
+- **Dirt:** patches on 40 % of the open ground – walk and build there like on grass, but no farm. Not on Blank. On Wild
+  where it's driest.
 - **Villages of doom** (points of interest, step 6): far from the base. **How many and how big is the map's** (its
   setup: villages per 10,000 tiles, houses near the base and at the edge – Open Plains many small ones, Broken Lands two
   huge ones); the difficulty makes both more or fewer, and **every house as full as it says** (`doom_zombies`, Normal
@@ -546,7 +574,7 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 | Large | 256 × 256 | ~73,000 (like TAB's Caustic Lands): ≈ 65,000 roaming almost everywhere in packs of 1–3 per tile, never more than 3 – near the base only walkers, further out the harder breeds; ≈ 8,000 asleep in villages and around loot |
 
 - **Fog of war:** unexplored (black) / explored (dark, no zombies shown) / visible. Sight per unit and building,
-  blocked by forests and trees, computed in the simulation (co-op players share it).
+  blocked by forest, computed in the simulation (co-op players share it).
 
 ---
 
@@ -857,7 +885,11 @@ before step 6.
   resource · **25** a unit is free again when idle and in no control group · **26** no ammo item: the munitions factory only unlocks firearms, after the stone workshop
   (2026-10-20) · **28** one mine for every ore patch
   (iron, coal, stone), no quarry (2026-10-20) · **30** the final wave calls every zombie on the map, villages and loot
-  guards too · **31** the waves bring the special breeds, more and more over the round (both 2026-10-20).
+  guards too · **31** the waves bring the special breeds, more and more over the round (both 2026-10-20) · **32** the
+  foundry is both: a tech building like TAB's (it unlocks the iron tier) that smelts iron ore + coal into iron while it
+  runs, like the charcoal burner burns wood – no extra building, the Factorio chain stays · **33** new towers
+  (ballista, MG tower) shoot by themselves; the ballista is early game like TAB's – unlocked by the wood workshop, no
+  iron (both 2026-10-24).
 
 ---
 

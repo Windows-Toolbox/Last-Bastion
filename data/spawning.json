@@ -20,7 +20,8 @@
       { "breed": "Armored", "from": 0.2, "share": 0.12 },
       { "breed": "Infested", "from": 0.4, "share": 0.08 },
       { "breed": "Spitter", "from": 0.55, "share": 0.06 },
-      { "breed": "Fat", "from": 0.7, "share": 0.04 }
+      { "breed": "Fat", "from": 0.7, "share": 0.04 },
+      { "breed": "Screamer", "from": 0.3, "share": 0.01 }
     ],
     "final_hour": 6,
     "final_runners": 1000

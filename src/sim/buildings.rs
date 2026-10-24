@@ -32,6 +32,9 @@ pub struct Building {
     /// Switched off (Y, like in TAB – `BuildingKind::can_switch_off`): it does nothing and costs nothing – no upkeep,
     /// no workers, no power, and what it `requires` for others doesn't count either.
     pub off: bool,
+    /// Ticks until it's finished (`World::start_construction`) – 0: it's done. Until then it stands and can be hit,
+    /// takes its workers, and its hit points grow – but it does nothing yet (`works`).
+    pub construction: u32,
     /// Points (hit points, then shield) that are paid for and still come back – a little every tick (`repair`).
     pub repair_left: u32,
     /// Production queue: in front what's being made right now – a unit, or a barrel in the munitions factory.
@@ -95,6 +98,16 @@ impl Building {
         self.kind.stats()
     }
 
+    /// Finished building it (`construction` 0)? Until then it gives nothing: no workers, gold, power, storage …
+    pub fn is_built(&self) -> bool {
+        self.construction == 0
+    }
+
+    /// Does it do its job right now – finished, switched on, not infected? Gathering, power, gold, upkeep, unlocking.
+    pub fn works(&self) -> bool {
+        self.is_built() && !self.off && !self.infected
+    }
+
     /// Width and depth in tiles, as it stands (turned or not).
     pub fn footprint(&self) -> (i32, i32) {
         self.kind.footprint(self.turned)
@@ -149,10 +162,36 @@ impl Building {
         self.stats().hp + self.stats().max_shield()
     }
 
-    /// What's missing to whole and isn't paid for yet – what a repair would fix now.
+    /// What's missing to whole and isn't paid for yet – what a repair would fix now. Nothing while it's being built:
+    /// it grows by itself, what a hit took then can be repaired once it's finished.
     pub fn unpaid_damage(&self) -> u32 {
+        if !self.is_built() {
+            return 0;
+        }
         // `saturating_sub`: never below 0 – even if `data\` was changed to fewer hit points than it has.
         self.full().saturating_sub(self.hp + self.shield + self.repair_left)
+    }
+
+    /// One tick of building: its hit points grow towards full – what was built up to now, minus what was built up to
+    /// the last tick, so the steps add up to exactly full and what a hit took stays missing. When it's finished the
+    /// shield is there. Returns `true` on the tick it's finished.
+    fn build_step(&mut self) -> bool {
+        if self.construction == 0 {
+            return false;
+        }
+        let stats = self.stats();
+        let start = stats.hp * data::get().buildings.build_start_percent / 100;
+        let total = stats.build_time.max(1);
+        // Hit points built when `left` ticks are left – a share of what's between the start and full.
+        let grown = |left: u32| stats.hp.saturating_sub(start) * total.saturating_sub(left) / total;
+        let before = grown(self.construction);
+        self.construction -= 1;
+        self.hp = (self.hp + grown(self.construction) - before).min(stats.hp);
+        if self.construction == 0 {
+            self.shield = stats.max_shield();
+            return true;
+        }
+        false
     }
 
     /// What repairing it costs right now: its share of `repair_cost`, rounded up – a scratch never costs nothing.
@@ -261,6 +300,7 @@ impl World {
             shield: kind.stats().max_shield(),
             infected: false,
             off: false,
+            construction: 0,
             repair_left: 0,
             production: VecDeque::new(),
             progress: 0,
@@ -286,6 +326,24 @@ impl World {
             self.map.set_taken(tile.0, tile.1, size, true);
         }
         self.map_changed = true;
+    }
+
+    /// The building just placed (`b`, by a player – the editor's and the generator's stand at once) builds itself
+    /// first, like in TAB: `build_seconds` long (`data\buildings.json`), from `build_start_percent` of its hit points
+    /// up, without a shield. Built every tick in `update_buildings`, power or not.
+    pub(super) fn start_construction(&mut self, b: usize) {
+        #[cfg(test)]
+        if self.instant_build {
+            return;
+        }
+        let building = &mut self.buildings[b];
+        let stats = building.stats();
+        if stats.build_time == 0 {
+            return;
+        }
+        building.construction = stats.build_time;
+        building.hp = (stats.hp * data::get().buildings.build_start_percent / 100).max(1);
+        building.shield = 0;
     }
 
     /// Before building: whatever the new building replaces (a gate on walls, `placement::replaces`) is torn down –
@@ -328,8 +386,8 @@ impl World {
                     unit.inside = None;
                 }
                 command_center_fell |= building.kind == BuildingKind::CommandCenter;
-                // Switched off, nobody works in it – nobody comes out.
-                let workers = if building.infected || building.off { 0 } else { building.stats().worker_cost };
+                // Switched off or not finished yet, nobody works in it – nobody comes out.
+                let workers = if building.works() { building.stats().worker_cost } else { 0 };
                 fallen.push((building.center(), building.tiles(), workers));
             }
         }
@@ -402,7 +460,7 @@ impl World {
     /// Workers like in TAB (DESIGN.md 5.6): houses and the command center give them (`workers`), every other building
     /// and every unit takes some (`worker_cost`) – for as long as it stands or lives. Units in a production queue
     /// already count: they take them when they go in, like their gold. Infected buildings give none, switched off
-    /// ones take none.
+    /// ones take none. A building still being built takes them already, a house gives them only once it's finished.
     /// Counted anew every time instead of kept in a number – that way they can't get out of step with what stands on
     /// the map, and map files don't need them. Returns (in use, all there are).
     pub fn workers(&self) -> (u32, u32) {
@@ -410,7 +468,7 @@ impl World {
         let queued = self.buildings.iter().flat_map(|b| b.production.iter().map(|p| p.worker_cost()));
         let units = self.units.iter().map(|u| u.stats().worker_cost);
         let used = buildings.chain(queued).chain(units).sum();
-        let all: u32 = self.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().workers).sum();
+        let all: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().workers).sum();
         #[cfg(test)]
         let all = all + self.extra_workers;
         (used, all)
@@ -424,10 +482,16 @@ impl World {
     }
 
     /// Every payout (`payout_ticks`) the economy does its round (`economy.rs`: gathering, burning, eating, the houses'
-    /// gold, the upkeep). Then repairs go on, and the production queues – as fast as the power allows, not at all
-    /// while switched off. Finished units come out next to the building, finished barrels go into the store – with
-    /// the store full, the next one waits.
+    /// gold, the upkeep). Then buildings being built grow, repairs go on, and the production queues – as fast as the
+    /// power allows, not at all while switched off. Finished units come out next to the building, finished barrels go
+    /// into the store – with the store full, the next one waits.
     pub(super) fn update_buildings(&mut self) {
+        for b in 0..self.buildings.len() {
+            // Finished: a charcoal burner lights up right away if there's wood, like a new one did before.
+            if self.buildings[b].build_step() {
+                self.fuel(b);
+            }
+        }
         if (self.tick + 1).is_multiple_of(payout_ticks()) {
             self.economy_payout();
         }
@@ -475,7 +539,7 @@ impl World {
     /// wood, like a new one.
     pub(super) fn switch_off(&mut self, b: usize, off: bool) {
         let building = &self.buildings[b];
-        if !building.kind.can_switch_off() || building.infected || building.off == off {
+        if !building.kind.can_switch_off() || building.infected || !building.is_built() || building.off == off {
             return;
         }
         if !off && self.switch_on_blocked(b).is_some() {
@@ -632,6 +696,6 @@ impl World {
     /// Is this building a tower with a free spot?
     pub(super) fn has_room(&self, b: usize) -> bool {
         let building = &self.buildings[b];
-        building.kind.is_tower() && self.garrison(building.id).len() < data::get().buildings.tower_slots
+        building.kind.is_tower() && building.is_built() && self.garrison(building.id).len() < data::get().buildings.tower_slots
     }
 }

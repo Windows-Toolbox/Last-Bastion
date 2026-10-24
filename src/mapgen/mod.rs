@@ -24,6 +24,7 @@ mod lanes;
 mod ores;
 mod regions;
 mod rings;
+mod start;
 mod tools;
 mod villages;
 mod wild;
@@ -31,6 +32,7 @@ mod wild;
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::BuildingKind;
 use crate::map::{Map, Region, Terrain, BORDER};
 use crate::noise::Noise;
 use crate::rng::Rng;
@@ -498,7 +500,13 @@ fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize, Vec<Vec2
     let c = &setup.common;
     // Inside the world border: what `Map::in_play` will say. Beyond `full` the corners of the grid are off the map.
     let (play, full) = (Map::play_area_of(size, BORDER), Map::full_area_of(size));
-    let ctx = Context { center: center_point, keep_out: c.base_clear, lanes: ways_in(seed, setup) };
+    let ctx = Context {
+        center: center_point,
+        keep_out: c.base_clear,
+        lanes: ways_in(seed, setup),
+        grid: BuildingKind::CommandCenter.stats().power_radius,
+        relay: BuildingKind::TeslaTower.stats().power_radius,
+    };
     match setup.generator {
         Generator::Wild => wild::generate(&mut tiles, &setup.wild, &mut rng, &ctx),
         Generator::Regions => regions::generate(&mut tiles, &setup.regions, &mut rng, &ctx),
@@ -519,6 +527,8 @@ fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize, Vec<Vec2
         }
     }
     tiles.clear_circle(ctx.center, ctx.keep_out);
+    // The start area: forest within reach of the command center's grid (the ore's start patches come with the ore).
+    start::ensure_forest(&mut tiles, &mut rng, &ctx);
     let rough = Noise::new(rng.next_u64() as u32);
     let cut = tools::connect_pockets(&mut tiles, center, MIN_POCKET, &rough, |x, y| play.contains_tile(x, y), |x, y| full.contains_tile(x, y));
 
@@ -564,6 +574,11 @@ pub struct Context {
     pub keep_out: f32,
     /// The ways in (`lanes.rs`) – they stay free just like the base. None for Rings and Blank.
     pub lanes: Lanes,
+    /// How far the command center's power reaches and a tesla tower's (`data\buildings.json`, tiles) – the start area
+    /// is planned with them (`start.rs`, `ores.rs`): what a building needs at the start lies within the grid, or one
+    /// tesla tower further.
+    pub grid: f32,
+    pub relay: f32,
 }
 
 impl Context {
@@ -934,48 +949,56 @@ mod tests {
         }
     }
 
-    /// Not a real test – a tool: writes a picture of every generator (2 seeds) as PNG into the folder `DUMP_DIR`,
-    /// one pixel per tile, twice as big. That's how the generators were tuned on 2026-10-17:
+    /// Not a real test – a tool: writes a picture of every generator and every map of `data\game_maps.json` (seeds 1
+    /// to `DUMP_SEEDS`, default 2) as PNG into the folder `DUMP_DIR`. Turned like the minimap and TAB's map: the
+    /// playing field is a square, the ring around it darker, the base a blue dot. That's how the generators were tuned:
     /// `$env:DUMP_DIR = "C:\temp\maps"; cargo test dump_previews -- --ignored`
     #[test]
     #[ignore]
     fn dump_previews() {
-        use macroquad::color::Color;
         let out = std::env::var("DUMP_DIR").expect("set DUMP_DIR to a folder");
-        for generator in Generator::ALL {
-            for seed in [1u64, 2] {
-                let s = MapSetup { generator, ..MapSetup::default() };
-                let g = generate(seed, &s);
-                let map = &g.map;
-                let (n, scale) = (map.size, 2);
-                let w = n * scale;
-                let mut bytes = vec![0u8; w * w * 4];
-                for y in 0..n {
-                    for x in 0..n {
-                        let (xi, yi) = (x as i32, y as i32);
-                        let mut c = match map.deposit(xi, yi) {
-                            Some(d) => crate::draw::ore_color(d.ore),
-                            None => crate::draw::terrain_color(map.terrain(xi, yi)),
-                        };
-                        if !map.in_play(xi, yi) {
-                            c = Color::new(c.r * 0.6, c.g * 0.6, c.b * 0.6, 1.0);
-                        }
-                        let spawner = g.spawners.iter().any(|sp| sp.region().contains_tile(xi, yi));
-                        if spawner {
-                            c = Color::new(0.85, 0.25, 0.55, 1.0);
-                        }
-                        let px = [(c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, 255];
-                        for dy in 0..scale {
-                            for dx in 0..scale {
-                                let i = ((y * scale + dy) * w + x * scale + dx) * 4;
-                                bytes[i..i + 4].copy_from_slice(&px);
-                            }
-                        }
-                    }
-                }
-                let image = macroquad::texture::Image { bytes, width: w as u16, height: w as u16 };
-                image.export_png(&format!("{out}/{generator:?}_{seed}.png"));
+        let seeds: u64 = std::env::var("DUMP_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+        let mut setups: Vec<(String, MapSetup)> = Generator::ALL.iter().map(|&g| (format!("{g:?}"), MapSetup { generator: g, ..MapSetup::default() })).collect();
+        for map in &crate::data::get().maps.maps {
+            setups.push((map.name.replace(' ', "_"), map.setup.clone()));
+        }
+        for (name, setup) in setups {
+            for seed in 1..=seeds {
+                write_preview(&generate(seed, &setup), &format!("{out}/{name}_{seed}.png"));
             }
         }
+    }
+
+    /// The map as a PNG, turned like on screen (`to_frame`): 2 pixels per step of the screen axes.
+    fn write_preview(g: &Generated, path: &str) {
+        use crate::map::from_frame;
+        use macroquad::color::Color;
+        let map = &g.map;
+        let full = map.full_area();
+        let scale = 2.0;
+        let (w, h) = (((full.max.x - full.min.x) * scale) as usize, ((full.max.y - full.min.y) * scale) as usize);
+        let base = vec2(map.size as f32 / 2.0, map.size as f32 / 2.0);
+        let mut bytes = vec![0u8; w * h * 4];
+        for py in 0..h {
+            for px in 0..w {
+                let p = from_frame(full.min + vec2(px as f32 + 0.5, py as f32 + 0.5) / scale);
+                let (x, y) = (p.x.floor() as i32, p.y.floor() as i32);
+                let mut c = match map.deposit(x, y) {
+                    Some(d) => crate::draw::ore_color(d.ore),
+                    None => crate::draw::terrain_color(map.terrain(x, y)),
+                };
+                if g.spawners.iter().any(|sp| sp.region().contains_tile(x, y)) {
+                    c = Color::new(0.85, 0.25, 0.55, 1.0);
+                } else if !map.in_play(x, y) {
+                    c = Color::new(c.r * 0.6, c.g * 0.6, c.b * 0.6, 1.0);
+                }
+                if p.distance(base) < 2.5 {
+                    c = Color::new(0.32, 0.45, 0.70, 1.0);
+                }
+                let i = (py * w + px) * 4;
+                bytes[i..i + 4].copy_from_slice(&[(c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, 255]);
+            }
+        }
+        macroquad::texture::Image { bytes, width: w as u16, height: h as u16 }.export_png(path);
     }
 }

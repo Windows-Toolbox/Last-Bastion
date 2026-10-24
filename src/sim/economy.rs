@@ -107,9 +107,9 @@ impl World {
         limit
     }
 
-    /// How much gold fits (`colony.json`) – every bank that isn't infected adds its `gold_storage`.
+    /// How much gold fits (`colony.json`) – every finished bank that isn't infected adds its `gold_storage`.
     pub fn gold_storage(&self) -> u32 {
-        let banks: u32 = self.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().gold_storage).sum();
+        let banks: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().gold_storage).sum();
         let limit = data::get().colony.storage_gold + banks;
         #[cfg(test)]
         let limit = limit.saturating_add(self.extra_storage);
@@ -153,7 +153,7 @@ impl World {
         for b in 0..n {
             let building = &self.buildings[b];
             let counts = building.kind.on_grid() || building.kind == BuildingKind::CommandCenter;
-            if building.infected || building.off || !counts {
+            if !building.works() || !counts {
                 continue;
             }
             let center = building.center();
@@ -190,7 +190,7 @@ impl World {
     /// switched off.
     pub fn carries_power(&self, b: usize) -> bool {
         let building = &self.buildings[b];
-        building.stats().power_radius > 0.0 && !building.infected && !building.off
+        building.stats().power_radius > 0.0 && building.works()
     }
 
     /// The grid reaching point `p` and what it has to spare (made minus used) – `None` if no grid reaches it. For a
@@ -246,7 +246,7 @@ impl World {
                     continue;
                 }
                 let fits = match source {
-                    Source::Forest => matches!(self.map.terrain(x, y), Terrain::Forest | Terrain::Tree),
+                    Source::Forest => self.map.terrain(x, y) == Terrain::Forest,
                     Source::Water => self.map.terrain(x, y) == Terrain::Water,
                     Source::Ore => self.map.deposit(x, y).is_some_and(|d| Resource::from_ore(d.ore).is_some()),
                     Source::Fertile => self.map.terrain(x, y).is_fertile() && self.map.deposit(x, y).is_none(),
@@ -282,7 +282,7 @@ impl World {
     /// what the HUD shows next to the stock.
     pub fn flow(&self, power: &Power) -> [i64; 5] {
         let mut flow = [0i64; 5];
-        for (b, building) in self.buildings.iter().enumerate().filter(|(_, b)| !b.infected && !b.off) {
+        for (b, building) in self.buildings.iter().enumerate().filter(|(_, b)| b.works()) {
             let rate = self.gather_rate(building.kind, building.tile, b, power.share(self, b));
             for r in Resource::ALL {
                 flow[r.index()] += rate[r.index()] as i64;
@@ -302,7 +302,7 @@ impl World {
     /// Does a building of this kind stand – or is nothing `needed`? What `requires` asks for (like TAB's workshops).
     /// Switched off it doesn't count: otherwise a workshop could unlock everything without ever costing upkeep.
     pub fn stands(&self, needed: Option<BuildingKind>) -> bool {
-        needed.is_none_or(|needed| self.buildings.iter().any(|b| b.kind == needed && !b.off))
+        needed.is_none_or(|needed| self.buildings.iter().any(|b| b.kind == needed && !b.off && b.is_built()))
     }
 
     /// May `kind` be built – does what it `requires` stand?
@@ -337,12 +337,12 @@ impl World {
     }
 
     /// A charcoal burner takes the wood until the next payout – without it, it makes no power until then.
-    /// Switched off it takes none.
+    /// Switched off or not finished it takes none.
     pub(super) fn fuel(&mut self, b: usize) {
         let building = &self.buildings[b];
         let burns = building.stats().burns_wood;
         if burns > 0 {
-            let runs = !building.infected && !building.off;
+            let runs = building.works();
             self.buildings[b].fuelled = runs && self.stock.take(Resource::Wood, burns);
         }
     }
@@ -358,7 +358,7 @@ impl World {
         let power = self.power();
         for b in 0..self.buildings.len() {
             let building = &self.buildings[b];
-            if building.infected || building.off || building.kind.gathers().is_none() {
+            if !building.works() || building.kind.gathers().is_none() {
                 continue;
             }
             let rate = self.gather_rate(building.kind, building.tile, b, power.share(self, b));
@@ -368,7 +368,7 @@ impl World {
             }
         }
         // The command center's food, out of nothing.
-        let made: u32 = self.buildings.iter().filter(|b| !b.infected).map(|b| b.stats().food_made).sum();
+        let made: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().food_made).sum();
         self.stock.add(Resource::Food, made, self.storage(Resource::Food));
         // The units eat first – what they eat the houses don't get. Not enough: they eat what there is, nothing else
         // happens to them.
@@ -378,7 +378,7 @@ impl World {
         for b in 0..self.buildings.len() {
             let share = power.share(self, b);
             let building = &self.buildings[b];
-            if building.infected || building.stats().gold == 0 {
+            if building.infected || !building.is_built() || building.stats().gold == 0 {
                 self.buildings[b].paid = 0;
                 continue;
             }

@@ -45,6 +45,7 @@ mod sound;
 mod spawning;
 mod terrain;
 mod units;
+mod veterans;
 mod zombies;
 #[cfg(test)]
 mod tests;
@@ -154,6 +155,9 @@ pub struct World {
     /// Tests: this much more fits in the storage, of gold and of every good (`World::storage`).
     #[cfg(test)]
     pub extra_storage: u32,
+    /// Tests: buildings stand at once, without their build time – the tests about building time switch it off.
+    #[cfg(test)]
+    pub instant_build: bool,
     /// How many days the round lasts – the final wave comes on the last one (DESIGN.md 4.1). 0: no set length (old map
     /// files).
     pub days: u32,
@@ -277,6 +281,7 @@ impl World {
             world.spawn_unit(kind, pos);
         }
         world.scatter_roamers(difficulty.roaming_zombies);
+        world.place_giants(difficulty.giants);
         world.wake_near_eyes();
         world.update_vision();
         world
@@ -284,8 +289,9 @@ impl World {
 
     /// For the tests: the default "Wild" map, but at the old size of 128 tiles – smaller is faster, and the tests
     /// were written for it. With plenty of gold, so tests that build and train don't depend on the prices – the
-    /// tests about gold set it themselves. Plenty of workers, goods and power too, for the same reason. And the start units
-    /// the tests were written for: 8 soldiers, 4 snipers, 4 rangers – whatever the default difficulty says now.
+    /// tests about gold set it themselves. Plenty of workers, goods and power too, for the same reason – and buildings
+    /// stand at once, without their build time. And the start units the tests were written for: 8 soldiers, 4 snipers,
+    /// 4 rangers – whatever the default difficulty says now.
     #[cfg(test)]
     pub fn new(seed: u64) -> World {
         let mut setup = MapSetup::default();
@@ -301,6 +307,7 @@ impl World {
         world.extra_reach = 10.0;
         world.extra_power = 100_000;
         world.extra_storage = 1_000_000;
+        world.instant_build = true;
         world
     }
 
@@ -359,6 +366,8 @@ impl World {
             extra_power: 0,
             #[cfg(test)]
             extra_storage: 0,
+            #[cfg(test)]
+            instant_build: false,
             days: 0,
             difficulty: difficulty.name.clone(),
             keep_out: difficulty.keep_out,
@@ -484,6 +493,7 @@ impl World {
         if self.remove_razed_houses() {
             self.refresh_map();
         }
+        self.share_experience(); // veterans.rs – the units around the fallen learn
         self.score.zombies_killed += self.zombies.iter().filter(|z| !z.is_alive()).count() as u32;
         self.zombies.retain(|z| z.is_alive());
         // Now and then: the calm ones far from everything fall asleep (`sleep.rs`), and the rest are put in order of
@@ -516,11 +526,13 @@ impl World {
             mix(u.facing.to_bits()); // decides when it can shoot
             mix(u.hp);
             mix(u.barrel as u32);
+            mix(u.xp);
         }
         for b in &self.buildings {
             mix(b.hp);
             mix(b.shield);
             mix(b.off as u32);
+            mix(b.construction);
         }
         for c in &self.corpses {
             mix(c.pos.x.to_bits());

@@ -80,6 +80,30 @@
     "build_seconds": 6.0,
     "noise": 0.0,
     "heals": true,
+    "heal_per_second": 4.0,
+    "heal_after_seconds": 3.0,
+    "sprite": "test/figure"
+  },
+  "spearman": {
+    "name": "Spearman",
+    "letter": "Sp",
+    "cost": 50,
+    "worker_cost": 1,
+    "upkeep": 1,
+    "food": 1,
+    "hp": 100,
+    "armor": 2,
+    "damage": 14,
+    "range": 1.2,
+    "sight": 6.0,
+    "turn_around_seconds": 0.3,
+    "aim_seconds": 0.25,
+    "cooldown_seconds": 0.6,
+    "speed": 3.0,
+    "build_seconds": 4.0,
+    "noise": 2.0,
+    "heals": false,
+    "knockback": 0.6,
     "sprite": "test/figure"
   },
   "merc_soldier": {
@@ -152,5 +176,11 @@
     "noise": 10.0,
     "heals": false,
     "sprite": "test/figure"
+  },
+  "veterans": {
+    "xp": 20,
+    "share_radius": 8.0,
+    "hp_percent": 25,
+    "damage_percent": 20
   }
 }

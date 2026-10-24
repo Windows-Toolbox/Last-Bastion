@@ -470,7 +470,10 @@ impl Game {
         col.note(&format!("Day {day} of {}, {hour:02}:00", self.world.days));
         col.note(&format!("Zombies killed: {}", s.zombies_killed));
         col.note(&format!("Houses of doom destroyed: {}   loot found: {}", s.doom_razed, s.loot_found));
-        col.note(&format!("Units trained: {}   lost: {}   deserted: {}", s.units_trained, s.units_lost, s.units_deserted));
+        col.note(&format!(
+            "Units trained: {}   lost: {}   deserted: {}   dismissed: {}",
+            s.units_trained, s.units_lost, s.units_deserted, s.units_dismissed
+        ));
         col.note(&format!("Buildings built: {}   lost: {}", s.buildings_built, s.buildings_lost));
         col.note(&format!("Gold earned: {}   spent: {}", s.gold_earned, s.gold_spent));
         col.gap();

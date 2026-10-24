@@ -97,6 +97,8 @@ pub struct Zombie {
     pub(super) step: Vec2,
     /// Ticks it has been calm in a row – long enough, and far from your eyes, it falls asleep (`sleep.rs`).
     pub(super) calm_for: u32,
+    /// A screamer: ticks until it can scream again (0: ready).
+    pub(super) scream_in: u32,
 }
 
 /// Where a zombie was lured to.
@@ -140,10 +142,25 @@ pub enum Breed {
     Spitter,
     /// Like StarCraft 2's infested marine: shoots back, just a little less far than your soldiers.
     Infested,
+    /// Weak, but sees far: when it spots one of your units it screams (`scream` in `data\zombies.json`) – a loud
+    /// noise that brings everything around it. Kill it first!
+    Screamer,
+    /// Like TAB's giant, a bit smaller and weaker: huge, slow, smashes walls in a few hits. Only a few per map, far out
+    /// (`giants` of the difficulty, `place_giants`) – and in the final wave, which calls everyone.
+    Giant,
 }
 
 impl Breed {
-    pub const ALL: [Breed; 6] = [Breed::Walker, Breed::Runner, Breed::Fat, Breed::Armored, Breed::Spitter, Breed::Infested];
+    pub const ALL: [Breed; 8] = [
+        Breed::Walker,
+        Breed::Runner,
+        Breed::Fat,
+        Breed::Armored,
+        Breed::Spitter,
+        Breed::Infested,
+        Breed::Screamer,
+        Breed::Giant,
+    ];
 
     /// Speed, hit points, armor, damage, sight and size of this breed.
     pub fn stats(self) -> &'static BreedStats {
@@ -284,6 +301,7 @@ impl World {
             final_wave: false,
             step: Vec2::ZERO,
             calm_for: 0,
+            scream_in: 0,
         });
     }
 
@@ -422,11 +440,20 @@ impl World {
         let mut shots = Vec::new();
         // Every hit makes a little noise (`sound.rs`) – a crowd tearing at a wall gets loud.
         let mut hits = Vec::new();
+        // Screamers that saw one of your units this tick: where, and how loud.
+        let mut screams = Vec::new();
         for (i, (zombie, (velocity, hit, seen))) in self.zombies.iter_mut().zip(moves).enumerate() {
-            // It sees one of your units: it remembers where – and goes there when it loses sight of it.
+            // It sees one of your units: it remembers where – and goes there when it loses sight of it. A screamer
+            // screams.
+            zombie.scream_in = zombie.scream_in.saturating_sub(1);
             if let Some(at) = seen {
                 zombie.lure = Some(Lure::seen(at, tick));
                 zombie.wander = None;
+                let stats = zombie.breed.stats();
+                if stats.scream > 0 && zombie.scream_in == 0 {
+                    screams.push((zombie.pos, stats.scream));
+                    zombie.scream_in = stats.scream_every.max(1);
+                }
             }
             zombie.prev = zombie.pos;
             zombie.step = velocity;
@@ -445,11 +472,7 @@ impl World {
             }
             match hit {
                 Some(hit) if zombie.breed.is_ranged() => shots.push((zombie.pos, zombie.breed, hit)),
-                Some(Hit::Unit(u)) => {
-                    let unit = &mut self.units[u];
-                    let damage = zombie.breed.stats().damage.saturating_sub(unit.stats().armor).max(1);
-                    unit.hp = unit.hp.saturating_sub(damage);
-                }
+                Some(Hit::Unit(u)) => self.units[u].take_hit(zombie.breed.stats().damage, tick),
                 Some(Hit::Building(b)) => {
                     if self.buildings[b].take_damage(zombie.breed.stats().damage) {
                         infected.push(b);
@@ -466,6 +489,11 @@ impl World {
         }
         for at in hits {
             self.make_sound(at, data::get().sound.zombie_hit);
+        }
+        // A scream is the zombies' noise: it brings them and wakes the sleepers around like any sound (`sound.rs`) –
+        // but it doesn't add to your colony's unrest.
+        for (at, loud) in screams {
+            self.make_sound(at, loud);
         }
 
         // 4. Nobody stands inside anybody else: whoever overlaps is pushed apart, like a liquid. Only the busy ones – a

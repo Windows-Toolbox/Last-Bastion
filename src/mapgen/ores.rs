@@ -1,7 +1,8 @@
 //! Ore patches (DESIGN.md 5.1, 9.1 steps 2–3) – placed like Factorio's "spot noise" (Factorio Friday Facts #258):
 //!
 //! 1. **Start area**: one small patch of each ore just outside the free space around the base – like Factorio's
-//!    starting area, so every map can start the same economy.
+//!    starting area, so every map can start the same economy. Stone closest (the barracks needs it), planned with
+//!    the reach of the command center's grid and of a tesla tower (`Context::grid`, `relay`).
 //! 2. **The rest of the map** is cut into square regions. Each gets a few random candidate points, sorted by how
 //!    "favourable" they are (a slow noise – so patches cluster a little, like ore fields), and the best ones become
 //!    patches until the region has as many as the density asks for. Spots on water, rock or too close to another
@@ -83,11 +84,18 @@ pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: &Region, setting
         play.contains_disc(c, r) && patches.iter().all(|p| p.center.distance(c) >= p.radius + r + GAP) && grass_share(tiles, c, r) >= grass_needed
     };
 
-    // 1. Start area: one patch of each ore, a few tiles outside the free space, in random directions.
+    // 1. Start area: one patch of each ore, in random directions. Stone first and closest – the barracks needs it:
+    //    just outside the command center's grid, a tesla tower brings a mine there (ore is open ground, so it may reach
+    //    into a wide clearing). Iron ore and coal outside the clearing, one or two towers further out.
     for ore in Ore::PATCHES {
+        let (near, far) = if ore == Ore::Stone {
+            (ctx.grid + 2.0, ctx.grid + ctx.relay - 1.0)
+        } else {
+            ((ctx.grid + 4.0).max(ctx.keep_out + START_RADIUS + 2.0), ctx.grid + 2.0 * ctx.relay)
+        };
         for _ in 0..60 {
             let dir = tools::random_direction(rng);
-            let dist = ctx.keep_out + START_RADIUS + 2.0 + rng.unit_f32() * 10.0;
+            let dist = near + rng.unit_f32() * (far - near).max(2.0);
             let c = ctx.center + dir * dist;
             if fits(&patches, c, START_RADIUS, 0.6) {
                 patches.push(Patch { center: c, radius: START_RADIUS, ore, richness: START_RICHNESS * settings.richness });
@@ -165,13 +173,15 @@ pub fn place(tiles: &Tiles, rng: &mut Rng, ctx: &Context, play: &Region, setting
     }
 
     // 4. Oil: one node in the start area, then groups region by region – more nodes per group further out.
-    let mut oil = Oil { tiles, play: *play, taken, deposits, groups: Vec::new() };
+    let mut oil = Oil { tiles, play: *play, taken, deposits, groups: Vec::new(), base: ctx.center, keep_away: 0.0 };
     for _ in 0..60 {
         let c = ctx.center + tools::random_direction(rng) * (ctx.keep_out + 3.0 + rng.unit_f32() * 10.0);
         if oil.group(rng, c, 1, settings.richness) {
             break;
         }
     }
+    // The groups further out: none of their nodes strays into the start area – its one node stays the only one there.
+    oil.keep_away = ctx.keep_out + AWAY_FROM_BASE - 2.0;
     if settings.oil_per_10k > 0.0 {
         let favour = Noise::new(rng.next_u64() as u32);
         for ry in (lo..hi).step_by(OIL_REGION as usize) {
@@ -213,6 +223,9 @@ struct Oil<'a> {
     taken: Vec<bool>,
     deposits: Vec<(i32, i32, Deposit)>,
     groups: Vec<Vec2>,
+    /// No node closer to `base` than `keep_away` tiles.
+    base: Vec2,
+    keep_away: f32,
 }
 
 impl Oil<'_> {
@@ -243,7 +256,7 @@ impl Oil<'_> {
     fn node(&mut self, p: Vec2, richness: f32) -> bool {
         let (x0, y0) = (p.x.floor() as i32, p.y.floor() as i32);
         let n = self.tiles.size;
-        if !(0..4).all(|k| self.play.contains_tile(x0 + k % 2, y0 + k / 2)) {
+        if p.distance(self.base) < self.keep_away || !(0..4).all(|k| self.play.contains_tile(x0 + k % 2, y0 + k / 2)) {
             return false;
         }
         let grass = (0..4).all(|k| self.tiles.get(x0 + k % 2, y0 + k / 2) == Terrain::Grass);

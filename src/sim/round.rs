@@ -32,8 +32,9 @@ pub struct Score {
     pub zombies_killed: u32,
     pub units_trained: u32,
     pub units_lost: u32,
-    /// Units that left because of debt (`debt.rs`).
+    /// Units that left because of debt (`debt.rs`) – and the ones you sent away (`Order::Dismiss`).
     pub units_deserted: u32,
+    pub units_dismissed: u32,
     pub buildings_built: u32,
     pub buildings_lost: u32,
     pub gold_earned: u32,

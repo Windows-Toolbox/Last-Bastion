@@ -96,8 +96,9 @@
 - New game, Map editor, **Custom maps** (Play / Edit / Delete), Settings, Quit.
 - **New game** (wie TAB): **Karte**, **Schwierigkeit** und **Dauer** wählen, Seed, Vorschau – dazu der
   **Score-Faktor** (Karte × Schwierigkeit × Dauer; eine Punktzahl gibt es noch nicht).
-  - **Karten** (`data\game_maps.json`): Green Valley (Wild), Broken Lands (Regions), Old Fortress (Rings), Red Canyons
-    (Canyons), Open Plains (Blank mit einzelnen Bäumen) – sie sehen (noch) nur nach ihrem Generator aus.
+  - **Karten** (`data\game_maps.json`): **Peaceful Lowlands** (Wild wie TABs Karte: trockene Ebenen, grüne Wiesen mit
+    Hainen, große glatte Seen), Green Valley (Wild), Broken Lands (Regions), Old Fortress (Rings), Red Canyons
+    (Canyons), Open Plains (Blank mit einzelnen Waldkacheln).
   - **Schwierigkeit** (Easy / Normal / Hard / Brutal, `data\game_difficulties.json`): Startgold, -holz und -einheiten,
     Streuner, wie nah jede Art ans Kommandozentrum darf, Zombies pro Dorfhaus, Wächter der Beute, Stärke der Wellen
     und des konstanten Spawns.
@@ -107,7 +108,7 @@
 
 | Generator | Wie |
 |---|---|
-| **Wild** | Rauschen wie Factorio: Seen, Bergrücken, Wälder, Flüsse |
+| **Wild** | Rauschen wie Factorio: Seen (Regler „Shore detail“: glatt bis zerfranst), Bergrücken, Wälder („Forest size“: große Wälder oder viele Haine), Flüsse. Eine Feuchte entscheidet: nass = Wald, daneben grüne Wiese, trocken = Erde |
 | **Regions** | Wie TAB: Regionen mit Wänden und **Pässen** dazwischen |
 | **Rings** | Festungsringe mit versetzten Öffnungen |
 | **Canyons** | Fels mit gewundenen Schluchten |
@@ -116,14 +117,18 @@
 - **Für alle Generatoren:** Größe (96–256), freier Platz um die Basis, Spawner pro Seite, Wege hinein, Villages of
   Doom (wie viele, Häuser nahe der Basis / am Rand), Beute, Erde, Erzfelder, Ölgruppen.
 - **Erde** (braun): begehbar und bebaubar wie Gras, aber **keine Farm** – in Flecken, 40 % des offenen Bodens (Regler
-  „Dirt“, nicht auf Blank).
+  „Dirt“, nicht auf Blank). Bei Wild dort, wo es am trockensten ist.
+- **Startgebiet** (wie Factorio, `src\mapgen\start.rs`): Auf jeder Karte findet ein Sägewerk im Netz des
+  Kommandozentrums ≥ 20 Waldkacheln (ist die Lichtung breiter als das Netz: einen Tesla-Turm weiter) – reicht der
+  Wald dort nicht, wächst ein Hain dazu. Ein Steinfeld liegt einen Tesla-Turm weit weg (die Kaserne braucht Stein).
+  Ein Test prüft das für jede Karte mit 10 Seeds.
 - **Wege hinein:** gewundene offene Wege von jeder Seite zur Basis, die sich wie Äste vereinigen – die Stellen zum
   Zumauern. Flüsse bekommen dort Furten, Regionswände Pässe. Ein Sicherheitsnetz verbindet alles Abgeschnittene.
 - **Weltgrenze:** gerade auf dem Bildschirm wie in TAB – die Spielfläche ist ein Rechteck (doppelt so breit wie
   hoch), die Minimap auch. Außen ein Ring offenen Geländes (≈ 11 Kacheln) mit den **Spawnern** (3 pro Seite, fast die
   ganze Seite breit). Dahinter sieht und läuft man nicht. Größe = so viele Kacheln wie ein Quadrat dieser Kante.
-- **Erz:** Eisenerz (rostbraun), Kohle (schwarz), Stein (hellgrau) als Felder; neben der Basis je ein kleines (16–26
-  Kacheln weg – oft braucht es einen Tesla-Turm bis dorthin), draußen größer und reicher. Abgebaut von der **Mine** –
+- **Erz:** Eisenerz (rostbraun), Kohle (schwarz), Stein (hellgrau) als Felder; neben der Basis je ein kleines (Stein
+  12–16 Kacheln weg, Eisen und Kohle 14–24 – ein, zwei Tesla-Türme), draußen größer und reicher. Abgebaut von der **Mine** –
   am besten mitten aufs Feld, sie baut auch das Erz unter sich ab.
 - **Öl:** Quellen von genau **2 × 2 Kacheln** (lila mit schwarzer Lache), berühren sich nie. Neben der Basis eine
   einzelne, draußen Gruppen von 2 bis 6.
@@ -151,7 +156,11 @@
 - **Arten:** **Walker** (langsam), **Runner** (schnell), **Fat** (groß, 600 HP), **Riot** (TABs gepanzerter Runner:
   schnell, Rüstung 3 – ein Pfeil macht nur 7), **Spitter** (TABs Venom: spuckt Säure 3,5 Kacheln weit, über Mauern;
   sie fliegt kurz und trifft alle im Umkreis von 1 Kachel – wer rechtzeitig weggeht, entkommt), **Infested** (SC2s
-  Infested Marine: schießt 4,5 Kacheln, knapp unter dem Soldaten). Weiter draußen mehr von den harten Arten.
+  Infested Marine: schießt 4,5 Kacheln, knapp unter dem Soldaten), **Screamer** (gelb, sieht 8 Kacheln weit: entdeckt
+  er eine Einheit, schreit er – Lärm 1.500, holt alles in der Nähe und weckt Schlafende; alle 10 s wieder – zuerst
+  erschießen!), **Riese** (wie TAB, etwas kleiner: 3.000 HP, Rüstung 6, 150 Schaden – eine Mauer in 3 Schlägen; nur ein
+  paar pro Karte weit draußen, `giants` der Schwierigkeit: Easy 2, Normal 4, Hard 6, Brutal 9 auf 256er-Karten – die
+  Schlusswelle ruft auch sie). Weiter draußen mehr von den harten Arten.
 - **Schlafen weit weg** (DESIGN.md 8.5): Wer weit weg von deinen Augen liegt, schläft – kostet fast nichts. Wach werden
   sie, wenn eine Einheit oder ein Gebäude auf Sichtweite + 8 Kacheln herankommt (bevor du sie siehst), durch Lärm
   (genau wie die wachen – und gehen hin), durch Scan, Sprengfass und die Schlusswelle (alle, 2.000 pro Takt, die
@@ -199,7 +208,16 @@
 
 ### Einheiten und Kampf
 
-- **Soldat, Ranger, Scharfschütze, Medic** – alle Werte in `data\` (siehe `data\README.md`).
+- **Soldat, Ranger, Scharfschütze, Medic, Speerträger** – alle Werte in `data\` (siehe `data\README.md`).
+- **Speerträger** (Kaserne, 50 Gold, ohne Munitionsfabrik): Nahkampf mit 1,2 Kacheln Reichweite, **jeder Treffer stößt
+  den Zombie zurück** (0,6 Kacheln, große weniger: Fat ≈ die Hälfte, Riese ≈ ein Viertel), **fast lautlos** (Lärm 2 pro
+  Stich – etwas mehr als ein Zombie-Treffer, weniger als ein Gewehrschuss). Hält früh eine
+  Linie oder ein Tor – gegen Spitter und Infested stirbt er.
+- **Veteranen:** jeder Zombie, der stirbt, gibt Erfahrung (Walker 1, Riot/Spitter/Infested/Screamer 3, Fat 10, Riese
+  100), geteilt unter allen Einheiten in 8 Kacheln – Veteranen nehmen einen halben Anteil. Bei 20 wird eine Einheit
+  **Veteran**: +25 % HP (sofort), +20 % Schaden, silberne Marke, desertiert dreimal seltener. Söldner lernen nicht.
+- **Entlassen (Entf):** die ausgewählten Einheiten verlassen die Kolonie – kein Unterhalt mehr, Arbeiter frei, kein
+  Gold zurück.
 - **Söldner** aus dem Gasthaus (Söldner-Soldat, -Ranger, -Scharfschütze): stärker als Veteranen (×1,5 HP, ×1,4
   Schaden, schneller), 2,5 × so teuer, doppelter Unterhalt, **keine Arbeiter** – das Limit ist nur das Gold. Goldene
   Marke über dem Kopf. Bei Schulden gehen sie zuerst, schon ab Stufe 2.
@@ -210,7 +228,8 @@
 - **Schießen wie StarCraft:** drehen → zielen → schießen → nachladen. Eine Einheit bleibt bei ihrem Ziel.
   Schüsse bis zum Tod: Walker Ranger 4 / Soldat 3 / Scharfschütze 1, Runner 6 / 4 / 1.
 - **Feuer verteilen:** neue Ziele sind Zombies, die die anderen nicht schon sicher töten.
-- **Medic:** greift nie an, richtet seinen Strahl auf Verletzte (Heilen kommt noch).
+- **Medic:** greift nie an, heilt mit seinem Strahl 4 HP/s – aber **nur, wer 3 s nicht getroffen wurde**: kein
+  SC2-Heilen mitten im Kampf, Verletzte muss man zurückziehen.
 - **Formationen** (wie *Diplomacy is Not an Option*): nur beim **Ziehen** – Linie, Block, Kreis.
 
 ### Die Leiste unten (wie TAB)
@@ -242,6 +261,7 @@
 | **Shift** + bauen / ausbilden | Fehlt nur Gold: ins Minus, in den Dispo der Banken (ohne Shift ist 0 die Grenze) |
 | **Strg** + ausbilden | 5 auf einmal (auch Fässer) – anders als SC2, dort ist es Shift |
 | D | Einheiten mit Fass: abstellen |
+| Entf | Ausgewählte Einheiten entlassen |
 | Strg / Shift / Strg+Shift + 1–0 | Gruppe setzen / dazu / „stehlen“ – auch mit Gebäuden. 1–0: auswählen, zweimal: Kamera hin |
 | WASD, Pfeile, Rand, Mausrad | Kamera, Zoom. **WASD nur ohne Auswahl** (sonst gehören die Tasten der Befehlskarte) |
 | Mittlere Maus ziehen | Karte verschieben |
@@ -268,8 +288,8 @@
 
 Balliste (F) und MG-Turm (G) sind noch grau.
 
-- **Kaserne** (ohne Voraussetzung baubar): Q Soldat (100 Gold), W Ranger (60), R Scharfschütze (200), T Medic (120),
-  G Sammelpunkt. **Soldat und Scharfschütze** (Schusswaffen) erst mit einer **Munitionsfabrik**. Strg = 5 auf
+- **Kaserne** (ohne Voraussetzung baubar): Q Soldat (100 Gold), W Ranger (60), E Speerträger (50), R Scharfschütze
+  (200), T Medic (120), G Sammelpunkt. **Soldat und Scharfschütze** (Schusswaffen) erst mit einer **Munitionsfabrik**. Strg = 5 auf
   einmal, **Taste halten = immer wieder** (wie SC2), höchstens 5 in der Schlange, Klick auf die Schlange bricht ab
   (Gold und Arbeiter zurück).
 - **Gasthaus** (Steinwerkstatt, 800 Gold): Q Söldner-Soldat (250), W Söldner-Ranger (150), R Söldner-Scharfschütze
@@ -283,8 +303,12 @@ Balliste (F) und MG-Turm (G) sind noch grau.
   **30 Strom** (früh fast alles).
 - **Preise** (Gold + Holz/Stein, alles in `data\buildings.json`): Zelt 30, Kaserne 450 + 20 Holz + 20 Stein,
   Holzwerkstatt 1000 + 40 Holz, Mine 300 + 30 Holz, Sägewerk 300, Mauer 10 + 3 Holz, Tor 50 + 10 Holz, Turm 120 + 10 Holz
-  (fast alles wie TAB). Gebäude stehen sofort (noch
-  keine Bauzeit). Der Tooltip zeigt den ganzen Preis.
+  (fast alles wie TAB). Der Tooltip zeigt den ganzen Preis.
+- **Bauzeit** (wie TAB, `build_seconds` in `data\buildings.json`): ein Gebäude baut sich selbst – kurz, länger je
+  größer und je höher im Techtree (Mauer 1 s, Zelt 3 s, Sägewerk 5 s, Kaserne 10 s, Steinwerkstatt 12 s, Gasthaus
+  15 s). Es fängt mit 10 % HP an, wächst bis voll, bekommt den Schild erst fertig. Bis dahin tut es nichts (keine
+  Arbeiter, kein Gold, kein Strom, keine Ausbildung), nimmt aber schon seine Arbeiter – und Zombies können es treffen.
+  Blass und niedriger gezeichnet, unten „Built x %“. Im Editor steht alles sofort.
 - **Arbeiter** (wie TAB): Zelt gibt 2, Steinhaus 8, Kommandozentrum 4. Kaserne braucht 8, Sägewerk und Mine 4, jede Einheit 1, Mauer, Tor, Turm 0
   – solange sie steht oder lebt. Keine freien Arbeiter = nichts Neues. Werte: `worker_cost` / `workers` in `data\`.
 - **Ziehen** baut eine Reihe (Mauern schräg 1 breit wie TAB, Türme mit Lücke). Das Gebäude bleibt an der Maus –
@@ -306,7 +330,7 @@ Balliste (F) und MG-Turm (G) sind noch grau.
 
 ### Wirtschaft
 
-- **Sammeln** (wie TAB): Sägewerk (Wald + Bäume → Holz), Jägerhütte (Wald → Nahrung), Fischerhütte (Wasser → Nahrung),
+- **Sammeln** (wie TAB): Sägewerk (Wald → Holz), Jägerhütte (Wald → Nahrung), Fischerhütte (Wasser → Nahrung),
   **Mine** (Erzfelder → Eisenerz, Kohle, Stein – was eben dort liegt), **Farm** (3 × 3, Felder auf Gras → viel Nahrung;
   steht nur auf Gras, Erde und Erz tragen nichts). Jedes zählt die passenden Kacheln in einem **Quadrat**: seine
   Fläche + `gather_range` Kacheln rundum (wie TAB: Mine 2 → 6 × 6, Sägewerk 3, Jäger 4, Fischer 3, Farm 2). Die
@@ -320,7 +344,8 @@ Balliste (F) und MG-Turm (G) sind noch grau.
 - **Windmühle** +50 (350 Gold + 25 Holz), **Köhlerei** +20, verbrennt aber 1 Holz pro Abrechnung (ohne Holz: nichts).
 - **Bauen braucht freien Strom** (wie TAB): was Strom nimmt, wird nur gebaut, wenn sein Netz so viel übrig hat.
 - **Freischalten** (wie TAB, die Werkstätten stellen nichts her):
-  - **Holzwerkstatt** → Mine, Farm, Windmühle, Tesla-Turm, Pfahlfalle, Steinwerkstatt.
+  - **Mine** und **Tesla-Turm** gehen ab Start (wie TAB – die Kaserne braucht Stein).
+  - **Holzwerkstatt** → Farm, Windmühle, Pfahlfalle, Steinwerkstatt.
   - **Steinwerkstatt** → Munitionsfabrik, Steinhaus, Steinmauer, Steinturm.
   - **Munitionsfabrik** (kostet auch 10 Kohle) → Soldat und Scharfschütze. Munition selbst bleibt gratis.
 - **Steinhaus** (16 Kolonisten, 8 Arbeiter, isst 2, zahlt 40), **Steinmauer** (1000 HP), **Steinturm** (2000 HP) lassen sich direkt
@@ -364,7 +389,7 @@ Balliste (F) und MG-Turm (G) sind noch grau.
 | Tab | Was |
 |---|---|
 | **Map** | Name (= Dateiname), Save, Close, New map, Tage, Startgold, Startholz |
-| **Terrain** | Gelände malen (Berg, Wald, Baum, Wasser, Erde, Erase), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinselgröße |
+| **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinselgröße |
 | **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies (Pinsel / Drop, alle 6 Arten, stürmen / wandern), **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Constant / Periodic / Off), Sofort-Wellen |
 | **Waves** | Zeitleiste der Wellen (Zeit, **Final** = ruft alle Zombies der Karte, **Reveal** = deckt die Karte auf, Anzahl, Art, woher) und der konstante Spawn |
 | **View** (immer) | All / Player / Zombies – durch wessen Augen man schaut |
@@ -376,7 +401,8 @@ Balliste (F) und MG-Turm (G) sind noch grau.
 - **Balancing:** `cargo test --release balance_mini_round -- --ignored --nocapture` spielt die Mini-Runde zweimal
   automatisch durch (untätig / einfacher Spieler: Sägewerk, Jäger, Köhlerei, Zelte, Holzwerkstatt, Tesla + Mine,
   Kaserne, Soldaten). `$env:ROAMERS = "0"` vorher: ohne herumstreifende Zombies – nur die Wirtschaft.
-- **Kartenbilder:** `cargo test dump_previews -- --ignored` mit `DUMP_DIR` schreibt jeden Generator als PNG.
+- **Kartenbilder:** `cargo test --release dump_previews -- --ignored` mit `DUMP_DIR` (und `DUMP_SEEDS`, sonst 2) schreibt
+  jeden Generator und jede Karte aus `data\game_maps.json` als PNG – gedreht wie die Minimap und TABs Kartenansicht.
 - **Tempo der Horde:** `cargo test --release horde_tick_time -- --ignored --nocapture` misst auf einer 256er-Karte,
   wie lange ein Takt mit 22.000 bis 87.000 Zombies dauert (er hat 50 ms) – zu Beginn (fast alle schlafen) und wenn
   die Schlusswelle alle ruft. Standard (65.000, ≈ 2.200 wach): ≈ 0,4 ms / ≈ 10 ms.

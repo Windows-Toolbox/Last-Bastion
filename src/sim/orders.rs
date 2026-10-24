@@ -26,6 +26,9 @@ pub enum Order {
     Command { units: Vec<u32>, command: Command, queue: bool, formation: Option<Formation> },
     /// Cancel everything (S).
     Stop { units: Vec<u32> },
+    /// Send these units away (Del, DESIGN.md 7.2): they leave the colony – no more upkeep, their workers are free
+    /// again. No corpse, no gold back; a barrel one of them carries is put down first.
+    Dismiss { units: Vec<u32> },
 
     // --- Developer tools (DESIGN.md 12.6) – these are orders too, so it stays deterministic ---
     /// Zombies at random spots in random spawners.
@@ -145,6 +148,13 @@ impl World {
                         self.units[i].queue.clear();
                     }
                 }
+            }
+            Order::Dismiss { units } => {
+                self.drop_barrels(units);
+                // `retain`, not `swap_remove`: the order of the list stays the same on every PC.
+                let before = self.units.len();
+                self.units.retain(|u| !units.contains(&u.id));
+                self.score.units_dismissed += (before - self.units.len()) as u32;
             }
             Order::SpawnZombies { count } => {
                 let all: Vec<usize> = (0..self.spawners.len()).collect();
@@ -280,7 +290,9 @@ impl World {
                     self.score.buildings_built += 1;
                     self.replace_buildings(*kind, *tile, *turned);
                     self.add_building(*kind, *tile, *turned);
-                    // A charcoal burner lights up right away if there's wood – not only at the next full hour.
+                    // It builds itself first (`build_seconds`). One that stands at once: a charcoal burner lights up
+                    // right away if there's wood – not only at the next full hour.
+                    self.start_construction(self.buildings.len() - 1);
                     self.fuel(self.buildings.len() - 1);
                     // Building is loud work (`sound.rs`).
                     let center = self.buildings[self.buildings.len() - 1].center();
@@ -328,8 +340,9 @@ impl World {
                     let workers = kind.stats().worker_cost <= self.free_workers() && self.unit_unlocked(*kind);
                     let gold = self.spendable() >= cost;
                     let building = &mut self.buildings[b];
-                    // Only where it's trained: soldiers in the barracks, mercenaries in the inn (`trained_in`).
-                    let room = building.kind == kind.stats().trained_in && building.production.len() < MAX_PRODUCTION;
+                    // Only where it's trained: soldiers in the barracks, mercenaries in the inn (`trained_in`) – once
+                    // it's finished.
+                    let room = building.kind == kind.stats().trained_in && building.is_built() && building.production.len() < MAX_PRODUCTION;
                     if room && gold && workers {
                         building.production.push_back(Product::Unit(*kind));
                         self.score.gold_spent += cost;

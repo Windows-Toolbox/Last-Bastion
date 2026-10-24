@@ -78,6 +78,8 @@ pub enum Button {
     Scan,
     /// Units carrying a barrel: put it down where they stand.
     Drop,
+    /// Units: send them away – no more upkeep, their workers free (Del).
+    Dismiss,
     // Command center
     /// Open one of the build menus – the card then shows its buildings (`Ui::submenu`).
     Open(Submenu),
@@ -156,7 +158,7 @@ pub const PLANNED: [Planned; 6] = [
 ];
 
 /// The buttons for units – top row like in StarCraft, the formations at the bottom.
-pub const UNIT_BUTTONS: [Button; 8] = [
+pub const UNIT_BUTTONS: [Button; 9] = [
     Button::Move,
     Button::Stop,
     Button::Hold,
@@ -165,6 +167,7 @@ pub const UNIT_BUTTONS: [Button; 8] = [
     Button::FormLine,
     Button::FormBox,
     Button::FormCircle,
+    Button::Dismiss,
 ];
 /// The buttons of the command center: one per build menu, Q W E / A S D / Y – F repair, C scan. It builds, the
 /// barracks trains.
@@ -180,9 +183,10 @@ pub const COMMAND_CENTER_BUTTONS: [Button; 9] = [
     Button::Scan,
 ];
 /// The buttons of the barracks.
-pub const BARRACKS_BUTTONS: [Button; 6] = [
+pub const BARRACKS_BUTTONS: [Button; 7] = [
     Button::Train(UnitKind::Soldier),
     Button::Train(UnitKind::Ranger),
+    Button::Train(UnitKind::Spearman),
     Button::Train(UnitKind::Sniper),
     Button::Train(UnitKind::Medic),
     Button::Rally,
@@ -250,6 +254,7 @@ impl Button {
             Button::Sell => "Selling",
             Button::Scan => "Scan",
             Button::Drop => "Drop",
+            Button::Dismiss => "Dismiss",
             Button::Open(Submenu::Colonists) => "Colonists",
             Button::Open(Submenu::Resources) => "Resources",
             Button::Open(Submenu::Energy) => "Energy",
@@ -298,6 +303,8 @@ impl Button {
             Button::FormBox => KeyCode::C,
             Button::FormCircle => KeyCode::V,
             Button::Drop => KeyCode::D,
+            // Not a letter: sending units away for good shouldn't happen by a slip of the finger.
+            Button::Dismiss => KeyCode::Delete,
             _ => GRID_KEYS[self.slot()],
         }
     }
@@ -314,6 +321,7 @@ impl Button {
             Button::FormBox => "C",
             Button::FormCircle => "V",
             Button::Drop => "D",
+            Button::Dismiss => "Del",
             _ => GRID_LABELS[self.slot()],
         }
     }
@@ -338,7 +346,7 @@ impl Button {
             Button::FormLine => 10,
             Button::FormBox => 11,
             Button::FormCircle => 12,
-            Button::Back => 14,
+            Button::Back | Button::Dismiss => 14,
         }
     }
 
@@ -403,6 +411,7 @@ impl Button {
             Button::Sell => "Selling on/off. On (lit): at every payout the market sells what lies above 80 % of the storage - up to 1 good per 4 colonists of its houses. Off: it keeps everything, its houses still pay more.",
             Button::Scan => "Click anywhere on the map: a circle of 10 tiles is shown for 10 s, over forests too - no noise. 2 charges, a new one every 120 s - while one charges, the command center takes 30 power from its grid.",
             Button::Drop => "Put the barrels down where the units stand. Any damage and a barrel goes off - and a unit carrying one goes off when it dies.",
+            Button::Dismiss => "Send the selected units away for good: no more upkeep, their workers are free again. No gold back, a barrel they carry is put down. (Del)",
             Button::Open(Submenu::Colonists) => "Houses for your colonists: the tent and the stone house.",
             Button::Open(Submenu::Resources) => "Gathering: hunter cottage, fishing hut, sawmill, mine, farm - later the oil pump.",
             Button::Open(Submenu::Energy) => "Power: tesla tower, windmill, charcoal burner - later the oil burning generator.",
@@ -440,6 +449,7 @@ fn train_slot(kind: UnitKind) -> usize {
     match kind {
         UnitKind::Soldier | UnitKind::MercSoldier => 0,
         UnitKind::Ranger | UnitKind::MercRanger => 1,
+        UnitKind::Spearman => 2,
         UnitKind::Sniper | UnitKind::MercSniper => 3,
         UnitKind::Medic => 4,
     }
@@ -451,7 +461,8 @@ fn train_help(kind: UnitKind) -> &'static str {
         UnitKind::Soldier => "Tough, short range, aims quickly, loud. Firearm: needs a munitions factory. Build time: 5 s. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
         UnitKind::Ranger => "Fast and weak, draws the bow a while before every arrow, quiet. Build time: 4 s. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
         UnitKind::Sniper => "Long range, one big shot - very loud. Firearm: needs a munitions factory. Build time: 8 s. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
-        UnitKind::Medic => "No attack. Beams at hurt units nearby (healing comes later). Build time: 6 s.",
+        UnitKind::Medic => "No attack. Heals hurt units nearby with its beam - but only those that haven't been hit for a few seconds: pull the wounded back. Build time: 6 s.",
+        UnitKind::Spearman => "Melee with a spear: every hit pushes the zombie back, nearly silent - holds a line or a gate early on. Short reach: spitters and infested shoot it to pieces. Build time: 4 s. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
         UnitKind::MercSoldier => "Mercenary soldier: half again as tough, hits harder and shoots faster than a soldier. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Needs a munitions factory. Ctrl: 5 at once, Shift: on credit.",
         UnitKind::MercRanger => "Mercenary ranger: half again as tough, hits harder and shoots faster than a ranger, quiet. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Ctrl: 5 at once, Shift: on credit.",
         UnitKind::MercSniper => "Mercenary sniper: half again as tough and a bigger shot than a sniper - very loud. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Needs a munitions factory. Ctrl: 5 at once, Shift: on credit.",
@@ -466,15 +477,15 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Wall => "Wall (1 x 1, 400 HP). Zombies have to tear it down. Drag: a line, diagonal too. Right click / Esc: stop building.",
         BuildingKind::Gate => "Gate (3 x 1, 600 HP). Your units walk through the middle, zombies don't. Can go on walls (cheaper there, but walls + gate still cost more than the gate alone). R: turn.",
         BuildingKind::Tower => "Tower (1 x 1, 800 HP). Right click it with units: up to 4 go in, shoot and see 2 tiles further and can't be hit. Needs 1 free tile to the next tower. Drag: a line.",
-        BuildingKind::Sawmill => "Sawmill (2 x 2). Wood from the forest and trees around it - the frame shows how far. Two sawmills share the trees they both reach. Needs power.",
-        BuildingKind::Mine => "Mine (2 x 2). Iron ore, coal and stone - whatever lies under it and up to 2 tiles around it (6 x 6, the frame). Put it right on the ore. Needs power and a wood workshop.",
+        BuildingKind::Sawmill => "Sawmill (2 x 2). Wood from the forest around it - the frame shows how far. Two sawmills share the forest they both reach. Needs power.",
+        BuildingKind::Mine => "Mine (2 x 2). Iron ore, coal and stone - whatever lies under it and up to 2 tiles around it (6 x 6, the frame). Put it right on the ore. Needs power.",
         BuildingKind::HunterCottage => "Hunter cottage (1 x 1). Food from the game in the forest around it. Needs power.",
         BuildingKind::FishingHut => "Fishing hut (1 x 1). Food from the water around it. Needs power.",
         BuildingKind::Farm => "Farm (3 x 3). Plants fields on the grass around it - food, a lot of it on open grass. Nothing grows on dirt (brown) or ore, and the farm itself has to stand on grass. Needs power and a wood workshop.",
         BuildingKind::Windmill => "Windmill (2 x 2). A lot of power, needs nothing but its upkeep. Has to stand inside the grid. Needs a wood workshop.",
         BuildingKind::CharcoalBurner => "Charcoal burner (2 x 2). Power, but it burns wood at every payout - without wood, none. Has to stand inside the grid.",
-        BuildingKind::WoodWorkshop => "Wood workshop (2 x 2). Makes nothing, but while one stands you can build the mine, the windmill and the tesla tower. Needs power.",
-        BuildingKind::TeslaTower => "Tesla tower (1 x 1). Carries the power further: a new circle of the grid around it. Has to stand inside the grid. Needs a wood workshop.",
+        BuildingKind::WoodWorkshop => "Wood workshop (2 x 2). Makes nothing, but while one stands you can build the farm, the windmill, the stake trap and the stone workshop. Needs power.",
+        BuildingKind::TeslaTower => "Tesla tower (1 x 1). Carries the power further: a new circle of the grid around it. Has to stand inside the grid.",
         BuildingKind::StoneWorkshop => "Stone workshop (2 x 2). Makes nothing, but while one stands you can build the munitions factory, the stone house, stone walls and stone towers. Needs power and a wood workshop.",
         BuildingKind::MunitionsFactory => "Munitions factory (2 x 2). Makes nothing (ammunition is free), but while one stands the barracks can train soldiers and snipers - firearms. Needs power and a stone workshop.",
         BuildingKind::StoneHouse => "Stone house (2 x 2). 16 colonists eat 8 food at every payout and pay gold, 8 workers. Goes on a tent too (an upgrade). Needs power and a stone workshop.",
@@ -890,7 +901,8 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
     let stats = unit.stats();
     draw_portrait(layout, kind_color(unit.kind), &stats.letter, BORDER);
     let text = layout.text_column();
-    let y = draw_title(layout, &stats.name, (unit.hp, stats.hp), (0, 0));
+    let name = if unit.veteran { format!("{} (veteran)", stats.name) } else { stats.name.clone() };
+    let y = draw_title(layout, &name, (unit.hp, unit.max_hp()), (0, 0));
     let order = match unit.queue_len() {
         0 | 1 => format!("Order: {}", unit.order_name()),
         n => format!("Order: {} (+{} queued)", unit.order_name(), n - 1),
@@ -899,8 +911,8 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
     draw_wrapped(unit_text(unit.kind), text.x, y + 16.0, text.w, 14.0, 1, DIM);
 
     let mut cells = vec![
-        ("HP", format!("{}/{}", unit.hp, stats.hp)),
-        ("Damage", world.army_damage(stats.damage).to_string()),
+        ("HP", format!("{}/{}", unit.hp, unit.max_hp())),
+        ("Damage", world.army_damage(unit.damage()).to_string()),
         ("Armor", stats.armor.to_string()),
         ("Upkeep", format!("-{}", stats.upkeep)),
     ];
@@ -921,6 +933,8 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
         ("Speed", format!("{}", stats.speed)),
         ("Sight", format!("{}", stats.sight)),
         ("Kills", unit.kills.to_string()),
+        // Experience towards a veteran (`sim/veterans.rs`) – mercenaries don't gather any.
+        ("XP", if stats.mercenary { "-".to_owned() } else { format!("{}/{}", unit.xp / 1000, data::get().units.veterans.xp) }),
         ("Aim", format!("{:.2} s", seconds(stats.aim))),
         ("Turn", format!("{:.2} s", seconds(stats.turn_around))),
         ("Noise", format!("{}", stats.noise)),
@@ -934,7 +948,8 @@ fn unit_text(kind: UnitKind) -> &'static str {
         UnitKind::Soldier => "Tough, short range, aims quickly - and loud.",
         UnitKind::Ranger => "Fast and weak, draws the bow before every arrow, quiet.",
         UnitKind::Sniper => "Long range, one big shot - very loud.",
-        UnitKind::Medic => "No attack. Beams at hurt units (healing comes later).",
+        UnitKind::Medic => "No attack. Heals hurt units with its beam - once they're out of the fight for a few seconds.",
+        UnitKind::Spearman => "Melee: every hit pushes the zombie back, nearly silent. Dies to spitters and infested.",
         UnitKind::MercSoldier => "Mercenary: tougher and stronger than a soldier, no worker - double upkeep, first to leave in debt.",
         UnitKind::MercRanger => "Mercenary: tougher and stronger than a ranger, no worker - double upkeep, first to leave in debt.",
         UnitKind::MercSniper => "Mercenary: tougher and stronger than a sniper, no worker - double upkeep, first to leave in debt.",
@@ -1109,12 +1124,12 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         cells.push(("Reach", format!("{}", stats.power_radius)));
     }
     if stats.upkeep > 0 {
-        let upkeep = if building.off || building.infected { 0 } else { stats.upkeep };
+        let upkeep = if building.works() { stats.upkeep } else { 0 };
         cells.push(("Upkeep", format!("-{upkeep}")));
     }
-    // What it gives (infected: nothing) or takes.
+    // What it gives (infected or not finished: nothing) or takes.
     if stats.workers > 0 {
-        cells.push(("Workers", format!("+{}", if building.infected { 0 } else { stats.workers })));
+        cells.push(("Workers", format!("+{}", if building.infected || !building.is_built() { 0 } else { stats.workers })));
     }
     if stats.worker_cost > 0 {
         cells.push(("Workers", format!("-{}", if building.off { 0 } else { stats.worker_cost })));
@@ -1126,6 +1141,14 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         cells.insert(1, ("Repair", format!("+{}", building.repair_left)));
     }
 
+    // Still being built: how far, and the text says when it works – no garrison, no queue yet.
+    if !building.is_built() {
+        let done = 100 - building.construction * 100 / stats.build_time.max(1);
+        cells.insert(1, ("Built", format!("{done} %")));
+        draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 15.0, 3, DIM);
+        draw_cells(layout, &cells);
+        return;
+    }
     if building.kind.is_tower() {
         // One box per spot: the unit in it, or empty.
         let inside = world.garrison(building.id);
@@ -1193,6 +1216,10 @@ fn building_text(world: &World, power: &Power, b: usize) -> String {
     if building.infected {
         return "INFECTED - its colonists came out as zombies, everyone walks through it. Repair (F) cures it.".to_owned();
     }
+    if !building.is_built() {
+        let seconds = building.construction as f32 / TICKS_PER_SECOND;
+        return format!("BEING BUILT - ready in {seconds:.0} s. Until then it does nothing, but zombies can already hit it.");
+    }
     if building.off {
         return "SWITCHED OFF - no upkeep, no workers, no power, and it does nothing. On/Off (Y) switches it on again.".to_owned();
     }
@@ -1225,7 +1252,7 @@ fn building_text(world: &World, power: &Power, b: usize) -> String {
         BuildingKind::CommandCenter => "The heart of the colony - it builds everything and its power reaches far. Lose it and the round is lost.".to_owned(),
         BuildingKind::Wall => "Holds zombies back - they have to tear it down.".to_owned(),
         BuildingKind::Gate => "Your units walk through the middle - zombies have to tear it down.".to_owned(),
-        BuildingKind::WoodWorkshop => "While it stands, the mine, the windmill, the tesla tower and the stake trap can be built.".to_owned(),
+        BuildingKind::WoodWorkshop => "While it stands, the farm, the windmill, the stake trap and the stone workshop can be built.".to_owned(),
         BuildingKind::StoneWorkshop => "While it stands, the munitions factory and the stone buildings can be built.".to_owned(),
         BuildingKind::MunitionsFactory => "While it stands, the barracks can train soldiers and snipers. Makes barrels (Q) - right click it with units: each takes one along.".to_owned(),
         BuildingKind::Market if !building.selling => "SELLING OFF - it keeps every good (Q switches selling on). Its houses still pay more.".to_owned(),
@@ -1263,7 +1290,7 @@ fn icon_info(world: &World, pick: Pick) -> IconInfo {
             let unit = &world.units[i];
             let stats = unit.stats();
             let (letter, name) = (stats.letter.as_str(), stats.name.as_str());
-            IconInfo { sub: Sub::Unit(unit.kind), color: kind_color(unit.kind), letter, name, hp: (unit.hp, stats.hp), shield: (0, 0) }
+            IconInfo { sub: Sub::Unit(unit.kind), color: kind_color(unit.kind), letter, name, hp: (unit.hp, unit.max_hp()), shield: (0, 0) }
         }
         Pick::Building(b) => {
             let building = &world.buildings[b];

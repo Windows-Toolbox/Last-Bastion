@@ -15,11 +15,15 @@ use crate::rng::Rng;
 pub struct Tiles {
     pub size: i32,
     terrain: Vec<Terrain>,
+    /// How wet every tile is (0 … 1, row by row like `all`), if the generator knows it (Wild: the same noise that
+    /// grows its forests). The dirt then goes where it's driest (`scatter_dirt`) – dry plains, green land around the
+    /// forests, like in TAB. `None`: the dirt gets a noise of its own.
+    pub moisture: Option<Vec<f32>>,
 }
 
 impl Tiles {
     pub fn new(size: usize) -> Tiles {
-        Tiles { size: size as i32, terrain: vec![Terrain::Grass; size * size] }
+        Tiles { size: size as i32, terrain: vec![Terrain::Grass; size * size], moisture: None }
     }
 
     pub fn center(&self) -> (i32, i32) {
@@ -141,13 +145,13 @@ pub fn material_at(choice: f32, fixed: Terrain, mix: &Noise, x: i32, y: i32) -> 
 }
 
 /// Blobs of rock, forest or water smaller than `max` tiles become grass again – crumbs that only get in the way.
-/// Single trees stay (they are meant to be single).
+/// The generators scatter their single trees only afterwards (`scatter_trees`), so those stay.
 pub fn remove_specks(tiles: &mut Tiles, max: usize) {
     let n = tiles.size;
     let mut seen = vec![false; (n * n) as usize];
     for (x, y) in tiles.all() {
         let t = tiles.get(x, y);
-        if seen[(y * n + x) as usize] || !t.is_solid() || t == Terrain::Tree {
+        if seen[(y * n + x) as usize] || !t.is_solid() {
             continue;
         }
         // All connected tiles of the same terrain.
@@ -180,20 +184,26 @@ pub fn trees_field(value: &mut f32) -> Field<'_> {
         max: 0.10,
         step: 0.005,
         show: Show::Percent,
-        help: "Chance for a lone tree on open grass - more next to forests. Trees block walking, sight and shots.",
+        help: "Chance for a lone tree - a single forest tile - on open grass, more next to forests. Blocks walking, sight and shots like any forest.",
     }
 }
 
 /// Bare dirt in patches (`Terrain::Dirt` – no farm grows there): on the grass tiles `inside`, wherever a slow noise is
 /// lowest – exactly `share` of them, because the cut is the noise value at that share of all of them, sorted. The noise
-/// is smooth, so the dirt comes in patches of a few to a few dozen tiles across instead of single tiles.
+/// is smooth, so the dirt comes in patches of a few to a few dozen tiles across instead of single tiles. If the
+/// generator knows how wet the land is (`Tiles::moisture`), that's the noise: the dirt lies where it's driest.
 pub fn scatter_dirt(tiles: &mut Tiles, noise: &Noise, share: f32, inside: impl Fn(i32, i32) -> bool) {
     let grass: Vec<(i32, i32)> = tiles.all().filter(|&(x, y)| inside(x, y) && tiles.get(x, y) == Terrain::Grass).collect();
     let count = (grass.len() as f32 * share.clamp(0.0, 1.0)) as usize;
     if count == 0 {
         return;
     }
-    let value = |(x, y): (i32, i32)| noise.fractal(x as f32, y as f32, 18.0, 3);
+    let size = tiles.size;
+    let moisture = tiles.moisture.take();
+    let value = |(x, y): (i32, i32)| match &moisture {
+        Some(wet) => wet[(y * size + x) as usize],
+        None => noise.fractal(x as f32, y as f32, 18.0, 3),
+    };
     let mut values: Vec<f32> = grass.iter().map(|&t| value(t)).collect();
     values.sort_unstable_by(f32::total_cmp);
     let cut = values[count - 1];
@@ -204,11 +214,15 @@ pub fn scatter_dirt(tiles: &mut Tiles, noise: &Noise, share: f32, inside: impl F
     }
 }
 
-/// Single trees on open grass, `density` = chance per tile, three times as likely right next to a forest.
+/// Single trees on open grass – a forest tile each, drawn like any forest. `density` = chance per tile, three times
+/// as likely right next to a forest. Which tile gets one is decided on the map as it was before: the trees are only
+/// set at the end – otherwise every new tree would count as "forest near" for the tiles after it and they would grow
+/// into rows.
 pub fn scatter_trees(tiles: &mut Tiles, rng: &mut Rng, density: f32) {
     if density <= 0.0 {
         return;
     }
+    let mut trees = Vec::new();
     for (x, y) in tiles.all() {
         if tiles.get(x, y) != Terrain::Grass {
             continue;
@@ -216,8 +230,11 @@ pub fn scatter_trees(tiles: &mut Tiles, rng: &mut Rng, density: f32) {
         let forest_near = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dy)| tiles.get(x + dx, y + dy) == Terrain::Forest);
         let chance = if forest_near { density * 3.0 } else { density };
         if rng.unit_f32() < chance {
-            tiles.set(x, y, Terrain::Tree);
+            trees.push((x, y));
         }
+    }
+    for (x, y) in trees {
+        tiles.set(x, y, Terrain::Forest);
     }
 }
 

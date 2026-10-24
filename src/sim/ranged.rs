@@ -77,10 +77,7 @@ impl World {
             return;
         }
         match target {
-            Hit::Unit(u) => {
-                let unit = &mut self.units[u];
-                unit.hp = unit.hp.saturating_sub(stats.damage.saturating_sub(unit.stats().armor).max(1));
-            }
+            Hit::Unit(u) => self.units[u].take_hit(stats.damage, self.tick),
             Hit::Building(b) => {
                 if self.buildings[b].take_damage(stats.damage) {
                     self.infect(b);
@@ -111,8 +108,9 @@ impl World {
     fn splash(&mut self, at: Vec2, breed: Breed) {
         let stats = breed.stats();
         let radius = stats.splash.max(0.1);
+        let tick = self.tick;
         for unit in self.units.iter_mut().filter(|u| !u.is_inside() && u.pos.distance(at) <= radius + UNIT_RADIUS) {
-            unit.hp = unit.hp.saturating_sub(stats.damage.saturating_sub(unit.stats().armor).max(1));
+            unit.take_hit(stats.damage, tick);
         }
         let mut infected = Vec::new();
         for (b, building) in self.buildings.iter_mut().enumerate() {

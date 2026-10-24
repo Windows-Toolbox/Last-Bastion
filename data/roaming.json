@@ -7,6 +7,8 @@
     { "breed": "Armored", "from": 0.5, "share": 0.06 },
     { "breed": "Infested", "from": 0.55, "share": 0.04 },
     { "breed": "Spitter", "from": 0.6, "share": 0.04 },
-    { "breed": "Fat", "from": 0.8, "share": 0.1 }
-  ]
+    { "breed": "Fat", "from": 0.8, "share": 0.1 },
+    { "breed": "Screamer", "from": 0.4, "share": 0.02 }
+  ],
+  "giants_from": 0.6
 }
