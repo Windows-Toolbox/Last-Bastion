@@ -247,7 +247,8 @@ pub fn placement_line(kind: BuildingKind, start: (i32, i32), end: (i32, i32)) ->
         | BuildingKind::Tower
         | BuildingKind::StoneTower
         | BuildingKind::Stakes
-        | BuildingKind::Barrel => {
+        | BuildingKind::Barrel
+        | BuildingKind::MachineGunTower => {
             // Keep only pieces that are far enough from the last kept one (counted like `gap`: in all 8 directions).
             let mut kept: Vec<(i32, i32)> = Vec::new();
             for tile in diagonal_line(start, end) {
@@ -274,7 +275,9 @@ pub fn placement_line(kind: BuildingKind, start: (i32, i32), end: (i32, i32)) ->
         | BuildingKind::MunitionsFactory
         | BuildingKind::Market
         | BuildingKind::Bank
-        | BuildingKind::Inn => vec![end],
+        | BuildingKind::Inn
+        | BuildingKind::Foundry
+        | BuildingKind::Ballista => vec![end],
         BuildingKind::Tent | BuildingKind::StoneHouse => {
             // Computed in "building steps": a tent (2 × 2) needs 2 tiles per step, plus the gap.
             let size = kind.stats().size.0 + spacing;

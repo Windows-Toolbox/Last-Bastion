@@ -148,13 +148,10 @@ const fn plan(menu: Submenu, slot: usize, short: &'static str, name: &'static st
 }
 
 /// All planned buildings, menu by menu. When one gets built, its line goes and a real button takes its spot.
-pub const PLANNED: [Planned; 6] = [
+pub const PLANNED: [Planned; 3] = [
     plan(Submenu::Resources, 4, "Oil pump", "Oil pump", "2 x 2, right on an oil node (the dark pools - one next to the base, groups further out). Oil."),
     plan(Submenu::Energy, 3, "Oil gen.", "Oil burning generator", "Burns oil: a lot of power."),
-    plan(Submenu::Industry, 2, "Foundry", "Foundry", "Iron ore and coal become iron."),
     plan(Submenu::Military, 2, "Siege", "Siege factory", "Vehicles and siege weapons."),
-    plan(Submenu::Defense, 8, "Ballista", "Ballista tower", "Heavy tower: a big bolt, slow and strong."),
-    plan(Submenu::Defense, 9, "MG tower", "Machine gun tower", "Fast fire against crowds - needs power and the foundry's iron."),
 ];
 
 /// The buttons for units – top row like in StarCraft, the formations at the bottom.
@@ -216,9 +213,9 @@ pub fn menu_buttons(menu: Submenu) -> Vec<Button> {
         Submenu::Colonists => &[Tent, StoneHouse],
         Submenu::Resources => &[HunterCottage, FishingHut, Sawmill, Mine, Farm],
         Submenu::Energy => &[TeslaTower, Windmill, CharcoalBurner],
-        Submenu::Industry => &[WoodWorkshop, StoneWorkshop, Inn, Market, Bank],
+        Submenu::Industry => &[WoodWorkshop, StoneWorkshop, Foundry, Inn, Market, Bank],
         Submenu::Military => &[Barracks, MunitionsFactory],
-        Submenu::Defense => &[Wall, Gate, Tower, Stakes, Barrel, StoneWall, StoneTower],
+        Submenu::Defense => &[Wall, Gate, Tower, Stakes, Barrel, StoneWall, StoneTower, Ballista, MachineGunTower],
         Submenu::Wonders => &[],
     };
     let built = built.iter().map(|&kind| Button::Place(kind));
@@ -273,6 +270,7 @@ impl Button {
             Button::Place(BuildingKind::StoneHouse) => "Stone h.",
             Button::Place(BuildingKind::StoneTower) => "St. tower",
             Button::Place(BuildingKind::Stakes) => "Stakes",
+            Button::Place(BuildingKind::MachineGunTower) => "MG tower",
             Button::Place(kind) => &kind.stats().name,
             Button::Planned(i) => PLANNED[i].short,
             Button::Unload => "Unload",
@@ -415,9 +413,9 @@ impl Button {
             Button::Open(Submenu::Colonists) => "Houses for your colonists: the tent and the stone house.",
             Button::Open(Submenu::Resources) => "Gathering: hunter cottage, fishing hut, sawmill, mine, farm - later the oil pump.",
             Button::Open(Submenu::Energy) => "Power: tesla tower, windmill, charcoal burner - later the oil burning generator.",
-            Button::Open(Submenu::Industry) => "The wood and the stone workshop, the inn (mercenaries), the market and the bank - later the foundry.",
+            Button::Open(Submenu::Industry) => "The wood and the stone workshop, the foundry (iron), the inn (mercenaries), the market and the bank.",
             Button::Open(Submenu::Military) => "The barracks and the munitions factory - later the siege factory.",
-            Button::Open(Submenu::Defense) => "Wall, gate, tower, stake trap, explosive barrel, stone wall, stone tower - later ballista and machine gun towers.",
+            Button::Open(Submenu::Defense) => "Wall, gate, tower, stake trap, explosive barrel, stone wall, stone tower, ballista, machine gun tower.",
             Button::Open(Submenu::Wonders) => "The most expensive buildings, with very strong buffs - none designed yet.",
             Button::Back => "Back to the main buttons (B or Esc).",
             Button::Place(kind) => place_help(kind),
@@ -435,12 +433,15 @@ fn place_slot(kind: BuildingKind) -> usize {
     match kind {
         Tent | Barracks | Wall | HunterCottage | TeslaTower | WoodWorkshop | CommandCenter => 0,
         Gate | FishingHut | Windmill | StoneHouse | StoneWorkshop | MunitionsFactory => 1,
-        Tower | Sawmill | CharcoalBurner => 2,
+        Tower | Sawmill | CharcoalBurner | Foundry => 2,
         Mine | Stakes | Inn => 3,
         Market | Barrel => 4,
         // Below their wooden ones – and the farm below the hunter, the other food. The bank next to the market.
         StoneWall | Farm | Bank => 5,
         StoneTower => 7,
+        // F and G, next to the stone tower.
+        Ballista => 8,
+        MachineGunTower => 9,
     }
 }
 
@@ -484,9 +485,10 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Farm => "Farm (3 x 3). Plants fields on the grass around it - food, a lot of it on open grass. Nothing grows on dirt (brown) or ore, and the farm itself has to stand on grass. Needs power and a wood workshop.",
         BuildingKind::Windmill => "Windmill (2 x 2). A lot of power, needs nothing but its upkeep. Has to stand inside the grid. Needs a wood workshop.",
         BuildingKind::CharcoalBurner => "Charcoal burner (2 x 2). Power, but it burns wood at every payout - without wood, none. Has to stand inside the grid.",
-        BuildingKind::WoodWorkshop => "Wood workshop (2 x 2). Makes nothing, but while one stands you can build the farm, the windmill, the stake trap and the stone workshop. Needs power.",
+        BuildingKind::WoodWorkshop => "Wood workshop (2 x 2). Makes nothing, but while one stands you can build the farm, the windmill, the stake trap, the ballista and the stone workshop. Needs power.",
         BuildingKind::TeslaTower => "Tesla tower (1 x 1). Carries the power further: a new circle of the grid around it. Has to stand inside the grid.",
-        BuildingKind::StoneWorkshop => "Stone workshop (2 x 2). Makes nothing, but while one stands you can build the munitions factory, the stone house, stone walls and stone towers. Needs power and a wood workshop.",
+        BuildingKind::StoneWorkshop => "Stone workshop (2 x 2). Makes nothing, but while one stands you can build the munitions factory, the foundry, the stone house, stone walls and stone towers. Needs power and a wood workshop.",
+        BuildingKind::Foundry => "Foundry (3 x 3). While one stands you can build the machine gun tower - and while it runs it smelts iron: up to 3 per payout, out of 2 iron ore and 1 coal each. Loud. Needs power and a stone workshop.",
         BuildingKind::MunitionsFactory => "Munitions factory (2 x 2). Makes nothing (ammunition is free), but while one stands the barracks can train soldiers and snipers - firearms. Needs power and a stone workshop.",
         BuildingKind::StoneHouse => "Stone house (2 x 2). 16 colonists eat 8 food at every payout and pay gold, 8 workers. Goes on a tent too (an upgrade). Needs power and a stone workshop.",
         BuildingKind::StoneWall => "Stone wall (1 x 1, 1000 HP). Goes on a wall too (an upgrade). Drag: a line. Needs a stone workshop.",
@@ -497,6 +499,8 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Bank => "Bank (2 x 2, 1200 HP). +2000 gold storage and 500 credit: when only gold is missing, hold Shift and you buy into it - no debt penalties, but 10 % interest per payout. If it falls, its share of that debt is gone - and the gold above the smaller storage. Can't be switched off. Needs a stone workshop.",
         BuildingKind::Inn => "Inn (3 x 3). Hires mercenaries: stronger than veterans, dearer, double upkeep - but they need no workers. In debt they are the first to leave. Needs power and a stone workshop.",
         BuildingKind::Barrel => "Explosive barrel (1 x 1). Takes one from the munitions factory's store. Any damage and it goes off: 200 damage to everyone within 2.5 tiles - other barrels too - and very loud. Drag: a line.",
+        BuildingKind::Ballista => "Ballista (2 x 2, 700 HP). Shoots by itself: a heavy bolt every 2.5 s, 9 tiles far, always at the toughest zombie in range - fat ones, riots, giants. No power needed. Needs a wood workshop.",
+        BuildingKind::MachineGunTower => "Machine gun tower (1 x 1, 900 HP). Shoots by itself: five shots a second at the nearest zombie - against crowds. Loud. Costs iron from the foundry, needs power and a foundry.",
     }
 }
 
@@ -1100,6 +1104,16 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
             cells.push(("Next", format!("{}:{:02}", seconds / 60, seconds % 60)));
         }
     }
+    // A tower that shoots by itself: its gun, and how far it is through reloading.
+    if let Some(weapon) = &stats.weapon {
+        cells.push(("Damage", weapon.damage.to_string()));
+        cells.push(("Range", format!("{}", weapon.range)));
+        cells.push(("Reload", format!("{:.1} s", seconds(weapon.reload))));
+        cells.push(("Ready", format!("{} %", ((1.0 - world.reload_share(b)) * 100.0).round())));
+    }
+    if stats.smelts > 0 {
+        cells.push(("Iron", format!("+{}", building.smelted)));
+    }
     // Machines: the noise it makes every few seconds while it works (`sim/sound.rs`).
     if stats.noise > 0 {
         cells.push(("Noise", stats.noise.to_string()));
@@ -1237,6 +1251,13 @@ fn building_text(world: &World, power: &Power, b: usize) -> String {
     if stats.burns_wood > 0 && !building.fuelled {
         return "OUT OF WOOD - no power until it gets wood again (it takes some at every payout).".to_owned();
     }
+    if stats.smelts > 0 && building.smelted == 0 {
+        return format!("IDLE - it smelted nothing at the last payout: every iron takes {} iron ore and {} coal. Build mines on iron and coal patches.", stats.smelt_ore, stats.smelt_coal);
+    }
+    if let Some(weapon) = &stats.weapon {
+        let whom = if weapon.toughest { "the toughest zombie (most hit points)" } else { "the nearest zombie" };
+        return format!("Shoots by itself at {whom} within {} tiles - {} damage every {:.1} s, {} noise per shot.", weapon.range, weapon.damage, seconds(weapon.reload), weapon.noise);
+    }
     if let Some((source, _)) = building.kind.gathers() {
         let tiles = world.worked_tiles(building.kind, building.tile, b).len();
         let what = match source {
@@ -1252,8 +1273,9 @@ fn building_text(world: &World, power: &Power, b: usize) -> String {
         BuildingKind::CommandCenter => "The heart of the colony - it builds everything and its power reaches far. Lose it and the round is lost.".to_owned(),
         BuildingKind::Wall => "Holds zombies back - they have to tear it down.".to_owned(),
         BuildingKind::Gate => "Your units walk through the middle - zombies have to tear it down.".to_owned(),
-        BuildingKind::WoodWorkshop => "While it stands, the farm, the windmill, the stake trap and the stone workshop can be built.".to_owned(),
-        BuildingKind::StoneWorkshop => "While it stands, the munitions factory and the stone buildings can be built.".to_owned(),
+        BuildingKind::WoodWorkshop => "While it stands, the farm, the windmill, the stake trap, the ballista and the stone workshop can be built.".to_owned(),
+        BuildingKind::StoneWorkshop => "While it stands, the munitions factory, the foundry and the stone buildings can be built.".to_owned(),
+        BuildingKind::Foundry => format!("Smelted {} iron at the last payout (up to {} - 2 iron ore and 1 coal each). While it stands, the machine gun tower can be built.", building.smelted, stats.smelts),
         BuildingKind::MunitionsFactory => "While it stands, the barracks can train soldiers and snipers. Makes barrels (Q) - right click it with units: each takes one along.".to_owned(),
         BuildingKind::Market if !building.selling => "SELLING OFF - it keeps every good (Q switches selling on). Its houses still pay more.".to_owned(),
         BuildingKind::Market => format!("Its houses pay +{} % gold. It sells what lies above {} % of the storage - at the last payout {} goods for {} gold.", stats.house_bonus_percent, data::get().buildings.sell_from_percent, building.sold_goods, building.sold_gold),
@@ -1428,6 +1450,9 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
         if s.cost_coal > 0 {
             parts.push(format!("{} coal", s.cost_coal));
         }
+        if s.cost_iron > 0 {
+            parts.push(format!("{} iron", s.cost_iron));
+        }
     }
     match button.workers() {
         0 => {}
@@ -1542,22 +1567,25 @@ fn draw_stock(layout: &Layout, world: &World) {
     };
     let net = (world.income() as i64 - world.upkeep() as i64) * 1000;
     let good = |r: Resource| (world.stock.get(r), world.storage(r), flow[r.index()]);
-    let goods: [(&str, (u32, u32, i64), &str); 5] = [
+    let goods: [(&str, (u32, u32, i64), &str); 6] = [
         ("Gold", (world.gold, world.gold_storage(), net), gold_help),
         ("Wood", good(Resource::Wood), "From sawmills. Buildings cost it, charcoal burners burn it."),
         ("Stone", good(Resource::Stone), "From mines on stone patches. Buildings cost it."),
-        ("Iron ore", good(Resource::Iron), "From mines on iron patches - the foundry will make iron of it."),
-        ("Coal", good(Resource::Coal), "From mines on coal patches - for the foundry and the coal plant later."),
+        ("Iron ore", good(Resource::IronOre), "From mines on iron patches - the foundry smelts iron of it."),
+        ("Coal", good(Resource::Coal), "From mines on coal patches - for barrels and the foundry."),
+        ("Iron", good(Resource::Iron), "From the foundry: 2 iron ore and 1 coal each. The machine gun tower costs it."),
     ];
+    // Six goods in the height of five rows on the left: a bit lower each.
+    let goods_h = (r.h - 12.0) / goods.len() as f32;
     for (k, (label, (value, limit, per_hour), help)) in goods.into_iter().enumerate() {
-        let y = row(k);
-        draw_text(label, right_x, y + 13.0, 13.0, DIM);
+        let y = r.y + 6.0 + k as f32 * goods_h;
+        draw_text(label, right_x, y + 12.0, 13.0, DIM);
         if per_hour != 0 {
             let color = if per_hour < 0 { TOO_DEAR } else { GLOW };
             let every = data::get().colony.economy_every_hours;
-            draw_right(&format!("{}/{every}h", signed(per_hour)), right_x + right_w, y + 13.0, 13.0, color);
+            draw_right(&format!("{}/{every}h", signed(per_hour)), right_x + right_w, y + 12.0, 13.0, color);
         }
-        let bar = Rect::new(right_x, y + 17.0, right_w, 16.0);
+        let bar = Rect::new(right_x, y + 15.0, right_w, (goods_h - 16.0).min(16.0));
         draw_rectangle(bar.x, bar.y, bar.w, bar.h, BOX_BG);
         // How full the storage is – full, and what comes in is lost.
         let full = (value as f32 / limit.max(1) as f32).min(1.0);
@@ -1569,8 +1597,8 @@ fn draw_stock(layout: &Layout, world: &World) {
             "Gold" if world.debt > 0 => (format!("-{}", world.debt), TOO_DEAR),
             _ => (format!("{value}/{limit}"), WHITE),
         };
-        draw_centered(&value, bar.x + bar.w / 2.0, bar.bottom() - 3.0, 16.0, color);
-        if Rect::new(right_x, y, right_w, row_h).contains(mouse) {
+        draw_centered(&value, bar.x + bar.w / 2.0, bar.bottom() - 2.0, 15.0, color);
+        if Rect::new(right_x, y, right_w, goods_h).contains(mouse) {
             tooltip = Some([label, help]);
         }
     }

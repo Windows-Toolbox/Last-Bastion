@@ -732,6 +732,27 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
             part(rect(middle - Vec2::splat(0.22), Vec2::splat(0.44)), 0.0, height, color);
             part(rect(middle - Vec2::splat(0.24), Vec2::splat(0.48)), height * 0.45, height * 0.6, BARREL_BAND);
         }
+        // A wooden platform with the big crossbow on it – its bow a beam across the top.
+        BuildingKind::Ballista => {
+            let (min, middle) = (building.corner(), building.center());
+            let size = building.far_corner() - min;
+            part(rect(min + Vec2::splat(0.15), size - Vec2::splat(0.3)), 0.0, height * 0.6, color);
+            part(rect(middle - Vec2::splat(0.3), Vec2::splat(0.6)), height * 0.6, height, darken(color, 0.75));
+            part(bar(middle + vec2(-0.7, 0.7), middle + vec2(0.7, -0.7), 0.14), height, height + 0.1, DOOR_COLOR);
+        }
+        // Like a tower, joined to the walls – a dark gun on top.
+        BuildingKind::MachineGunTower => {
+            let middle = building.center();
+            arms(&mut part, building.tile, (0, 0));
+            part(rect(middle - Vec2::splat(0.38), Vec2::splat(0.76)), 0.0, height, color);
+            part(rect(middle - Vec2::splat(0.18), Vec2::splat(0.36)), height, height + 0.22, darken(color, 0.5));
+        }
+        // A sooty block with a tall chimney in one corner.
+        BuildingKind::Foundry => {
+            let (min, max) = (building.corner(), building.far_corner());
+            part(rect(min, max - min), 0.0, height, color);
+            part(rect(min + Vec2::splat(0.3), Vec2::splat(0.7)), height, height + 1.2, darken(color, 0.6));
+        }
         // A tall thin pole with a glowing top – it carries the power.
         BuildingKind::TeslaTower => {
             let middle = building.center();
@@ -911,6 +932,12 @@ pub fn building_color(kind: BuildingKind) -> Color {
         BuildingKind::Bank => Color::new(0.84, 0.74, 0.42, 1.0),
         // Dark wood, a red sign.
         BuildingKind::Inn => Color::new(0.52, 0.30, 0.22, 1.0),
+        // Soot and glowing iron.
+        BuildingKind::Foundry => Color::new(0.38, 0.22, 0.18, 1.0),
+        // Fresh timber, like the wood workshop that unlocks it.
+        BuildingKind::Ballista => Color::new(0.64, 0.46, 0.26, 1.0),
+        // Gun metal.
+        BuildingKind::MachineGunTower => Color::new(0.36, 0.40, 0.44, 1.0),
         BuildingKind::Barrel => Color::new(0.78, 0.18, 0.12, 1.0),
     }
 }

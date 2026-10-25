@@ -136,7 +136,7 @@ would pull the focus away from the army.
 | Raw | **Coal** | Mine on a coal patch | Power plant, smelter fuel |
 | Raw | **Food** | Hunter cottage (forest), fishing hut (water), farm (grass – nothing grows on dirt) | Houses |
 | Raw | **Oil** | Oil pump on an oil node (2 × 2, 2026-10-18) | Oil burning generator, later more ❓ |
-| 1 | **Iron** | Smelter (ore + coal) | Buildings, tools, ammo |
+| 1 | **Iron** | Foundry (ore + coal, decision 32) | Buildings (the machine gun tower first), tools |
 | 1 | **Energy** | Command center (a little), charcoal burner (early, burns wood), windmill (big, costs upkeep), coal plant / solar later | Machines, houses, towers |
 | 2 | **Tools** | Workshop (iron + wood) | Tier 2 houses, units |
 | 2 | ~~Ammo~~ | ~~Armory (iron + coal)~~ | **Free for now** (open question 6, 2026-10-15) – ammo as an item is parked |
@@ -283,10 +283,13 @@ Costs and stats live in `data\buildings.json` (12.4).
 your units), tower (up to 4 units, +2 range and sight, can't be hit), sawmill, mine, hunter cottage, fishing hut,
 farm (3 × 3, only on grass: plants the grass around it, dirt and ore give nothing), windmill, charcoal burner, tesla
 tower (the mine and the tesla tower need no workshop, like TAB – the barracks needs stone, 2026-10-24), wood
-workshop (unlocks farm, windmill, stake trap, stone workshop), stone workshop (unlocks munitions factory, stone house, stone wall, stone tower), munitions factory
-(unlocks soldier and sniper – the ranger's bow needs nothing; makes barrels), stone house, stone wall, stone tower, stake trap,
-market, bank, inn (mercenaries), explosive barrel, the command center's scan (`src/sim/market.rs`, `debt.rs`, `blast.rs`,
-`scan.rs`). Start (2026-10-20,
+workshop (unlocks farm, windmill, stake trap, ballista, stone workshop), stone workshop (unlocks munitions factory,
+foundry, stone house, stone wall, stone tower), munitions factory (unlocks soldier and sniper – the ranger's bow needs
+nothing; makes barrels), **foundry** (2026-10-24: unlocks the machine gun tower, smelts 2 iron ore + 1 coal into 1 iron,
+up to 3 per payout), stone house, stone wall, stone tower, stake trap, market, bank, inn (mercenaries), explosive barrel,
+the command center's scan (`src/sim/market.rs`, `debt.rs`, `blast.rs`, `scan.rs`), and the towers that shoot by
+themselves (2026-10-24, `src/sim/towers.rs`, a `weapon` block each): **ballista** (a heavy bolt at the toughest zombie in
+range, no power, no iron) and **machine gun tower** (fast fire at the nearest, power, 20 iron). Start (2026-10-20,
 different from TAB): 4 rangers, 1 soldier, 100 gold, 20 wood. Prices in gold plus wood/stone (barracks 150 + 20 wood + 20 stone,
 wood workshop 40 wood). Every full hour: burners take wood, gatherers deliver, tents eat 4 food, soldiers 1 – fed, they pay gold
 (× power share), hungry, nothing. Placement rules all in `src/placement.rs`:
@@ -852,7 +855,7 @@ before step 6.
 | **3. Walls, towers, infection** | Build on a grid, zombies attack, infection | A breach feels dangerous | ✓ |
 | **4. Mini round** | 10 days ≈ 30 min, tents pay gold, 3 unit and zombie types, waves + final wave | **Is it fun?** | Playable – playing and tuning left |
 | **5. Co-op mini round** | 2 players, direct IP, orders per tick, desync check | No desync to the end | |
-| **6. Production chains** | Drill → stock → smelter → workshop, with power | A small chain runs by itself | |
+| **6. Production chains** | Drill → stock → smelter → workshop, with power | A small chain runs by itself | Mine → foundry → iron → machine gun tower; tools missing |
 | **7. Houses, gold, upkeep** | Houses consume and pay, units cost upkeep | Economy and army linked | |
 | **8. Map generation** | Terrain, patches, nests, POIs, fog | Two seeds feel different | Partly (generators, ore, oil, fog, villages of doom, loot, dirt) |
 | **9. Noise and creep** | Noise attracts waves, nests spread creep | Expanding is a decision | Noise like TAB (adds up, lures, villages) – creep missing |

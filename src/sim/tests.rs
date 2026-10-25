@@ -54,7 +54,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0xec96_ab15_0e83_57b7;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0xe181_4579_b7fd_75e9;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -2336,7 +2336,7 @@ fn a_mine_needs_no_workshop_and_gets_every_ore() {
     ]);
     world.step(&[Order::PlaceBuilding { kind: BuildingKind::Mine, tile: spot, turned: false, editor: false }]);
     assert!(world.buildings.iter().any(|b| b.kind == BuildingKind::Mine), "not built");
-    for r in [Resource::Iron, Resource::Coal, Resource::Stone] {
+    for r in [Resource::IronOre, Resource::Coal, Resource::Stone] {
         world.stock.set(r, 0);
     }
     no_more_zombies(&mut world);
@@ -2344,7 +2344,7 @@ fn a_mine_needs_no_workshop_and_gets_every_ore() {
         one_payout(&mut world);
     }
     let got = |r: Resource| world.stock.get(r);
-    assert_eq!((got(Resource::Iron), got(Resource::Coal), got(Resource::Stone)), (1, 1, 2));
+    assert_eq!((got(Resource::IronOre), got(Resource::Coal), got(Resource::Stone)), (1, 1, 2));
 }
 
 /// Like TAB: a mine (2 × 2, `gather_range` 2) in the middle of a big ore patch works 6 × 6 tiles – a square, the
@@ -2384,13 +2384,13 @@ fn a_mine_digs_the_ore_under_itself() {
     world.step(&[Order::PlaceBuilding { kind: BuildingKind::Mine, tile: spot, turned: false, editor: false }]);
     let b = world.buildings.iter().position(|b| b.kind == BuildingKind::Mine).expect("not built on the ore");
     assert_eq!(world.worked_tiles(BuildingKind::Mine, spot, b), planned, "built, it works other tiles than planned");
-    world.stock.set(Resource::Iron, 0);
+    world.stock.set(Resource::IronOre, 0);
     no_more_zombies(&mut world);
     for _ in 0..10 {
         one_payout(&mut world);
     }
     // 10 payouts, 0.1 per tile: one iron ore per tile under it.
-    assert_eq!(world.stock.get(Resource::Iron), under.len() as u32);
+    assert_eq!(world.stock.get(Resource::IronOre), under.len() as u32);
 }
 
 /// The barracks costs wood and stone besides its gold: one short, and it isn't built; enough, and both are paid.
@@ -2927,6 +2927,103 @@ fn a_few_giants_lie_far_out() {
     assert_eq!(count(&World::generate_with(3, &small, &difficulty)), 1);
     difficulty.giants = 0;
     assert_eq!(count(&World::generate_with(3, &small, &difficulty)), 0);
+}
+
+/// The foundry (DESIGN.md decision 32): a tech building like TAB's – while it stands the machine gun tower can be
+/// built – that smelts iron at every payout: `smelts` at most, `smelt_ore` iron ore and `smelt_coal` coal each, only as
+/// much as there is. The machine gun tower costs that iron.
+#[test]
+fn the_foundry_smelts_iron_and_unlocks_the_machine_gun_tower() {
+    let (mut world, _) = quiet_world();
+    no_more_zombies(&mut world);
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    clear_ground(&mut world, (bx + 8, by - 8), 5);
+    assert!(!world.unlocked(BuildingKind::MachineGunTower), "the machine gun tower without a foundry");
+    world.step(&[
+        Order::PlaceBuilding { kind: BuildingKind::StoneWorkshop, tile: (bx - 8, by + 6), turned: false, editor: true },
+        Order::PlaceBuilding { kind: BuildingKind::Foundry, tile: (bx + 6, by - 10), turned: false, editor: false },
+    ]);
+    assert!(world.buildings.iter().any(|b| b.kind == BuildingKind::Foundry), "the foundry wasn't built");
+    assert!(world.unlocked(BuildingKind::MachineGunTower));
+    let stats = BuildingKind::Foundry.stats();
+    let ore = stats.smelt_ore * stats.smelts + 1; // enough for all of it, and one left over
+    world.stock.set(Resource::IronOre, ore);
+    world.stock.set(Resource::Coal, 100);
+    world.stock.set(Resource::Iron, 0);
+    one_payout(&mut world);
+    assert_eq!(world.stock.get(Resource::Iron), stats.smelts);
+    assert_eq!(world.stock.get(Resource::IronOre), 1);
+    assert_eq!(world.stock.get(Resource::Coal), 100 - stats.smelt_coal * stats.smelts);
+    // One iron ore left: not enough for one iron – nothing more.
+    one_payout(&mut world);
+    assert_eq!(world.stock.get(Resource::Iron), stats.smelts);
+    assert_eq!(world.buildings.iter().find(|b| b.kind == BuildingKind::Foundry).unwrap().smelted, 0);
+
+    // The machine gun tower: not without its iron.
+    let mg = BuildingKind::MachineGunTower;
+    let place = Order::PlaceBuilding { kind: mg, tile: (bx + 10, by - 4), turned: false, editor: false };
+    world.stock.set(Resource::Iron, mg.stats().cost_iron - 1);
+    world.step(std::slice::from_ref(&place));
+    assert!(!world.buildings.iter().any(|b| b.kind == mg), "built without its iron");
+    world.stock.set(Resource::Iron, mg.stats().cost_iron);
+    world.step(&[place]);
+    assert!(world.buildings.iter().any(|b| b.kind == mg), "not built with its iron");
+    assert_eq!(world.stock.get(Resource::Iron), 0);
+}
+
+/// The ballista (DESIGN.md decision 33): early like TAB's – the wood workshop unlocks it – and it shoots by itself,
+/// always at the toughest zombie in range: a fat one before a walker standing closer. Then it reloads; every shot
+/// makes noise. The machine gun tower shoots the nearest, many times a second.
+#[test]
+fn towers_shoot_by_themselves() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    no_more_zombies(&mut world);
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    let spot = (bx + 12, by);
+    clear_ground(&mut world, (spot.0 + 4, spot.1), 9);
+    let ballista = Order::PlaceBuilding { kind: BuildingKind::Ballista, tile: spot, turned: false, editor: false };
+    world.step(std::slice::from_ref(&ballista));
+    assert!(!world.buildings.iter().any(|b| b.kind == BuildingKind::Ballista), "built without a wood workshop");
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::WoodWorkshop, tile: (bx - 8, by + 6), turned: false, editor: true }]);
+    world.step(&[ballista]);
+    let b = world.buildings.iter().position(|b| b.kind == BuildingKind::Ballista).expect("not built with a wood workshop");
+    let center = world.buildings[b].center();
+    world.spawn_zombie_as(center + vec2(3.0, 0.0), Breed::Walker, true);
+    world.spawn_zombie_as(center + vec2(7.0, 1.0), Breed::Fat, true);
+    for zombie in &mut world.zombies {
+        zombie.speed = 0.0;
+    }
+    let (walker, fat) = (world.zombies[0].hp, world.zombies[1].hp);
+    let unrest = world.unrest;
+    let weapon = BuildingKind::Ballista.stats().weapon.as_ref().unwrap();
+    world.step(&[]);
+    assert_eq!(world.zombies[0].hp, walker, "the bolt went to the walker");
+    assert_eq!(world.zombies[1].hp, fat - (weapon.damage - Breed::Fat.stats().armor), "the fat one wasn't hit");
+    assert_eq!(world.unrest, unrest + weapon.noise as u64, "the shot made no noise");
+    // Reloading: no second bolt before `reload_seconds`.
+    for _ in 0..weapon.reload - 1 {
+        world.step(&[]);
+    }
+    assert_eq!(world.zombies[1].hp, fat - (weapon.damage - Breed::Fat.stats().armor), "a second bolt too soon");
+
+    // The machine gun tower: the nearest one, again and again.
+    world.zombies.clear();
+    world.buildings[b].off = true;
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::MachineGunTower, tile: (spot.0, spot.1 + 4), turned: false, editor: true }]);
+    let tower = world.buildings.last().unwrap().center();
+    world.spawn_zombie_as(tower + vec2(2.0, 0.0), Breed::Fat, true);
+    world.spawn_zombie_as(tower + vec2(5.0, 0.0), Breed::Fat, true);
+    for zombie in &mut world.zombies {
+        zombie.speed = 0.0;
+    }
+    let fat = world.zombies[0].hp;
+    for _ in 0..TICKS_PER_SECOND as u32 {
+        world.step(&[]);
+    }
+    let hits = (fat - world.zombies[0].hp) / (9 - Breed::Fat.stats().armor);
+    assert!(hits >= 4, "only {hits} shots in a second");
+    assert_eq!(world.zombies[1].hp, fat, "it shot the one further away");
 }
 
 /// The stake trap: everyone walks over it, zombies don't go for it – the ones on it get hurt every

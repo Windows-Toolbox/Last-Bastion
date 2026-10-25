@@ -99,6 +99,9 @@ pub struct Buildings {
     pub bank: BuildingStats,
     pub inn: BuildingStats,
     pub barrel: BuildingStats,
+    pub foundry: BuildingStats,
+    pub ballista: BuildingStats,
+    pub machine_gun_tower: BuildingStats,
     /// Markets sell only what lies above this many percent of the storage (`sim/market.rs`) …
     pub sell_from_percent: u32,
     /// … at these prices (gold per unit).
@@ -130,9 +133,11 @@ pub struct Buildings {
 pub struct Prices {
     pub wood: u32,
     pub stone: u32,
-    pub iron: u32,
+    pub iron_ore: u32,
     pub coal: u32,
     pub food: u32,
+    /// Iron from the foundry – worth more than the ore and coal in it.
+    pub iron: u32,
 }
 
 /// Explosive barrels (`sim/blast.rs`): what one costs in the munitions factory and how long it takes …
@@ -614,6 +619,9 @@ impl GameData {
             BuildingKind::Bank => &self.buildings.bank,
             BuildingKind::Inn => &self.buildings.inn,
             BuildingKind::Barrel => &self.buildings.barrel,
+            BuildingKind::Foundry => &self.buildings.foundry,
+            BuildingKind::Ballista => &self.buildings.ballista,
+            BuildingKind::MachineGunTower => &self.buildings.machine_gun_tower,
         }
     }
 

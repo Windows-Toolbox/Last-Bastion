@@ -164,12 +164,19 @@ pub enum BuildingKind {
     StoneWorkshop,
     /// Makes nothing either (ammunition is free, DESIGN.md question 26): while one stands, firearms can be trained.
     MunitionsFactory,
+    /// Like TAB's foundry a tech building – while one stands, the iron tier can be built (the machine gun tower) – and
+    /// while it runs it smelts iron ore and coal into iron (`smelts`, DESIGN.md decision 32).
+    Foundry,
     /// The second house (DESIGN.md 5.3): more colonists and workers, eats more. Goes on a tent – an upgrade.
     StoneHouse,
     /// A stronger wall – goes on a wall too.
     StoneWall,
     /// A stronger tower, the same garrison – goes on a tower too.
     StoneTower,
+    /// Shoots by itself (`weapon`), early like TAB's: a heavy bolt, slow, at the toughest zombie in range.
+    Ballista,
+    /// Shoots by itself: fast fire at the nearest – against crowds. Costs iron, needs power.
+    MachineGunTower,
     /// TAB's stake trap: zombies walk over it (they don't attack it) and get hurt; every hit wears it down.
     Stakes,
     /// Houses around it pay more gold, and it sells what the stock has too much of (`sim/market.rs`).
@@ -188,14 +195,20 @@ pub enum BuildingKind {
 pub enum Resource {
     Wood,
     Stone,
-    /// Iron ore – iron comes later, from the foundry.
-    Iron,
+    /// Iron ore – out of the mines. The foundry makes iron of it.
+    IronOre,
     Coal,
     Food,
+    /// Iron – smelted in the foundry from iron ore and coal (`smelts` in `data\buildings.json`). The second tier of
+    /// defence costs it: the machine gun tower.
+    Iron,
 }
 
 impl Resource {
-    pub const ALL: [Resource; 5] = [Resource::Wood, Resource::Stone, Resource::Iron, Resource::Coal, Resource::Food];
+    /// How many there are – the size of the lists with one entry per good (`Stock`).
+    pub const COUNT: usize = 6;
+    pub const ALL: [Resource; Resource::COUNT] =
+        [Resource::Wood, Resource::Stone, Resource::IronOre, Resource::Coal, Resource::Food, Resource::Iron];
 
     /// Its place in `Stock`.
     pub fn index(self) -> usize {
@@ -206,16 +219,17 @@ impl Resource {
         match self {
             Resource::Wood => "Wood",
             Resource::Stone => "Stone",
-            Resource::Iron => "Iron ore",
+            Resource::IronOre => "Iron ore",
             Resource::Coal => "Coal",
             Resource::Food => "Food",
+            Resource::Iron => "Iron",
         }
     }
 
     /// What a mine gets out of a tile with this ore – oil isn't mined.
     pub fn from_ore(ore: Ore) -> Option<Resource> {
         match ore {
-            Ore::Iron => Some(Resource::Iron),
+            Ore::Iron => Some(Resource::IronOre),
             Ore::Coal => Some(Resource::Coal),
             Ore::Stone => Some(Resource::Stone),
             Ore::Oil => None,
@@ -276,6 +290,9 @@ pub struct BuildingStats {
     pub cost_stone: u32,
     #[serde(default)]
     pub cost_coal: u32,
+    /// Iron from the foundry (`Resource::Iron`) – the second tier of defence costs it.
+    #[serde(default)]
+    pub cost_iron: u32,
     /// Only while one of these stands can it be built – like TAB's wood workshop. Written as the type's name in the
     /// file (`"WoodWorkshop"`).
     #[serde(default)]
@@ -335,6 +352,17 @@ pub struct BuildingStats {
     /// The munitions factory: this many barrels fit in its store (`sim/blast.rs`).
     #[serde(default)]
     pub barrel_storage: u32,
+    /// The foundry: iron it smelts at every payout at full power (less with less power, none without ore or coal) …
+    #[serde(default)]
+    pub smelts: u32,
+    /// … out of this much iron ore and coal for every one (`World::smelt`).
+    #[serde(default)]
+    pub smelt_ore: u32,
+    #[serde(default)]
+    pub smelt_coal: u32,
+    /// A tower that shoots by itself (ballista, machine gun tower, `sim/towers.rs`). Left out: it doesn't shoot.
+    #[serde(default)]
+    pub weapon: Option<Weapon>,
     /// Noise it makes every `work_every_seconds` while it works – machines are loud (`sim/sound.rs`). Left out: 0, quiet.
     #[serde(default)]
     pub noise: u32,
@@ -359,6 +387,24 @@ pub struct BuildingStats {
     pub height: f32,
     /// Walls, gates and towers join up into one line on screen (only the look – `draw.rs`).
     pub joins: bool,
+}
+
+/// The gun of a tower that shoots by itself – one block `weapon` in `data\buildings.json`.
+#[derive(Deserialize)]
+pub struct Weapon {
+    /// Per shot, minus the zombie's armor (at least 1).
+    pub damage: u32,
+    /// Tiles from its middle.
+    pub range: f32,
+    /// Ticks from one shot to the next – in the file in seconds (`reload_seconds`). Short of power it reloads slower.
+    #[serde(rename = "reload_seconds", deserialize_with = "data::seconds")]
+    pub reload: u32,
+    /// Noise per shot, like the units' (`sim/sound.rs`).
+    pub noise: u32,
+    /// Whom it aims at: `true` the toughest zombie in range (most hit points – the ballista's bolt is wasted on
+    /// walkers), `false` the nearest.
+    #[serde(default)]
+    pub toughest: bool,
 }
 
 impl BuildingStats {

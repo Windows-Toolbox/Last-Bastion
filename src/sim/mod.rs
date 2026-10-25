@@ -44,6 +44,7 @@ mod sleep;
 mod sound;
 mod spawning;
 mod terrain;
+mod towers;
 mod units;
 mod veterans;
 mod zombies;
@@ -472,6 +473,7 @@ impl World {
         self.move_zombies(); // zombies.rs, infected buildings in buildings.rs, shots of the ranged ones in ranged.rs
         self.fly_spits(); // ranged.rs
         self.update_units(); // units.rs, shooting in combat.rs
+        self.fire_towers(); // towers.rs – the ballista and the machine gun tower
         self.detonate(); // blast.rs – barrels hit or carried by the dead go off
         self.update_buildings(); // buildings.rs, gold too
         self.update_scan(); // scan.rs
@@ -533,6 +535,7 @@ impl World {
             mix(b.shield);
             mix(b.off as u32);
             mix(b.construction);
+            mix(b.reload);
         }
         for c in &self.corpses {
             mix(c.pos.x.to_bits());

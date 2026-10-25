@@ -22,7 +22,7 @@ use crate::map::Terrain;
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Stock {
     /// Thousandths of a unit, one per `Resource` (`Resource::index`).
-    milli: [u64; 5],
+    milli: [u64; Resource::COUNT],
 }
 
 impl Stock {
@@ -65,7 +65,7 @@ impl Stock {
     }
 
     /// For the checksum.
-    pub(super) fn all_milli(&self) -> [u64; 5] {
+    pub(super) fn all_milli(&self) -> [u64; Resource::COUNT] {
         self.milli
     }
 }
@@ -261,8 +261,8 @@ impl World {
 
     /// What a gathering building of `kind` at `tile` brings in per payout, in thousandths per resource
     /// (`Resource::index`) – with `share` thousandths of the power it needs (`Power::share`).
-    pub fn gather_rate(&self, kind: BuildingKind, tile: (i32, i32), before: usize, share: u32) -> [u64; 5] {
-        let mut rate = [0; 5];
+    pub fn gather_rate(&self, kind: BuildingKind, tile: (i32, i32), before: usize, share: u32) -> [u64; Resource::COUNT] {
+        let mut rate = [0; Resource::COUNT];
         let Some((_, gives)) = kind.gathers() else {
             return rate;
         };
@@ -280,8 +280,8 @@ impl World {
     /// What comes into the stock per payout and what goes out of it, in thousandths per resource: the gathering
     /// buildings and the command center's food minus the wood the burners burn and the food the units and houses eat –
     /// what the HUD shows next to the stock.
-    pub fn flow(&self, power: &Power) -> [i64; 5] {
-        let mut flow = [0i64; 5];
+    pub fn flow(&self, power: &Power) -> [i64; Resource::COUNT] {
+        let mut flow = [0i64; Resource::COUNT];
         for (b, building) in self.buildings.iter().enumerate().filter(|(_, b)| b.works()) {
             let rate = self.gather_rate(building.kind, building.tile, b, power.share(self, b));
             for r in Resource::ALL {
@@ -315,22 +315,24 @@ impl World {
         self.stands(kind.stats().requires)
     }
 
-    /// Are wood, stone and coal enough for `kind` – and for a barrel, is there one in the store (`blast.rs`)? (The gold
-    /// is checked with `build_cost` – it can be less on walls.)
+    /// Are wood, stone, coal and iron enough for `kind` – and for a barrel, is there one in the store (`blast.rs`)?
+    /// (The gold is checked with `build_cost` – it can be less on walls.)
     pub fn can_afford_goods(&self, kind: BuildingKind) -> bool {
         let s = kind.stats();
         let enough = |r: Resource, n: u32| self.stock.get(r) >= n;
         let barrel = kind != BuildingKind::Barrel || self.barrels > 0;
-        enough(Resource::Wood, s.cost_wood) && enough(Resource::Stone, s.cost_stone) && enough(Resource::Coal, s.cost_coal) && barrel
+        let goods = enough(Resource::Wood, s.cost_wood) && enough(Resource::Stone, s.cost_stone);
+        goods && enough(Resource::Coal, s.cost_coal) && enough(Resource::Iron, s.cost_iron) && barrel
     }
 
-    /// Pays the wood, stone and coal of `kind` – a barrel comes out of the store (checked before with
+    /// Pays the wood, stone, coal and iron of `kind` – a barrel comes out of the store (checked before with
     /// `can_afford_goods`).
     pub(super) fn pay_goods(&mut self, kind: BuildingKind) {
         let s = kind.stats();
         self.stock.take(Resource::Wood, s.cost_wood);
         self.stock.take(Resource::Stone, s.cost_stone);
         self.stock.take(Resource::Coal, s.cost_coal);
+        self.stock.take(Resource::Iron, s.cost_iron);
         if kind == BuildingKind::Barrel {
             self.barrels = self.barrels.saturating_sub(1);
         }
@@ -347,9 +349,31 @@ impl World {
         }
     }
 
+    /// Every foundry that works smelts iron (DESIGN.md decision 32): `smelts` per payout at full power, less with less –
+    /// as much as the iron ore and the coal in the stock are enough for (`smelt_ore` and `smelt_coal` per iron). In
+    /// the order of the list: when ore runs short, the older foundry gets it.
+    fn smelt(&mut self, power: &Power) {
+        for b in 0..self.buildings.len() {
+            let building = &self.buildings[b];
+            let stats = building.stats();
+            if !building.works() || stats.smelts == 0 {
+                continue;
+            }
+            let want = stats.smelts * power.share(self, b) / 1000;
+            let ore = self.stock.get(Resource::IronOre) / stats.smelt_ore.max(1);
+            let coal = self.stock.get(Resource::Coal) / stats.smelt_coal.max(1);
+            let room = self.storage(Resource::Iron).saturating_sub(self.stock.get(Resource::Iron));
+            let iron = want.min(ore).min(coal).min(room);
+            self.stock.take(Resource::IronOre, iron * stats.smelt_ore);
+            self.stock.take(Resource::Coal, iron * stats.smelt_coal);
+            self.stock.add(Resource::Iron, iron, self.storage(Resource::Iron));
+            self.buildings[b].smelted = iron;
+        }
+    }
+
     /// One payout: the banks take their interest, burners take their wood, gathering buildings and the command center
-    /// bring in, the units eat, houses eat and pay (more around a market), the markets sell (`market.rs`), then the
-    /// upkeep (`debt.rs`).
+    /// bring in, the foundries smelt, the units eat, houses eat and pay (more around a market), the markets sell
+    /// (`market.rs`), then the upkeep (`debt.rs`).
     pub(super) fn economy_payout(&mut self) {
         self.charge_interest();
         for b in 0..self.buildings.len() {
@@ -367,6 +391,8 @@ impl World {
                 self.stock.add_milli(r, rate[r.index()], limit);
             }
         }
+        // The foundries smelt what came in – before the markets could sell the ore.
+        self.smelt(&power);
         // The command center's food, out of nothing.
         let made: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().food_made).sum();
         self.stock.add(Resource::Food, made, self.storage(Resource::Food));

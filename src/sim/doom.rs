@@ -123,7 +123,7 @@ impl LootKind {
             LootKind::Gold => None,
             LootKind::Wood => Some(Resource::Wood),
             LootKind::Stone => Some(Resource::Stone),
-            LootKind::Iron => Some(Resource::Iron),
+            LootKind::Iron => Some(Resource::IronOre),
             LootKind::Coal => Some(Resource::Coal),
         }
     }

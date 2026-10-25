@@ -84,6 +84,7 @@ enum Short {
     Wood,
     Stone,
     Coal,
+    Iron,
     Workers,
     /// Not enough spare power – switching a building on again (Y).
     Power,
@@ -102,6 +103,7 @@ impl Short {
             Short::Wood => "Not enough wood - build a sawmill".to_owned(),
             Short::Stone => "Not enough stone - build a mine on a stone patch".to_owned(),
             Short::Coal => "Not enough coal - build a mine on a coal patch".to_owned(),
+            Short::Iron => "Not enough iron - the foundry smelts it from iron ore and coal".to_owned(),
             Short::Workers => "Not enough workers - build tents".to_owned(),
             Short::Power => "Not enough power - build a windmill or a charcoal burner".to_owned(),
             Short::Income => "Not enough gold income for its upkeep - build houses".to_owned(),
@@ -437,7 +439,7 @@ impl Ui {
         // Without Shift, but the credit would pay: say so.
         let gold_short = if !credit && world.spendable_on_credit() > world.gold { Short::GoldCredit } else { Short::Gold };
         let (mut wood, mut stone) = (world.stock.get(Resource::Wood), world.stock.get(Resource::Stone));
-        let mut coal = world.stock.get(Resource::Coal);
+        let (mut coal, mut iron) = (world.stock.get(Resource::Coal), world.stock.get(Resource::Iron));
         let stats = kind.stats();
         let mut plan = LinePlan { built: Vec::new(), cost: 0, workers: 0, short: None };
         // Power: what the grids have to spare, and what the pieces planned so far take of it, per grid.
@@ -488,6 +490,10 @@ impl Ui {
                 plan.short.get_or_insert(Short::Coal);
                 continue;
             }
+            if !free && stats.cost_iron > iron {
+                plan.short.get_or_insert(Short::Iron);
+                continue;
+            }
             if !free && kind == BuildingKind::Barrel && barrels == 0 {
                 plan.short.get_or_insert(Short::Barrels);
                 continue;
@@ -496,6 +502,7 @@ impl Ui {
                 wood -= stats.cost_wood;
                 stone -= stats.cost_stone;
                 coal -= stats.cost_coal;
+                iron -= stats.cost_iron;
                 if kind == BuildingKind::Barrel {
                     barrels -= 1;
                 }
@@ -1989,6 +1996,9 @@ impl Ui {
             if !free && stats.cost_coal > 0 {
                 text += &format!(", {} coal", stats.cost_coal * pieces);
             }
+            if !free && stats.cost_iron > 0 {
+                text += &format!(", {} iron", stats.cost_iron * pieces);
+            }
             if plan.workers > 0 {
                 text += &format!(", {} worker{}", plan.workers, if plan.workers == 1 { "" } else { "s" });
             }
@@ -2002,6 +2012,7 @@ impl Ui {
                 Some(Short::Wood) => text += &format!(" - not enough wood ({})", world.stock.get(Resource::Wood)),
                 Some(Short::Stone) => text += &format!(" - not enough stone ({})", world.stock.get(Resource::Stone)),
                 Some(Short::Coal) => text += &format!(" - not enough coal ({})", world.stock.get(Resource::Coal)),
+                Some(Short::Iron) => text += &format!(" - not enough iron ({})", world.stock.get(Resource::Iron)),
                 Some(Short::Workers) => text += &format!(" - not enough workers ({} free)", world.free_workers()),
                 Some(short @ (Short::Locked(_) | Short::Power | Short::Income)) => text += &format!(" - {}", short.alert().to_lowercase()),
                 None => {}

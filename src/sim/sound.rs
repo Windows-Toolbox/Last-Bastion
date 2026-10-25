@@ -142,7 +142,9 @@ impl World {
         for b in 0..self.buildings.len() {
             let building = &self.buildings[b];
             let stats = building.stats();
-            let idle = !building.works() || (stats.burns_wood > 0 && !building.fuelled);
+            // A burner without wood and a foundry without ore stand still – quiet.
+            let unfed = (stats.burns_wood > 0 && !building.fuelled) || (stats.smelts > 0 && building.smelted == 0);
+            let idle = !building.works() || unfed;
             if stats.noise == 0 || idle {
                 continue;
             }

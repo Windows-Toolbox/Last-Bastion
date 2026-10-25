@@ -110,8 +110,9 @@ pub fn price(r: Resource) -> u32 {
     match r {
         Resource::Wood => prices.wood,
         Resource::Stone => prices.stone,
-        Resource::Iron => prices.iron,
+        Resource::IronOre => prices.iron_ore,
         Resource::Coal => prices.coal,
         Resource::Food => prices.food,
+        Resource::Iron => prices.iron,
     }
 }

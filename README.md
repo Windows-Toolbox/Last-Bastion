@@ -241,7 +241,7 @@
 - **Befehlskarte** 5 × 3 mit Tooltips, Preis rot, wenn das Gold nicht reicht.
 - **Gold im Minus:** gelb („-250 of 500“), solange es im Dispo der Banken liegt, rot darüber.
 - **Vorräte:** Kolonisten, **Arbeiter** (frei/alle), **Nahrung**, **Energie** (gebraucht/erzeugt), Gold, Holz, Stein,
-  Eisenerz, Kohle – jeweils mit „+/− pro Abrechnung“ (alle 8 Stunden); rot, wenn etwas knapp wird.
+  Eisenerz, Kohle, **Eisen** – jeweils mit „+/− pro Abrechnung“ (alle 8 Stunden); rot, wenn etwas knapp wird.
 
 ### Steuerung (wie StarCraft 2)
 
@@ -281,12 +281,12 @@
 | **Q** Kolonisten | **Zelt** | **Steinhaus** | | | | | |
 | **W** Ressourcen | **Jägerhütte** | **Fischerhütte** | **Sägewerk** | **Mine** | Ölpumpe | **Farm** | |
 | **E** Energie | **Tesla-Turm** | **Windmühle** | **Köhlerei** | Ölgenerator | | | |
-| **A** Industrie und Handel | **Holzwerkstatt** | **Steinwerkstatt** | Gießerei | **Gasthaus** | **Markt** | **Bank** | |
+| **A** Industrie und Handel | **Holzwerkstatt** | **Steinwerkstatt** | **Gießerei** | **Gasthaus** | **Markt** | **Bank** | |
 | **S** Militär | **Kaserne** | **Munitionsfabrik** | Belagerungsfabrik | | | | |
 | **D** Verteidigung | **Mauer** | **Tor** | **Turm** | **Pfahlfalle** (R) | **Sprengfass** (T) | **Steinmauer** (A) | **Steinturm** (D) |
 | **Y** Wunder | – | | | | | | |
 
-Balliste (F) und MG-Turm (G) sind noch grau.
+Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 
 - **Kaserne** (ohne Voraussetzung baubar): Q Soldat (100 Gold), W Ranger (60), E Speerträger (50), R Scharfschütze
   (200), T Medic (120), G Sammelpunkt. **Soldat und Scharfschütze** (Schusswaffen) erst mit einer **Munitionsfabrik**. Strg = 5 auf
@@ -345,20 +345,31 @@ Balliste (F) und MG-Turm (G) sind noch grau.
 - **Bauen braucht freien Strom** (wie TAB): was Strom nimmt, wird nur gebaut, wenn sein Netz so viel übrig hat.
 - **Freischalten** (wie TAB, die Werkstätten stellen nichts her):
   - **Mine** und **Tesla-Turm** gehen ab Start (wie TAB – die Kaserne braucht Stein).
-  - **Holzwerkstatt** → Farm, Windmühle, Pfahlfalle, Steinwerkstatt.
-  - **Steinwerkstatt** → Munitionsfabrik, Steinhaus, Steinmauer, Steinturm.
+  - **Holzwerkstatt** → Farm, Windmühle, Pfahlfalle, **Balliste**, Steinwerkstatt.
+  - **Steinwerkstatt** → Munitionsfabrik, **Gießerei**, Steinhaus, Steinmauer, Steinturm.
+  - **Gießerei** → MG-Turm.
   - **Munitionsfabrik** (kostet auch 10 Kohle) → Soldat und Scharfschütze. Munition selbst bleibt gratis.
 - **Steinhaus** (16 Kolonisten, 8 Arbeiter, isst 2, zahlt 40), **Steinmauer** (1000 HP), **Steinturm** (2000 HP) lassen sich direkt
   auf Zelt, Mauer, Turm bauen – ein Upgrade an Ort und Stelle (ein Teil des alten Goldes kommt zurück).
 - **Pfahlfalle** (wie TABs Stakes): Zombies laufen darüber, greifen sie nicht an und bekommen alle 0,5 s Schaden; jeder
   Treffer nutzt sie ab. Eigene Einheiten laufen unverletzt darüber.
+- **Gießerei** (3 × 3, Steinwerkstatt, 1.500 Gold + 40 Holz + 40 Stein, Strom 10, Unterhalt 15): ein Tech-Gebäude wie
+  TABs – sie schaltet den MG-Turm frei – und sie **schmilzt Eisen**: bei jeder Abrechnung bis zu 3, aus je 2 Eisenerz
+  und 1 Kohle (weniger bei wenig Strom, nichts ohne Erz). Laut wie eine Mine; ohne Erz still.
+- **Türme, die selbst schießen** (`weapon` in `data\buildings.json`, keine Einheiten darin):
+  - **Balliste** (2 × 2, Holzwerkstatt, 300 Gold + 20 Holz + 10 Stein, kein Strom): ein schwerer Bolzen alle 2,5 s,
+    120 Schaden, 9 Kacheln weit – immer auf den **zähesten** Zombie in Reichweite (Fat, Riot, Riese). Lärm 6 pro Schuss.
+  - **MG-Turm** (1 × 1, Gießerei, 600 Gold + 20 Stein + **20 Eisen**, Strom 6): 5 Schuss pro Sekunde, 9 Schaden,
+    6,5 Kacheln, auf den **nächsten** – gegen Massen. Lärm 4 pro Schuss, also sehr laut. Wenig Strom: lädt langsamer.
+    Ziehen = Reihe.
+  - Ein angeschossener Zombie stürmt los wie bei Einheiten. Aus (Y) schießen sie nicht.
 - **Abrechnung alle 8 Stunden** (wie TABs 8-Stunden-Takt, 60 s, `economy_every_hours` in `data\colony.json`):
-  Zinsen des Dispo → Köhlereien nehmen Holz → Sammler und Kommandozentrum liefern → Häuser essen und zahlen → Märkte
-  verkaufen → **Unterhalt** wird bezahlt. Alle Werte „pro Abrechnung“.
+  Zinsen des Dispo → Köhlereien nehmen Holz → Sammler und Kommandozentrum liefern → Gießereien schmelzen → Häuser essen
+  und zahlen → Märkte verkaufen → **Unterhalt** wird bezahlt. Alle Werte „pro Abrechnung“.
 - **Markt** (3 × 3, ab Start baubar, 400 Gold + 30 Holz): Häuser, deren Mitte auf ihm oder bis 2 Kacheln drumherum
   liegt (7 × 7), zahlen **+50 % Gold** – jedes Haus nur für einen Markt (den ältesten). Er **verkauft**, was über
   **80 % des Lagers** liegt, reihum je 1 pro Ware, höchstens **1 Ware je 4 Kolonisten** seiner Häuser pro Abrechnung
-  (Holz 2, Stein/Eisenerz/Kohle 3, Nahrung 1 Gold). **Q**: Verkauf aus/an. Beim Platzieren: Rahmen, seine Häuser gelb,
+  (Holz 2, Stein/Eisenerz/Kohle 3, Nahrung 1, Eisen 10 Gold). **Q**: Verkauf aus/an. Beim Platzieren: Rahmen, seine Häuser gelb,
   „+x Gold, bis zu y Waren“.
 - **Bank** (2 × 2, Steinwerkstatt, 800 Gold + 30 Stein): Goldlager **+2.000** und **Dispo 500**. Fehlt beim Bauen oder
   Ausbilden nur Gold, geht es mit **Shift** ins Minus – ohne Schuldenstrafen, aber **10 % Zinsen** pro Abrechnung.

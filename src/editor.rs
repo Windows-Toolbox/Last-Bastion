@@ -897,6 +897,11 @@ impl Editor {
                         B::Tool(Tool::Building(BuildingKind::Bank)),
                         B::Tool(Tool::Building(BuildingKind::Inn)),
                     ]),
+                    buttons(&[
+                        B::Tool(Tool::Building(BuildingKind::Foundry)),
+                        B::Tool(Tool::Building(BuildingKind::Ballista)),
+                        B::Tool(Tool::Building(BuildingKind::MachineGunTower)),
+                    ]),
                     buttons(&[B::Tool(Tool::Building(BuildingKind::Barrel))]),
                     Row::Heading("Remove - hold and drag (brush)"),
                     buttons(&[B::Tool(Tool::Remove)]),

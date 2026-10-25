@@ -46,6 +46,11 @@ pub struct Building {
     charge: u32,
     /// A charcoal burner: did it get its wood for this hour (`World::fuel`)? Without it, it makes no power.
     pub fuelled: bool,
+    /// A foundry: the iron it smelted at the last payout (`World::smelt`) – 0: no ore or coal, and it stands still.
+    pub smelted: u32,
+    /// A tower that shoots by itself (`sim/towers.rs`): thousandths of a tick until it can shoot again – every tick
+    /// takes off its power share, so short of power it reloads slower.
+    pub reload: u32,
     /// A house: did its colonists get their food at the last payout – and the gold they paid then (`economy_payout`).
     pub fed: bool,
     pub paid: u32,
@@ -306,6 +311,8 @@ impl World {
             progress: 0,
             charge: 0,
             fuelled: false,
+            smelted: 0,
+            reload: 0,
             fed: true,
             paid: 0,
             rally: None,
