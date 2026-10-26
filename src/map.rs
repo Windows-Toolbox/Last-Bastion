@@ -230,6 +230,7 @@ impl Region {
     }
 }
 
+#[derive(Clone)]
 pub struct Map {
     pub size: usize,
     /// Width of the ring outside the world border.

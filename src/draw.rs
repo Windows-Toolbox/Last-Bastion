@@ -13,7 +13,7 @@ use crate::hud::{draw_life, hp_color};
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
 use crate::map::{Ore, Region, Terrain};
-use crate::sim::{Breed, Building, DoomHouse, LootKind, Mark, TICK, World};
+use crate::sim::{Breed, Building, DoomHouse, LootKind, Mark, TICK, UNIT_RADIUS, World};
 use crate::sprites::{Pose, Sprite, Sprites};
 use crate::vision::Vision;
 
@@ -33,8 +33,8 @@ const FAT: Color = Color::new(0.58, 0.52, 0.34, 1.0);
 const ARMORED: Color = Color::new(0.40, 0.47, 0.60, 1.0);
 const SPITTER: Color = Color::new(0.50, 0.74, 0.20, 1.0);
 const INFESTED: Color = Color::new(0.64, 0.34, 0.50, 1.0);
-/// A screamer: sickly yellow, easy to pick out of the crowd – it's the one to shoot first.
-const SCREAMER: Color = Color::new(0.90, 0.82, 0.35, 1.0);
+/// A harpy: sickly yellow, easy to pick out of the crowd – it's the one to shoot first.
+const HARPY: Color = Color::new(0.90, 0.82, 0.35, 1.0);
 const GIANT: Color = Color::new(0.45, 0.22, 0.18, 1.0);
 /// The spitters' acid in flight, and the infested's shots.
 const ACID: Color = Color::new(0.62, 0.95, 0.20, 1.0);
@@ -62,6 +62,8 @@ const BARREL_BAND: Color = Color::new(0.25, 0.10, 0.08, 1.0);
 /// A fallen unit lies flat on the ground until it rises.
 const CORPSE_HEIGHT: f32 = 0.06;
 const HOLD_RING: Color = ORANGE;
+/// A ring under a figure is at least this wide (pixels, half its width) – zoomed out it would vanish.
+const MIN_RING: f32 = 5.0;
 const SHOT: Color = Color::new(1.0, 0.9, 0.4, 0.8);
 const BEAM: Color = Color::new(0.35, 1.0, 0.45, 0.9);
 /// The world border line in editor mode.
@@ -266,10 +268,9 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         if !selected.contains(&unit.id) {
             continue;
         }
-        let s = camera.world_to_screen(lerp(unit.prev, unit.pos, alpha));
-        let w = 0.7 * TILE_W * camera.zoom;
-        let ring = if unit.is_holding() { HOLD_RING } else { GREEN };
-        draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 1.5, ring);
+        let p = lerp(unit.prev, unit.pos, alpha);
+        let s = camera.world_to_screen(p);
+        draw_ring(camera, p, UNIT_RADIUS, 1.5, if unit.is_holding() { HOLD_RING } else { GREEN });
 
         // Line from point to point of the command queue.
         let plan = world.plan(i);
@@ -296,6 +297,9 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             continue;
         }
         let p = lerp(zombie.prev, zombie.pos, alpha);
+        // A harpy leaping over a wall: up in an arc. On screen "up" is towards the top left of the map – the figure is
+        // drawn that much further back, but sorted by where it stands.
+        let lift = zombie.leap_height(alpha);
         let color = breed_color(zombie.breed);
         if let Some(sprite) = view.sprites.get(zombie.breed.stats().sprite.as_deref()) {
             let pose = match zombie.since_hit() {
@@ -304,14 +308,15 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
                 None => Pose::Idle,
             };
             let color = Color { a: visible, ..if sprite.tinted() { color } else { WHITE } };
-            let figure = Figure { sprite, at: p, facing: look.facing, pose, clock: clock(time, zombie.id), color };
+            let at = p - Vec2::splat(2.0 * lift);
+            let figure = Figure { sprite, at, facing: look.facing, pose, clock: clock(time, zombie.id), color };
             things.push((p.x + p.y, Thing::Figure(figure)));
             continue;
         }
         let size = zombie.radius * ZOMBIE_SIZE;
         let height = ZOMBIE_HEIGHT * (0.5 + 4.0 * zombie.radius);
         let ground = rect(p - Vec2::splat(size / 2.0), Vec2::splat(size));
-        things.push((p.x + p.y, Thing::Body(Prism(ground, 0.0, height, Color { a: visible, ..color }))));
+        things.push((p.x + p.y, Thing::Body(Prism(ground, lift, lift + height, Color { a: visible, ..color }))));
     }
     // The sleeping ones (`sim/sleep.rs`) only where there's no fog (editor): standing still, a little darker. In the
     // player's view they're never seen – they wake before your eyes get there.
@@ -969,7 +974,7 @@ pub fn breed_color(breed: Breed) -> Color {
         Breed::Armored => ARMORED,
         Breed::Spitter => SPITTER,
         Breed::Infested => INFESTED,
-        Breed::Screamer => SCREAMER,
+        Breed::Harpy => HARPY,
         Breed::Giant => GIANT,
     }
 }
@@ -981,6 +986,14 @@ fn lighten(c: Color) -> Color {
 /// `share` of the way from colour `a` to colour `b` (0: `a`, 1: `b`). Keeps the transparency of `a`.
 fn mix(a: Color, b: Color, share: f32) -> Color {
     Color::new(a.r + (b.r - a.r) * share, a.g + (b.g - a.g) * share, a.b + (b.b - a.b) * share, a.a)
+}
+
+/// The ring on the ground under a figure – selected, under the mouse, where it will stand: as big as its body
+/// (`radius`, tiles), so about as big as the shadow under it. On screen a flat ellipse, like the tiles.
+pub fn draw_ring(camera: &Camera, at: Vec2, radius: f32, thickness: f32, color: Color) {
+    let s = camera.world_to_screen(at);
+    let w = (radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom).max(MIN_RING);
+    draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, thickness, color);
 }
 
 /// The colour of a kind of command: move green, attack red, patrol yellow, heal light green.

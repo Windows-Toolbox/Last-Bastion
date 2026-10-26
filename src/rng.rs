@@ -2,6 +2,7 @@
 //! Same seed → the same numbers in the same order, on every PC.
 
 /// SplitMix64: a tiny, fast generator, good enough for a game.
+#[derive(Clone)]
 pub struct Rng {
     state: u64,
 }

@@ -22,6 +22,7 @@ const CROWD_REACH: f32 = 8.0;
 /// This close to the edge of a tower a unit climbs in.
 const ENTER_REACH: f32 = 0.8;
 
+#[derive(Clone)]
 pub struct Unit {
     /// Fixed number like with the zombies: selection, control groups and orders remember it.
     pub id: u32,

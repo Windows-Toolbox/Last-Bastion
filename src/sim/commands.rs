@@ -46,6 +46,7 @@ impl Command {
 }
 
 /// An entry in a unit's command queue: the command plus what the unit needs for it.
+#[derive(Clone)]
 pub(super) enum Task {
     Move(Waypoint),
     AttackMove(Waypoint),

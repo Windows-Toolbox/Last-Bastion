@@ -33,6 +33,7 @@ pub const CELL: i32 = 4;
 pub(super) const LISTEN_EVERY: u64 = 10;
 
 /// How loud it is where: the sound grid.
+#[derive(Clone)]
 pub struct Sound {
     /// Cells across (and down) – the map is square.
     cells: i32,

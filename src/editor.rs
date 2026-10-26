@@ -11,37 +11,72 @@
 //! - **Waves** – send waves now, the **timeline** (waves that come by themselves on a given day and hour, like TAB's
 //!   events "32d 12h", the final wave among them) and the **constant spawn**.
 //!
-//! Like the bottom panel (`hud.rs`) it's split in two: here is where everything lies (`hit`), what it looks
-//! like (`draw`) and what a button does (`click`). What the left mouse button does on the map with a tool
-//! in hand is decided by `ui.rs`, because that's where the mouse is read anyway. Saving, closing and switching between
-//! Edit and Test only `game.rs` can do – the panel asks for it (`request`).
+//! It's made with **egui** (DESIGN.md 12.9, step 1): fields to type numbers and names into (or drag them), drop-down
+//! lists, sections that fold, a list that scrolls. egui works like macroquad's drawing – *immediate mode*: every frame
+//! `show` describes the whole panel anew, and what was clicked or typed comes back right there. The panel only reads
+//! the world; whatever it changes goes out as an order (`Order`), so it stays deterministic. What the left mouse button
+//! does on the map with a tool in hand is decided by `ui.rs`, because that's where the mouse is read anyway. Saving,
+//! closing and switching between Edit and Test only `game.rs` can do – the panel asks for it (`request`).
 
-use macroquad::prelude::*;
+use egui_macroquad::egui::{
+    self, Align2, CollapsingHeader, Color32, ComboBox, DragValue, FontId, Frame, RichText, ScrollArea, Slider, TextEdit,
+    TextStyle, Ui,
+};
+use macroquad::math::Vec2;
 
-use crate::data::Stage;
+use crate::data::{ConstantSpecial, Stage};
+use crate::hud::Layout;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Ore, Terrain};
-use crate::sim::{day_and_hour, stage_start, Breed, Order, SpawnMode, TimedWave, WaveFrom, World, DAY_TICKS, HOUR_TICKS};
-use crate::widgets::type_into;
+use crate::sim::{day_and_hour, Breed, Order, SpawnMode, TimedWave, WaveFrom, World, DAY_TICKS, HOUR_TICKS};
 
-const WIDTH: f32 = 270.0;
+/// Width of the panel. egui counts in points – here the same as macroquad's pixels.
+const WIDTH: f32 = 320.0;
+/// Room between the panel and the edge of the window or the bottom panel.
 const PAD: f32 = 8.0;
-const MODE_H: f32 = 32.0;
-const ROW_H: f32 = 30.0;
-const HEADING_H: f32 = 24.0;
-/// Room for the hint at the bottom of the panel.
-const HINT_H: f32 = 30.0;
-
-const BG: Color = Color::new(0.08, 0.09, 0.11, 0.92);
-const BOX: Color = Color::new(0.15, 0.16, 0.20, 1.0);
-const HOVER: Color = Color::new(0.22, 0.24, 0.30, 1.0);
-const ACTIVE: Color = Color::new(0.25, 0.35, 0.20, 1.0);
-const BORDER: Color = Color::new(0.30, 0.32, 0.38, 1.0);
-const DIM: Color = Color::new(0.55, 0.57, 0.62, 1.0);
-/// The final wave stands out on the timeline.
-const FINAL: Color = Color::new(0.95, 0.45, 0.35, 1.0);
+/// Room for the hint at the bottom of the panel and the panel's own edge.
+const HINT_H: f32 = 44.0;
 /// A spawner name and a map name have at most this many letters.
 const MAX_NAME: usize = 24;
+/// The round lasts at most this many days.
+const MAX_DAYS: u32 = 200;
+/// The most a number field takes (gold, wood, zombies) – far more than a map needs, only so nothing overflows.
+const MAX_AMOUNT: u32 = 10_000_000;
+/// The final wave stands out on the timeline.
+const FINAL: Color32 = Color32::from_rgb(242, 115, 89);
+/// Where a wave on the timeline can come from.
+const WAVE_FROM: [WaveFrom; 5] = [WaveFrom::OneSpawner, WaveFrom::Sides(1), WaveFrom::Sides(2), WaveFrom::Sides(3), WaveFrom::Sides(4)];
+/// The buildings of the "Entities" tab, in this order.
+const BUILDINGS: &[BuildingKind] = &[
+    BuildingKind::CommandCenter,
+    BuildingKind::Tent,
+    BuildingKind::Wall,
+    BuildingKind::Gate,
+    BuildingKind::Tower,
+    BuildingKind::Barracks,
+    BuildingKind::Sawmill,
+    BuildingKind::Mine,
+    BuildingKind::HunterCottage,
+    BuildingKind::FishingHut,
+    BuildingKind::Windmill,
+    BuildingKind::CharcoalBurner,
+    BuildingKind::WoodWorkshop,
+    BuildingKind::StoneWorkshop,
+    BuildingKind::MunitionsFactory,
+    BuildingKind::TeslaTower,
+    BuildingKind::StoneHouse,
+    BuildingKind::Stakes,
+    BuildingKind::StoneWall,
+    BuildingKind::StoneTower,
+    BuildingKind::Farm,
+    BuildingKind::Market,
+    BuildingKind::Bank,
+    BuildingKind::Inn,
+    BuildingKind::Foundry,
+    BuildingKind::Ballista,
+    BuildingKind::MachineGunTower,
+    BuildingKind::Barrel,
+];
 
 /// Editing the map (no time passes) or testing it (the round runs).
 #[derive(Clone, Copy, PartialEq)]
@@ -134,6 +169,9 @@ pub enum EditorRequest {
     Close,
     /// Edit ↔ Test (the two buttons at the top, F10).
     Mode(Mode),
+    /// "Undo" (Ctrl+Z) and "Redo" (Ctrl+Y).
+    Undo,
+    Redo,
 }
 
 /// The kinds of waves the editor can send right now – all of them from the spawners.
@@ -157,177 +195,6 @@ impl Wave {
     }
 }
 
-/// The buttons of the panel.
-#[derive(Clone, Copy, PartialEq)]
-pub enum EditorButton {
-    /// One of the two buttons at the top.
-    Mode(Mode),
-    Tab(Tab),
-    /// Whose view: all, the player's, the zombies'.
-    Sight(Sight),
-    /// Take a tool in hand (clicked again: put it away).
-    Tool(Tool),
-    /// Brush size in tiles (edge length).
-    Brush(i32),
-
-    // --- Map tab ---
-    /// The name of the map – click to type a new one.
-    MapName,
-    /// Only shows what map this is (generator, seed, days) – does nothing when clicked.
-    Info,
-    SaveMap,
-    CloseMap,
-    NewMap,
-    /// Only shows the result of the last save.
-    Status,
-    /// The round: a day less (-1) or more (+1) – with Shift 10 …
-    Days(i32),
-    /// … how many (shown) …
-    DaysShow,
-    /// … the gold at the start …
-    Gold(i32),
-    GoldShow,
-    /// … and the wood.
-    Wood(i32),
-    WoodShow,
-
-    // --- Waves tab ---
-    /// 1,000 zombies spread over all spawners.
-    EdgeZombies,
-    Wave(Wave),
-    ClearZombies,
-    /// Only shows the clock of the round.
-    Clock,
-    /// A new wave at the end of the timeline.
-    AddTimed,
-    /// Wave number `.0` of the timeline: earlier (-1) / later (+1) by 6 hours, with Shift by a day …
-    TimedTime(usize, i32),
-    /// … its time (shown) …
-    TimedShow(usize),
-    /// … part of the final wave or not (it calls every zombie on the map) …
-    TimedFinal(usize),
-    /// … whether it shows the whole map when it comes …
-    TimedReveal(usize),
-    /// … fewer / more zombies …
-    TimedCount(usize, i32),
-    /// … how many (shown) …
-    TimedCountShow(usize),
-    /// … which breed (click: the next one) …
-    TimedBreed(usize),
-    /// … where from (click: the next choice) …
-    TimedFrom(usize),
-    /// … and off the timeline.
-    TimedRemove(usize),
-    /// Stage number `.0` of the constant spawn: earlier / later (like the waves), its time (shown), breed, remove …
-    StageTime(usize, i32),
-    StageShow(usize),
-    StageBreed(usize),
-    StageRemove(usize),
-    /// … every how many seconds a group comes (step down / up, shown) …
-    StageEvery(usize, i32),
-    StageEveryShow(usize),
-    /// … and how big the group is (step down / up, shown).
-    StageGroup(usize, i32),
-    StageGroupShow(usize),
-    /// A new stage at the end, a day after the last one.
-    AddStage,
-    /// After the last stage the groups grow by this much per day (less / more, shown).
-    Extra(i32),
-    ExtraShow,
-
-    // --- Selected spawner ---
-    /// The name of the selected spawner – click to type a new one.
-    SpawnerName,
-    /// How the selected spawner sends zombies by itself.
-    Sends(Sends),
-    /// Periodic: the time between two sends one step shorter (-1) or longer (+1) …
-    Every(i32),
-    /// … and how many come each time.
-    Count(i32),
-    /// Only shows a value (the time, the count) – does nothing when clicked.
-    Show(Value),
-    RemoveSpawner,
-
-    // --- Zombies ---
-    /// Which zombies the brush and drop place.
-    Breed(Breed),
-    /// Placed zombies wander around there (true) or storm the command center (false).
-    Wander(bool),
-    /// Zombies per tick of the brush one step less (-1) or more (+1) …
-    Rate(i32),
-    /// … and how many a drop places.
-    Drop(i32),
-}
-
-/// The three ways of sending (the buttons for `sim::SpawnMode`).
-#[derive(Clone, Copy, PartialEq)]
-pub enum Sends {
-    Constant,
-    Periodic,
-    Off,
-}
-
-/// Which value a `Show` field shows.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Value {
-    Every,
-    Count,
-    Rate,
-    Drop,
-}
-
-/// The steps for "every … seconds" and "… zombies" – the buttons jump from one to the next.
-const EVERY_STEPS: [u32; 12] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120];
-const COUNT_STEPS: [u32; 9] = [1, 2, 5, 10, 20, 50, 100, 200, 500];
-/// Zombies per tick of the brush, zombies per drop.
-const RATE_STEPS: [u32; 6] = [1, 2, 3, 5, 10, 20];
-const DROP_STEPS: [u32; 7] = [1, 10, 50, 100, 200, 500, 1000];
-/// Zombies of a wave on the timeline.
-const WAVE_STEPS: [u32; 15] = [5, 10, 15, 25, 50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000];
-/// Where a wave on the timeline comes from – the button goes round these.
-const WAVE_FROM: [WaveFrom; 5] = [WaveFrom::OneSpawner, WaveFrom::Sides(1), WaveFrom::Sides(2), WaveFrom::Sides(3), WaveFrom::Sides(4)];
-/// The gold a map starts with.
-const GOLD_STEPS: [u32; 16] = [0, 50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000, 50000];
-/// The wood a map starts with.
-const WOOD_STEPS: [u32; 12] = [0, 10, 20, 30, 40, 50, 75, 100, 150, 200, 500, 1000];
-/// How big a group of the constant spawn is: from … to … zombies.
-const GROUP_STEPS: [[u32; 2]; 13] = [[1, 1], [1, 2], [1, 3], [2, 4], [3, 5], [4, 5], [5, 8], [8, 10], [10, 15], [15, 20], [20, 30], [30, 50], [50, 100]];
-/// How much the groups grow per day after the last stage.
-const EXTRA_STEPS: [f32; 7] = [0.0, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0];
-
-/// The next step up (+1) or down (-1) from `now` in `steps` – stays at the ends.
-fn next_step(steps: &[u32], now: u32, dir: i32) -> u32 {
-    let at = steps.iter().position(|&s| s >= now).unwrap_or(steps.len() - 1) as i32;
-    steps[(at + dir).clamp(0, steps.len() as i32 - 1) as usize]
-}
-
-/// The same for any list whose entries can be compared (`PartialOrd`: numbers with a fraction, pairs) – a *generic*
-/// function: `T` stands for whatever type the list has. `Copy`: an entry can be handed out as a copy.
-fn next_in<T: PartialOrd + Copy>(steps: &[T], now: T, dir: i32) -> T {
-    let at = steps.iter().position(|&s| s >= now).unwrap_or(steps.len() - 1) as i32;
-    steps[(at + dir).clamp(0, steps.len() as i32 - 1) as usize]
-}
-
-/// The breed after this one (the breed buttons go round).
-fn next_breed(breed: Breed) -> Breed {
-    Breed::ALL[(breed.index() + 1) % Breed::ALL.len()]
-}
-
-/// One row of the panel: a heading or a few buttons side by side. The buttons are a `Vec` (not a fixed list),
-/// because the timeline has as many rows as there are waves.
-#[derive(Clone)]
-enum Row {
-    Heading(&'static str),
-    Buttons(Vec<EditorButton>),
-}
-
-use EditorButton as B;
-
-/// Shorter to write: a row of buttons.
-fn buttons(list: &[EditorButton]) -> Row {
-    Row::Buttons(list.to_vec())
-}
-
 pub struct Editor {
     /// Is there an editor at all? Only in `LastBastionEditor.exe` – in the game nothing of it is drawn or clickable,
     /// and the whole map is never shown.
@@ -336,12 +203,11 @@ pub struct Editor {
     pub tab: Tab,
     /// The tool in hand – `None`: the left mouse button selects as usual.
     pub tool: Option<Tool>,
-    /// Brush size for painting terrain.
+    /// Brush size in tiles (edge length, odd).
     pub brush: i32,
     /// The selected spawner (its `id`) – its edge glows and can be dragged.
     pub spawner: Option<u32>,
-    /// While a new name is being typed for the selected spawner: the text so far. Then the keyboard
-    /// belongs to the name field and no key does anything else.
+    /// While the selected spawner's name field has the keyboard: the text so far (`ui.rs` shows it on the map).
     pub name_edit: Option<String>,
     /// The same for the map name.
     map_name_edit: Option<String>,
@@ -353,17 +219,13 @@ pub struct Editor {
     pub status: Option<String>,
     /// For `game.rs`: something only it can do (`EditorRequest`).
     pub request: Option<EditorRequest>,
-    /// For `ui.rs`: a building button was clicked – hang this building on the mouse (`Some(kind)`) or take it off
-    /// (`None`).
+    /// How many steps undo and redo can go – set by `game.rs` (`undo.rs`).
+    pub steps: (usize, usize),
+    /// For `ui.rs`: a tool or building button was clicked – hang this building on the mouse (`Some(kind)`), or take
+    /// whatever is on it off (`None`).
     pub place: Option<Option<BuildingKind>>,
     /// The building `ui.rs` has on the mouse right now (copied every frame, `sync`) – its button is lit.
     placing: Option<BuildingKind>,
-    /// How many waves the timeline has and how many stages the constant spawn (copied every frame) – that many rows
-    /// in the "Waves" tab.
-    wave_count: usize,
-    stage_count: usize,
-    /// How far the panel is scrolled down (pixels) – mouse wheel on the panel.
-    scroll: f32,
     /// Whose view the editor shows (stays when switching back and forth).
     sight: Sight,
     /// What the zombie brush and drop place: breed, wandering or storming, how many.
@@ -373,8 +235,14 @@ pub struct Editor {
     pub rate: u32,
     /// Zombies per drop.
     pub drop: u32,
-    /// Sections folded shut (by their heading) – so the panel fits on the screen.
-    folded: Vec<&'static str>,
+    /// Is the mouse on the panel, or is one of its fields being dragged? Then the map doesn't get it (`show`).
+    on_panel: bool,
+    /// Does a field of the panel have the keyboard – now, or until the end of the last frame (`show`)?
+    typing: bool,
+    /// Did one have it at the end of the last frame?
+    typed_before: bool,
+    /// Are the panel's fonts set yet (`style`)?
+    styled: bool,
 }
 
 impl Editor {
@@ -393,24 +261,23 @@ impl Editor {
             map_info: String::new(),
             status: None,
             request: None,
+            steps: (0, 0),
             place: None,
             placing: None,
-            wave_count: 0,
-            stage_count: 0,
-            scroll: 0.0,
             sight: Sight::All,
             breed: Breed::Walker,
             wander: false,
             rate: 2,
             drop: 100,
-            folded: Vec::new(),
+            on_panel: false,
+            typing: false,
+            typed_before: false,
+            styled: false,
         }
     }
 
-    /// Every frame, before anything else: what the panel needs to know from outside.
-    pub fn sync(&mut self, world: &World, placing: Option<BuildingKind>) {
-        self.wave_count = world.waves.len();
-        self.stage_count = world.constant.stages.len();
+    /// Every frame: the building `ui.rs` has on the mouse – its button is lit.
+    pub fn sync(&mut self, placing: Option<BuildingKind>) {
         self.placing = placing;
     }
 
@@ -450,46 +317,24 @@ impl Editor {
         self.name_edit = None;
     }
 
-    /// Selects a spawner (or none). A name still being typed for the previous one is saved first.
-    pub fn select_spawner(&mut self, spawner: Option<u32>, orders: &mut Vec<Order>) {
+    /// Selects a spawner (or none). A name being typed for the previous one was already saved by `show` – the click
+    /// that selects took the keyboard away from the field.
+    pub fn select_spawner(&mut self, spawner: Option<u32>) {
         if spawner != self.spawner {
-            self.finish_name(orders);
+            self.name_edit = None;
         }
         self.spawner = spawner;
     }
 
-    /// Is a name being typed (spawner or map)? Then the keyboard belongs to the name field.
+    /// Is something being typed into the panel (a name, a number)? Then the keyboard belongs to it and no key does
+    /// anything else.
     pub fn is_typing(&self) -> bool {
-        self.name_edit.is_some() || self.map_name_edit.is_some()
+        self.typing
     }
 
-    /// Every frame while a name field is active: letters, Backspace, Enter (keep) or Esc (cancel).
-    pub fn type_text(&mut self, orders: &mut Vec<Order>) {
-        if let Some(text) = &mut self.map_name_edit {
-            match type_into(text, MAX_NAME, |_| true) {
-                Some(true) => self.finish_name(orders),
-                Some(false) => self.map_name_edit = None,
-                None => {}
-            }
-        } else if let Some(text) = &mut self.name_edit {
-            match type_into(text, MAX_NAME, |_| true) {
-                Some(true) => self.finish_name(orders),
-                Some(false) => self.name_edit = None,
-                None => {}
-            }
-        }
-    }
-
-    /// Ends typing: renames the spawner (an empty name is ignored by the simulation) or the map.
-    pub fn finish_name(&mut self, orders: &mut Vec<Order>) {
-        if let Some(name) = self.map_name_edit.take() {
-            if !name.trim().is_empty() {
-                self.map_name = name.trim().to_owned();
-            }
-        }
-        if let (Some(name), Some(spawner)) = (self.name_edit.take(), self.spawner) {
-            orders.push(Order::RenameSpawner { spawner, name });
-        }
+    /// Is the mouse on the panel (or dragging one of its fields)? Then clicks and the wheel don't go to the map.
+    pub fn has_mouse(&self) -> bool {
+        self.available && self.on_panel
     }
 
     /// F10: the other mode – asked for, `game.rs` switches.
@@ -498,16 +343,6 @@ impl Editor {
             let other = if self.mode == Mode::Edit { Mode::Test } else { Mode::Edit };
             self.request = Some(EditorRequest::Mode(other));
         }
-    }
-
-    /// Is this screen point on the panel (or on the mode buttons)? Then the click doesn't go to the map.
-    pub fn contains(&self, p: Vec2) -> bool {
-        self.available && self.panel().contains(p)
-    }
-
-    /// The mouse wheel turned on the panel: scroll it (instead of zooming the map).
-    pub fn scroll_by(&mut self, wheel: f32) {
-        self.scroll = (self.scroll - wheel.signum() * 40.0).clamp(0.0, self.max_scroll());
     }
 
     /// The tiles the brush covers around `center`: a square for small brushes, a rough circle for big ones.
@@ -525,631 +360,534 @@ impl Editor {
         tiles
     }
 
-    /// A click on the panel. Clicking anywhere but a name field ends typing.
-    pub fn click(&mut self, p: Vec2, world: &World, orders: &mut Vec<Order>) {
-        if let Some(text) = self.heading_at(p) {
-            match self.folded.iter().position(|&t| t == text) {
-                Some(at) => {
-                    self.folded.remove(at);
+    /// Every frame in the editor, before `ui.rs` reads the mouse and the keys: the whole panel, built anew. `ctx` is
+    /// egui's context – it remembers between frames what egui needs (which section is folded, how far the list is
+    /// scrolled, which field has the keyboard). `enabled`: `false` while the menu or a question is in front – then the
+    /// panel is only shown, greyed out.
+    pub fn show(&mut self, ctx: &egui::Context, world: &World, enabled: bool, orders: &mut Vec<Order>) {
+        if !self.styled {
+            style(ctx);
+            self.styled = true;
+        }
+        // From the top down to the bottom panel (`hud.rs`) – the command card and the stock stay free.
+        let height = Layout::new().panel.y - 2.0 * PAD;
+        egui::Window::new("Map editor")
+            .title_bar(false)
+            .resizable(false)
+            .anchor(Align2::RIGHT_TOP, [-PAD, PAD])
+            .min_width(WIDTH)
+            .max_width(WIDTH)
+            .show(ctx, |ui| {
+                if !enabled {
+                    ui.disable();
                 }
-                None => self.folded.push(text),
-            }
-            return;
-        }
-        let button = self.hit(p);
-        if !matches!(button, Some(EditorButton::SpawnerName | EditorButton::MapName)) {
-            self.finish_name(orders);
-        }
-        let Some(button) = button else {
-            return;
-        };
-        let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
-        match button {
-            EditorButton::Mode(mode) => {
-                if mode != self.mode {
+                self.top(ui);
+                ui.separator();
+                // `min_rect`: what the panel has used so far. The tab gets the rest – more scrolls.
+                let room = (height - ui.min_rect().height() - HINT_H).max(60.0);
+                ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| match self.tab {
+                    Tab::Map => self.map_tab(ui, world, orders),
+                    Tab::Terrain => self.terrain_tab(ui),
+                    Tab::Entities => self.entities_tab(ui, world, orders),
+                    Tab::Waves => waves_tab(ui, world, orders),
+                });
+                ui.separator();
+                ui.label(RichText::new(self.hint()).small().weak());
+            });
+        keep_focus_for_text(ctx);
+        // Esc and Enter take the keyboard away from a field before `show` even starts – but in that frame the key
+        // was still meant for the field (not for the menu or the selection). So "typing" lasts one frame longer.
+        let typing = text_has_focus(ctx);
+        self.typing = typing || self.typed_before;
+        self.typed_before = typing;
+        // `wants_pointer_input`: also while a number is dragged and the mouse has left the panel.
+        self.on_panel = ctx.wants_pointer_input() || ctx.is_pointer_over_area();
+    }
+
+    /// What's always there: Edit / Test, the tabs, whose view.
+    fn top(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+            for (mode, text) in [(Mode::Edit, "Edit"), (Mode::Test, "Test (F10)")] {
+                let button = egui::Button::new(RichText::new(text).strong()).selected(self.mode == mode);
+                if ui.add_sized([w, 28.0], button).clicked() && mode != self.mode {
                     self.request = Some(EditorRequest::Mode(mode));
                 }
             }
-            EditorButton::Tab(tab) => {
-                self.tab = tab;
-                self.scroll = 0.0;
+        });
+        // Undo and redo only in Edit – a test runs on a copy of the map anyway. `add_enabled`: greyed out if not.
+        ui.horizontal(|ui| {
+            let (back, forward) = self.steps;
+            let edit = self.mode == Mode::Edit;
+            if ui.add_enabled(edit && back > 0, egui::Button::new(format!("Undo ({back})"))).on_hover_text("Ctrl+Z").clicked() {
+                self.request = Some(EditorRequest::Undo);
             }
-            EditorButton::Sight(sight) => self.sight = sight,
-            EditorButton::Tool(Tool::Building(kind)) => {
-                self.tool = None;
-                self.place = Some(if self.placing == Some(kind) { None } else { Some(kind) });
+            if ui.add_enabled(edit && forward > 0, egui::Button::new(format!("Redo ({forward})"))).on_hover_text("Ctrl+Y").clicked() {
+                self.request = Some(EditorRequest::Redo);
             }
-            EditorButton::Tool(tool) => {
-                self.tool = if self.tool == Some(tool) { None } else { Some(tool) };
-                if self.placing.is_some() {
-                    self.place = Some(None);
-                }
+        });
+        ui.horizontal(|ui| {
+            for (tab, text) in [(Tab::Map, "Map"), (Tab::Terrain, "Terrain"), (Tab::Entities, "Entities"), (Tab::Waves, "Waves")] {
+                ui.selectable_value(&mut self.tab, tab, text);
             }
-            EditorButton::Brush(size) => self.brush = size,
-            EditorButton::MapName => {
-                if self.map_name_edit.is_none() {
-                    self.finish_name(orders);
-                    self.map_name_edit = Some(self.map_name.clone());
-                }
+        });
+        ui.horizontal(|ui| {
+            ui.label("View:");
+            for (sight, text) in [(Sight::All, "All"), (Sight::Player, "Player"), (Sight::Zombies, "Zombies")] {
+                ui.selectable_value(&mut self.sight, sight, text);
             }
-            EditorButton::SaveMap => self.request = Some(EditorRequest::Save),
-            EditorButton::CloseMap => self.request = Some(EditorRequest::Close),
-            EditorButton::NewMap => self.request = Some(EditorRequest::NewMap),
-            EditorButton::Days(dir) => {
-                let step = if shift { 10 } else { 1 };
-                let days = (world.days as i32 + dir * step).clamp(1, 200) as u32;
-                orders.push(Order::SetDays { days });
-            }
-            EditorButton::Gold(dir) => orders.push(Order::SetGold { gold: next_step(&GOLD_STEPS, world.gold, dir) }),
-            EditorButton::Wood(dir) => {
-                let wood = next_step(&WOOD_STEPS, world.stock.get(Resource::Wood), dir);
-                orders.push(Order::SetWood { wood });
-            }
-            EditorButton::Info
-            | EditorButton::Status
-            | EditorButton::Clock
-            | EditorButton::DaysShow
-            | EditorButton::GoldShow
-            | EditorButton::WoodShow => {}
-            EditorButton::EdgeZombies => orders.push(Order::SpawnZombies { count: 1000 }),
-            EditorButton::Wave(wave) => orders.push(wave.order()),
-            EditorButton::ClearZombies => orders.push(Order::ClearZombies),
-            EditorButton::AddTimed => {
-                // A day after the last wave (or after now), on the full hour – but before a final wave.
-                let last = world.waves.iter().filter(|w| !w.final_wave).map(|w| w.at).max().unwrap_or(0).max(world.tick);
-                let at = (last + DAY_TICKS) / HOUR_TICKS * HOUR_TICKS;
-                orders.push(Order::AddTimedWave(TimedWave { at, count: 200, from: WaveFrom::Sides(1), breed: Breed::Runner, final_wave: false, reveal: false }));
-            }
-            // In a pattern with `|` every alternative has to bind the same names – here only `i`, the number of the wave.
-            EditorButton::TimedTime(i, _)
-            | EditorButton::TimedCount(i, _)
-            | EditorButton::TimedFinal(i)
-            | EditorButton::TimedReveal(i)
-            | EditorButton::TimedBreed(i)
-            | EditorButton::TimedFrom(i)
-            | EditorButton::TimedRemove(i) => self.timed_click(button, i, world, shift, orders),
-            EditorButton::TimedShow(_) | EditorButton::TimedCountShow(_) => {}
-            EditorButton::StageTime(..)
-            | EditorButton::StageBreed(_)
-            | EditorButton::StageRemove(_)
-            | EditorButton::StageEvery(..)
-            | EditorButton::StageGroup(..)
-            | EditorButton::AddStage
-            | EditorButton::Extra(_) => self.stage_click(button, world, shift, orders),
-            EditorButton::StageShow(_) | EditorButton::StageEveryShow(_) | EditorButton::StageGroupShow(_) | EditorButton::ExtraShow => {}
-            EditorButton::SpawnerName => {
-                if self.name_edit.is_none() {
-                    self.finish_name(orders);
-                    self.name_edit = Some(spawner_name(world, self.spawner).unwrap_or_default());
-                }
-            }
-            EditorButton::RemoveSpawner => {
-                if let Some(spawner) = self.spawner.take() {
-                    self.name_edit = None;
-                    orders.push(Order::RemoveSpawner { spawner });
-                }
-            }
-            EditorButton::Sends(_) | EditorButton::Every(_) | EditorButton::Count(_) => {
-                // A new mode for the selected spawner – the time and count buttons switch it to "periodic".
-                let (Some(spawner), Some(now)) = (self.spawner, spawn_mode(world, self.spawner)) else {
-                    return;
-                };
-                let (every, count) = periodic_values(now);
-                let mode = match button {
-                    EditorButton::Sends(Sends::Constant) => SpawnMode::Constant,
-                    EditorButton::Sends(Sends::Off) => SpawnMode::Off,
-                    EditorButton::Every(dir) => SpawnMode::Periodic { every: next_step(&EVERY_STEPS, every, dir), count },
-                    EditorButton::Count(dir) => SpawnMode::Periodic { every, count: next_step(&COUNT_STEPS, count, dir) },
-                    _ => SpawnMode::Periodic { every, count },
-                };
-                if mode != now {
-                    orders.push(Order::SetSpawnMode { spawner, mode });
-                }
-            }
-            EditorButton::Show(_) => {}
-            EditorButton::Breed(breed) => self.breed = breed,
-            EditorButton::Wander(wander) => self.wander = wander,
-            EditorButton::Rate(dir) => self.rate = next_step(&RATE_STEPS, self.rate, dir),
-            EditorButton::Drop(dir) => self.drop = next_step(&DROP_STEPS, self.drop, dir),
-        }
+        });
     }
 
-    /// A button of wave `i` on the timeline: one order that changes it (or takes it off).
-    fn timed_click(&self, button: EditorButton, i: usize, world: &World, shift: bool, orders: &mut Vec<Order>) {
-        let Some(&wave) = world.waves.get(i) else {
-            return;
-        };
-        let changed = match button {
-            B::TimedTime(_, dir) => {
-                let step = (if shift { DAY_TICKS } else { 6 * HOUR_TICKS }) as i64;
-                TimedWave { at: (wave.at as i64 + step * dir as i64).max(0) as u64, ..wave }
-            }
-            B::TimedCount(_, dir) => TimedWave { count: next_step(&WAVE_STEPS, wave.count, dir), ..wave },
-            B::TimedFinal(_) => TimedWave { final_wave: !wave.final_wave, ..wave },
-            B::TimedReveal(_) => TimedWave { reveal: !wave.reveal, ..wave },
-            B::TimedBreed(_) => TimedWave { breed: next_breed(wave.breed), ..wave },
-            B::TimedFrom(_) => {
-                let at = WAVE_FROM.iter().position(|&f| f == wave.from).unwrap_or(0);
-                TimedWave { from: WAVE_FROM[(at + 1) % WAVE_FROM.len()], ..wave }
-            }
-            B::TimedRemove(_) => {
-                orders.push(Order::RemoveTimedWave { index: i });
-                return;
-            }
-            _ => return,
-        };
-        orders.push(Order::SetTimedWave { index: i, wave: changed });
-    }
-
-    /// A button of the constant spawn: change a stage, add one, take one off, the growth after the last stage.
-    fn stage_click(&self, button: EditorButton, world: &World, shift: bool, orders: &mut Vec<Order>) {
-        let stages = &world.constant.stages;
-        let change = |i: usize, change: &dyn Fn(Stage) -> Stage, orders: &mut Vec<Order>| {
-            if let Some(&stage) = stages.get(i) {
-                orders.push(Order::SetStage { index: i, stage: change(stage) });
-            }
-        };
-        match button {
-            B::StageTime(i, dir) => change(
-                i,
-                &|stage| {
-                    let step = (if shift { DAY_TICKS } else { 6 * HOUR_TICKS }) as i64;
-                    let at = (stage_start(&stage) as i64 + step * dir as i64).max(0) as u64;
-                    let (day, hour) = day_and_hour(at);
-                    Stage { day, hour, ..stage }
-                },
-                orders,
-            ),
-            B::StageBreed(i) => change(i, &|stage| Stage { breed: next_breed(stage.breed), ..stage }, orders),
-            B::StageEvery(i, dir) => change(
-                i,
-                &|stage| Stage { every_seconds: next_step(&EVERY_STEPS, stage.every_seconds.round() as u32, dir) as f32, ..stage },
-                orders,
-            ),
-            B::StageGroup(i, dir) => change(i, &|stage| Stage { group: next_in(&GROUP_STEPS, stage.group, dir), ..stage }, orders),
-            B::StageRemove(i) => orders.push(Order::RemoveStage { index: i }),
-            B::AddStage => {
-                // A day after the last one, with its values – or single walkers on day 2 if there is none yet.
-                let stage = match stages.last() {
-                    Some(&last) => Stage { day: last.day + 1, ..last },
-                    None => Stage { day: 2, hour: 0, breed: Breed::Walker, every_seconds: 30.0, group: [1, 1] },
-                };
-                orders.push(Order::AddStage(stage));
-            }
-            B::Extra(dir) => orders.push(Order::SetExtraPerDay { extra: next_in(&EXTRA_STEPS, world.constant.extra_per_day, dir) }),
-            _ => {}
-        }
-    }
-
-    pub fn draw(&self, world: &World) {
-        if !self.available {
-            return;
-        }
-        let panel = self.panel();
-        draw_rectangle(panel.x, panel.y, panel.w, panel.h, BG);
-        draw_rectangle_lines(panel.x, panel.y, panel.w, panel.h, 1.5, BORDER);
-
-        let mouse = Vec2::from(mouse_position());
-        for (y, text) in self.headings() {
-            let fold = if self.folded.contains(&text) { "[+]" } else { "[-]" };
-            draw_text(&format!("{fold} {text}"), panel.x + PAD, y + 17.0, 17.0, DIM);
-        }
-        for (r, button) in self.buttons() {
-            let active = match button {
-                EditorButton::Mode(mode) => self.mode == mode,
-                EditorButton::Tab(tab) => self.tab == tab,
-                EditorButton::Sight(sight) => self.sight == sight,
-                EditorButton::Tool(Tool::Building(kind)) => self.placing == Some(kind),
-                EditorButton::Tool(tool) => self.tool == Some(tool),
-                EditorButton::Brush(size) => self.brush == size,
-                EditorButton::SpawnerName => self.name_edit.is_some(),
-                EditorButton::MapName => self.map_name_edit.is_some(),
-                EditorButton::Sends(sends) => spawn_mode(world, self.spawner).is_some_and(|mode| sends_of(mode) == sends),
-                EditorButton::Breed(breed) => self.breed == breed,
-                EditorButton::Wander(wander) => self.wander == wander,
-                EditorButton::TimedFinal(i) => world.waves.get(i).is_some_and(|w| w.final_wave),
-                EditorButton::TimedReveal(i) => world.waves.get(i).is_some_and(|w| w.reveal),
-                _ => false,
-            };
-            // Fields that only show something have no box.
-            let plain = matches!(
-                button,
-                B::Info | B::Status | B::Clock | B::TimedShow(_) | B::TimedCountShow(_) | B::Show(_) | B::DaysShow | B::GoldShow
-                    | B::WoodShow | B::StageShow(_) | B::StageEveryShow(_) | B::StageGroupShow(_) | B::ExtraShow
-            );
-            if !plain {
-                let bg = if active {
-                    ACTIVE
-                } else if r.contains(mouse) {
-                    HOVER
-                } else {
-                    BOX
-                };
-                draw_rectangle(r.x, r.y, r.w, r.h, bg);
-                let edge = match button {
-                    B::TimedFinal(_) if active => FINAL,
-                    _ if active => GREEN,
-                    _ => BORDER,
-                };
-                draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, edge);
-            }
-            let label = self.label(button, world);
-            let color = match button {
-                // A wave whose time has passed won't come any more – a final wave in its colour.
-                B::TimedShow(i) if world.waves.get(i).is_some_and(|w| w.at < world.tick) => DIM,
-                B::TimedShow(i) if world.waves.get(i).is_some_and(|w| w.final_wave) => FINAL,
-                B::Info | B::Status => DIM,
-                _ => WHITE,
-            };
-            let w = measure_text(&label, None, 17, 1.0).width;
-            let x = if plain && matches!(button, B::Info | B::Status) { r.x + 2.0 } else { r.x + (r.w - w) / 2.0 };
-            draw_text(&label, x, r.y + r.h / 2.0 + 5.0, 17.0, color);
-        }
-        let hint = if self.testing() {
+    /// The line at the bottom of the panel.
+    fn hint(&self) -> &'static str {
+        if self.testing() {
             "Test - Edit (F10): the map as before the test"
         } else {
             match self.tab {
-                Tab::Waves => "Shift + time button: a whole day",
-                Tab::Map => "Ctrl+S saves   Shift + days: 10",
+                Tab::Map | Tab::Waves => "Numbers: drag them, or click and type",
                 _ => "Right click or Esc: put the tool away",
             }
-        };
-        draw_text(hint, panel.x + PAD, panel.bottom() - 10.0, 15.0, DIM);
-        if self.max_scroll() > 0.0 {
-            draw_text("wheel: scroll", panel.right() - 82.0, panel.bottom() - 10.0, 15.0, DIM);
         }
     }
 
-    // --- Where everything lies. Computed anew every frame, in case the window changes size ---
-
-    /// The rows that are always there: the tabs and whose view.
-    fn fixed_rows(&self) -> Vec<Row> {
-        vec![
-            buttons(&[B::Tab(Tab::Map), B::Tab(Tab::Terrain), B::Tab(Tab::Entities), B::Tab(Tab::Waves)]),
-            buttons(&[B::Sight(Sight::All), B::Sight(Sight::Player), B::Sight(Sight::Zombies)]),
-        ]
-    }
-
-    /// The rows of the open tab. The rows of a folded section are left out – only its heading stays.
-    fn tab_rows(&self) -> Vec<Row> {
-        let brush = [
-            Row::Heading("Brush size"),
-            buttons(&[B::Brush(1), B::Brush(3), B::Brush(5), B::Brush(9)]),
-            buttons(&[B::Brush(15), B::Brush(25), B::Brush(41)]),
-        ];
-        let mut rows = match self.tab {
-            Tab::Map => {
-                let mut rows = vec![
-                    Row::Heading("Map"),
-                    buttons(&[B::MapName]),
-                    buttons(&[B::Info]),
-                    buttons(&[B::SaveMap, B::CloseMap]),
-                    buttons(&[B::NewMap]),
-                ];
-                if self.status.is_some() {
-                    rows.push(buttons(&[B::Status]));
+    fn map_tab(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        section(ui, "Map", "", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                let shown = self.map_name.clone();
+                if let Some(name) = name_field(ui, &mut self.map_name_edit, &shown) {
+                    self.map_name = name;
                 }
-                rows.extend([
-                    Row::Heading("Round - days, start gold and wood"),
-                    buttons(&[B::Days(-1), B::DaysShow, B::Days(1)]),
-                    buttons(&[B::Gold(-1), B::GoldShow, B::Gold(1)]),
-                    buttons(&[B::Wood(-1), B::WoodShow, B::Wood(1)]),
-                ]);
-                rows
-            }
-            Tab::Terrain => {
-                let mut rows = vec![
-                    Row::Heading("Paint - hold and drag"),
-                    buttons(&[B::Tool(Tool::Paint(Terrain::Mountain)), B::Tool(Tool::Paint(Terrain::Forest)), B::Tool(Tool::Paint(Terrain::Water))]),
-                    buttons(&[B::Tool(Tool::Paint(Terrain::Dirt)), B::Tool(Tool::Paint(Terrain::Grass))]),
-                    Row::Heading("Ore - only on open ground (oil: one 2 x 2 node)"),
-                    buttons(&[B::Tool(Tool::Ore(Some(Ore::Iron))), B::Tool(Tool::Ore(Some(Ore::Coal))), B::Tool(Tool::Ore(Some(Ore::Stone)))]),
-                    buttons(&[B::Tool(Tool::Ore(Some(Ore::Oil))), B::Tool(Tool::Ore(None))]),
-                ];
-                rows.extend(brush);
-                rows
-            }
-            Tab::Entities => {
-                let mut rows = vec![
-                    Row::Heading(UNITS),
-                    buttons(&[B::Tool(Tool::Unit(UnitKind::Soldier)), B::Tool(Tool::Unit(UnitKind::Ranger))]),
-                    buttons(&[B::Tool(Tool::Unit(UnitKind::Sniper)), B::Tool(Tool::Unit(UnitKind::Medic))]),
-                    buttons(&[B::Tool(Tool::Unit(UnitKind::MercSoldier)), B::Tool(Tool::Unit(UnitKind::MercRanger))]),
-                    buttons(&[B::Tool(Tool::Unit(UnitKind::MercSniper))]),
-                    Row::Heading("Buildings - free, R turns"),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::CommandCenter)),
-                        B::Tool(Tool::Building(BuildingKind::Tent)),
-                        B::Tool(Tool::Building(BuildingKind::Wall)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::Gate)),
-                        B::Tool(Tool::Building(BuildingKind::Tower)),
-                        B::Tool(Tool::Building(BuildingKind::Barracks)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::Sawmill)),
-                        B::Tool(Tool::Building(BuildingKind::Mine)),
-                        B::Tool(Tool::Building(BuildingKind::HunterCottage)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::FishingHut)),
-                        B::Tool(Tool::Building(BuildingKind::Windmill)),
-                        B::Tool(Tool::Building(BuildingKind::CharcoalBurner)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::WoodWorkshop)),
-                        B::Tool(Tool::Building(BuildingKind::StoneWorkshop)),
-                        B::Tool(Tool::Building(BuildingKind::MunitionsFactory)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::TeslaTower)),
-                        B::Tool(Tool::Building(BuildingKind::StoneHouse)),
-                        B::Tool(Tool::Building(BuildingKind::Stakes)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::StoneWall)),
-                        B::Tool(Tool::Building(BuildingKind::StoneTower)),
-                        B::Tool(Tool::Building(BuildingKind::Farm)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::Market)),
-                        B::Tool(Tool::Building(BuildingKind::Bank)),
-                        B::Tool(Tool::Building(BuildingKind::Inn)),
-                    ]),
-                    buttons(&[
-                        B::Tool(Tool::Building(BuildingKind::Foundry)),
-                        B::Tool(Tool::Building(BuildingKind::Ballista)),
-                        B::Tool(Tool::Building(BuildingKind::MachineGunTower)),
-                    ]),
-                    buttons(&[B::Tool(Tool::Building(BuildingKind::Barrel))]),
-                    Row::Heading("Remove - hold and drag (brush)"),
-                    buttons(&[B::Tool(Tool::Remove)]),
-                    Row::Heading("Zombies - brush: hold, drop: click"),
-                    buttons(&[B::Tool(Tool::ZombieBrush), B::Tool(Tool::ZombieDrop)]),
-                    buttons(&[B::Breed(Breed::Walker), B::Breed(Breed::Runner), B::Breed(Breed::Fat)]),
-                    buttons(&[B::Breed(Breed::Armored), B::Breed(Breed::Spitter), B::Breed(Breed::Infested)]),
-                    buttons(&[B::Breed(Breed::Screamer), B::Breed(Breed::Giant)]),
-                    buttons(&[B::Wander(false), B::Wander(true)]),
-                    buttons(&[B::Rate(-1), B::Show(Value::Rate), B::Rate(1)]),
-                    buttons(&[B::Drop(-1), B::Show(Value::Drop), B::Drop(1)]),
-                    Row::Heading("Villages of doom and loot - click"),
-                    buttons(&[B::Tool(Tool::Doom), B::Tool(Tool::Loot)]),
-                ];
-                rows.extend(brush);
-                rows.extend([Row::Heading("Spawners - click to place or select"), buttons(&[B::Tool(Tool::Spawner)])]);
-                if self.spawner.is_some() {
-                    rows.extend([
-                        Row::Heading("Selected spawner - drag its edge"),
-                        buttons(&[B::SpawnerName]),
-                        Row::Heading("Sends zombies by itself"),
-                        buttons(&[B::Sends(Sends::Constant), B::Sends(Sends::Periodic), B::Sends(Sends::Off)]),
-                        buttons(&[B::Every(-1), B::Show(Value::Every), B::Every(1)]),
-                        buttons(&[B::Count(-1), B::Show(Value::Count), B::Count(1)]),
-                        buttons(&[B::RemoveSpawner]),
-                    ]);
+            });
+            ui.label(RichText::new(&self.map_info).weak());
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Save (Ctrl+S)").clicked() {
+                    self.request = Some(EditorRequest::Save);
                 }
-                rows
-            }
-            Tab::Waves => {
-                let mut rows = vec![
-                    Row::Heading("Send now - from the spawners"),
-                    buttons(&[B::Wave(Wave::Small), B::Wave(Wave::Side), B::Wave(Wave::TwoSides)]),
-                    buttons(&[B::EdgeZombies]),
-                    buttons(&[B::ClearZombies]),
-                    Row::Heading("Timeline - comes by itself"),
-                    buttons(&[B::Clock]),
-                ];
-                for i in 0..self.wave_count {
-                    rows.push(buttons(&[B::TimedTime(i, -1), B::TimedShow(i), B::TimedTime(i, 1), B::TimedFinal(i), B::TimedReveal(i)]));
-                    rows.push(buttons(&[
-                        B::TimedCount(i, -1),
-                        B::TimedCountShow(i),
-                        B::TimedCount(i, 1),
-                        B::TimedBreed(i),
-                        B::TimedFrom(i),
-                        B::TimedRemove(i),
-                    ]));
+                if ui.button("Close").clicked() {
+                    self.request = Some(EditorRequest::Close);
                 }
-                rows.push(buttons(&[B::AddTimed]));
-                rows.push(Row::Heading("Constant spawn"));
-                for i in 0..self.stage_count {
-                    rows.push(buttons(&[B::StageTime(i, -1), B::StageShow(i), B::StageTime(i, 1), B::StageBreed(i), B::StageRemove(i)]));
-                    rows.push(buttons(&[
-                        B::StageEvery(i, -1),
-                        B::StageEveryShow(i),
-                        B::StageEvery(i, 1),
-                        B::StageGroup(i, -1),
-                        B::StageGroupShow(i),
-                        B::StageGroup(i, 1),
-                    ]));
+                if ui.button("New map...").clicked() {
+                    self.request = Some(EditorRequest::NewMap);
                 }
-                rows.push(buttons(&[B::AddStage]));
-                rows.push(buttons(&[B::Extra(-1), B::ExtraShow, B::Extra(1)]));
-                rows
+            });
+            if let Some(status) = &self.status {
+                ui.label(RichText::new(status).weak());
             }
-        };
-        let mut folded = false;
-        rows.retain(|row| match row {
-            Row::Heading(text) => {
-                folded = self.folded.contains(text);
-                true
-            }
-            Row::Buttons(_) => !folded,
         });
-        rows
-    }
-
-    /// Top of the rows that scroll (under the mode buttons, tabs and view).
-    fn content_top(&self) -> f32 {
-        PAD + MODE_H + 8.0 + self.fixed_rows().iter().map(row_height).sum::<f32>()
-    }
-
-    /// How high the scrolling rows are together, and how much room there is for them on the screen.
-    fn content_heights(&self) -> (f32, f32) {
-        let total: f32 = self.tab_rows().iter().map(row_height).sum();
-        let room = (screen_height() - PAD - HINT_H - self.content_top()).max(ROW_H);
-        (total, room)
-    }
-
-    fn max_scroll(&self) -> f32 {
-        let (total, room) = self.content_heights();
-        (total - room).max(0.0)
-    }
-
-    fn panel(&self) -> Rect {
-        let (x, y) = (screen_width() - WIDTH - PAD, PAD);
-        let (total, room) = self.content_heights();
-        Rect::new(x, y, WIDTH, self.content_top() - PAD + total.min(room) + HINT_H)
-    }
-
-    /// The heading under the mouse, if any – a click on it folds its section shut or open.
-    fn heading_at(&self, p: Vec2) -> Option<&'static str> {
-        let x = self.panel().x;
-        self.headings().into_iter().find(|&(y, _)| Rect::new(x, y, WIDTH, HEADING_H).contains(p)).map(|(_, text)| text)
-    }
-
-    /// The rows one below the other: the top edge of every row together with the row. The rows of the tab are
-    /// shifted by the scrolling, and only those fully in the panel are kept.
-    fn rows(&self) -> Vec<(f32, Row)> {
-        let mut rows = Vec::new();
-        let mut y = PAD + MODE_H + 8.0;
-        for row in self.fixed_rows() {
-            let h = row_height(&row);
-            rows.push((y, row));
-            y += h;
-        }
-        let (top, (_, room)) = (y, self.content_heights());
-        let scroll = self.scroll.min(self.max_scroll());
-        y -= scroll;
-        for row in self.tab_rows() {
-            let h = row_height(&row);
-            if y >= top - 0.5 && y + h <= top + room + 0.5 {
-                rows.push((y, row.clone()));
-            }
-            y += h;
-        }
-        rows
-    }
-
-    fn headings(&self) -> Vec<(f32, &'static str)> {
-        self.rows()
-            .into_iter()
-            .filter_map(|(y, row)| match row {
-                Row::Heading(text) => Some((y, text)),
-                Row::Buttons(_) => None,
-            })
-            .collect()
-    }
-
-    /// Every button with its rectangle: first the two mode buttons, then the rest. The buttons of a row share its
-    /// width by their `weight` – a "−" needs less room than "Day 12, 06:00".
-    fn buttons(&self) -> Vec<(Rect, EditorButton)> {
-        let x0 = self.panel().x + PAD;
-        let width = WIDTH - 2.0 * PAD;
-        let mut buttons = Vec::new();
-        let mut add_row = |y: f32, h: f32, row: &[EditorButton]| {
-            let unit = width / row.iter().map(|&b| weight(b)).sum::<f32>();
-            let mut x = x0;
-            for &button in row {
-                let w = weight(button) * unit;
-                buttons.push((Rect::new(x, y + 2.0, w - 4.0, h - 4.0), button));
-                x += w;
-            }
-        };
-        add_row(self.panel().y + 4.0, MODE_H, &[B::Mode(Mode::Edit), B::Mode(Mode::Test)]);
-        for (y, row) in self.rows() {
-            if let Row::Buttons(row) = row {
-                add_row(y, ROW_H, &row);
-            }
-        }
-        buttons
-    }
-
-    fn hit(&self, p: Vec2) -> Option<EditorButton> {
-        self.buttons().into_iter().find(|(r, _)| r.contains(p)).map(|(_, button)| button)
-    }
-
-    /// The text on a button.
-    fn label(&self, button: EditorButton, world: &World) -> String {
-        // While typing with a blinking line at the end, like a text cursor.
-        let typed = |text: &String| if (get_time() * 2.0) as i64 % 2 == 0 { format!("{text}|") } else { text.clone() };
-        let stage = |i: usize| world.constant.stages.get(i).copied();
-        match button {
-            EditorButton::SpawnerName => match &self.name_edit {
-                Some(text) => typed(text),
-                None => format!("{}  (rename)", spawner_name(world, self.spawner).unwrap_or_default()),
-            },
-            EditorButton::MapName => match &self.map_name_edit {
-                Some(text) => typed(text),
-                None => format!("{}  (rename)", self.map_name),
-            },
-            EditorButton::Info => self.map_info.clone(),
-            EditorButton::Status => self.status.clone().unwrap_or_default(),
-            EditorButton::DaysShow => match world.days {
-                1 => "1 day".to_owned(),
-                days => format!("{days} days"),
-            },
-            EditorButton::GoldShow => format!("{} gold at the start", world.gold),
-            EditorButton::WoodShow => format!("{} wood at the start", world.stock.get(Resource::Wood)),
-            EditorButton::Clock => {
-                let (day, hour) = world.clock();
-                format!("Now: day {day}, {hour:02}:00")
-            }
-            EditorButton::TimedShow(i) => world.waves.get(i).map_or(String::new(), |w| {
-                let (day, hour) = day_and_hour(w.at);
-                format!("Day {day}, {hour:02}:00")
-            }),
-            EditorButton::TimedCountShow(i) => world.waves.get(i).map_or(String::new(), |w| w.count.to_string()),
-            EditorButton::TimedBreed(i) => world.waves.get(i).map_or(String::new(), |w| w.breed.name().to_owned()),
-            EditorButton::TimedFrom(i) => world.waves.get(i).map_or(String::new(), |w| from_label(w.from).to_owned()),
-            EditorButton::StageShow(i) => stage(i).map_or(String::new(), |s| format!("Day {}, {:02}:00", s.day, s.hour)),
-            EditorButton::StageBreed(i) => stage(i).map_or(String::new(), |s| s.breed.name().to_owned()),
-            EditorButton::StageEveryShow(i) => stage(i).map_or(String::new(), |s| format!("every {} s", s.every_seconds)),
-            EditorButton::StageGroupShow(i) => stage(i).map_or(String::new(), |s| format!("{}-{}", s.group[0], s.group[1])),
-            EditorButton::ExtraShow => format!("+{} per day after", world.constant.extra_per_day),
-            // The values of "periodic" – greyed out with a dash while the spawner sends some other way.
-            EditorButton::Show(Value::Rate) => format!("{} per tick", self.rate),
-            EditorButton::Show(Value::Drop) => format!("{} per drop", self.drop),
-            EditorButton::Show(value) => {
-                let mode = spawn_mode(world, self.spawner);
-                let (every, count) = periodic_values(mode.unwrap_or(SpawnMode::Off));
-                match (mode, value) {
-                    (Some(SpawnMode::Periodic { .. }), Value::Every) => format!("every {every} s"),
-                    (Some(SpawnMode::Periodic { .. }), Value::Count) => format!("{count} zombies"),
-                    _ => "-".to_owned(),
+        section(ui, "Round", "", |ui| {
+            // `Grid`: a table – the names in one column, the fields in the next, `end_row` starts a new line.
+            egui::Grid::new("round").num_columns(2).show(ui, |ui| {
+                ui.label("Days");
+                let mut days = world.days;
+                if ui.add(DragValue::new(&mut days).range(1..=MAX_DAYS)).changed() {
+                    orders.push(Order::SetDays { days });
                 }
+                ui.end_row();
+                ui.label("Gold at the start");
+                let mut gold = world.gold;
+                if ui.add(DragValue::new(&mut gold).range(0..=MAX_AMOUNT).speed(10)).changed() {
+                    orders.push(Order::SetGold { gold });
+                }
+                ui.end_row();
+                ui.label("Wood at the start");
+                let mut wood = world.stock.get(Resource::Wood);
+                if ui.add(DragValue::new(&mut wood).range(0..=MAX_AMOUNT)).changed() {
+                    orders.push(Order::SetWood { wood });
+                }
+                ui.end_row();
+            });
+        });
+    }
+
+    fn terrain_tab(&mut self, ui: &mut Ui) {
+        section(ui, "Paint", "hold and drag", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for terrain in [Terrain::Mountain, Terrain::Forest, Terrain::Water, Terrain::Dirt, Terrain::Grass] {
+                    self.tool_button(ui, Tool::Paint(terrain));
+                }
+            });
+        });
+        section(ui, "Ore", "only on open ground - oil: one 2 x 2 node", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for ore in [Some(Ore::Iron), Some(Ore::Coal), Some(Ore::Stone), Some(Ore::Oil), None] {
+                    self.tool_button(ui, Tool::Ore(ore));
+                }
+            });
+        });
+        self.brush_size(ui);
+    }
+
+    fn entities_tab(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        section(ui, "Units", "click inside the border", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for kind in UnitKind::ALL {
+                    self.tool_button(ui, Tool::Unit(kind));
+                }
+            });
+        });
+        section(ui, "Buildings", "free, R turns", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for &kind in BUILDINGS {
+                    self.tool_button(ui, Tool::Building(kind));
+                }
+            });
+        });
+        section(ui, "Remove", "hold and drag (brush)", |ui| self.tool_button(ui, Tool::Remove));
+        section(ui, "Zombies", "brush: hold, drop: click", |ui| {
+            ui.horizontal(|ui| {
+                self.tool_button(ui, Tool::ZombieBrush);
+                self.tool_button(ui, Tool::ZombieDrop);
+            });
+            egui::Grid::new("zombies").num_columns(2).show(ui, |ui| {
+                ui.label("Breed");
+                breed_box(ui, "brush breed", &mut self.breed);
+                ui.end_row();
+                ui.label("They");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.wander, false, "storm the CC");
+                    ui.radio_value(&mut self.wander, true, "wander");
+                });
+                ui.end_row();
+                ui.label("Brush");
+                ui.add(DragValue::new(&mut self.rate).range(1..=100).suffix(" per tick"));
+                ui.end_row();
+                ui.label("Drop");
+                ui.add(DragValue::new(&mut self.drop).range(1..=10_000).suffix(" zombies"));
+                ui.end_row();
+            });
+        });
+        section(ui, "Villages of doom and loot", "click", |ui| {
+            ui.horizontal(|ui| {
+                self.tool_button(ui, Tool::Doom);
+                self.tool_button(ui, Tool::Loot);
+            });
+        });
+        self.brush_size(ui);
+        section(ui, "Spawners", "click to place or select", |ui| self.tool_button(ui, Tool::Spawner));
+        self.spawner_section(ui, world, orders);
+    }
+
+    /// The selected spawner: its name, how it sends zombies by itself, remove it.
+    fn spawner_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        let Some((spawner, s)) = self.spawner.and_then(|id| Some((id, world.find_spawner(id)?))) else {
+            return;
+        };
+        let (name, mode) = (&world.spawners[s].name, world.spawners[s].mode);
+        section(ui, "Selected spawner", "drag its edge", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                if let Some(name) = name_field(ui, &mut self.name_edit, name) {
+                    orders.push(Order::RenameSpawner { spawner, name });
+                }
+            });
+            ui.label("Sends zombies by itself:");
+            let mut new = mode;
+            ui.horizontal(|ui| {
+                let periodic = matches!(mode, SpawnMode::Periodic { .. });
+                if ui.selectable_label(mode == SpawnMode::Constant, "Constant").clicked() {
+                    new = SpawnMode::Constant;
+                }
+                if ui.selectable_label(periodic, "Periodic").clicked() && !periodic {
+                    new = SpawnMode::PERIODIC;
+                }
+                if ui.selectable_label(mode == SpawnMode::Off, "Off").clicked() {
+                    new = SpawnMode::Off;
+                }
+            });
+            // `if let` with a pattern that also takes the values out – `mut`: as copies that may change.
+            if let SpawnMode::Periodic { mut every, mut count } = mode {
+                ui.horizontal(|ui| {
+                    ui.label("every");
+                    ui.add(DragValue::new(&mut every).range(1..=3600).suffix(" s"));
+                    ui.add(DragValue::new(&mut count).range(1..=10_000).suffix(" zombies"));
+                });
+                new = SpawnMode::Periodic { every, count };
             }
-            _ => label(button),
+            if new != mode {
+                orders.push(Order::SetSpawnMode { spawner, mode: new });
+            }
+            if ui.button("Remove spawner (Del)").clicked() {
+                self.spawner = None;
+                self.name_edit = None;
+                orders.push(Order::RemoveSpawner { spawner });
+            }
+        });
+    }
+
+    fn brush_size(&mut self, ui: &mut Ui) {
+        section(ui, "Brush size", "", |ui| {
+            ui.add(Slider::new(&mut self.brush, 1..=41).suffix(" tiles"));
+            // Odd, so the brush has a middle tile – an even size would paint like the next smaller one
+            // (`brush_tiles`). `|= 1`: sets the lowest bit, 4 becomes 5.
+            self.brush |= 1;
+        });
+    }
+
+    /// A tool's button: lit while it's in hand – clicked: take it, clicked again: put it away. A building isn't held
+    /// by the editor: `ui.rs` hangs it on the mouse (`place`).
+    fn tool_button(&mut self, ui: &mut Ui, tool: Tool) {
+        let held = match tool {
+            Tool::Building(kind) => self.placing == Some(kind),
+            _ => self.tool == Some(tool),
+        };
+        if !ui.selectable_label(held, tool.name()).clicked() {
+            return;
+        }
+        match tool {
+            Tool::Building(kind) => {
+                self.tool = None;
+                self.place = Some(if held { None } else { Some(kind) });
+            }
+            _ => {
+                self.tool = if held { None } else { Some(tool) };
+                // Whatever else is on the mouse comes off it: a building, a command waiting for its target.
+                self.place = Some(None);
+            }
         }
     }
 }
 
-/// How much of its row's width a button gets (`Editor::buttons`).
-fn weight(button: EditorButton) -> f32 {
-    match button {
-        // − + x
-        B::TimedTime(..)
-        | B::TimedCount(..)
-        | B::TimedRemove(_)
-        | B::StageTime(..)
-        | B::StageEvery(..)
-        | B::StageGroup(..)
-        | B::StageRemove(_)
-        | B::Every(_)
-        | B::Count(_)
-        | B::Rate(_)
-        | B::Drop(_)
-        | B::Days(_)
-        | B::Gold(_)
-        | B::Wood(_)
-        | B::Extra(_) => 1.0,
-        // The value between a − and a +.
-        B::TimedShow(_) | B::StageShow(_) => 4.0,
-        B::Show(_) | B::DaysShow | B::GoldShow | B::WoodShow | B::ExtraShow | B::StageEveryShow(_) => 3.5,
-        B::TimedCountShow(_) | B::StageGroupShow(_) => 2.0,
-        _ => 2.5,
+/// The "Waves" tab: send waves now, the timeline, the constant spawn. Only reads the world – a free function, not a
+/// method, because it needs nothing of the editor.
+fn waves_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+    section(ui, "Send now", "from the spawners", |ui| {
+        // `horizontal_wrapped`: side by side, and on to the next line where the panel ends.
+        ui.horizontal_wrapped(|ui| {
+            for (wave, text) in [(Wave::Small, "Small"), (Wave::Side, "One side"), (Wave::TwoSides, "Two sides")] {
+                if ui.button(text).clicked() {
+                    orders.push(wave.order());
+                }
+            }
+            if ui.button("+1000 from all spawners").clicked() {
+                orders.push(Order::SpawnZombies { count: 1000 });
+            }
+            if ui.button("Remove all zombies").clicked() {
+                orders.push(Order::ClearZombies);
+            }
+        });
+    });
+    section(ui, "Timeline", "comes by itself", |ui| {
+        let (day, hour) = world.clock();
+        ui.label(format!("Now: day {day}, {hour:02}:00"));
+        for (i, &wave) in world.waves.iter().enumerate() {
+            timed_wave(ui, i, wave, world.tick, orders);
+        }
+        if ui.button("+ Add wave").clicked() {
+            // A day after the last wave (or after now), on the full hour – but before a final wave.
+            let last = world.waves.iter().filter(|w| !w.final_wave).map(|w| w.at).max().unwrap_or(0).max(world.tick);
+            let at = (last + DAY_TICKS) / HOUR_TICKS * HOUR_TICKS;
+            orders.push(Order::AddTimedWave(TimedWave { at, count: 200, from: WaveFrom::Sides(1), breed: Breed::Runner, final_wave: false, reveal: false }));
+        }
+    });
+    section(ui, "Constant spawn", "groups out of the spawners set to Constant", |ui| {
+        let constant = &world.constant;
+        for (i, &stage) in constant.stages.iter().enumerate() {
+            stage_row(ui, i, stage, orders);
+        }
+        if ui.button("+ Add stage").clicked() {
+            // A day after the last one, with its values – or single walkers on day 2 if there is none yet.
+            let stage = match constant.stages.last() {
+                Some(&last) => Stage { day: last.day + 1, ..last },
+                None => Stage { day: 2, hour: 0, breed: Breed::Walker, every_seconds: 30.0, group: [1, 1] },
+            };
+            orders.push(Order::AddStage(stage));
+        }
+        ui.horizontal(|ui| {
+            ui.label("After the last stage");
+            let mut extra = constant.extra_per_day;
+            if ui.add(DragValue::new(&mut extra).range(0.0..=100.0).speed(0.1).suffix(" more per day")).changed() {
+                orders.push(Order::SetExtraPerDay { extra });
+            }
+        });
+        ui.add_space(4.0);
+        ui.label("Specials - a share of every group, from their day on:");
+        for i in 0..constant.specials.len() {
+            special_row(ui, i, &constant.specials, orders);
+        }
+        if ui.button("+ Add special").clicked() {
+            // A day after the last one, with its values – or a few fat ones from day 10.
+            let special = match constant.specials.last() {
+                Some(&last) => ConstantSpecial { day: last.day + 1, ..last },
+                None => ConstantSpecial { day: 10, breed: Breed::Fat, share: 0.1 },
+            };
+            let mut specials = constant.specials.clone();
+            specials.push(special);
+            orders.push(Order::SetSpecials { specials });
+        }
+    });
+}
+
+/// One wave of the timeline, in a box of two lines: when (day, hour), final, reveal, remove – how many, which breed,
+/// from where. All fields work on a copy (`changed`); if it differs at the end, one order sets it.
+fn timed_wave(ui: &mut Ui, i: usize, wave: TimedWave, now: u64, orders: &mut Vec<Order>) {
+    let mut changed = wave;
+    let mut removed = false;
+    Frame::group(ui.style()).show(ui, |ui| {
+        // Every box as wide as the panel, whatever is in it.
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            // A wave whose time has passed won't come any more – greyed out. The final wave in its colour.
+            let color = if wave.at < now {
+                ui.visuals().weak_text_color()
+            } else if wave.final_wave {
+                FINAL
+            } else {
+                ui.visuals().text_color()
+            };
+            ui.label(RichText::new("Day").color(color));
+            let (mut day, mut hour) = day_and_hour(wave.at);
+            let a = ui.add(DragValue::new(&mut day).range(1..=MAX_DAYS as u64));
+            let b = ui.add(DragValue::new(&mut hour).range(0..=23).suffix(":00"));
+            // `|`, not `||`: both sides are worked out – here only booleans, no difference, but no skipping either.
+            if a.changed() | b.changed() {
+                changed.at = (day - 1) * DAY_TICKS + hour * HOUR_TICKS;
+            }
+            ui.toggle_value(&mut changed.final_wave, "Final").on_hover_text("Calls every zombie on the map");
+            ui.toggle_value(&mut changed.reveal, "Reveal").on_hover_text("Shows the whole map when it comes");
+            removed = ui.small_button("x").on_hover_text("Remove").clicked();
+        });
+        ui.horizontal(|ui| {
+            ui.add(DragValue::new(&mut changed.count).range(1..=MAX_AMOUNT).speed(5).suffix(" zombies"));
+            // `("wave breed", i)`: a pair as the list's name – one per wave.
+            breed_box(ui, ("wave breed", i), &mut changed.breed);
+            ComboBox::from_id_salt(("wave from", i)).width(80.0).selected_text(from_label(changed.from)).show_ui(ui, |ui| {
+                for from in WAVE_FROM {
+                    ui.selectable_value(&mut changed.from, from, from_label(from));
+                }
+            });
+        });
+    });
+    if removed {
+        orders.push(Order::RemoveTimedWave { index: i });
+    } else if changed != wave {
+        orders.push(Order::SetTimedWave { index: i, wave: changed });
     }
+}
+
+/// One stage of the constant spawn, in a box: from when, which breed, remove – every how many seconds, how big a group.
+fn stage_row(ui: &mut Ui, i: usize, stage: Stage, orders: &mut Vec<Order>) {
+    let mut changed = stage;
+    let mut removed = false;
+    Frame::group(ui.style()).show(ui, |ui| {
+        // Every box as wide as the panel, whatever is in it.
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label("Day");
+            // `settled`: the stages stay in order of time – see there.
+            if let Some(day) = settled(ui, stage.day, |v| DragValue::new(v).range(1..=MAX_DAYS as u64)) {
+                changed.day = day;
+            }
+            if let Some(hour) = settled(ui, stage.hour, |v| DragValue::new(v).range(0..=23).suffix(":00")) {
+                changed.hour = hour;
+            }
+            breed_box(ui, ("stage breed", i), &mut changed.breed);
+            removed = ui.small_button("x").on_hover_text("Remove").clicked();
+        });
+        ui.horizontal(|ui| {
+            ui.label("every");
+            ui.add(DragValue::new(&mut changed.every_seconds).range(0.1..=3600.0).speed(0.1).suffix(" s"));
+            // "From" never above "to": each one's range ends at the other.
+            let [from, to] = &mut changed.group;
+            let to_now = *to;
+            ui.add(DragValue::new(from).range(1..=to_now));
+            ui.label("to");
+            ui.add(DragValue::new(to).range(*from..=MAX_AMOUNT));
+            ui.label("zombies");
+        });
+    });
+    if removed {
+        orders.push(Order::RemoveStage { index: i });
+    } else if changed != stage {
+        orders.push(Order::SetStage { index: i, stage: changed });
+    }
+}
+
+/// One special of the constant spawn: from which day, which breed, what share of every group. The order sets the
+/// whole list anew.
+fn special_row(ui: &mut Ui, i: usize, specials: &[ConstantSpecial], orders: &mut Vec<Order>) {
+    let special = specials[i];
+    let mut changed = special;
+    let mut removed = false;
+    ui.horizontal(|ui| {
+        ui.label("From day");
+        ui.add(DragValue::new(&mut changed.day).range(1..=MAX_DAYS as u64));
+        breed_box(ui, ("special breed", i), &mut changed.breed);
+        // In the file a share (0.15), here in percent (15 %).
+        let mut percent = special.share * 100.0;
+        if ui.add(DragValue::new(&mut percent).range(0.0..=100.0).speed(0.5).max_decimals(1).suffix(" %")).changed() {
+            changed.share = percent / 100.0;
+        }
+        removed = ui.small_button("x").on_hover_text("Remove").clicked();
+    });
+    // `to_vec`: a copy of the list that can be changed – the world's own list only changes through the order.
+    let mut list = specials.to_vec();
+    if removed {
+        list.remove(i);
+    } else if changed != special {
+        list[i] = changed;
+    } else {
+        return;
+    }
+    orders.push(Order::SetSpecials { specials: list });
+}
+
+/// A section with a heading that folds shut with a click (egui remembers it by the heading) and a grey hint under it.
+/// `add`: what's in it – a *closure*, like a `lambda` in Python, only that it may have many lines. `impl FnOnce(&mut
+/// Ui)`: any closure that takes the section's `Ui` and is called once.
+fn section(ui: &mut Ui, title: &str, hint: &str, add: impl FnOnce(&mut Ui)) {
+    CollapsingHeader::new(RichText::new(title).strong()).default_open(true).show(ui, |ui| {
+        if !hint.is_empty() {
+            ui.label(RichText::new(hint).small().weak());
+        }
+        add(ui);
+    });
+}
+
+/// A name field: shows `name`; while it has the keyboard the text so far is in `edit` (the map shows a spawner's new
+/// name while it's typed). Hands out the new name when typing ends – with Enter or a click elsewhere, not with Esc,
+/// and not if it's empty or unchanged.
+fn name_field(ui: &mut Ui, edit: &mut Option<String>, name: &str) -> Option<String> {
+    let mut text = edit.clone().unwrap_or_else(|| name.to_owned());
+    let field = ui.add(TextEdit::singleline(&mut text).char_limit(MAX_NAME).desired_width(f32::INFINITY));
+    if field.has_focus() {
+        *edit = Some(text);
+        return None;
+    }
+    *edit = None;
+    let escaped = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    let text = text.trim();
+    (field.lost_focus() && !escaped && !text.is_empty() && text != name).then(|| text.to_owned())
+}
+
+/// A number field whose new value only counts once it's settled: let go after dragging, Enter or a click elsewhere
+/// after typing. Until then it shows its own copy, kept in egui's memory. For the time of a stage of the constant
+/// spawn: the simulation keeps the stages in order of time, so a stage dragged past another would swap rows under the
+/// mouse – and the drag would go on with the wrong one.
+///
+/// `field` makes the field for a value: `impl FnOnce(&mut u64) -> DragValue<'_>` – a closure that gets the value
+/// lent (`&mut`) and gives back a field that borrows it (`'_`: as long as the value is lent).
+fn settled(ui: &mut Ui, value: u64, field: impl FnOnce(&mut u64) -> DragValue<'_>) -> Option<u64> {
+    // The id the field is going to get – `with`: one of its own, derived from it.
+    let id = ui.next_auto_id().with("settled");
+    let mut shown = ui.data(|data| data.get_temp::<u64>(id)).unwrap_or(value);
+    let response = ui.add(field(&mut shown).update_while_editing(false));
+    if response.dragged() || response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, shown));
+        return None;
+    }
+    ui.data_mut(|data| data.remove::<u64>(id));
+    (shown != value).then_some(shown)
+}
+
+/// A drop-down list of the zombie breeds. `id`: egui tells the lists apart by it.
+fn breed_box(ui: &mut Ui, id: impl std::hash::Hash, breed: &mut Breed) {
+    ComboBox::from_id_salt(id).width(90.0).selected_text(breed.name()).show_ui(ui, |ui| {
+        for b in Breed::ALL {
+            ui.selectable_value(breed, b, b.name());
+        }
+    });
 }
 
 /// Where a wave of the timeline comes from, as a short text.
@@ -1163,110 +901,31 @@ fn from_label(from: WaveFrom) -> &'static str {
     }
 }
 
-/// The mode of the selected spawner – `None` if none is selected (or it's gone).
-fn spawn_mode(world: &World, spawner: Option<u32>) -> Option<SpawnMode> {
-    let s = world.find_spawner(spawner?)?;
-    Some(world.spawners[s].mode)
+/// The panel's fonts a bit bigger than egui's own (12.5 points) – near the 17 pixels of the rest of the game.
+fn style(ctx: &egui::Context) {
+    ctx.style_mut(|style| {
+        style.text_styles = [
+            (TextStyle::Small, FontId::proportional(12.0)),
+            (TextStyle::Body, FontId::proportional(15.0)),
+            (TextStyle::Button, FontId::proportional(15.0)),
+            (TextStyle::Heading, FontId::proportional(19.0)),
+            (TextStyle::Monospace, FontId::monospace(14.0)),
+        ]
+        .into();
+    });
 }
 
-/// Every how many seconds and how many: the spawner's own values if it sends periodically, otherwise those
-/// "periodic" starts with.
-fn periodic_values(mode: SpawnMode) -> (u32, u32) {
-    match mode {
-        SpawnMode::Periodic { every, count } => (every, count),
-        _ => periodic_values(SpawnMode::PERIODIC),
+/// Tab hands egui's keyboard focus on to the next button – and then Space or Enter would press it. In this game Tab
+/// and Space are keys of their own (`keys.rs`), so only a field you type into keeps the focus.
+fn keep_focus_for_text(ctx: &egui::Context) {
+    let button = ctx.memory(|memory| memory.focused()).filter(|&id| TextEdit::load_state(ctx, id).is_none());
+    if let Some(id) = button {
+        ctx.memory_mut(|memory| memory.surrender_focus(id));
     }
 }
 
-/// Which of the three buttons belongs to a mode.
-fn sends_of(mode: SpawnMode) -> Sends {
-    match mode {
-        SpawnMode::Constant => Sends::Constant,
-        SpawnMode::Periodic { .. } => Sends::Periodic,
-        SpawnMode::Off => Sends::Off,
-    }
-}
-
-fn row_height(row: &Row) -> f32 {
-    match row {
-        Row::Heading(_) => HEADING_H,
-        Row::Buttons(_) => ROW_H,
-    }
-}
-
-/// The name of a spawner – `None` if there is none (anymore).
-fn spawner_name(world: &World, spawner: Option<u32>) -> Option<String> {
-    let s = world.find_spawner(spawner?)?;
-    Some(world.spawners[s].name.clone())
-}
-
-const UNITS: &str = "Units - click inside the border";
-
-/// The text on a button (except the ones that show a value).
-fn label(button: EditorButton) -> String {
-    match button {
-        EditorButton::Mode(Mode::Edit) => "Edit".to_owned(),
-        EditorButton::Mode(Mode::Test) => "Test (F10)".to_owned(),
-        EditorButton::Tab(Tab::Map) => "Map".to_owned(),
-        EditorButton::Tab(Tab::Terrain) => "Terrain".to_owned(),
-        EditorButton::Tab(Tab::Entities) => "Entities".to_owned(),
-        EditorButton::Tab(Tab::Waves) => "Waves".to_owned(),
-        EditorButton::Sight(Sight::All) => "All".to_owned(),
-        EditorButton::Sight(Sight::Player) => "Player".to_owned(),
-        EditorButton::Sight(Sight::Zombies) => "Zombies".to_owned(),
-        EditorButton::Tool(tool) => tool.name().to_owned(),
-        EditorButton::Brush(size) => size.to_string(),
-        EditorButton::SaveMap => "Save".to_owned(),
-        EditorButton::CloseMap => "Close".to_owned(),
-        EditorButton::NewMap => "New map...".to_owned(),
-        EditorButton::EdgeZombies => "+1000 from all spawners".to_owned(),
-        EditorButton::Wave(Wave::Small) => "Small".to_owned(),
-        EditorButton::Wave(Wave::Side) => "One side".to_owned(),
-        EditorButton::Wave(Wave::TwoSides) => "Two sides".to_owned(),
-        EditorButton::ClearZombies => "Remove all zombies".to_owned(),
-        EditorButton::AddTimed => "+ Add wave".to_owned(),
-        EditorButton::AddStage => "+ Add stage".to_owned(),
-        EditorButton::TimedFinal(_) => "Final".to_owned(),
-        EditorButton::TimedReveal(_) => "Reveal".to_owned(),
-        EditorButton::TimedRemove(_) | EditorButton::StageRemove(_) => "x".to_owned(),
-        EditorButton::TimedTime(_, dir)
-        | EditorButton::TimedCount(_, dir)
-        | EditorButton::StageTime(_, dir)
-        | EditorButton::StageEvery(_, dir)
-        | EditorButton::StageGroup(_, dir)
-        | EditorButton::Every(dir)
-        | EditorButton::Count(dir)
-        | EditorButton::Rate(dir)
-        | EditorButton::Drop(dir)
-        | EditorButton::Days(dir)
-        | EditorButton::Gold(dir)
-        | EditorButton::Wood(dir)
-        | EditorButton::Extra(dir) => if dir < 0 { "-" } else { "+" }.to_owned(),
-        EditorButton::Sends(Sends::Constant) => "Constant".to_owned(),
-        EditorButton::Sends(Sends::Periodic) => "Periodic".to_owned(),
-        EditorButton::Sends(Sends::Off) => "Off".to_owned(),
-        EditorButton::Breed(breed) => breed.name().to_owned(),
-        EditorButton::Wander(false) => "Storm the CC".to_owned(),
-        EditorButton::Wander(true) => "Wander".to_owned(),
-        EditorButton::RemoveSpawner => "Remove spawner (Del)".to_owned(),
-        // These show a value – `Editor::label` writes them.
-        EditorButton::SpawnerName
-        | EditorButton::MapName
-        | EditorButton::Info
-        | EditorButton::Status
-        | EditorButton::Clock
-        | EditorButton::DaysShow
-        | EditorButton::GoldShow
-        | EditorButton::WoodShow
-        | EditorButton::TimedShow(_)
-        | EditorButton::TimedCountShow(_)
-        | EditorButton::TimedBreed(_)
-        | EditorButton::TimedFrom(_)
-        | EditorButton::StageShow(_)
-        | EditorButton::StageBreed(_)
-        | EditorButton::StageEveryShow(_)
-        | EditorButton::StageGroupShow(_)
-        | EditorButton::ExtraShow
-        | EditorButton::Show(_) => String::new(),
-    }
+/// Is something being typed into a field (a name, or a number clicked to type it)? Only those keep a text cursor in
+/// egui's memory (`TextEdit::load_state`) – a button that has the focus doesn't.
+fn text_has_focus(ctx: &egui::Context) -> bool {
+    ctx.memory(|memory| memory.focused()).is_some_and(|id| TextEdit::load_state(ctx, id).is_some())
 }

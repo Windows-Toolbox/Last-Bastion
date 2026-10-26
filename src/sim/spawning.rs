@@ -21,6 +21,7 @@ pub(super) const NEW_SPAWNER_SIZE: i32 = 8;
 /// An area on the map where zombies come from – the only place they come from. Placed, renamed and resized
 /// in the editor; players don't see spawners. A straight rectangle on screen like the world border: `min` and
 /// `size` are in the screen axes (`map::to_frame`), in whole steps.
+#[derive(Clone)]
 pub struct Spawner {
     pub id: u32,
     pub name: String,
@@ -171,6 +172,7 @@ pub(super) fn group_at(spawning: &ConstantSpawn, tick: u64) -> Option<Group> {
 }
 
 /// One of your units has fallen: it lies there and rises as a walker when `rise_in` runs out.
+#[derive(Clone)]
 pub struct Corpse {
     pub pos: Vec2,
     /// What it was – only for drawing.
@@ -216,11 +218,15 @@ impl World {
             let tile = (y * size + x) as usize;
             let middle = vec2(x as f32 + 0.5, y as f32 + 0.5);
             let out = self.way_out(middle);
-            if taken[tile] || self.rng.unit_f32() >= libm::powf(out, roaming.edge_weight) {
+            // Toward the ring they thin out (`ring_ramp`): 0 right at it, 1 from `ring_ramp` tiles further out.
+            let ramp = if roaming.ring_ramp > 0.0 { ((middle.distance(self.base) - ring) / roaming.ring_ramp).clamp(0.0, 1.0) } else { 1.0 };
+            if taken[tile] || self.rng.unit_f32() >= libm::powf(out, roaming.edge_weight) * ramp {
                 continue;
             }
             taken[tile] = true;
-            let pack = (smallest + self.rng.below(biggest - smallest + 1)).min((count - placed) as u32);
+            // The packs too: right at the ring the smallest, the biggest only from `ring_ramp` tiles further out.
+            let most = smallest + ((biggest - smallest) as f32 * ramp).round() as u32;
+            let pack = (smallest + self.rng.below(most - smallest + 1)).min((count - placed) as u32);
             for _ in 0..pack {
                 // Somewhere on the tile, not quite at its edge – asleep until something wakes it (`sleep.rs`).
                 let pos = vec2(x as f32 + 0.15 + 0.7 * self.rng.unit_f32(), y as f32 + 0.15 + 0.7 * self.rng.unit_f32());
@@ -234,12 +240,12 @@ impl World {
         }
     }
 
-    /// The giants (DESIGN.md 8.1, like TAB's): only a few per map – `giants` of the difficulty on a map of TAB's size
-    /// (256 × 256 tiles inside the border), more on a bigger one, fewer on a smaller one (at least one, if any). Far out
-    /// (`giants_from` in `data\roaming.json`, and never inside their `keep_out`), asleep like the roamers: they stroll
-    /// and wake like any zombie – and the final wave calls them too.
-    pub(super) fn place_giants(&mut self, giants: u32) {
-        if giants == 0 {
+    /// The giants (DESIGN.md 8.1, like TAB's): only a few per map – `giants` of the map (times the difficulty's
+    /// `giants_percent`) on a map of TAB's size (256 × 256 tiles inside the border), more on a bigger one, fewer on a
+    /// smaller one (at least one, if any). Far out (`giants_from` in `data\roaming.json`, and never inside their
+    /// `keep_out`), asleep like the roamers: they stroll and wake like any zombie – and the final wave calls them too.
+    pub(super) fn place_giants(&mut self, giants: f32) {
+        if giants <= 0.0 {
             return;
         }
         let size = self.map.size as i32;
@@ -255,7 +261,7 @@ impl World {
             return;
         }
         let area = self.map.play_area().area();
-        let count = ((giants as f32 * area / (256.0 * 256.0)).round() as u32).max(1);
+        let count = ((giants * area / (256.0 * 256.0)).round() as u32).max(1);
         for _ in 0..count {
             let pos = open[self.rng.below(open.len() as u32) as usize];
             self.lay_to_sleep(pos, Breed::Giant);
@@ -356,7 +362,8 @@ impl World {
 
     /// `count` zombies of this breed, each from a random one of these spawners (indices into `spawners`). They storm
     /// the command center. `final_wave`: they belong to the final wave – the round is won once they're all dead.
-    pub(super) fn spawn_from(&mut self, spawners: &[usize], count: usize, breed: Breed, final_wave: bool) {
+    /// `swarm`: the swarm of a wave they belong to (`new_swarm`), 0: none.
+    pub(super) fn spawn_from(&mut self, spawners: &[usize], count: usize, breed: Breed, final_wave: bool, swarm: u32) {
         for _ in 0..count {
             let Some(pos) = self.spawn_point(spawners) else {
                 break; // no spot in these spawners leads to the base: nobody can come
@@ -364,15 +371,17 @@ impl World {
             self.spawn_zombie_as(pos, breed, false);
             if let Some(zombie) = self.zombies.last_mut() {
                 zombie.final_wave = final_wave;
+                zombie.swarm = swarm;
             }
         }
     }
 
     /// A wave out of the spawners: `count` zombies from one random spawner, or `count` from each of `sides` different
-    /// random sides (only sides that have spawners at all), spread over the spawners there.
+    /// random sides (only sides that have spawners at all), spread over the spawners there. One swarm per side.
     pub(super) fn send_wave(&mut self, count: usize, from: WaveFrom, breed: Breed, final_wave: bool) {
         for spawners in self.wave_spawners(from) {
-            self.spawn_from(&spawners, count, breed, final_wave);
+            let swarm = self.new_swarm();
+            self.spawn_from(&spawners, count, breed, final_wave, swarm);
         }
     }
 
@@ -431,11 +440,12 @@ impl World {
                 froms.push(wave.from);
             }
         }
+        // Every side a wave comes out of is one swarm – the runners and whoever comes along with them.
         for from in froms {
-            let groups = self.wave_spawners(from);
+            let groups: Vec<(Vec<usize>, u32)> = self.wave_spawners(from).into_iter().map(|g| (g, self.new_swarm())).collect();
             for wave in due.iter().filter(|w| w.from == from) {
-                for spawners in &groups {
-                    self.spawn_from(spawners, wave.count as usize, wave.breed, wave.final_wave);
+                for (spawners, swarm) in &groups {
+                    self.spawn_from(spawners, wave.count as usize, wave.breed, wave.final_wave, *swarm);
                 }
             }
         }
@@ -452,7 +462,8 @@ impl World {
             self.spawners[s].timer += 1;
             if self.spawners[s].timer as f32 >= every as f32 * TICKS_PER_SECOND {
                 self.spawners[s].timer = 0;
-                self.spawn_from(&[s], count as usize, Breed::Runner, false);
+                let swarm = self.new_swarm();
+                self.spawn_from(&[s], count as usize, Breed::Runner, false, swarm);
             }
         }
     }

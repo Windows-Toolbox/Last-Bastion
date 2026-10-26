@@ -28,6 +28,7 @@ const GUARD_GAP: f32 = 1.0;
 
 /// A house of a village of doom. It blocks its tiles like a mountain (`Map::set_doom`): nobody walks through, the
 /// zombies don't tear it down – only your units can, by shooting it.
+#[derive(Clone)]
 pub struct DoomHouse {
     pub id: u32,
     /// The top left tile, and width and depth.
@@ -137,6 +138,7 @@ impl LootKind {
 }
 
 /// A pile of loot on the ground – everyone walks over it.
+#[derive(Clone)]
 pub struct Loot {
     pub id: u32,
     pub pos: Vec2,

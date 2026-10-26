@@ -51,6 +51,7 @@ pub enum Walker {
     Zombie { detour: u32 },
 }
 
+#[derive(Clone)]
 pub struct FlowField {
     size: usize,
     /// The exact target point (not just the tile).

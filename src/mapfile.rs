@@ -429,6 +429,7 @@ mod tests {
             Order::SetGold { gold: 777 },
             Order::SetWood { wood: 55 },
             Order::SetExtraPerDay { extra: 2.5 },
+            Order::SetSpecials { specials: vec![crate::data::ConstantSpecial { day: 7, breed: Breed::Spitter, share: 0.2 }] },
         ]);
         let mut file = MapFile::from_world(&world, "Test: map?");
         file.setup = Some(MapSetup::default());

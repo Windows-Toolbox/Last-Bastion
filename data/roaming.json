@@ -1,6 +1,7 @@
 {
   "edge_weight": 0.5,
   "pack": [1, 3],
+  "ring_ramp": 6.0,
   "inside_step": 3.0,
   "mix": [
     { "breed": "Runner", "from": 0.35, "share": 0.3 },
@@ -8,7 +9,7 @@
     { "breed": "Infested", "from": 0.55, "share": 0.04 },
     { "breed": "Spitter", "from": 0.6, "share": 0.04 },
     { "breed": "Fat", "from": 0.8, "share": 0.1 },
-    { "breed": "Screamer", "from": 0.4, "share": 0.02 }
+    { "breed": "Harpy", "from": 0.4, "share": 0.02 }
   ],
   "giants_from": 0.6
 }

@@ -131,8 +131,8 @@ Dazu für alle:
 ## `zombies.json` – Zombies
 
 `walker`, `runner`, `fat` (TABs „Chubby“), `armored` (TABs gepanzerter Runner, im Spiel „Riot“), `spitter` (TABs
-Venom), `infested` (StarCraft 2s Infested Marine), `screamer` (schreit, wenn er dich sieht) und `giant` (TABs Riese,
-etwas kleiner – wie viele: `giants` der Schwierigkeit), je mit:
+Venom), `infested` (StarCraft 2s Infested Marine), `harpy` (TABs Harpyie: hört weit, schlägt laut zu) und `giant` (TABs Riese,
+etwas kleiner – wie viele: `giants` der Karte), je mit:
 
 | Wert | Bedeutung |
 |---|---|
@@ -144,13 +144,14 @@ etwas kleiner – wie viele: `giants` der Schwierigkeit), je mit:
 | `damage` | Schaden pro Treffer – beim Spitter an jedem im Spritzer |
 | `sight` | So weit sieht er Einheiten (nicht durch Wald). TAB: Walker 5, Runner 6, Fat 5 |
 | `stroll` | Als **Wanderer** geht er pro Ausflug höchstens so weit (Kacheln, in x und y) – von da, wo er gerade steht, ohne festen Platz: mit der Zeit überall hin. Je seltener die Art, desto weiter: Walker 8, Runner 14, Riot 18, Infested 22, Spitter 24, Fat 30. Nie näher ans Kommandozentrum als `keep_out` seiner Art in der Schwierigkeit (`game_difficulties.json`) |
-| `radius` | Wie groß er ist (Kacheln): so weit halten andere Zombies und Einheiten Abstand, und so viel weiter reicht er |
+| `radius` | Wie groß er ist (Kacheln): so weit halten andere Zombies und Einheiten Abstand, und so viel weiter reicht er. So groß ist auch der Ring unter ihm (Maus, angeklickt) |
 | `range` | **Fernkampf**: so weit schießt er (Kacheln) – über Mauern, nicht durch Wald. Weglassen = 0: er muss dich berühren. Infested 4,5 = knapp unter dem Soldaten (5) |
 | `splash` | Sein Schuss trifft jeden so nah am Einschlag (Spitter): Einheiten und Gebäude, keine Zombies. Weglassen = nur das Ziel |
 | `attack_seconds` | Zeit zwischen zwei Angriffen. Weglassen = `hit_every_seconds` |
 | `projectile_speed` | Sein Schuss fliegt so viele Kacheln pro Sekunde und landet, wo das Ziel stand – wer rechtzeitig weggeht, wird nicht getroffen (Spitter). Weglassen = trifft sofort |
 | `xp` | Erfahrung, wenn er stirbt – geteilt unter deinen Einheiten in der Nähe (`veterans` in `units.json`). Weglassen = 1 |
-| `scream`, `scream_every_seconds` | Screamer: sieht er eine Einheit, schreit er – so viel Lärm, wo er steht (holt die Zombies um ihn, weckt Schlafende; zählt nicht zur Unruhe) –, und frühestens nach so vielen Sekunden wieder. Weglassen = 0, schreit nicht |
+| `jump` | Springt über Mauern und Tore bis so viele Kacheln dick, statt sie einzuschlagen – wenn sein Ziel dahinter liegt (Harpyie). Weglassen = 0, springt nie |
+| `hit_noise` | So viel Lärm macht jeder seiner Treffer, wo er steht (holt Zombies, weckt Schlafende; zählt nicht zur Unruhe). Trifft er öfter als der Lärm verklingt (`quiet_seconds` in `sound.json`), wird es immer lauter (Harpyie). Weglassen = `zombie_hit` aus `sound.json` |
 | `sprite` | Nur die Optik: sein Bild in `assets\`, wie bei den Einheiten. Weglassen = Kästchen |
 
 Dazu für alle:
@@ -195,8 +196,9 @@ etwas sie weckt (DESIGN.md 8.5).
 | `edge_weight` | Wie viel mehr weiter draußen liegen: 0 = überall gleich viele, 1 = mit der Entfernung gleichmäßig mehr, 2 = fast alle am Rand (jetzt 0,5: fast überall, außen etwas mehr – wie TAB) |
 | `inside_step` | Wer **im Ring** seiner Art steht (`keep_out` der Schwierigkeit – angelockt, Pech gehabt), bummelt von dort zufällig weiter: pro Ausflug höchstens so viele Kacheln näher ans Kommandozentrum. Ausflüge weiter hinein fallen weg – im Ganzen bummelt er also wieder hinaus. Pro Zombie wird dafür nichts gespeichert |
 | `pack` | `[wenigste, meiste]`: sie liegen in Grüppchen auf je einer Kachel, eine Gruppe pro Kachel – also nie mehr als `meiste` auf einer Kachel (wie TAB: bis 3). `[3, 3]` = überall genau 3 (dann ≈ doppelt so viele möglich, Regler bis 2.000 reicht dann nicht mehr ganz) |
+| `ring_ramp` | Über so viele Kacheln hinter dem Ring ums Kommandozentrum (das kleinste `keep_out` der Schwierigkeit) dünnen sie nach innen aus: direkt am Ring kaum welche und nur einzeln, so weit draußen so viele wie überall und in vollen Grüppchen (`pack`). 0 = kein sanfter Rand (jetzt 6). Insgesamt bleiben es gleich viele – die fehlenden liegen weiter draußen |
 | `mix` | Welche Arten außer Walkern: je `breed` (Name wie in den Dateien), `from` (ab so weit draußen) und `share` (so ein Anteil der Zombies dort). Der Rest sind Walker. Gilt auch für die Villages of Doom und die Wächter der Beute. Näher am Kommandozentrum als `keep_out` ihrer Art (Schwierigkeit) wird eine Art zum Walker |
-| `giants_from` | Die Riesen (`giants` der Schwierigkeit) liegen mindestens so weit draußen (Anteil des Wegs wie `from`) – schlafend, sie bummeln und wachen wie alle |
+| `giants_from` | Die Riesen (`giants` der Karte) liegen mindestens so weit draußen (Anteil des Wegs wie `from`) – schlafend, sie bummeln und wachen wie alle |
 
 ## `doom.json` – Villages of Doom
 
@@ -297,10 +299,10 @@ gewählt ist – und für eine Karte, deren Schwierigkeit es nicht (mehr) gibt. 
 | `start_gold`, `start_wood` | Gold und Holz zu Beginn (der übrige Vorrat startet leer). Im Editor pro Karte änderbar |
 | `start_soldiers`, `start_rangers`, `start_snipers` | Einheiten zu Beginn |
 | `roaming_zombies` | Streuner zu Beginn, pro 1.000 Kacheln, auf denen sie stehen können – in Grüppchen von `pack` (`roaming.json`), also füllen ≈ 2.000 fast jede Kachel |
-| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `screamer`, `giant`): so nah ans Kommandozentrum (Kacheln) kommt keiner – nicht zu Beginn, nicht beim Bummeln (auch nicht auf dem Weg zum Ziel). Wer angelockt oder mit einer Welle kommt, kümmert sich nicht darum – und bummelt danach wieder hinaus |
+| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `harpy`, `giant`): so nah ans Kommandozentrum (Kacheln) kommt keiner – nicht zu Beginn, nicht beim Bummeln (auch nicht auf dem Weg zum Ziel). Wer angelockt oder mit einer Welle kommt, kümmert sich nicht darum – und bummelt danach wieder hinaus |
 | `villages_percent`, `village_houses_percent` | So viel Prozent so viele Villages of Doom, wie die Karte hat (`villages`), und so viel Prozent ihrer Häuser (`houses_near`, `houses_edge`) |
 | `doom_zombies` | So viele Zombies schlafen in **jedem** Haus der Villages of Doom – fest, egal wie weit draußen |
-| `giants` | So viele **Riesen** liegen auf einer Karte von TABs Größe (256) – auf größeren mehr, auf kleineren weniger (mindestens einer). Weit draußen (`giants_from` in `roaming.json`); die Schlusswelle ruft auch sie |
+| `giants_percent` | So viel Prozent so viele **Riesen**, wie die Karte hat (`giants`) |
 | `loot_guards` | `[nahe der Basis, am Rand]`: so viele Zombies liegen um einen Haufen Beute versteckt |
 | `waves_percent` | Jede Welle (auch die Schlusswelle) so viel Prozent der Zahlen in `spawning.json` |
 | `constant_spawn_percent` | Jede Gruppe des konstanten Spawns so viel Prozent so groß |
@@ -324,4 +326,4 @@ Die Karten wie in TAB. Vorerst ist eine Karte einer der Generatoren mit seinen W
 | Wert | Bedeutung |
 |---|---|
 | `name`, `about`, `score_percent` | Name, eine Zeile Erklärung, Score-Faktor |
-| `setup` | Wie sie gemacht wird – alles, was die Seite „Custom setup“ hat: `generator` (`wild`, `regions`, `rings`, `canyons`, `blank`), `common` (z. B. `size`, `ways_in`, `loot_piles` und die Dörfer: `villages` pro 10.000 Kacheln, `houses_near` / `houses_edge` Häuser pro Dorf – Open Plains viele kleine, Broken Lands zwei riesige) und die Werte des Generators (z. B. `"blank": { "trees": 0.02 }`). Was fehlt, bleibt beim Standard. Die Namen der Werte stehen in einer Kartendatei unter `setup` |
+| `setup` | Wie sie gemacht wird – alles, was die Seite „Custom setup“ hat: `generator` (`wild`, `regions`, `rings`, `canyons`, `blank`), `common` (z. B. `size`, `ways_in`, `loot_piles` und die Dörfer: `villages` pro 10.000 Kacheln, `houses_near` / `houses_edge` Häuser pro Dorf – Open Plains viele kleine, Broken Lands zwei riesige – und `giants`, die Riesen auf einer Karte von TABs Größe 256: auf größeren mehr, auf kleineren weniger, mindestens einer; weit draußen, die Schlusswelle ruft auch sie) und die Werte des Generators (z. B. `"blank": { "trees": 0.02 }`). Was fehlt, bleibt beim Standard. Die Namen der Werte stehen in einer Kartendatei unter `setup` |

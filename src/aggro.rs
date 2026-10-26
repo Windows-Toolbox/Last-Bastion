@@ -8,6 +8,7 @@ use macroquad::math::{vec2, Vec2};
 
 const NONE: u32 = u32::MAX;
 
+#[derive(Clone)]
 pub struct AggroMap {
     size: usize,
     /// Per tile: index of the nearest target in its list (units or buildings), or `NONE`.

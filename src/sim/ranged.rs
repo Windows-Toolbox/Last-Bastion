@@ -13,6 +13,7 @@ use super::zombies::{Breed, Hit, Zombie};
 use super::{World, TICKS_PER_SECOND, UNIT_RADIUS};
 
 /// Acid in flight.
+#[derive(Clone)]
 pub struct Spit {
     pub from: Vec2,
     pub to: Vec2,

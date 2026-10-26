@@ -10,6 +10,7 @@ use crate::formation::Shape;
 use crate::iso::Camera;
 use crate::editor::Sight;
 use crate::data;
+use crate::keys::Action;
 use crate::kinds::{BuildingKind, Resource, Source, UnitKind};
 use crate::map::{from_frame, to_frame, Region};
 use crate::picture::MapPicture;
@@ -52,9 +53,16 @@ const TOO_DEAR: Color = Color::new(1.0, 0.35, 0.3, 1.0);
 const FINAL: Color = Color::new(1.0, 0.6, 0.5, 1.0);
 /// The villages of doom on the minimap – red like TAB's.
 const DOOM_MINIMAP: Color = Color::new(0.85, 0.12, 0.10, 1.0);
+/// A giant on the minimap: a big dot, always shown.
+const GIANT_MINIMAP: Color = Color::new(0.95, 0.45, 0.15, 1.0);
+/// A swarm of a wave on the minimap: a warning triangle in its middle.
+const SWARM_MINIMAP: Color = Color::new(1.0, 0.22, 0.15, 1.0);
+/// The dark edge around the marks, so they stand out on any ground.
+const MARK_EDGE: Color = Color::new(0.08, 0.05, 0.03, 1.0);
 
-/// The buttons of the command card. Which ones are visible depends on the selection (`Ui::card`).
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// The buttons of the command card. Which ones are visible depends on the selection (`Ui::card`). Their keys:
+/// `keys.rs` (`Eq` and `Hash`: so a button can be the key of a `HashMap` there).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Button {
     // Units
     Move,
@@ -78,7 +86,7 @@ pub enum Button {
     Scan,
     /// Units carrying a barrel: put it down where they stand.
     Drop,
-    /// Units: send them away – no more upkeep, their workers free (Del).
+    /// Units: send them away – no more upkeep, their workers free.
     Dismiss,
     // Command center
     /// Open one of the build menus – the card then shows its buildings (`Ui::submenu`).
@@ -99,7 +107,7 @@ pub enum Button {
 }
 
 /// The build menus of the command center – the keys on the left of the keyboard, like TAB's build categories.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Submenu {
     /// Q: houses for the colonists.
     Colonists,
@@ -223,6 +231,43 @@ pub fn menu_buttons(menu: Submenu) -> Vec<Button> {
     built.chain(planned).chain([Button::Back]).collect()
 }
 
+/// The build menus, in the order of their buttons on the command center.
+pub fn build_menus() -> impl Iterator<Item = Submenu> {
+    COMMAND_CENTER_BUTTONS.into_iter().filter_map(|button| match button {
+        Button::Open(menu) => Some(menu),
+        _ => None,
+    })
+}
+
+/// The card of a selected building (not the command center: its card depends on the build menu, `Ui::card`).
+pub fn building_buttons(kind: BuildingKind) -> Vec<Button> {
+    let mut card = match kind {
+        BuildingKind::Barracks => BARRACKS_BUTTONS.to_vec(),
+        BuildingKind::Inn => INN_BUTTONS.to_vec(),
+        BuildingKind::MunitionsFactory => MUNITIONS_BUTTONS.to_vec(),
+        BuildingKind::Market => MARKET_BUTTONS.to_vec(),
+        BuildingKind::Tower | BuildingKind::StoneTower => TOWER_BUTTONS.to_vec(),
+        _ => REPAIR_BUTTONS.to_vec(),
+    };
+    // Everything that runs can be switched off (Y).
+    if kind.can_switch_off() {
+        card.push(Button::Switch);
+    }
+    card
+}
+
+/// Every card there can be – to find a key that's twice on one card (`keys.rs`). The buildings' cards each with
+/// On/Off: whether a kind can be switched off depends on `data\`, and a clash that can't happen yet is still worth
+/// telling.
+pub fn all_cards() -> Vec<Vec<Button>> {
+    let mut cards = vec![[UNIT_BUTTONS.as_slice(), &[Button::Drop]].concat(), COMMAND_CENTER_BUTTONS.to_vec()];
+    cards.extend(build_menus().map(menu_buttons));
+    for buttons in [&BARRACKS_BUTTONS[..], &INN_BUTTONS, &MUNITIONS_BUTTONS, &MARKET_BUTTONS, &TOWER_BUTTONS, &REPAIR_BUTTONS] {
+        cards.push([buttons, &[Button::Switch]].concat());
+    }
+    cards
+}
+
 /// StarCraft's grid layout: the keys of the 15 spots of the command card, row by row – the left part of the
 /// keyboard. macroquad reads keys by their place on a US keyboard: on a German one the first key of the bottom row
 /// is Y.
@@ -231,7 +276,6 @@ const GRID_KEYS: [KeyCode; 15] = [
     KeyCode::A, KeyCode::S, KeyCode::D, KeyCode::F, KeyCode::G,
     KeyCode::Z, KeyCode::X, KeyCode::C, KeyCode::V, KeyCode::B,
 ];
-const GRID_LABELS: [&str; 15] = ["Q", "W", "E", "R", "T", "A", "S", "D", "F", "G", "Y", "X", "C", "V", "B"];
 
 impl Button {
     /// The name on the button.
@@ -289,8 +333,9 @@ impl Button {
         }
     }
 
-    /// The key: for units their own letters (M = move, S = stop …), for buildings the grid (`GRID_KEYS`).
-    pub fn key(self) -> KeyCode {
+    /// The key until it's changed in the key mapping (`keys.rs`): for units their own letters (M = move, S = stop …),
+    /// for buildings the grid (`GRID_KEYS`).
+    pub fn default_key(self) -> KeyCode {
         match self {
             Button::Move => KeyCode::M,
             Button::Stop => KeyCode::S,
@@ -304,23 +349,6 @@ impl Button {
             // Not a letter: sending units away for good shouldn't happen by a slip of the finger.
             Button::Dismiss => KeyCode::Delete,
             _ => GRID_KEYS[self.slot()],
-        }
-    }
-
-    fn key_label(self) -> &'static str {
-        match self {
-            Button::Move => "M",
-            Button::Stop => "S",
-            Button::Hold => "H",
-            Button::Patrol => "P",
-            Button::Attack => "T",
-            // Not Z: macroquad reads keys by their place on a US keyboard, and there a German keyboard has Y.
-            Button::FormLine => "X",
-            Button::FormBox => "C",
-            Button::FormCircle => "V",
-            Button::Drop => "D",
-            Button::Dismiss => "Del",
-            _ => GRID_LABELS[self.slot()],
         }
     }
 
@@ -409,7 +437,7 @@ impl Button {
             Button::Sell => "Selling on/off. On (lit): at every payout the market sells what lies above 80 % of the storage - up to 1 good per 4 colonists of its houses. Off: it keeps everything, its houses still pay more.",
             Button::Scan => "Click anywhere on the map: a circle of 10 tiles is shown for 10 s, over forests too - no noise. 2 charges, a new one every 120 s - while one charges, the command center takes 30 power from its grid.",
             Button::Drop => "Put the barrels down where the units stand. Any damage and a barrel goes off - and a unit carrying one goes off when it dies.",
-            Button::Dismiss => "Send the selected units away for good: no more upkeep, their workers are free again. No gold back, a barrel they carry is put down. (Del)",
+            Button::Dismiss => "Send the selected units away for good: no more upkeep, their workers are free again. No gold back, a barrel they carry is put down.",
             Button::Open(Submenu::Colonists) => "Houses for your colonists: the tent and the stone house.",
             Button::Open(Submenu::Resources) => "Gathering: hunter cottage, fishing hut, sawmill, mine, farm - later the oil pump.",
             Button::Open(Submenu::Energy) => "Power: tesla tower, windmill, charcoal burner - later the oil burning generator.",
@@ -768,6 +796,28 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
         draw_rectangle(m.x - 1.5, m.y - 1.5, 3.0, 3.0, color);
     }
 
+    // On top, through the fog: every giant, awake or asleep, and the middle of every swarm of a wave – the bigger the
+    // swarm, the bigger its triangle. A mark outside what the minimap shows (a wave still in the spawn ring) sits at
+    // its edge, on the side it comes from.
+    let (lo, hi) = (layout.minimap.point(), layout.minimap.point() + layout.minimap.size());
+    let pin = |p: Vec2, r: f32| to_mini(p).clamp(lo + Vec2::splat(r), hi - Vec2::splat(r));
+    for giant in world.giants() {
+        let m = pin(giant, 4.0);
+        draw_circle(m.x, m.y, 4.0, MARK_EDGE);
+        draw_circle(m.x, m.y, 3.0, GIANT_MINIMAP);
+    }
+    for (middle, count) in world.swarms() {
+        let r = 5.0 + (count as f32).sqrt().min(10.0) * 0.4;
+        let m = pin(middle, r);
+        let corners = |r: f32| (m + vec2(0.0, -r), m + vec2(r * 0.9, r * 0.6), m + vec2(-r * 0.9, r * 0.6));
+        let (a, b, c) = corners(r + 1.5);
+        draw_triangle(a, b, c, MARK_EDGE);
+        let (a, b, c) = corners(r);
+        draw_triangle(a, b, c, SWARM_MINIMAP);
+        draw_line(m.x, m.y - r * 0.55, m.x, m.y + r * 0.05, 1.5, MARK_EDGE);
+        draw_rectangle(m.x - 0.75, m.y + r * 0.2, 1.5, 1.5, MARK_EDGE);
+    }
+
     // What the camera shows right now: a rectangle, because the map and the minimap are rotated the same way.
     let top_left = to_mini(camera.screen_to_world(Vec2::ZERO)).max(layout.minimap.point());
     let bottom_right = to_mini(camera.screen_to_world(vec2(screen_width(), layout.panel.y)))
@@ -852,8 +902,12 @@ fn draw_selection(layout: &Layout, world: &World, ui: &Ui) {
             None => {
                 let inner = layout.info_inner();
                 draw_text("Nothing selected", inner.x + 4.0, inner.y + 20.0, 20.0, DIM);
-                let hint = "Click the command center to build: Q houses, W resources, E energy, A industry, S military, D defense, Y wonders.";
-                draw_wrapped(hint, inner.x + 4.0, inner.y + 46.0, inner.w - 8.0, 15.0, 4, DIM);
+                // The keys of the build menus as they are set (`keys.rs`).
+                let menus: Vec<String> = build_menus()
+                    .map(|menu| format!("{} {}", ui.settings.keys.short(Action::of(Button::Open(menu))), Button::Open(menu).name().to_lowercase()))
+                    .collect();
+                let hint = format!("Click the command center to build: {}.", menus.join(", "));
+                draw_wrapped(&hint, inner.x + 4.0, inner.y + 46.0, inner.w - 8.0, 15.0, 4, DIM);
             }
         },
         [Pick::Unit(i)] => draw_single(layout, world, *i),
@@ -1228,14 +1282,14 @@ fn building_text(world: &World, power: &Power, b: usize) -> String {
     let stats = building.stats();
     let share = power.share(world, b);
     if building.infected {
-        return "INFECTED - its colonists came out as zombies, everyone walks through it. Repair (F) cures it.".to_owned();
+        return "INFECTED - its colonists came out as zombies, everyone walks through it. Repair cures it.".to_owned();
     }
     if !building.is_built() {
         let seconds = building.construction as f32 / TICKS_PER_SECOND;
         return format!("BEING BUILT - ready in {seconds:.0} s. Until then it does nothing, but zombies can already hit it.");
     }
     if building.off {
-        return "SWITCHED OFF - no upkeep, no workers, no power, and it does nothing. On/Off (Y) switches it on again.".to_owned();
+        return "SWITCHED OFF - no upkeep, no workers, no power, and it does nothing. On/Off switches it on again.".to_owned();
     }
     if building.kind.on_grid() && power.grid_of[b].is_none() {
         return "NO POWER - it stands outside the grid (its command center or tesla tower is gone).".to_owned();
@@ -1357,7 +1411,7 @@ fn draw_icons(layout: &Layout, world: &World, ui: &Ui, view: &[Pick]) {
         text += &format!(" (+{} not shown)", view.len() - capacity);
     }
     if let Some(sub) = ui.active {
-        text += &format!("   active: {} (Tab)", sub.name());
+        text += &format!("   active: {} ({})", sub.name(), ui.settings.keys.label(Action::NextType));
     }
     let inner = layout.info_inner();
     draw_fitted_left(&text, inner.x, inner.bottom() - 4.0, inner.w, 16.0, DIM);
@@ -1409,7 +1463,8 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
         draw_rectangle(r.x, r.y, r.w, r.h, bg);
         let edge = if waiting { GREEN } else if planned { BORDER } else { BRASS };
         draw_rectangle_lines(r.x, r.y, r.w, r.h, if waiting { 2.0 } else { 1.0 }, edge);
-        draw_text(button.key_label(), r.x + 4.0, r.y + 15.0, 16.0, if planned { DIM } else { KEY });
+        // Only the first key fits on the button – the tooltip has both.
+        draw_text(ui.settings.keys.short(Action::of(button)), r.x + 4.0, r.y + 15.0, 16.0, if planned { DIM } else { KEY });
         if let Some(cost) = cost {
             let price = cost.to_string();
             draw_right(&price, r.right() - 3.0, r.y + 14.0, 14.0, if affordable { KEY } else { TOO_DEAR });
@@ -1423,14 +1478,15 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
 
     // Tooltip above the command card, like in StarCraft – with the price.
     if let Some(button) = hovered {
+        let key = ui.settings.keys.label(Action::of(button));
         let title = match (shown_cost(button, world, ui), button) {
-            (Some(cost), _) => format!("{} ({}) - {}", button.title(), button.key_label(), price_text(button, cost, world)),
+            (Some(cost), _) => format!("{} ({}) - {}", button.title(), key, price_text(button, cost, world)),
             (None, Button::Repair) => {
                 let plan = world.repair_plan(ui.selected_building_indices(world));
-                format!("{} ({}) - {}", button.title(), button.key_label(), nothing_to_repair(&plan))
+                format!("{} ({}) - {}", button.title(), key, nothing_to_repair(&plan))
             }
-            (None, Button::Planned(_)) => format!("{} ({}) - planned, not in the game yet", button.title(), button.key_label()),
-            (None, _) => format!("{} ({})", button.title(), button.key_label()),
+            (None, Button::Planned(_)) => format!("{} ({}) - planned, not in the game yet", button.title(), key),
+            (None, _) => format!("{} ({})", button.title(), key),
         };
         draw_tooltip(&[&title, button.help()], layout.card.x, layout.panel.y - 4.0);
     }
@@ -1561,7 +1617,7 @@ fn draw_stock(layout: &Layout, world: &World) {
     let gold_help = match world.debt_stage() {
         DebtStage::None if world.debt > 0 => credit_help.as_str(),
         DebtStage::None => "Pays for units and buildings. The command center and fed houses pay it at every payout, units and running buildings cost upkeep. What doesn't fit in the storage (more with banks) is lost.",
-        DebtStage::Debt => "IN DEBT - the upkeep was more than your gold. Units do less damage and shoot slower. Switch buildings off (Y)?",
+        DebtStage::Debt => "IN DEBT - the upkeep was more than your gold. Units do less damage and shoot slower. Switch buildings off (On/Off)?",
         DebtStage::Deep => "DEEP IN DEBT - units do much less damage, shoot and walk slower. Soon they desert.",
         DebtStage::Desert => "UNITS DESERT - every few seconds one leaves for good, until the debt is smaller.",
     };

@@ -81,19 +81,20 @@
     "attack_seconds": 1.0,
     "sprite": "test/figure"
   },
-  "screamer": {
-    "name": "Screamer",
+  "harpy": {
+    "name": "Harpy",
     "xp": 3,
-    "alertness": 4,
-    "speed": 1.2,
+    "alertness": 8,
+    "speed": 2.2,
     "hp": 60,
     "armor": 0,
-    "damage": 4,
+    "damage": 8,
     "sight": 8.0,
     "stroll": 20.0,
     "radius": 0.13,
-    "scream": 1500,
-    "scream_every_seconds": 10.0,
+    "attack_seconds": 0.75,
+    "hit_noise": 200,
+    "jump": 3.0,
     "sprite": "test/figure"
   },
   "giant": {

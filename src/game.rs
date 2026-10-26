@@ -13,7 +13,7 @@ use crate::data;
 use crate::draw::{self, Fog};
 use crate::editor::{EditorRequest, Mode, Sight};
 use crate::home;
-use crate::hud::{self, Layout};
+use crate::hud::{self, Button, Layout};
 use crate::iso::Camera;
 use crate::mapfile::{self, MapFile};
 use crate::mapgen::MapSetup;
@@ -24,6 +24,7 @@ use crate::settings::Settings;
 use crate::sim::{day_and_hour, Breed, Order, Outcome, TimedWave, WaveFrom, World, TICK};
 use crate::sprites::Sprites;
 use crate::ui::Ui;
+use crate::undo::History;
 use crate::vision::Vision;
 use crate::widgets::{button, Column};
 
@@ -57,6 +58,8 @@ pub struct Game {
     file: MapFile,
     /// Editor: the map being edited, put aside while a test runs – the test plays a copy (`switch_mode`).
     stash: Option<World>,
+    /// Editor: undo and redo – the orders of the last steps in Edit mode (`undo.rs`).
+    history: History,
     orders: Vec<Order>,
     accumulator: f32,
     /// Editor (Edit): no tick runs there, but the zombie brush still places its zombies 20 times a second.
@@ -114,6 +117,7 @@ impl Game {
             path,
             file,
             stash: None,
+            history: History::new(),
             orders: Vec::new(),
             accumulator: 0.0,
             brush_clock: 0.0,
@@ -161,6 +165,15 @@ impl Game {
 
         // A question or the end screen in front: only their buttons count – no Esc menu, no input on the map.
         let modal = self.leaving.is_some() || self.end_screen_shown();
+        // The editor's panel first (egui): what it takes – a click, a field being typed into – the map and the keys
+        // below don't get. Greyed out while the menu or a question is in front.
+        if self.ui.editor.available {
+            let enabled = !self.menu.open && !modal;
+            self.ui.editor.steps = self.history.counts();
+            // Three fields of `self` lent apart: the closure gets the editor, the world and the orders – nothing else.
+            let (editor, world, orders) = (&mut self.ui.editor, &self.world, &mut self.orders);
+            egui_macroquad::ui(|ctx| editor.show(ctx, world, enabled, orders));
+        }
         // Esc first cancels a waiting command, placing or an editor tool, then clears the selection, otherwise it opens
         // the menu. An open menu it always closes.
         if !modal && is_key_pressed(KeyCode::Escape) && (self.menu.open || !self.ui.is_busy()) {
@@ -190,11 +203,23 @@ impl Game {
                 EditorRequest::Close => action = self.leave(GameAction::Home),
                 EditorRequest::NewMap => action = self.leave(GameAction::Setup),
                 EditorRequest::Mode(mode) => self.switch_mode(mode),
+                EditorRequest::Undo => self.undo(false),
+                EditorRequest::Redo => self.undo(true),
             }
         }
         let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
-        if self.program == Program::Editor && ctrl && is_key_pressed(KeyCode::S) && !self.ui.editor.is_typing() && !modal {
-            self.save();
+        if self.program == Program::Editor && ctrl && !self.ui.editor.is_typing() && !modal {
+            if is_key_pressed(KeyCode::S) {
+                self.save();
+            }
+            // Ctrl+Z undo, Ctrl+Y (or Ctrl+Shift+Z) redo. macroquad names the keys by their place on a US keyboard
+            // (`keys.rs`), where Z and Y are swapped: `KeyCode::Y` is the Z of a German one.
+            let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+            if is_key_pressed(KeyCode::Y) && !self.menu.open {
+                self.undo(shift);
+            } else if is_key_pressed(KeyCode::Z) && !self.menu.open {
+                self.undo(true);
+            }
         }
         if self.end_screen_shown() {
             action = self.end_screen();
@@ -258,12 +283,17 @@ impl Game {
             if !self.orders.is_empty() {
                 // Paused (Space) or editing: take the orders over right away – you see the lines, queues and rally
                 // points, the painted terrain, the placed zombies – but no time passes, so nobody starts moving.
-                self.world.apply_orders(&self.orders);
-                self.orders.clear();
                 if editing {
-                    self.world.update_vision();
+                    // And remembered for undo: one step lasts as long as the left mouse button is held (`undo.rs`).
+                    self.history.apply(&mut self.world, &self.orders, is_mouse_button_down(MouseButton::Left));
                     self.zombie_view_tick = None;
+                } else {
+                    self.world.apply_orders(&self.orders);
                 }
+                self.orders.clear();
+            }
+            if !is_mouse_button_down(MouseButton::Left) {
+                self.history.close();
             }
         }
         if ticks > 0 {
@@ -326,12 +356,27 @@ impl Game {
         self.zombie_view = Vision::new(world.map.size);
         self.world = world;
         self.stash = None;
+        self.history = History::new();
         self.orders.clear();
         self.accumulator = 0.0;
         self.checksum_at_check = None;
         self.zombie_view_tick = None;
         self.looks = draw::Looks::default(); // the new world numbers its zombies from 1 again
         self.end_hidden = false;
+    }
+
+    /// Editor (Edit): the last step undone (Ctrl+Z) – or with `redo` the one undone last done again (Ctrl+Y).
+    fn undo(&mut self, redo: bool) {
+        if !self.ui.editor.editing() || self.ui.editor.testing() {
+            return;
+        }
+        let done = if redo { self.history.redo(&mut self.world) } else { self.history.undo(&mut self.world) };
+        if done {
+            // A spawner placed in the step taken back is gone – and with it the selection.
+            self.ui.editor.select_spawner(None);
+            self.zombie_view_tick = None;
+            self.looks = draw::Looks::default();
+        }
     }
 
     /// The map in the editor as it is now – while a test runs, the one put aside (not the test).
@@ -536,7 +581,10 @@ impl Game {
             draw_rectangle(8.0, y, measure_text(&text, None, 18, 1.0).width + 16.0, 26.0, Color::new(0.4, 0.05, 0.05, 0.9));
             draw_text(&text, 16.0, y + 18.0, 18.0, WHITE);
         }
-        self.ui.editor.draw(world);
+        // The editor's panel over the map and the bottom panel – the menu and the questions come later, on top of it.
+        if self.ui.editor.available {
+            egui_macroquad::draw();
+        }
         self.draw_round_over();
         self.avg_draw_ms = smooth(self.avg_draw_ms, draw_start.elapsed().as_secs_f64() * 1000.0);
 
@@ -613,52 +661,73 @@ impl Game {
                 world.unrest_zombies(),
                 data::get().sound.unrest_per_zombie
             ));
+        // The keys as they are set in the key mapping (`keys.rs`) – not the defaults.
+        use crate::keys::Action as K;
+        let keys = &ui.settings.keys;
+        let k = |action: K| keys.label(action);
+        let card = |button: Button| keys.label(K::of(button));
         o.section("switches", "Switches")
-            .switch("Pause (Space)", ui.paused, Switch::Pause)
+            .switch(&format!("Pause ({})", k(K::Pause)), ui.paused, Switch::Pause)
             .switch("Edge scrolling", ui.settings.edge_scroll, Switch::EdgeScroll)
-            .switch("Keep the mouse in the window (F12)", ui.settings.confine_mouse, Switch::ConfineMouse)
+            .switch(&format!("Keep the mouse in the window ({})", k(K::ConfineMouse)), ui.settings.confine_mouse, Switch::ConfineMouse)
             .switch("Health bars on all units", ui.settings.always_health_bars, Switch::HealthBars)
             .switch("Whole command queue (else: hold Shift)", ui.settings.always_full_queue, Switch::FullQueue);
         o.section("select", "Select")
             .text("Click / box, Shift: add or remove, on nothing or Esc: none")
             .text("Click a zombie: its values")
             .text("Ctrl-click, double click: all of this type")
-            .text("F2: all   Tab: active type (buildings too)");
+            .text(format!("{}: all   {}: active type (buildings too)", k(K::SelectArmy), k(K::NextType)));
+        let (line, block, ring) = (card(Button::FormLine), card(Button::FormBox), card(Button::FormCircle));
+        let (go, stop, hold, patrol, attack) =
+            (card(Button::Move), card(Button::Stop), card(Button::Hold), card(Button::Patrol), card(Button::Attack));
         o.section("commands", "Commands")
             .text("Right click: move / attack zombie / follow")
-            .text("  right drag: move in formation (X line, C box, V circle)")
-            .text("M S H P T (or buttons), T/P/M + drag: formation")
+            .text(format!("  right drag: move in formation ({line} line, {block} box, {ring} circle)"))
+            .text(format!("{go} {stop} {hold} {patrol} {attack} (or buttons), {attack}/{patrol}/{go} + drag: formation"))
             .text("Shift: queue - let go: the command leaves the mouse,")
             .text("  press Shift again: it's back")
-            .text("Medic: T + click on a unit = beam at it");
-        o.section("buildings", "Buildings")
-            .text("Command center: Q colonists (Q tent, W stone house), W resources")
-            .text("  (Q hunter, W fishing, E sawmill, R mine), E energy (Q tesla,")
-            .text("  W windmill, E charcoal burner), A industry (Q wood, W stone")
-            .text("  workshop), S military (Q barracks, W munitions factory),")
-            .text("  D defense (Q wall, W gate - R turns, E tower, R stakes,")
-            .text("  A stone wall, D stone tower)")
-            .text("  (costs gold, wood, stone, workers; most need power - inside the")
-            .text("  blue circles; not within 4 tiles of a zombie, pushes your units")
-            .text("  aside). Right click / Esc: stop")
-            .text("  B, Esc or select it again (click, group key): back to its main buttons")
-            .text("Barracks: Q soldier, W ranger, R sniper, T medic, G rally")
-            .text("  (hold the key: again and again, Ctrl: 5 at once, Shift: on credit)")
-            .text("Right click a tower with units: they go in. Tower selected: Q unload")
-            .text("Any building: F repair (gold, all selected) - cures infected ones")
-            .text("X (no units selected, or the button in the stock): repair all")
+            .text(format!("Medic: {attack} + click on a unit = beam at it"));
+        o.section("buildings", "Buildings").text("Command center: a build menu, then the building:");
+        for menu in hud::build_menus() {
+            let buildings: Vec<String> =
+                hud::menu_buttons(menu).into_iter().filter(|b| b.places().is_some()).map(|b| format!("{} {}", card(b), b.name())).collect();
+            if !buildings.is_empty() {
+                for text in wrap_list(format!("  {} {}:", card(Button::Open(menu)), Button::Open(menu).name()), &buildings) {
+                    o.text(text);
+                }
+            }
+        }
+        o.text(format!("  {} turns the gate. Costs gold, wood, stone, workers; most need", k(K::TurnGate)))
+            .text("  power - inside the blue circles; not within 4 tiles of a zombie,")
+            .text("  pushes your units aside. Right click / Esc: stop")
+            .text(format!("  {}, Esc or select it again (click, group key): back to its main buttons", card(Button::Back)));
+        let barracks: Vec<String> = hud::BARRACKS_BUTTONS
+            .into_iter()
+            .filter(|b| b.trains().is_some() || *b == Button::Rally)
+            .map(|b| format!("{} {}", card(b), b.name()))
+            .collect();
+        for text in wrap_list("Barracks:".to_owned(), &barracks) {
+            o.text(text);
+        }
+        o.text("  (hold the key: again and again, Ctrl: 5 at once, Shift: on credit)")
+            .text(format!("Right click a tower with units: they go in. Tower selected: {} unload", card(Button::Unload)))
+            .text(format!("Any building: {} repair (gold, all selected) - cures infected ones", card(Button::Repair)))
+            .text(format!("{} (no units selected, or the button in the stock): repair all", k(K::RepairAll)))
             .text("  cheapest first, not with a zombie within 4 tiles");
+        let camera = [K::CameraUp, K::CameraLeft, K::CameraDown, K::CameraRight].map(k).join(", ");
+        let spots: Vec<String> = (0..4).map(|b| k(K::Bookmark(b))).collect();
         o.section("groups", "Groups and camera")
             .text("Groups (units and buildings): Ctrl+number set, Shift+number add,")
             .text("  Ctrl+Shift+number steal, number select (2x: go)")
-            .text("Camera: WASD (nothing selected), arrows, edge, wheel, minimap,")
-            .text("  Ctrl+F5-F8 save, F5-F8 jump, Backspace: base")
+            .text(format!("Camera: {camera}"))
+            .text("  (letters only with nothing selected), edge, wheel, minimap,")
+            .text(format!("  {}: jump (Ctrl: save), {}: base", spots.join(" "), k(K::Base)))
             .text("  middle mouse drag: move the map");
         o.section("keys", "Other keys")
-            .text("Space pause   +/- speed   F3 this overlay")
-            .text("F12 keep mouse in window   Esc menu");
+            .text(format!("{} pause   {} / {} speed   {} this overlay", k(K::Pause), k(K::Faster), k(K::Slower), k(K::Overlay)))
+            .text(format!("{} keep mouse in window   Esc menu - all keys: Key mapping", k(K::ConfineMouse)));
         if self.program == Program::Editor {
-            o.text("F10 edit / test (top right)   Ctrl+S save").text("Click a spawner, drag its edge, Del removes it");
+            o.text(format!("{} edit / test (top right)   Ctrl+S save", k(K::EditTest))).text("Click a spawner, drag its edge, Del removes it");
         }
         o
     }
@@ -679,6 +748,23 @@ impl Game {
             }
         }
     }
+}
+
+/// A list for the overlay ("  D Defense: Q Wall, W Gate, …") in lines short enough for it – the later ones indented.
+fn wrap_list(head: String, items: &[String]) -> Vec<String> {
+    const LONGEST: usize = 70;
+    let mut lines = Vec::new();
+    let mut line = head;
+    for (i, item) in items.iter().enumerate() {
+        let item = if i + 1 < items.len() { format!("{item},") } else { item.clone() };
+        if line.chars().count() + 1 + item.chars().count() > LONGEST && !line.trim().is_empty() {
+            lines.push(line);
+            line = "     ".to_owned();
+        }
+        line = format!("{line} {item}");
+    }
+    lines.push(line);
+    lines
 }
 
 /// Mixes a new measurement into the average at 5 % – outliers hardly count.

@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::keys::Bindings;
+
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")] // in the file: "window" / "borderless"
 pub enum WindowMode {
@@ -36,6 +38,8 @@ pub struct Settings {
     pub dev_overlay: bool,
     /// The sections of that overlay that are folded shut (`overlay.rs`) – by their key.
     pub overlay_folded: Vec<String>,
+    /// Which key does what (`keys.rs`) – only the changed ones are in the file.
+    pub keys: Bindings,
 }
 
 impl Default for Settings {
@@ -50,6 +54,7 @@ impl Default for Settings {
             dev_overlay: true,
             // At first only the measurements and the switches are open – the key help is there, one click away.
             overlay_folded: ["select", "commands", "buildings", "groups", "keys"].map(String::from).to_vec(),
+            keys: Bindings::default(),
         }
     }
 }
@@ -140,5 +145,16 @@ mod tests {
         let text = serde_json::to_string_pretty(&s).unwrap();
         assert!(text.contains(r#""window_mode": "borderless""#));
         assert!(Settings::parse(&text) == s);
+    }
+
+    /// A changed key is saved and read back with the rest.
+    #[test]
+    fn keys_round_trip() {
+        use crate::keys::Action;
+        use macroquad::prelude::KeyCode;
+        let mut s = Settings::default();
+        s.keys.set(Action::Pause, 0, Some(KeyCode::P));
+        let text = serde_json::to_string_pretty(&s).unwrap();
+        assert!(Settings::parse(&text).keys.has(Action::Pause, KeyCode::P));
     }
 }

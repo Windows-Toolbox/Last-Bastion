@@ -8,7 +8,7 @@ use super::commands::Command;
 use super::spawning::{SpawnMode, TimedWave, WaveFrom, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
-use crate::data::{self, Stage};
+use crate::data::{self, ConstantSpecial, Stage};
 use crate::formation::Formation;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Ore, Terrain};
@@ -85,6 +85,8 @@ pub enum Order {
     SetStage { index: usize, stage: Stage },
     RemoveStage { index: usize },
     SetExtraPerDay { extra: f32 },
+    /// The constant spawn's specials (breeds that come along in every group from their day on) – the whole list anew.
+    SetSpecials { specials: Vec<ConstantSpecial> },
 
     // --- Buildings ---
     /// Build a building, `tile` = top left tile, `turned` by 90° (gate). Invalid spots are ignored (`can_place`),
@@ -158,7 +160,7 @@ impl World {
             }
             Order::SpawnZombies { count } => {
                 let all: Vec<usize> = (0..self.spawners.len()).collect();
-                self.spawn_from(&all, *count, Breed::Runner, false);
+                self.spawn_from(&all, *count, Breed::Runner, false, 0);
             }
             #[cfg(test)]
             Order::SpawnZombiesAt { count, point } => self.spawn_cluster(*count, *point),
@@ -278,6 +280,7 @@ impl World {
                 }
             }
             Order::SetExtraPerDay { extra } => self.constant.extra_per_day = extra.max(0.0),
+            Order::SetSpecials { specials } => self.constant.specials = specials.clone(),
             Order::PlaceBuilding { kind, tile, turned, editor: false } => {
                 // The price is worked out before building: built over walls, the gate gets part of theirs back.
                 let cost = self.build_cost(*kind, *tile, *turned);

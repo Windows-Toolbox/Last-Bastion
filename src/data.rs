@@ -179,7 +179,7 @@ pub struct Zombies {
     pub armored: BreedStats,
     pub spitter: BreedStats,
     pub infested: BreedStats,
-    pub screamer: BreedStats,
+    pub harpy: BreedStats,
     pub giant: BreedStats,
     /// Time between two hits (read in seconds, kept in ticks) – for every breed without its own `attack_seconds`.
     #[serde(rename = "hit_every_seconds", deserialize_with = "seconds")]
@@ -222,6 +222,9 @@ pub struct Roaming {
     /// They lie in packs on one tile each, `[fewest, most]` zombies per pack – so never more than `most` on a tile at
     /// the start (TAB: up to 3).
     pub pack: [u32; 2],
+    /// Over this many tiles beyond the ring around the command center (the smallest `keep_out`) they thin out toward
+    /// it: right at the ring hardly any, one per tile; this far out as many as anywhere, in full packs.
+    pub ring_ramp: f32,
     /// A zombie inside the ring its breed keeps out of (`keep_out` of the difficulty – lured in there, your bad luck)
     /// strolls on at random from there: on every trip it may get at most this many tiles closer to the command center.
     /// Trips further in are dropped, so on the whole it drifts back out – nothing is kept per zombie for it.
@@ -230,7 +233,7 @@ pub struct Roaming {
     /// villages of doom and the guards of loot are mixed the same way. Closer than its `keep_out` (difficulty) a breed
     /// never lies – there it's a walker.
     pub mix: Vec<Mix>,
-    /// The giants (`giants` of the difficulty) lie at least this far out – share of the way, like `from`.
+    /// The giants (`giants` of the map) lie at least this far out – share of the way, like `from`.
     pub giants_from: f32,
 }
 
@@ -349,12 +352,14 @@ pub struct BreedStats {
     /// Experience it gives when it dies, split among your units nearby (`sim/veterans.rs`). Left out: 1.
     #[serde(default = "one")]
     pub xp: u32,
-    /// A screamer: seeing one of your units it screams – this much noise where it stands (`sim/sound.rs`) …
+    /// Leaps over walls (and gates) up to this many tiles thick instead of tearing them down (TAB's harpy, `leap_over`)
+    /// – a thicker wall it hits. Left out: 0 – it never leaps.
     #[serde(default)]
-    pub scream: u32,
-    /// … and again at the earliest after this long (read in seconds, kept in ticks).
-    #[serde(default, rename = "scream_every_seconds", deserialize_with = "seconds")]
-    pub scream_every: u32,
+    pub jump: f32,
+    /// Every hit it lands makes this much noise where it stands (`sim/sound.rs`) – the zombies' noise, not counted
+    /// in the unrest. Left out: `zombie_hit` of `data\sound.json`.
+    #[serde(default)]
+    pub hit_noise: Option<u32>,
     /// Its picture: a sprite in `assets\` (`sprites.rs`), e.g. `"test/figure"`. Missing: a box.
     pub sprite: Option<String>,
 }
@@ -483,9 +488,8 @@ pub struct Difficulty {
     pub village_houses_percent: u32,
     /// … and this many zombies asleep in every house – the same in each.
     pub doom_zombies: u32,
-    /// Giants on a map of TAB's size (256) – more on a bigger one, fewer on a smaller one, far out (`place_giants`).
-    #[serde(default)]
-    pub giants: u32,
+    /// The giants: this many percent as many as the map says (`giants` of its setup, `place_giants`).
+    pub giants_percent: u32,
     /// Zombies hidden around a pile of loot: `[near the base, at the edge]` – in between it grows with the distance.
     pub loot_guards: [u32; 2],
     /// Every wave this many percent of the counts in `spawning.json` …
@@ -503,7 +507,7 @@ pub struct KeepOut {
     pub armored: f32,
     pub spitter: f32,
     pub infested: f32,
-    pub screamer: f32,
+    pub harpy: f32,
     pub giant: f32,
 }
 
@@ -516,7 +520,7 @@ impl KeepOut {
             Breed::Armored => self.armored,
             Breed::Spitter => self.spitter,
             Breed::Infested => self.infested,
-            Breed::Screamer => self.screamer,
+            Breed::Harpy => self.harpy,
             Breed::Giant => self.giant,
         }
     }
@@ -653,7 +657,7 @@ impl GameData {
             Breed::Armored => &self.zombies.armored,
             Breed::Spitter => &self.zombies.spitter,
             Breed::Infested => &self.zombies.infested,
-            Breed::Screamer => &self.zombies.screamer,
+            Breed::Harpy => &self.zombies.harpy,
             Breed::Giant => &self.zombies.giant,
         }
     }

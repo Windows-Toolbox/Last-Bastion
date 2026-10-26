@@ -6,6 +6,7 @@
 use macroquad::prelude::*;
 
 use crate::app::Program;
+use crate::keymap::KeyMap;
 use crate::settings::{self, Settings, WindowMode};
 use crate::widgets::{button, choice, slider, toggle, Column};
 
@@ -29,25 +30,31 @@ pub enum MenuAction {
 enum Page {
     Main,
     Settings,
+    Keys,
 }
 
 pub struct Menu {
     pub open: bool,
     page: Page,
     program: Program,
+    /// The page "Key mapping" – kept, so it opens again on the tab it was left on.
+    keymap: KeyMap,
 }
 
 impl Menu {
     pub fn new(program: Program) -> Menu {
-        Menu { open: false, page: Page::Main, program }
+        Menu { open: false, page: Page::Main, program, keymap: KeyMap::new() }
     }
 
-    /// Esc: open the menu – inside the menu one page back – on the first page close it.
+    /// Esc: open the menu – inside the menu one page back – on the first page close it. While a new key is being
+    /// set, Esc only stops that.
     pub fn escape(&mut self) {
         if !self.open {
             self.open = true;
             self.page = Page::Main;
-        } else if self.page == Page::Settings {
+        } else if self.page == Page::Keys && self.keymap.escape() {
+            // Stayed on the page.
+        } else if self.page != Page::Main {
             self.page = Page::Main;
         } else {
             self.open = false;
@@ -70,17 +77,26 @@ impl Menu {
                 }
                 MenuAction::Nothing
             }
+            Page::Keys => {
+                if self.keymap.show(&mut settings.keys) {
+                    self.page = Page::Main;
+                }
+                MenuAction::Nothing
+            }
         }
     }
 
     fn main_page(&mut self) -> MenuAction {
         let editor = self.program == Program::Editor;
-        let mut col = Column::centered(if editor { "Editor menu" } else { "Game menu" }, 8, WIDTH);
+        let mut col = Column::centered(if editor { "Editor menu" } else { "Game menu" }, 9, WIDTH);
         if button(col.row(), "Resume", true) {
             self.open = false;
         }
         if button(col.row(), "Settings", true) {
             self.page = Page::Settings;
+        }
+        if button(col.row(), "Key mapping", true) {
+            self.page = Page::Keys;
         }
         // `bool::then_some`: `Some(action)` if the button was clicked, otherwise `None`. Every `button` call is made (each
         // one draws its button), `or` keeps the first `Some`.

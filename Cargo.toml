@@ -7,6 +7,9 @@ edition = "2024"
 default-run = "last_bastion"
 
 [dependencies]
+# egui (a whole toolbox of fields, lists and panels) drawn by macroquad – the map editor's panel (`src\editor.rs`).
+# The game doesn't show it (yet, DESIGN.md 12.6).
+egui-macroquad = "0.17.3"
 libm = "0.2.16"
 macroquad = "0.4.16"
 # The zombies think side by side on all cores (`src\sim\zombies.rs`) – every one comes out as if worked out alone.

@@ -19,8 +19,8 @@
   welcher Ansatz, welche Alternative verworfen wurde). Ich will Rust und das Spiel dabei verstehen, nicht nur Code
   bekommen – Rust-Besonderheiten, die neu sind (Ownership, Borrowing, Traits …), kurz erklären.
 - **Neuen Code Stück für Stück erklären** (so wie beim ersten Fenster): jeden Abschnitt zeigen und
-  erklären, was er tut und was die Syntax bedeutet – mit Vergleich zu Python/pygame, wo es passt. Neue Zeichen und
-  Begriffe am Ende in einem kleinen Spickzettel (Rust ↔ Python). Was schon erklärt wurde, nur kurz erwähnen statt
+  erklären, was er tut und was die Syntax bedeutet – mit Vergleich zu Python/pygame, wo es passt. **Kein
+  Spickzettel** am Ende. Was schon erklärt wurde, nur kurz erwähnen statt
   jedes Mal neu – außer es wird anders benutzt. Auch Hilfsdateien (`Cargo.toml`, Skripte) kurz erklären und zum
   passenden Kapitel im Rust-Buch verweisen.
 - **Am Ende eine kurze Zusammenfassung** in ein paar Sätzen im Chat. Ändert sich, was der Prototyp kann, wird
@@ -35,7 +35,7 @@
 | Datei | Was |
 |---|---|
 | `DESIGN.md` | Design-Dokument: Säulen, Runde, Wirtschaft, Einheiten, Zombies, Karte, Technik, Fahrplan, offene Fragen |
-| `Cargo.toml` / `Cargo.lock` | Rust-Projekt und Bibliotheken (`macroquad`, `serde`/`serde_json`, `libm`, `rayon`) / ihre genauen Versionen |
+| `Cargo.toml` / `Cargo.lock` | Rust-Projekt und Bibliotheken (`macroquad`, `egui-macroquad`, `serde`/`serde_json`, `libm`, `rayon`) / ihre genauen Versionen |
 | `build.ps1` | Baut beide Programme nach `dist\LastBastion.exe` und `dist\LastBastionEditor.exe` |
 | `data\` | **Alle Spielwerte** als JSON (Einheiten, Gebäude, Zombies, Lärm, Streuner, Villages of Doom, Beute, Kolonie, Spawn, Schwierigkeiten, Spieldauer, Karten) – erklärt in `data\README.md` |
 | `assets\` | **Bilder** (Sprite-Sheets) der Zombies und Einheiten – erklärt in `assets\README.md` |
@@ -52,9 +52,10 @@
 | `src\mapgen\` | Kartengeneratoren (Wild, Regions, Rings, Canyons, Blank), Wege hinein, Erz und Öl, Dörfer und Beute (`villages.rs`), Werkzeuge (auch Erde) |
 | `src\mapfile.rs` | Eine Runde = eine Datei (`%APPDATA%\Last Bastion\maps\`) |
 | `src\home.rs`, `menu.rs`, `widgets.rs`, `settings.rs` | Startbildschirm und Karten-Einstellung / Esc-Menü / Knöpfe und Regler / Einstellungen |
+| `src\keys.rs`, `keymap.rs` | Welche Taste was tut (Standard, gespeichert in `settings.json`) / die Seite „Key mapping“ |
 | `src\ui.rs`, `cursor.rs` | Maus und Tastatur → Auswahl, Gruppen, Kamera, Befehle / echte Windows-Maus |
 | `src\hud.rs` | Die Leiste unten wie in TAB (Minimap, Uhr, Gruppen, Auswahl, Befehlskarte, Vorräte) |
-| `src\editor.rs` | Das Panel des Editors |
+| `src\editor.rs`, `src\undo.rs` | Das Panel des Editors (egui) / Rückgängig und Wiederholen |
 | `src\draw.rs`, `sprites.rs` | Zeichnen (Bilder, sonst Platzhalter) / Sprite-Sheets laden, Richtung und Animation wählen |
 | `src\picture.rs`, `iso.rs` | Kartenbild für Minimap und Vorschau / isometrische Kamera |
 | `src\noise.rs`, `rng.rs` | Rauschen für die Generatoren / eigener Zufallsgenerator |
@@ -93,7 +94,7 @@
 
 ### Startbildschirm und Karten-Einstellung
 
-- New game, Map editor, **Custom maps** (Play / Edit / Delete), Settings, Quit.
+- New game, Map editor, **Custom maps** (Play / Edit / Delete), Settings, **Key mapping**, Quit.
 - **New game** (wie TAB): **Karte**, **Schwierigkeit** und **Dauer** wählen, Seed, Vorschau – dazu der
   **Score-Faktor** (Karte × Schwierigkeit × Dauer; eine Punktzahl gibt es noch nicht).
   - **Karten** (`data\game_maps.json`): **Peaceful Lowlands** (Wild wie TABs Karte: trockene Ebenen, grüne Wiesen mit
@@ -149,18 +150,22 @@
   und um Beute.
 - **Die Balance machen die Arten, nicht die Menge:** nahe der Basis ≈ 1 pro Kachel, nur Walker; am Rand ≈ 1,6, davon
   über die Hälfte Runner, Riots, Infested, Spitter, Fat.
-- **Wie nah jede Art ans Kommandozentrum darf** (`keep_out` der Schwierigkeit, Normal: Walker und Runner 10, Riot und
-  Infested 25, Spitter 30, Fat 35 Kacheln; Brutal: alle 10) – beim Verteilen und beim Bummeln, auch nicht auf dem
+- **Wie nah jede Art ans Kommandozentrum darf** (`keep_out` der Schwierigkeit, Normal: Walker und Runner 14, Riot und
+  Infested 25, Spitter 30, Fat 35 Kacheln; Brutal: alle 14) – beim Verteilen und beim Bummeln, auch nicht auf dem
   Weg zum Ziel. Angelockte und Wellen dürfen näher – Angelockte bummeln von dort zufällig weiter, pro Ausflug
-  höchstens 3 Kacheln tiefer (`inside_step`), im Ganzen wieder hinaus.
+  höchstens 3 Kacheln tiefer (`inside_step`), im Ganzen wieder hinaus. **Sanfter Rand:** direkt am Ring liegen sie
+  dünn und einzeln, erst 6 Kacheln weiter (`ring_ramp`) so viele wie überall, bis 3 pro Kachel.
 - **Arten:** **Walker** (langsam), **Runner** (schnell), **Fat** (groß, 600 HP), **Riot** (TABs gepanzerter Runner:
   schnell, Rüstung 3 – ein Pfeil macht nur 7), **Spitter** (TABs Venom: spuckt Säure 3,5 Kacheln weit, über Mauern;
   sie fliegt kurz und trifft alle im Umkreis von 1 Kachel – wer rechtzeitig weggeht, entkommt), **Infested** (SC2s
-  Infested Marine: schießt 4,5 Kacheln, knapp unter dem Soldaten), **Screamer** (gelb, sieht 8 Kacheln weit: entdeckt
-  er eine Einheit, schreit er – Lärm 1.500, holt alles in der Nähe und weckt Schlafende; alle 10 s wieder – zuerst
-  erschießen!), **Riese** (wie TAB, etwas kleiner: 3.000 HP, Rüstung 6, 150 Schaden – eine Mauer in 3 Schlägen; nur ein
-  paar pro Karte weit draußen, `giants` der Schwierigkeit: Easy 2, Normal 4, Hard 6, Brutal 9 auf 256er-Karten – die
-  Schlusswelle ruft auch sie). Weiter draußen mehr von den harten Arten.
+  Infested Marine: schießt 4,5 Kacheln, knapp unter dem Soldaten), **Harpyie** (TABs Harpy, gelb: schnell, ihr
+  reicht 2–4× leiserer Lärm als den anderen, sie hört 32 Kacheln weit und kommt zu jedem Kampf als Erste; jeder ihrer Treffer macht Lärm 200, alle 0,75 s –
+  das addiert sich, nach ein paar Sekunden kommt alles in der Nähe – zuerst erschießen! **Springt über Mauern und
+  Tore** bis 3 Kacheln dick (0,6 s in der Luft), wenn ihr Ziel dahinter liegt; eine dickere Mauer schlägt sie ein),
+  **Riese** (wie TAB, etwas kleiner: 3.000 HP, Rüstung 6, 150 Schaden – eine Mauer in 3 Schlägen; nur ein paar pro
+  Karte weit draußen – **wie viele, sagt die Karte** (Einstellung „Giants“, Standard 4 auf 256er-Karten, Peaceful
+  Lowlands 2, Broken Lands 5, Open Plains 6), die Schwierigkeit macht daraus 50 % bis 225 % – die Schlusswelle ruft
+  auch sie). Weiter draußen mehr von den harten Arten.
 - **Schlafen weit weg** (DESIGN.md 8.5): Wer weit weg von deinen Augen liegt, schläft – kostet fast nichts. Wach werden
   sie, wenn eine Einheit oder ein Gebäude auf Sichtweite + 8 Kacheln herankommt (bevor du sie siehst), durch Lärm
   (genau wie die wachen – und gehen hin), durch Scan, Sprengfass und die Schlusswelle (alle, 2.000 pro Takt, die
@@ -168,6 +173,12 @@
 - **Auch Schlafende bummeln** – Ausflug für Ausflug wie die wachen (nur kommen sie sofort an und warten dann, so lange
   der Weg gedauert hätte). Ein Ausflug, der nahe deiner Augen endet, weckt sie unterwegs: Sie laufen wach von außen
   herein. **Ein leergeräumter Ort füllt sich so wieder auf** – die Zombies gehen dir nicht aus.
+- **Gedränge wie in TAB:** Zombies stehen ein Stück ineinander (bis zu einem Viertel), nie verschmolzen und nicht in
+  Reihen. Wer blockiert ist, weicht seitlich aus – vor Mauern und Lücken fließen die hinteren um den Haufen herum.
+  **Sie schieben sich:** wer in einen anderen läuft, schiebt ihn mit – auch herumstehende Bummler. Fat und Riese
+  schieben Kleine weg, ein Walker bewegt einen Riesen kaum. **Die ganze Masse drückt:** wer geschoben wird, schiebt
+  weiter – vor einer Mauer drückt sie die vorderen seitlich auseinander, statt sich dahinter anzureihen. Die Masse
+  steht dabei ruhig, ohne zu zittern, und schlingert nicht durch Lücken.
 - **Einblenden:** Zombies kommen sanft ins Bild (0,6 s) und verschwinden sanft (0,8 s) – wie TAB, kein Aufploppen am
   Sichtrand. Im Editor („All“, „Zombies“) sieht man auch die Schlafenden, dunkler.
 - **Streuner bummeln ohne festen Platz:** jeder Ausflug bis zu Walker 8 Kacheln, Runner 14, Riot 18, Infested 22,
@@ -213,7 +224,7 @@
   den Zombie zurück** (0,6 Kacheln, große weniger: Fat ≈ die Hälfte, Riese ≈ ein Viertel), **fast lautlos** (Lärm 2 pro
   Stich – etwas mehr als ein Zombie-Treffer, weniger als ein Gewehrschuss). Hält früh eine
   Linie oder ein Tor – gegen Spitter und Infested stirbt er.
-- **Veteranen:** jeder Zombie, der stirbt, gibt Erfahrung (Walker 1, Riot/Spitter/Infested/Screamer 3, Fat 10, Riese
+- **Veteranen:** jeder Zombie, der stirbt, gibt Erfahrung (Walker 1, Riot/Spitter/Infested/Harpyie 3, Fat 10, Riese
   100), geteilt unter allen Einheiten in 8 Kacheln – Veteranen nehmen einen halben Anteil. Bei 20 wird eine Einheit
   **Veteran**: +25 % HP (sofort), +20 % Schaden, silberne Marke, desertiert dreimal seltener. Söldner lernen nicht.
 - **Entlassen (Entf):** die ausgewählten Einheiten verlassen die Kolonie – kein Unterhalt mehr, Arbeiter frei, kein
@@ -234,7 +245,9 @@
 
 ### Die Leiste unten (wie TAB)
 
-- **Minimap** (klicken/ziehen = Kamera, Rechtsklick = hinlaufen).
+- **Minimap** (klicken/ziehen = Kamera, Rechtsklick = hinlaufen). Immer sichtbar, auch im Nebel: jeder **Riese**
+  (oranger Punkt, wach oder schlafend) und jeder **Schwarm einer Welle** (rotes Warndreieck in seiner Mitte, größer
+  je mehr er hat – eine Welle von zwei Seiten sind zwei Schwärme; noch im Spawn-Ring: am Rand der Minimap).
 - **Uhr:** Tag, Stunde, **Pause-Knopf**, Tempo, nächste Welle (Schlusswelle rot).
 - **Kontrollgruppen** 1–0 untereinander.
 - **Auswahl:** eine Sache = Bild, Name, Lebensbalken (HP + Schild in einem), Text, Werte in Kästchen; mehrere = Symbole.
@@ -267,8 +280,20 @@
 | Mittlere Maus ziehen | Karte verschieben |
 | Strg + F5–F8 / F5–F8 | Kamera merken / hinspringen. Rücktaste: zur Basis |
 | Leertaste | Pause (Befehle gehen weiter) · `+` / `-`: Tempo ×1–×8 |
-| Esc | Bricht ab, was wartet → hebt die Auswahl auf → Spielmenü (Settings, Restart, New map, Main menu) |
+| Esc | Bricht ab, was wartet → hebt die Auswahl auf → Spielmenü (Settings, **Key mapping**, Restart, New map, Main menu) |
 | F3 / F12 | Messwerte, Schalter, Tastenhilfe (Abschnitte per Klick ein-/ausklappen) / Maus im Fenster halten an/aus |
+
+- **Die Tabelle zeigt die Standardtasten – jede ist änderbar:** Esc → **Key mapping** (auch im Startbildschirm).
+  - 5 Tabs: Kamera und Zeit, Auswahl und Gruppen, Einheiten (Befehle, Formationen), Kommandozentrum (die Baumenüs und
+    **jedes Gebäude darin**, wie in TAB), Gebäude (Ausbilden, Sammelpunkt, Reparieren, On/Off …).
+  - Je Aktion **2 Tasten**. Kästchen anklicken → neue Taste drücken; Rechtsklick leert es, Esc bricht ab.
+  - **Rot** = zwei Aktionen haben dieselbe Taste auf einer Karte (oder beide überall). Maus auf der Zeile: was sonst
+    auf der Taste liegt bzw. die Standardtaste. „Defaults for this tab / for all“ setzt zurück.
+  - Fest bleiben **Shift, Strg** (Kette, 5 auf einmal, Gruppe setzen …), **Esc** und im Editor **Strg+S**, **Strg+Z** / **Strg+Y**.
+  - Die Befehlskarte geht vor: eine Taste, die auch überall gilt, wirkt nur, wenn die Karte sie gerade nicht hat (wie
+    X: Linie bei Einheiten, sonst alles reparieren). Kamera-Tasten, die auf einer Karte liegen, nur ohne Auswahl.
+  - F3-Tastenhilfe, Befehlskarte und Tooltips zeigen immer die eingestellten Tasten. Gespeichert in `settings.json`
+    unter `keys` – nur, was vom Standard abweicht.
 
 ### Bauen
 
@@ -395,14 +420,19 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 - **Edit / Test** (F10): Edit = keine Zeit vergeht, alles wird so gespeichert. Test = die Runde läuft; zurück in Edit
   ist die Karte wieder wie vorher.
 - **Speichern:** Save / Strg+S. Ungespeichertes → Frage Save / Don't save / Cancel. „Revert to saved“ im Esc-Menü.
+- **Rückgängig:** Undo / Strg+Z, Redo / Strg+Y (oder Strg+Shift+Z) – die letzten 20 Schritte, nur in Edit. Ein Schritt =
+  alles, solange die linke Maustaste gedrückt ist (ein ganzer Pinselstrich), oder eine einzelne Änderung.
 - **Gebäude** gehen im Editor überall hin und kosten nichts.
+- **Panel** (egui): Zahlen ziehen oder anklicken und tippen (Enter: übernehmen, Esc: abbrechen), Listen zum Aufklappen,
+  Abschnitte klappen mit einem Klick auf die Überschrift zu, das Mausrad scrollt das Panel. Solange man tippt, wirkt
+  keine Taste im Spiel.
 
 | Tab | Was |
 |---|---|
 | **Map** | Name (= Dateiname), Save, Close, New map, Tage, Startgold, Startholz |
 | **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinselgröße |
-| **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies (Pinsel / Drop, alle 6 Arten, stürmen / wandern), **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Constant / Periodic / Off), Sofort-Wellen |
-| **Waves** | Zeitleiste der Wellen (Zeit, **Final** = ruft alle Zombies der Karte, **Reveal** = deckt die Karte auf, Anzahl, Art, woher) und der konstante Spawn |
+| **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies (Pinsel / Drop, jede Art, stürmen / wandern, wie viele), **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Constant / Periodic mit Sekunden und Anzahl / Off) |
+| **Waves** | Sofort-Wellen, Zeitleiste der Wellen (Tag und Stunde, **Final** = ruft alle Zombies der Karte, **Reveal** = deckt die Karte auf, Anzahl, Art, woher) und der konstante Spawn (Stufen: ab wann, Art, alle wie viele Sekunden, Gruppengröße – Zuwachs pro Tag danach – **Specials**: Anteil einer Art an jeder Gruppe ab einem Tag) |
 | **View** (immer) | All / Player / Zombies – durch wessen Augen man schaut |
 
 ### Für Entwickler

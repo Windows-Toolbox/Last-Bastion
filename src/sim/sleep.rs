@@ -54,6 +54,7 @@ pub struct Sleeper {
 }
 
 /// The sleepers, block by block.
+#[derive(Clone)]
 pub struct Sleep {
     /// Blocks across (and down) – the map is square.
     side: i32,

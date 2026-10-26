@@ -77,7 +77,7 @@ pub use orders::Order;
 pub use round::{plan_waves, Outcome, Score};
 pub use scan::Scanned;
 pub use sleep::Sleep;
-pub use spawning::{scaled_groups, stage_start, Corpse, SpawnMode, Spawner, TimedWave, WaveFrom};
+pub use spawning::{scaled_groups, Corpse, SpawnMode, Spawner, TimedWave, WaveFrom};
 pub use units::Unit;
 pub use zombies::{Breed, Zombie};
 
@@ -102,6 +102,7 @@ pub fn payout_ticks() -> u64 {
 /// `data\zombies.json`).
 pub const UNIT_RADIUS: f32 = 0.175;
 
+#[derive(Clone)]
 pub struct World {
     pub map: Map,
     pub base: Vec2,
@@ -222,6 +223,8 @@ pub struct World {
     /// once after the orders – not after every single wall of a dragged line.
     map_changed: bool,
     next_zombie_id: u32,
+    /// The last swarm of a wave (`Zombie::swarm`) – the next one gets the number after it.
+    next_swarm: u32,
     next_unit_id: u32,
     next_building_id: u32,
     next_spawner_id: u32,
@@ -282,7 +285,7 @@ impl World {
             world.spawn_unit(kind, pos);
         }
         world.scatter_roamers(difficulty.roaming_zombies);
-        world.place_giants(difficulty.giants);
+        world.place_giants(setup.common.giants * difficulty.giants_percent as f32 / 100.0);
         world.wake_near_eyes();
         world.update_vision();
         world
@@ -391,6 +394,7 @@ impl World {
             rng: Rng::new(seed ^ 0x5157_4F52_4C44),
             map_changed: false,
             next_zombie_id: 0,
+            next_swarm: 0,
             next_unit_id: 0,
             next_building_id: 0,
             next_spawner_id: 0,

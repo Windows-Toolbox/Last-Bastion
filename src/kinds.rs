@@ -7,7 +7,7 @@ use crate::data;
 use crate::map::Ore;
 
 /// The order here is also the order in the selection panel and for Tab.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub enum UnitKind {
     /// Tough, short range – in front in a formation.
     Soldier,
@@ -131,7 +131,7 @@ impl Stats {
 }
 
 /// Buildings. The order here is the order in the selection panel and for Tab (after the units).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub enum BuildingKind {
     CommandCenter,
     /// Trains your units – the only building that does (DESIGN.md 6, "Military").
@@ -428,6 +428,11 @@ impl BuildingKind {
     /// Does it make barrels (a production queue of them, `sim/blast.rs`)? The munitions factory.
     pub fn makes_barrels(self) -> bool {
         self.stats().barrel_storage > 0
+    }
+
+    /// The walls, and the gates in them – a harpy leaps over them (`leap_over`).
+    pub fn is_wall(self) -> bool {
+        matches!(self, BuildingKind::Wall | BuildingKind::StoneWall | BuildingKind::Gate)
     }
 
     /// The towers – units go in (`tower_slots`).

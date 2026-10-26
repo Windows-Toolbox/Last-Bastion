@@ -74,6 +74,12 @@ pub async fn run(program: Program) {
                 let before = home.settings.clone();
                 let action = home.frame(random_seed);
                 home.settings.apply_changes(&before);
+                // egui (the editor's panel) keeps every key and click until it's asked for them – also while no map is
+                // open. Emptied every frame here, or they would all reach the panel at once when the next map opens.
+                if program == Program::Editor {
+                    egui_macroquad::ui(|_| {});
+                    egui_macroquad::draw();
+                }
                 match action {
                     HomeAction::Nothing => {}
                     HomeAction::Start { seed, setup } => {

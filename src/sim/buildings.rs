@@ -17,6 +17,7 @@ pub const MAX_PRODUCTION: usize = 5;
 /// "No building on this tile" in `building_at`.
 pub(super) const NO_BUILDING: u32 = u32::MAX;
 
+#[derive(Clone)]
 pub struct Building {
     pub id: u32,
     pub kind: BuildingKind,

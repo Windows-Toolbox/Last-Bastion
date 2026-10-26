@@ -11,6 +11,7 @@ use macroquad::math::{vec2, Vec2};
 
 use crate::map::Map;
 
+#[derive(Clone)]
 pub struct Vision {
     size: usize,
     /// Per tile: does someone see it right now? Computed anew every tick.

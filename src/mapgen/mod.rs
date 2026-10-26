@@ -165,6 +165,10 @@ pub struct Common {
     pub houses_near: f32,
     pub houses_edge: f32,
     pub loot_piles: f32,
+    /// Giants on a map of TAB's size (256) – more on a bigger one, fewer on a smaller one, far out (`place_giants`).
+    /// The difficulty makes them more or fewer (`giants_percent`). The generator doesn't place them – the world does,
+    /// asleep like the roamers.
+    pub giants: f32,
     /// Share of the open ground that is dirt – no farm grows there (`Terrain::Dirt`).
     pub dirt: f32,
     /// Ore patches per 10,000 tiles (besides the three in the start area), their size and richness (`ores.rs`).
@@ -188,6 +192,7 @@ impl Default for Common {
             houses_near: 3.0,
             houses_edge: 6.0,
             loot_piles: 6.0,
+            giants: 4.0,
             dirt: 0.4,
             ore_patches: 5.0,
             ore_size: 5.0,
@@ -280,6 +285,15 @@ impl Common {
                 step: 1.0,
                 show: Show::Number,
                 help: "Piles of gold, wood, stone, iron ore or coal per 10,000 tiles. Walk onto one to pick it up - but zombies lie hidden around it and come out when you get close. 6 on 256 tiles: about 40.",
+            },
+            Field {
+                label: "Giants",
+                value: &mut self.giants,
+                min: 0.0,
+                max: 16.0,
+                step: 1.0,
+                show: Show::Number,
+                help: "Giants on a map of 256 tiles - more on a bigger one, fewer on a smaller one (at least one, if any). They sleep far out and stroll like the others; the final wave calls them. The difficulty makes them more or fewer. The minimap always shows where they are.",
             },
             Field {
                 label: "Dirt",

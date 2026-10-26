@@ -22,6 +22,7 @@ use macroquad::prelude::*;
 use crate::app::{self, Program};
 use crate::data;
 use crate::iso::{iso, TILE_H, TILE_W};
+use crate::keymap::KeyMap;
 use crate::map::{Map, Region};
 use crate::mapfile::{self, Entry, MapFile};
 use crate::mapgen::{self, Generator, MapSetup, RoundSetup};
@@ -49,6 +50,7 @@ enum Page {
     Setup,
     Maps,
     Settings,
+    Keys,
 }
 
 /// This many maps fit on the maps page at once – the mouse wheel scrolls the rest.
@@ -74,6 +76,8 @@ pub struct Home {
     delete_armed: Option<(PathBuf, f64)>,
     /// A line for the player (a map that couldn't be loaded, the editor that couldn't be started …).
     pub message: Option<String>,
+    /// The page "Key mapping" (`keymap.rs`) – the same as in the Esc menu.
+    keymap: KeyMap,
 }
 
 /// The values of the last setup are kept here, so the setup screen starts where you left it.
@@ -112,6 +116,7 @@ impl Home {
             scroll: 0,
             delete_armed: None,
             message: None,
+            keymap: KeyMap::new(),
         }
     }
 
@@ -128,7 +133,10 @@ impl Home {
         clear_background(Color::new(0.06, 0.07, 0.09, 1.0));
         self.refresh_preview();
         if self.seed_text.is_none() && is_key_pressed(KeyCode::Escape) && self.page != Page::Main {
-            self.page = Page::Main;
+            // While a new key is being set, Esc only stops that.
+            if !(self.page == Page::Keys && self.keymap.escape()) {
+                self.page = Page::Main;
+            }
             return HomeAction::Nothing;
         }
         match self.page {
@@ -140,6 +148,13 @@ impl Home {
                 self.draw_backdrop(0.8);
                 let mut col = Column::centered("Settings", 13, 460.0);
                 if settings_page(&mut col, &mut self.settings) {
+                    self.page = Page::Main;
+                }
+                HomeAction::Nothing
+            }
+            Page::Keys => {
+                self.draw_backdrop(0.8);
+                if self.keymap.show(&mut self.settings.keys) {
                     self.page = Page::Main;
                 }
                 HomeAction::Nothing
@@ -247,6 +262,9 @@ impl Home {
         }
         if button(col.row(), "Settings", true) {
             self.page = Page::Settings;
+        }
+        if button(col.row(), "Key mapping", true) {
+            self.page = Page::Keys;
         }
         col.gap();
         if button(col.row(), "Quit", true) {

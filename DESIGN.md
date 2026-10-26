@@ -334,7 +334,7 @@ one active ability** (low APM, clear identity).
 | **Ranger** | TAB | 1 | 1 | Fast, cheap, bow, weak damage | *Sprint* ❓ | Silent | Single runners, scouting | Masses, brutes |
 | **Spearman** | – (2026-10-24) | 1 | 1 | Cheap melee, every hit pushes back | ❓ | Nearly silent | Walkers and runners at a gate | Spitters, infested, giants |
 | **Soldier** | TAB | 1 | 2 | Rifle all-rounder, the backbone | *Stim*: faster, costs HP | Loud | Walkers, runners | Clumped swarms, brutes |
-| **Sniper** | TAB | 2 | 3 | Very long range, slow, huge damage | *Headshot* | Very loud | Brutes, spitters, screamers | Anything that reaches it |
+| **Sniper** | TAB | 2 | 3 | Very long range, slow, huge damage | *Headshot* | Very loud | Brutes, spitters, harpies | Anything that reaches it |
 | **Flamethrower** | TAB (Lucifer) | 2 | 3 | Short cone, burns the ground | *Burn ground* (also removes creep) | Loud | Swarms | Spitters, brutes |
 | **Medic** | SC | 2 | 2 | No attack, heals infantry nearby | *Restoration* | Silent | – (support) | Being targeted |
 | **Machine gunner** | – (mech) | 3 | 5 | Walker with a gun that **spins up** (25 % → 100 % in ≈ 3 s) | *Keep spinning* (energy + constant noise) | Very loud | Large hordes, holding a line | Brutes, surprises |
@@ -381,7 +381,7 @@ nothing.
 - Veterans count as half a share, so fresh units next to them still level at a sensible pace:
   `XP × own share / sum of shares`.
 - Makes losing a squad hurt; veterans are less likely to desert (7.2).
-- **In the prototype (2026-10-24, `src/sim/veterans.rs`):** walker 1, riot/spitter/infested/screamer 3, fat 10, giant
+- **In the prototype (2026-10-24, `src/sim/veterans.rs`):** walker 1, riot/spitter/infested/harpy 3, fat 10, giant
   100 XP, shared within 8 tiles of where the zombie fell; at 20 a unit is a veteran: +25 % HP, +20 % damage, a silver
   mark. Mercenaries take no share – they are better than veterans already.
 
@@ -399,15 +399,18 @@ nothing.
 | **Armored runner** (TAB's, shown as "Riot") | Fast like a runner, armor eats most of an arrow | Rangers alone can't hold it – soldiers and snipers can. |
 | **Spitter** (TAB's venom) | Ranged acid over walls, lands a moment later and splashes | Forces you out instead of turtling; step aside in time. |
 | **Infested** (StarCraft 2's infested marine) | Shoots back, just under a soldier's range | Your line takes fire too – no free kills from behind a wall. |
-| **Screamer** | Calls nearby zombies when it sees you | Kill it first! |
+| **Harpy** (like TAB's) | Fast, hears much further than the others, leaps over thin walls; every hit it lands is loud and it adds up | First at every fight – kill it before its noise brings the rest. |
 | **Swarm** | Tiny, fast, many, explodes on contact | Counters clumped armies. |
 | **Giant** (like TAB's) | Rare, huge, slow, smashes through walls and buildings | Late waves and the final wave. No other bosses. |
 
 **In the prototype:** walker, runner, **fat** (TAB's "chubby": big, 600 HP), armored runner ("Riot", armor 3),
 spitter (acid 3.5 tiles, flies, splashes 1 tile – units and buildings, never zombies), infested (shoots 4.5 tiles, the
-soldier 5), **screamer** (2026-10-24: sees 8 tiles, screams when it spots a unit – noise 1,500 that brings everything
-around and wakes the sleepers, again after 10 s), **giant** (2026-10-24, TAB's a bit smaller: 3,000 HP, armor 6, a wall
-in 3 hits – only a few per map, far out, `giants` of the difficulty; not in the waves, but the final wave calls them)
+soldier 5), **harpy** (alertness 8: noise 2–4× quieter than
+the others need brings it, from 32 tiles – it comes first; each hit noise 200 every 0.75 s – faster than noise fades, so it adds up; zombies' noise, no
+unrest; leaps over walls and gates up to 3 tiles thick when its goal lies behind them, hits thicker ones), **giant**
+(TAB's a bit smaller: 3,000 HP, armor 6, a wall in 3 hits – only a few per map, far out; how many is up to the map
+(`giants`, default 4 on 256 tiles), the difficulty scales it 50–225 %; not in the waves, but the final wave calls
+them)
 – values in `data\zombies.json`, the names too. The harder breeds lie further out (`mix` in `data\roaming.json`)
 and stroll further per trip (`stroll` per breed: walker 8 tiles … fat 30) – without a home they keep to (8.5).
 
@@ -419,6 +422,23 @@ and stroll further per trip (`stroll` per breed: walker 8 tiles … fat 30) – 
 - Without anything else: the nearest building within 5 tiles; wave zombies the command center (buildings in the way
   only avoided if the detour is short).
 - Sight is computed from the few units outwards, not from thousands of zombies.
+- **A crowd stands a little inside itself, like in TAB:** a zombie walks into another only up to its core (three
+  quarters of touching), the rest of its step slides along it and ¾ of what's blocked goes sideways – in front of
+  walls and gaps the horde piles up and flows around the pile, instead of merging into one or queuing up in rows. A
+  weak soft push makes room to the sides; a strong one made the crowd jitter.
+- **They push each other:** who walks into another's core pushes it along by ¾ of what's blocked, by weight (size²) –
+  a fat one or a giant shoves walkers aside, a walker hardly moves a giant. In the same tick, and the pushed one
+  doesn't walk into anybody's core either: where nobody can make room, nobody moves. Each keeps half its last step
+  and steps aside to the side it already moves to – no zigzag in a gap. Calm strollers are pushed too, as far as busy
+  ones – a runner shoves idle walkers aside instead of only going around them (8.5). Pushing
+  by walking in and pushing apart afterwards (before the cores) made 600 zombies at a wall step back and forth
+  23,000 times in 3 s – now about 70.
+- **The mass pushes, not only the ones right behind:** who is pushed presses on with it the next tick, but never
+  harder than it walks itself – so a crowd at a wall shoves its front aside along it instead of queuing up behind it
+  (of a stream of 200, 130 reach the wall instead of 96), and nobody is shoved faster than a zombie walks. Your units
+  have cores too: a crowd doesn't press zombies into them. Walking to a wall to hit it, a zombie's last step is only
+  as long as needed – a full step overshot, the crowd pushed it back out of reach, it walked in again: dozens stepped
+  back and forth every few ticks. To a unit it walks until its body touches, an arm's length within its reach.
 
 ### 8.2 Waves
 
@@ -480,7 +500,8 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
   `data\roaming.json`). Near the base nearly only walkers, further out the harder breeds (TAB's balance: by breed, not
   by how many). How many: the difficulty (`roaming_zombies`).
 - **How close each breed may come** – the difficulty's `keep_out`, in tiles from the command center (Normal: walkers
-  and runners 10, riots and infested 25, spitters 30, fat ones 35; Brutal: all 10). None lies closer at the start
+  and runners 14, riots and infested 25, spitters 30, fat ones 35; Brutal: all 14). Right at that ring they lie
+  thinly, one per tile – over `ring_ramp` (6) tiles they get as many as anywhere, in full packs. None lies closer at the start
   (there it's a walker instead), none strolls closer – not even on the straight way to its goal. Lured ones and waves
   may go closer. A lured one strolls on at random from where it is: every trip at most `inside_step` (3) tiles deeper,
   trips further in are dropped – so it may come a little closer, but on the whole drifts back out. Nothing is kept
@@ -509,8 +530,9 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
   `stroll` tiles from where it stands now (walker 8 … fat 30, `data\zombies.json`), never into its breed's ring around
   the command center (above). **No home it keeps to:** trip after trip it can get anywhere outside that ring. How
   close the special breeds come is up to the difficulty.
-- **Calm is cheap:** a stroller that notices nothing thinks only every 8th tick and isn't pushed hard by the crowd –
-  calm crowds may overlap a little while they stroll.
+- **Calm is cheap:** a stroller that notices nothing thinks only every 8th tick – calm crowds may overlap a little
+  while they stroll. Only with a busy zombie on its tile or the tiles around does it move every tick: then it can be
+  walked into and pushed (8.1).
 - **Falling asleep again:** a stroller that has been calm for **20 s** and is further than sight **+ 16 tiles** from
   every eye falls asleep where it stands (its hit points kept) – and strolls on asleep. Never after the final wave's
   call. Far away nothing costs anything, but the horde keeps moving.
@@ -619,7 +641,8 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 **The bottom bar like TAB's (2026-10-18)** – no top bar. From left to right: minimap · clock (day, hour, pause button,
 speed, next wave) · control groups · selection (portrait, name, life bar, text, values as small boxes) · command card
 (5 × 3, build menus) · stock (colonists, workers, food, energy; gold, wood, stone, iron, oil). Placeholder look in
-brass and dark wood until the real art (12.3). Later: noise/creep overlay on the minimap.
+brass and dark wood until the real art (12.3). The minimap always shows the giants and one warning mark in the middle
+of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: noise/creep overlay on the minimap.
 
 ### 11.2 Keys
 
@@ -641,8 +664,15 @@ brass and dark wood until the real art (12.3). Later: noise/creep overlay on the
 | Tab | Next type in the selection (planned: noise/creep overlay elsewhere) |
 | WASD / arrows / edge / wheel / middle mouse | Camera. **WASD only with nothing selected** |
 
-- **Every key will be changeable** in the settings (11.4).
-- macroquad reads keys by their **US position**: on a German keyboard the grid key "Y" arrives as Z (12.2).
+- **Every key is changeable** (the table shows the defaults): page *Key mapping* in the Esc menu and on the home
+  screen – tabs camera/time, selection/groups, units, command center (every build menu and **every building in it**,
+  like TAB's hotkeys), buildings. Up to **2 keys per action**; a key twice on one card (or twice among the global
+  keys) turns red.
+- **Fixed:** Shift and Ctrl (queue, credit, 5 at once, groups), Esc, Ctrl+S and Ctrl+Z / Ctrl+Y in the editor.
+- **The card comes first:** a global key that the current card also has only works without it (X: line formation for
+  units, otherwise repair all). A camera key that's on any card only moves the camera with nothing selected.
+- macroquad reads keys by their **US position**: on a German keyboard the grid key "Y" arrives as Z (12.2). The names
+  shown are a German keyboard's.
 
 ### 11.3 Feedback
 
@@ -653,11 +683,10 @@ brass and dark wood until the real art (12.3). Later: noise/creep overlay on the
 
 - **`%APPDATA%\Last Bastion\settings.json`** (open question 16) – a fixed place, so the toolbox finds it too. Saves go
   next to it. A button *Open settings folder* makes it easy to find.
-- Planned values: display, window mode, resolution, FPS limit/vsync, volume, UI scale, edge scrolling, language, key
-  bindings (as action → key name, e.g. `"attack_move": "T"`).
+- Planned values: display, window mode, resolution, FPS limit/vsync, volume, UI scale, edge scrolling, language.
 - **Never crash on a bad file:** missing values = defaults, unknown ones ignored.
 - **In the prototype:** window mode, edge scrolling, scroll speed, confine mouse, health bars, full command chain,
-  dev overlay. Key bindings still missing.
+  dev overlay, key bindings (`keys`: only the changed ones, action → first and second key, e.g. `"stop": ["Q", ""]`).
 
 ### 11.5 Save and load (like Factorio)
 
@@ -689,11 +718,12 @@ brass and dark wood until the real art (12.3). Later: noise/creep overlay on the
   continuum crowds so the horde flows around jams, RVO/ORCA for smoother crowds at gates.
 - **A big horde (`src/sim/zombies.rs`, `src/grid.rs`):** a tick of the simulation has 50 ms.
   - *Calm zombies are cheap:* a stroller with nothing to notice thinks only every 8th tick (each on another one) and
-    walks on with what it decided; it isn't pushed by the crowd either – that's only for the busy ones.
+    walks on with what it decided. Only next to a busy one does it move every tick, so it can be pushed – a calm crowd
+    far from them costs nothing more.
   - *Neighbours in memory:* every 2 s the list of zombies is sorted by where they stand, and the grid keeps each one's
     position, size and number in it, tile after tile – looking at the neighbours finds them in the processor's cache.
-  - *All cores:* what each zombie wants and how it's pushed apart is worked out side by side (`rayon`) – only reading,
-    collected in order, so the result is the same on every PC and the checksum doesn't change.
+  - *All cores:* what each zombie wants, its step in the crowd and how it's pushed apart is worked out side by side
+    (`rayon`) – only reading, collected in order, so the result is the same on every PC and the checksum doesn't change.
   - *Asleep far away* (8.5): zombies far from your eyes are plain entries per 8 × 8 tiles and cost nothing until your
     eyes, a sound, the scan or the final wave wakes them; calm ones far from everything fall asleep again.
   - Measured (256, `horde_tick_time`): 65,000 zombies, ≈ 2,200 of them awake near the base ≈ 0.4 ms per tick; ≈ 10 ms
@@ -706,6 +736,8 @@ brass and dark wood until the real art (12.3). Later: noise/creep overlay on the
 - Think in data: objects refer to each other by ID, plain `Vec`s of structs, no ECS library for now.
 - **macroquad** (open question 17): fastest start (only `cargo`), batches sprites by itself. Drawing stays behind a
   thin layer of our own, so SDL3/wgpu could replace it later.
+- **egui** (through `egui-macroquad`) for panels full of fields – typed numbers and names, drop-downs, folding
+  sections: the map editor's panel; later the dev tools in the game (12.6). macroquad draws it, after the HUD.
 - **Throwaway prototype (2026-10-15):** 10,000 zombies at 59 FPS, 2.1 ms simulation per tick – plenty of room.
 - **What macroquad can't do:**
   - fullscreen only borderless on the main monitor, no monitor list, vsync only a hint;
@@ -749,12 +781,17 @@ A 2–4 hour round is far too slow to test by playing.
 
 - **Planned:** jump to day X, speed ×4+, give gold, spawn zombies, start a wave, reveal the map, very short test
   rounds, debug views (flow fields, grid, noise), hot reload.
+- **Planned – a console like Factorio's:** most dev tools as commands, **hidden from normal players** (a command only
+  after typing `/`; panels for the bigger tools on egui, also in the game, opened from the console). In co-op the same
+  box is the **chat**, with **pings** (a spot on the map – click it in the chat and the camera goes there).
+  Hooks: a cheat changes the simulation, so it's an order like any other (deterministic, everyone sees it in the chat);
+  like Factorio, a round with cheats should later count for no score or research (10.2).
 - **In the prototype:** speed ×1–×8, F3 overlay (FPS, ms per tick, checksum, switches, key help – sections fold with a click), `--seed N`, an automatic balancing run
   of the mini round, PNG previews of the generators.
 - **Map editor** (`LastBastionEditor.exe`, own program since 2026-10-17, like TAB's): opens a map file, paints terrain,
   ore and oil, places units, buildings, zombies and spawners, edits the waves and the round, **Edit** (no time) /
   **Test** (the round runs, afterwards the map is as before). Every change is an order, so it stays deterministic.
-  The rework towards TAB + SC2 is planned in 12.9.
+  Its panel is on egui (12.2): numbers are typed or dragged. The rework towards TAB + SC2 is planned in 12.9.
 - **One game = one file:** every new round writes its map file to `%APPDATA%\Last Bastion\maps\`; "Restart" reads it.
 
 ### 12.7 Repository and toolbox
@@ -800,6 +837,7 @@ Same seed + same orders → **the same state, bit for bit**. Rules for the simul
 - **Hands off what your ally uses:** a unit belongs to a player while it's in their control group or carrying out
   their order; idle and in no group → free again (open question 25).
 - **No pause**, speed 1×; the Esc menu doesn't stop the game.
+- **Chat = the console** (12.6), with clickable pings.
 - **Everyone can save** (and continue alone), **only the host loads**. A dropped player can rejoin; if the host
   leaves, the round ends.
 
@@ -814,7 +852,11 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
   changes new maps. Changing the days in the editor moves only the final wave.
 - **Steps:**
   1. **UI foundation:** fields to type numbers and text into, drop-downs, scrolling lists, a properties panel, dialogs –
-     the column of +/- buttons doesn't carry many settings. Own widgets or egui (editor only) ❓. **Undo/redo.**
+     the column of +/- buttons doesn't carry many settings. **egui** – in the editor, and hidden in the game for the dev tools (12.6). **Undo/redo.**
+     *In the prototype:* the editor's panel is on egui (every number typed or dragged, drop-downs for breed and side,
+     sections that fold, the tab scrolls), plus the constant spawn's specials. Undo/redo (20 steps) keeps **orders, not
+     maps**: one copy of the map before the oldest step, and undo plays the other steps onto it again – exact, because
+     the simulation is deterministic (dice included); new orders need nothing extra for it.
   2. **Map settings (TAB's Info):** every value of the difficulty and duration per map (start, `keep_out`, zombies per
      house, wave plan – planned anew from rules or by hand), description; the constant spawn's specials.
   3. **Properties of what's placed (TAB's Entities):** select one or many and edit – zombies per house and their breeds,

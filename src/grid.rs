@@ -23,6 +23,7 @@ pub struct Body {
     pub radius: f32,
 }
 
+#[derive(Clone)]
 pub struct SpatialGrid {
     size: usize,
     /// Per tile where its entries start – tile k: `bodies[start[k]..start[k + 1]]`. One more than there are tiles.

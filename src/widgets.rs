@@ -19,6 +19,8 @@ pub const ON: Color = Color::new(0.30, 0.65, 0.35, 1.0);
 /// The picked one of a group of buttons.
 pub const LIT: Color = Color::new(0.25, 0.35, 0.20, 1.0);
 pub const ACCENT: Color = Color::new(0.95, 0.62, 0.20, 1.0);
+/// Something wrong: a key that's twice on one card.
+pub const BAD: Color = Color::new(0.92, 0.32, 0.27, 1.0);
 
 /// A column of rows: every call of `row()` gives the rectangle of the next row.
 pub struct Column {
@@ -211,6 +213,25 @@ pub fn field_slider(r: Rect, field: &mut Field) -> (bool, Option<&'static str>) 
     draw_rectangle_lines(bar.x, bar.y, bar.w, bar.h, 1.0, BORDER);
     draw_text(&field.text(), r.right() - value_w + 4.0, r.y + r.h / 2.0 + 6.0, 18.0, WHITE);
     (*field.value != before, hover.then_some(field.help))
+}
+
+/// A key on the page "Key mapping": its name in a box – lit while it waits for a new key, a red frame when it does
+/// two things at once. Returns whether it was clicked with the left and with the right mouse button.
+pub fn key_box(r: Rect, text: &str, waiting: bool, clash: bool) -> (bool, bool) {
+    let hover = r.contains(mouse());
+    let bg = if waiting {
+        LIT
+    } else if hover {
+        HOVER
+    } else {
+        BOX
+    };
+    draw_rectangle(r.x, r.y, r.w, r.h, bg);
+    let (edge, thick) = if clash { (BAD, 2.0) } else if waiting { (GREEN, 1.0) } else { (BORDER, 1.0) };
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, thick, edge);
+    let w = measure_text(text, None, 18, 1.0).width;
+    draw_text(text, r.x + (r.w - w) / 2.0, r.y + r.h / 2.0 + 6.0, 18.0, if waiting { ACCENT } else { WHITE });
+    (hover && is_mouse_button_pressed(MouseButton::Left), hover && is_mouse_button_pressed(MouseButton::Right))
 }
 
 /// Text on the left, the current value on the right. Returns `true` if clicked (then pick the next value).

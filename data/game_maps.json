@@ -7,7 +7,7 @@
       "score_percent": 100,
       "setup": {
         "generator": "wild",
-        "common": { "base_clear": 8, "dirt": 0.55 },
+        "common": { "base_clear": 8, "dirt": 0.55, "giants": 2 },
         "wild": { "scale": 44, "wobble": 20, "water": 0.14, "shore_detail": 3, "mountains": 0.02, "ridges": 0.0, "forest": 0.10, "forest_size": 8, "trees": 0.01, "rivers": 0 }
       }
     },
@@ -21,7 +21,7 @@
       "name": "Broken Lands",
       "about": "Regions walled off by rock and forest - hold the passes. Two huge villages of doom",
       "score_percent": 110,
-      "setup": { "generator": "regions", "common": { "villages": 0.3, "houses_near": 15, "houses_edge": 25 } }
+      "setup": { "generator": "regions", "common": { "villages": 0.3, "houses_near": 15, "houses_edge": 25, "giants": 5 } }
     },
     {
       "name": "Old Fortress",
@@ -39,7 +39,7 @@
       "name": "Open Plains",
       "about": "Grass and lone trees - nothing walls you in, nothing walls them out. Many small villages",
       "score_percent": 160,
-      "setup": { "generator": "blank", "common": { "villages": 4.0, "houses_near": 2, "houses_edge": 3 }, "blank": { "trees": 0.02 } }
+      "setup": { "generator": "blank", "common": { "villages": 4.0, "houses_near": 2, "houses_edge": 3, "giants": 6 }, "blank": { "trees": 0.02 } }
     }
   ]
 }

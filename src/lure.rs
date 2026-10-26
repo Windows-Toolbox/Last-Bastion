@@ -18,6 +18,7 @@ use crate::map::Map;
 
 const UNSEEN: u16 = u16::MAX;
 
+#[derive(Clone)]
 pub struct LureField {
     /// The cell it leads to – its key in the simulation's list.
     pub cell: (i32, i32),

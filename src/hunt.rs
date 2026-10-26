@@ -43,6 +43,7 @@ pub enum Through {
     Cost(u16),
 }
 
+#[derive(Clone)]
 pub struct HuntMap {
     size: usize,
     through: Through,

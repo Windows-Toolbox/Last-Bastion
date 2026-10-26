@@ -7,19 +7,17 @@ use macroquad::prelude::*;
 
 use crate::cursor::Cursor;
 use crate::data;
-use crate::draw::{draw_diamond, mark_color, ore_color, terrain_color, SpawnerShape, TESLA_GLOW, ZOMBIE};
+use crate::draw::{draw_diamond, draw_ring, mark_color, ore_color, terrain_color, SpawnerShape, TESLA_GLOW, ZOMBIE};
 use crate::editor::{Editor, Sight, Tool};
 use crate::formation::{self, Formation, Shape, MIN_DRAG};
-use crate::hud::{
-    menu_buttons, Button, HudHit, Layout, Submenu, BARRACKS_BUTTONS, COMMAND_CENTER_BUTTONS, INN_BUTTONS, MARKET_BUTTONS,
-    MUNITIONS_BUTTONS, REPAIR_BUTTONS, TOWER_BUTTONS, UNIT_BUTTONS,
-};
+use crate::hud::{building_buttons, menu_buttons, Button, HudHit, Layout, Submenu, COMMAND_CENTER_BUTTONS, UNIT_BUTTONS};
 use crate::iso::{Camera, TILE_H, TILE_W};
+use crate::keys::Action;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{from_frame, to_frame, Ore, Region, Terrain};
 use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
-use crate::sim::{Command, Mark, Order, Rally, Spawner, SwitchBlock, World, MAX_PRODUCTION};
+use crate::sim::{Command, Mark, Order, Rally, Spawner, SwitchBlock, World, MAX_PRODUCTION, UNIT_RADIUS};
 
 /// One entry of the selection, as an index into the world's list of units or buildings.
 #[derive(Clone, Copy, PartialEq)]
@@ -150,28 +148,13 @@ impl KeyRepeat {
     }
 }
 
-/// The keys of the control groups, in keyboard order: 1 … 9, then 0.
-const GROUP_KEYS: [KeyCode; 10] = [
-    KeyCode::Key1,
-    KeyCode::Key2,
-    KeyCode::Key3,
-    KeyCode::Key4,
-    KeyCode::Key5,
-    KeyCode::Key6,
-    KeyCode::Key7,
-    KeyCode::Key8,
-    KeyCode::Key9,
-    KeyCode::Key0,
+/// The camera keys and where each one moves it (on screen).
+const CAMERA: [(Action, Vec2); 4] = [
+    (Action::CameraUp, Vec2::new(0.0, -1.0)),
+    (Action::CameraLeft, Vec2::new(-1.0, 0.0)),
+    (Action::CameraDown, Vec2::new(0.0, 1.0)),
+    (Action::CameraRight, Vec2::new(1.0, 0.0)),
 ];
-/// Camera with WASD – but only while nothing is selected (`move_camera`).
-const WASD: [(KeyCode, Vec2); 4] = [
-    (KeyCode::W, Vec2::new(0.0, -1.0)),
-    (KeyCode::A, Vec2::new(-1.0, 0.0)),
-    (KeyCode::S, Vec2::new(0.0, 1.0)),
-    (KeyCode::D, Vec2::new(1.0, 0.0)),
-];
-/// Camera bookmarks like in StarCraft 2: Ctrl + F5–F8 to set, F5–F8 to jump.
-const BOOKMARK_KEYS: [KeyCode; 4] = [KeyCode::F5, KeyCode::F6, KeyCode::F7, KeyCode::F8];
 /// The edge of a spawner can be grabbed this many pixels away from it.
 const GRAB_PIXELS: f32 = 10.0;
 
@@ -649,6 +632,14 @@ impl Ui {
     }
 
     /// Which buttons the command card shows right now – and which keys are taken by them.
+    /// Was a key of `action` pressed in this frame – one the command card doesn't have right now? The card comes
+    /// first: X is the Line formation while units are selected, otherwise "repair all" (`keys.rs`).
+    fn global_pressed(&self, action: Action, card: &[Button]) -> bool {
+        let keys = &self.settings.keys;
+        let on_card = |key| card.iter().any(|&button| keys.has(Action::of(button), key));
+        keys.keys(action).into_iter().flatten().any(|key| is_key_pressed(key) && !on_card(key))
+    }
+
     pub fn card(&self, world: &World) -> Vec<Button> {
         if !self.has_selection() || self.selection_view(world).is_empty() {
             return Vec::new();
@@ -666,21 +657,7 @@ impl Ui {
                 None => COMMAND_CENTER_BUTTONS.to_vec(),
                 Some(menu) => menu_buttons(menu),
             },
-            Some(Sub::Building(kind)) => {
-                let mut card = match kind {
-                    BuildingKind::Barracks => BARRACKS_BUTTONS.to_vec(),
-                    BuildingKind::Inn => INN_BUTTONS.to_vec(),
-                    BuildingKind::MunitionsFactory => MUNITIONS_BUTTONS.to_vec(),
-                    BuildingKind::Market => MARKET_BUTTONS.to_vec(),
-                    BuildingKind::Tower | BuildingKind::StoneTower => TOWER_BUTTONS.to_vec(),
-                    _ => REPAIR_BUTTONS.to_vec(),
-                };
-                // Everything that runs can be switched off (Y).
-                if kind.can_switch_off() {
-                    card.push(Button::Switch);
-                }
-                card
-            }
+            Some(Sub::Building(kind)) => building_buttons(kind),
             None => Vec::new(),
         }
     }
@@ -708,7 +685,18 @@ impl Ui {
 
     pub fn handle_input(&mut self, world: &World, camera: &mut Camera, orders: &mut Vec<Order>, dt: f32) {
         self.forget_dead(world);
-        self.editor.sync(world, self.placing);
+        self.editor.sync(self.placing);
+        // What the editor's panel did this frame (it ran before, `Game::frame`): a building button hangs the building
+        // on the mouse; a tool taken in hand takes off whatever is on it – a building, a command waiting for its target.
+        if let Some(place) = self.editor.place.take() {
+            self.targeting = None;
+            self.placing = place;
+            if place.is_some() {
+                self.free_placing = true;
+                self.turned = false;
+                self.selected_buildings.clear();
+            }
+        }
         let layout = Layout::new();
         let mouse = Vec2::from(mouse_position());
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
@@ -729,19 +717,18 @@ impl Ui {
             self.parked = None;
         }
 
-        // While a name is being typed (spawner, map), the keyboard belongs to the name field: no hotkeys, no WASD.
+        // While something is typed into the editor's panel (a name, a number), the keyboard belongs to that field: no
+        // hotkeys, no WASD.
         let typing = self.editor.is_typing();
         // Esc with nothing else to cancel clears the selection – the next Esc opens the menu. Decided now, before
         // anything below cancels something: one press does one thing.
         let esc_deselects = !typing && is_key_pressed(KeyCode::Escape) && !self.has_pending();
-        if typing {
-            self.editor.type_text(orders);
-        } else if is_key_pressed(KeyCode::Escape) {
+        if !typing && is_key_pressed(KeyCode::Escape) {
             // Esc: first put the tool away, then deselect the spawner.
             if self.editor.tool.is_some() {
                 self.editor.tool = None;
             } else {
-                self.editor.select_spawner(None, orders);
+                self.editor.select_spawner(None);
             }
             self.form_drag = None;
         }
@@ -753,13 +740,13 @@ impl Ui {
         let card = self.card(world);
         self.mouse_buttons(world, camera, orders, &layout, mouse, shift, ctrl);
         // X: repair all (like TAB) – unless the card has a button on X right now (units: the Line formation).
-        if !typing && is_key_pressed(KeyCode::X) && !card.iter().any(|b| b.key() == KeyCode::X) {
+        if !typing && self.global_pressed(Action::RepairAll, &card) {
             self.repair(world, orders, (0..world.buildings.len()).collect());
         }
         if !typing {
             self.command_keys(world, orders, &card, shift, ctrl);
-            self.selection_keys(world, camera, shift, ctrl);
-            self.other_keys();
+            self.selection_keys(world, camera, &card, shift, ctrl);
+            self.other_keys(&card);
         }
         if esc_deselects {
             self.deselect();
@@ -838,7 +825,8 @@ impl Ui {
         let building = self.single_building(world);
         let queue = building.map_or(0, |b| world.buildings[b].production.len());
         // The editor panel and the overlay lie on top of the map: there it counts like the bottom panel (not the map).
-        let on_editor = self.editor.contains(mouse);
+        // A click on the editor's panel egui has already taken (`Editor::show`).
+        let on_editor = self.editor.has_mouse();
         let on_overlay = self.overlay.is_some_and(|r| r.contains(mouse));
         let hit = if on_editor || on_overlay {
             Some(HudHit::Panel)
@@ -852,24 +840,7 @@ impl Ui {
         };
 
         if is_mouse_button_pressed(MouseButton::Left) {
-            if !on_editor {
-                self.editor.finish_name(orders); // a click outside the name field ends typing
-            }
-            if on_editor {
-                self.editor.click(mouse, world, orders);
-                if self.editor.tool.is_some() {
-                    self.targeting = None;
-                    self.placing = None;
-                }
-                // A building button of the editor: hang the building on the mouse (or take it off again).
-                if let Some(place) = self.editor.place.take() {
-                    self.targeting = None;
-                    self.placing = place;
-                    self.free_placing = true;
-                    self.turned = false;
-                    self.selected_buildings.clear();
-                }
-            } else if let (Some(tool), None) = (self.editor.tool, hit) {
+            if let (Some(tool), None) = (self.editor.tool, hit) {
                 self.use_tool(tool, world, orders, point);
             } else if let (Some(kind), None) = (self.placing, hit) {
                 // Building on the mouse: the line starts here. It's built on release.
@@ -901,7 +872,7 @@ impl Ui {
             } else {
                 match hit {
                     // In the editor a click can grab a spawner – otherwise it starts the selection box.
-                    None if self.editor.editing() && self.spawner_press(world, camera, point, orders) => {}
+                    None if self.editor.editing() && self.spawner_press(world, camera, point) => {}
                     None => self.drag_start = Some(mouse),
                     Some(HudHit::Minimap(p)) => {
                         camera.center = p;
@@ -1067,7 +1038,7 @@ impl Ui {
 
     /// Left click in the editor (no tool): grab the edge of the selected spawner, or the inside of a spawner to
     /// move it. Returns whether a spawner was hit – if not, the selection box starts as usual.
-    fn spawner_press(&mut self, world: &World, camera: &Camera, point: Vec2, orders: &mut Vec<Order>) -> bool {
+    fn spawner_press(&mut self, world: &World, camera: &Camera, point: Vec2) -> bool {
         let tolerance = grab_tolerance(camera);
         let selected = self.editor.spawner.and_then(|id| world.find_spawner(id));
         let grabbed = match selected.and_then(|s| grab(&world.spawners[s], point, tolerance).map(|e| (s, e))) {
@@ -1079,11 +1050,11 @@ impl Ui {
             None => None,
         };
         let Some((s, edges)) = grabbed else {
-            self.editor.select_spawner(None, orders);
+            self.editor.select_spawner(None);
             return false;
         };
         let spawner = &world.spawners[s];
-        self.editor.select_spawner(Some(spawner.id), orders);
+        self.editor.select_spawner(Some(spawner.id));
         self.spawner_drag = Some(SpawnerDrag { spawner: spawner.id, edges, start: point, min: spawner.min, size: spawner.size });
         true
     }
@@ -1111,7 +1082,7 @@ impl Ui {
                 let waiting = orders.iter().filter(|o| matches!(o, Order::PlaceSpawner { .. })).count() as u32;
                 let center = to_frame(point).round();
                 orders.push(Order::PlaceSpawner { center: (center.x as i32, center.y as i32) });
-                self.editor.select_spawner(Some(world.next_spawner_id() + waiting), orders);
+                self.editor.select_spawner(Some(world.next_spawner_id() + waiting));
                 self.editor.tool = None;
             }
             // Never in the editor's hand – it goes onto the mouse as `placing` right away.
@@ -1267,7 +1238,7 @@ impl Ui {
             // (with Shift also the credit) and the coal pay for.
             Button::MakeBarrel => {
                 if self.editor.editing() && !self.editor.testing() {
-                    self.alert("No time passes while editing - make barrels in a test (F10)");
+                    self.alert(&format!("No time passes while editing - make barrels in a test ({})", self.settings.keys.label(Action::EditTest)));
                     return;
                 }
                 let blast = &data::get().buildings.blast;
@@ -1337,7 +1308,7 @@ impl Ui {
                     return;
                 };
                 if self.editor.editing() && !self.editor.testing() {
-                    self.alert("No time passes while editing - train units in a test (F10)");
+                    self.alert(&format!("No time passes while editing - train units in a test ({})", self.settings.keys.label(Action::EditTest)));
                     return;
                 }
                 if let Some(needed) = kind.stats().requires.filter(|_| !world.unit_unlocked(kind)) {
@@ -1402,7 +1373,7 @@ impl Ui {
     /// order arrives (`start_repair`); `world.gold` is only read here.
     fn repair(&mut self, world: &World, orders: &mut Vec<Order>, candidates: Vec<usize>) {
         if self.editor.editing() && !self.editor.testing() {
-            self.alert("No time passes while editing - repair in a test (F10)");
+            self.alert(&format!("No time passes while editing - repair in a test ({})", self.settings.keys.label(Action::EditTest)));
             return;
         }
         let plan = world.repair_plan(candidates);
@@ -1440,18 +1411,24 @@ impl Ui {
             return;
         }
         if card.is_empty() {
+            // Nothing selected that has these commands any more – but a building from the editor's panel hangs on no
+            // selection (`free_placing`), it stays on the mouse.
             self.targeting = None;
-            self.placing = None;
+            if !self.free_placing {
+                self.placing = None;
+            }
             return;
         }
-        // R turns the gate on the mouse (like in Factorio) – while placing it, R isn't "rally".
-        if self.placing == Some(BuildingKind::Gate) && is_key_pressed(KeyCode::R) {
+        // R turns the gate on the mouse (like in Factorio) – while placing it, R isn't the stakes of the menu.
+        if self.placing == Some(BuildingKind::Gate) && self.settings.keys.pressed(Action::TurnGate) {
             self.turned = !self.turned;
             return;
         }
         for &button in card {
             let repeats = button.trains().is_some() || button == Button::MakeBarrel;
-            let pressed = if repeats { self.repeat.pressed(button.key()) } else { is_key_pressed(button.key()) };
+            // `into_iter().flatten()`: the keys that are there (the `Some`s of the two places).
+            let keys = self.settings.keys.keys(Action::of(button));
+            let pressed = keys.into_iter().flatten().any(|key| if repeats { self.repeat.pressed(key) } else { is_key_pressed(key) });
             if pressed {
                 self.press(button, world, orders, shift, ctrl);
                 break; // the card may change (a build menu opens) – one button per key press
@@ -1636,20 +1613,20 @@ impl Ui {
     }
 
     /// Control groups, F2, Tab, camera bookmarks, Backspace.
-    fn selection_keys(&mut self, world: &World, camera: &mut Camera, shift: bool, ctrl: bool) {
-        for (g, &key) in GROUP_KEYS.iter().enumerate() {
-            if is_key_pressed(key) {
+    fn selection_keys(&mut self, world: &World, camera: &mut Camera, card: &[Button], shift: bool, ctrl: bool) {
+        for g in 0..10 {
+            if self.global_pressed(Action::Group(g), card) {
                 self.group_action(g, world, camera, shift, ctrl);
             }
         }
 
         // F2: the whole army (like in StarCraft 2).
-        if is_key_pressed(KeyCode::F2) {
+        if self.global_pressed(Action::SelectArmy, card) {
             self.select_units(world.units.iter().filter(|u| !u.is_inside()).map(|unit| unit.id).collect());
         }
 
         // Tab: to the next type in the selection, Shift+Tab: to the previous one.
-        if is_key_pressed(KeyCode::Tab) {
+        if self.global_pressed(Action::NextType, card) {
             let subs = self.subs_in_selection(world);
             if let Some(pos) = subs.iter().position(|&k| Some(k) == self.active) {
                 let next = (if shift { pos + subs.len() - 1 } else { pos + 1 }) % subs.len();
@@ -1658,8 +1635,8 @@ impl Ui {
             }
         }
 
-        for (b, &key) in BOOKMARK_KEYS.iter().enumerate() {
-            if is_key_pressed(key) {
+        for b in 0..4 {
+            if self.global_pressed(Action::Bookmark(b), card) {
                 if ctrl {
                     self.bookmarks[b] = Some(camera.center);
                 } else if let Some(center) = self.bookmarks[b] {
@@ -1668,7 +1645,7 @@ impl Ui {
             }
         }
         // Backspace: camera to the base (like StarCraft's jump to the main building).
-        if is_key_pressed(KeyCode::Backspace) {
+        if self.global_pressed(Action::Base, card) {
             camera.center = world.base;
         }
     }
@@ -1759,27 +1736,25 @@ impl Ui {
 
     /// Time, overlay, editor. The developer tools are buttons in the editor now (F10) –
     /// so the keys Insert, Home, Delete, End, Page Up/Down, F4 and F11 are free again.
-    fn other_keys(&mut self) {
-        if is_key_pressed(KeyCode::Space) {
+    fn other_keys(&mut self, card: &[Button]) {
+        if self.global_pressed(Action::Pause, card) {
             self.paused = !self.paused;
         }
-        // macroquad reports keys by their position on a US keyboard. On a German keyboard
-        // "+" is where US has "]", and "-" is where US has "/" – so check both.
-        if any_pressed(&[KeyCode::KpAdd, KeyCode::RightBracket, KeyCode::Equal]) {
+        if self.global_pressed(Action::Faster, card) {
             self.speed = (self.speed * 2).min(8);
         }
-        if any_pressed(&[KeyCode::KpSubtract, KeyCode::Slash, KeyCode::Minus]) {
+        if self.global_pressed(Action::Slower, card) {
             self.speed = (self.speed / 2).max(1);
         }
-        if is_key_pressed(KeyCode::F3) {
+        if self.global_pressed(Action::Overlay, card) {
             self.settings.dev_overlay = !self.settings.dev_overlay;
         }
         // Game view ↔ editor mode (the two buttons in the top right).
-        if is_key_pressed(KeyCode::F10) {
+        if self.global_pressed(Action::EditTest, card) {
             self.editor.toggle();
         }
         // Emergency exit if the confined mouse gets in the way (the setting is also in the menu).
-        if is_key_pressed(KeyCode::F12) {
+        if self.global_pressed(Action::ConfineMouse, card) {
             self.settings.confine_mouse = !self.settings.confine_mouse;
         }
     }
@@ -1788,20 +1763,17 @@ impl Ui {
     /// a name is being typed)?
     fn move_camera(&mut self, world: &World, camera: &mut Camera, mouse: Vec2, dt: f32, keys: bool) {
         let mut pan = Vec2::ZERO;
-        // WASD only while nothing is selected – units and buildings have their hotkeys right there (S = stop,
-        // Q, W, E …), and a key that sometimes moves the camera and sometimes doesn't is a trap.
-        // Ctrl held: not either (Ctrl+S, Ctrl+A … should never move the camera).
+        // A camera key that's also on a card (W A S D) only while nothing is selected – units and buildings have their
+        // hotkeys right there (S = stop, Q, W, E …), and a key that sometimes moves the camera and sometimes doesn't
+        // is a trap. Ctrl held: not either (Ctrl+S, Ctrl+A … should never move the camera). The arrows always.
         let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
         let selected = self.has_selection();
-        for (key, dir) in WASD {
-            if keys && is_key_down(key) && !ctrl && !selected {
-                pan += dir;
-            }
-        }
-        let arrows = [(KeyCode::Left, vec2(-1.0, 0.0)), (KeyCode::Right, vec2(1.0, 0.0)), (KeyCode::Up, vec2(0.0, -1.0)), (KeyCode::Down, vec2(0.0, 1.0))];
-        for (key, dir) in arrows {
-            if keys && is_key_down(key) {
-                pan += dir;
+        for (action, dir) in CAMERA {
+            for key in self.settings.keys.keys(action).into_iter().flatten() {
+                let free = !self.settings.keys.on_any_card(key) || (!ctrl && !selected);
+                if keys && is_key_down(key) && free {
+                    pan += dir;
+                }
             }
         }
         // At the edge only the real mouse counts: if the window has no focus or the mouse is outside
@@ -1837,13 +1809,13 @@ impl Ui {
         }
 
         let (_, wheel) = mouse_wheel();
-        // On the editor panel the wheel scrolls the panel, not the map.
-        if wheel != 0.0 && self.editor.contains(mouse) {
-            self.editor.scroll_by(wheel);
-        } else if wheel > 0.0 {
-            camera.zoom_by(1.15);
-        } else if wheel < 0.0 {
-            camera.zoom_by(1.0 / 1.15);
+        // On the editor panel the wheel scrolls the panel (egui does that), not the map.
+        if !self.editor.has_mouse() {
+            if wheel > 0.0 {
+                camera.zoom_by(1.15);
+            } else if wheel < 0.0 {
+                camera.zoom_by(1.0 / 1.15);
+            }
         }
     }
 
@@ -1853,7 +1825,7 @@ impl Ui {
         self.hover_zombie = None;
         self.hover_building = None;
         let busy = self.drag_start.is_some() || self.placing.is_some() || self.editor.tool.is_some();
-        if !layout.in_game_view(mouse) || self.editor.contains(mouse) || busy {
+        if !layout.in_game_view(mouse) || self.editor.has_mouse() || busy {
             return;
         }
         self.hover_zombie = self.zombie_at(world, camera, mouse);
@@ -1868,11 +1840,6 @@ impl Ui {
     /// Selection box, highlights, target marker and the waiting command or tool on the mouse.
     pub fn draw(&self, world: &World, camera: &Camera) {
         let mouse = Vec2::from(mouse_position());
-        let ring = |pos: Vec2, color: Color| {
-            let s = camera.world_to_screen(pos);
-            let w = 0.8 * TILE_W * camera.zoom;
-            draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 1.5, color);
-        };
 
         if let Some(start) = self.drag_start {
             let min = start.min(mouse);
@@ -1882,19 +1849,18 @@ impl Ui {
             let rect = Rect::new(min.x, min.y, size.x, size.y);
             for unit in &world.units {
                 if rect.contains(camera.world_to_screen(unit.pos)) {
-                    ring(unit.pos, WHITE);
+                    draw_ring(camera, unit.pos, UNIT_RADIUS, 1.5, WHITE);
                 }
             }
         }
         // Under the mouse: zombie red (right click = attack), own unit white.
         if let Some(z) = self.hover_zombie.and_then(|id| world.find_zombie(id)) {
-            ring(world.zombies[z].pos, RED);
+            draw_ring(camera, world.zombies[z].pos, world.zombies[z].radius, 1.5, RED);
         }
         // The zombie clicked on: a thick red ring. A house of doom or loot: a red frame on the ground around it.
         if let Some(z) = self.selected_zombie.and_then(|id| world.find_zombie(id)) {
             let s = camera.world_to_screen(world.zombies[z].pos);
-            let w = 0.8 * TILE_W * camera.zoom;
-            draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 3.0, RED);
+            draw_ring(camera, world.zombies[z].pos, world.zombies[z].radius, 2.5, RED);
             // Where it was lured to: a thin line there and a small cross.
             if let Some(to) = world.zombies[z].lured_to() {
                 let t = camera.world_to_screen(to);
@@ -1915,7 +1881,7 @@ impl Ui {
             }
         }
         if let Some(i) = self.hover_unit.and_then(|id| world.find_unit(id)) {
-            ring(world.units[i].pos, WHITE);
+            draw_ring(camera, world.units[i].pos, UNIT_RADIUS, 1.5, WHITE);
         }
         // Buildings: outline on the ground – white under the mouse, green when selected, plus the rally point.
         let outline = |b: usize, color: Color| {
@@ -2025,7 +1991,7 @@ impl Ui {
             self.draw_economy_hints(world, camera, kind, here, mouse);
         }
         // Editor tool on the mouse: the brush in the colour of the terrain, or the name of what gets spawned.
-        if let Some(tool) = self.editor.tool.filter(|_| !self.editor.contains(mouse)) {
+        if let Some(tool) = self.editor.tool.filter(|_| !self.editor.has_mouse()) {
             match tool {
                 Tool::Paint(_) | Tool::Ore(_) | Tool::Remove => {
                     let color = match tool {
@@ -2077,11 +2043,9 @@ impl Ui {
             let (a, b) = (camera.world_to_screen(drag.from), camera.world_to_screen(to));
             draw_line(a.x, a.y, b.x, b.y, 2.0, Color { a: 0.6, ..color });
             let formation = Formation { shape: self.formation, from: drag.from, to };
-            let w = 0.6 * TILE_W * camera.zoom;
             for (spot, (_, kind)) in formation::spots(formation, &units).into_iter().zip(&units) {
-                let s = camera.world_to_screen(spot);
                 let ring = if *kind == UnitKind::Soldier { color } else { Color { a: 0.6, ..color } };
-                draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 1.5, ring);
+                draw_ring(camera, spot, UNIT_RADIUS, 1.5, ring);
             }
         }
         // Editor: the edge of the selected spawner under the mouse (or being dragged) lights up white.
@@ -2090,7 +2054,7 @@ impl Ui {
             let tolerance = grab_tolerance(camera);
             let edges = match self.spawner_drag {
                 Some(drag) => Some(drag.edges),
-                None if !self.editor.contains(mouse) && self.editor.tool.is_none() => grab(&world.spawners[s], point, tolerance),
+                None if !self.editor.has_mouse() && self.editor.tool.is_none() => grab(&world.spawners[s], point, tolerance),
                 None => None,
             };
             if let Some(edges) = edges.filter(|&e| e != Edges::ALL) {
@@ -2137,10 +2101,6 @@ impl Ui {
             draw_text(text, x + 16.0, y + 26.0, 24.0, Color::new(1.0, 1.0, 1.0, fade));
         }
     }
-}
-
-fn any_pressed(keys: &[KeyCode]) -> bool {
-    keys.iter().any(|&key| is_key_pressed(key))
 }
 
 /// The command T, P or M gives on the ground.

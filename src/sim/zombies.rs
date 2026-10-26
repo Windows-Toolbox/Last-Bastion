@@ -11,12 +11,13 @@
 //! **Calm zombies are cheap** (`is_calm`): most of the horde only strolls around its place, far from everything. Such a
 //! zombie thinks anew only every `THINK_EVERY` ticks – each on another tick, by its number – and walks on with what it
 //! decided in between. It still looks every tick whether it notices anything: then it isn't calm anymore and thinks
-//! every tick again. That's what makes tens of thousands of them possible.
+//! every tick again. And with a busy one right next to it, it moves every tick too – it may be walked into and pushed
+//! (`next_to_busy`). That's what makes tens of thousands of them possible.
 //!
-//! **Thinking side by side:** what every zombie wants (`zombie_intent`) and how far it is pushed apart from the others
-//! (`unpile_zombies`) are worked out on all cores of the processor at once (`rayon`) – each zombie only reads, nobody
-//! writes. Every one comes out exactly as if worked out one after the other, collected in the order of the list – the
-//! same on every PC, however many cores it has.
+//! **Thinking side by side:** what every zombie wants (`zombie_intent`), its step in the crowd (`crowd_step`) and how
+//! far it is pushed apart from the others (`unpile_zombies`) are worked out on all cores of the processor at once
+//! (`rayon`, `per_zombie`) – each zombie only reads, nobody writes. Every one comes out exactly as if worked out one
+//! after the other, collected in the order of the list – the same on every PC, however many cores it has.
 
 use macroquad::math::{vec2, Vec2};
 use rayon::prelude::*;
@@ -31,6 +32,30 @@ use crate::vision::Vision;
 
 /// How often per tick overlapping zombies are pushed apart. More passes = harder crowd, but more work.
 const CROWD_PASSES: u32 = 2;
+/// A zombie's hard core – this share of the touching distance (both radii together): nobody walks closer to another
+/// than that, and whoever is closer is pushed out to it (`unpile_zombies`). So a crowd stands a little inside itself,
+/// like in TAB – not merged into one, and not body to body in rows either.
+const CORE: f32 = 0.75;
+/// This share of the step another's core blocks, a zombie takes sideways instead – around it. The ones behind flow
+/// around a pile instead of queuing up behind it. With half (0.5) more of them still queued up behind it; with all of it
+/// (1.0) more of them stood inside each other around your units.
+const SIDESTEP: f32 = 0.75;
+/// Overlapping zombies push each other away softly – making room to the sides – at this share of their pace. Much
+/// stronger (1.5) and a crowd jitters: the push and the walking back in swing against each other from tick to tick.
+const SOFT_PUSH: f32 = 0.3;
+/// Who walks into another's core pushes it along: the other one moves by this share of the step that went into it –
+/// between two of the same size; a heavier one pushes more (at most all of it), a lighter one less (`push_share`). In
+/// the same tick, and it doesn't walk into anybody's core either – where nobody can make room, nobody moves, so the
+/// crowd stands still. Half as strong (0.5) a walker was pushed only half as far as before the cores; 1.0 shook more.
+/// Who is pushed presses on with it the next tick (`shove`) – so the whole mass pushes, not only the ones right behind.
+const PUSH: f32 = 0.75;
+/// This share of its last step a zombie keeps (`crowd_step`) – it doesn't turn on the spot or stop dead. Without it a
+/// crowd streaming into a gap zigzagged, pushed this way one tick and that way the next; and someone pushed moved in
+/// jerks.
+const INERTIA: f32 = 0.5;
+/// A zombie's step is checked against at most this many cores close by (`crowd_step`) – even in the thickest crowd
+/// around a fat one there are fewer; more would only be left to the pushing apart (`unpile_zombies`).
+const CLOSE: usize = 32;
 /// A calm zombie (`is_calm`) thinks anew only every this many ticks – 0.4 s; in between it walks on as it decided.
 const THINK_EVERY: u64 = 8;
 /// Every this many ticks the list of zombies is sorted by where they stand (`sort_by_place`) – 2 s.
@@ -52,6 +77,12 @@ const ARM: f32 = 0.075;
 /// This many steps of detour is a building tile worth to zombies. If the way around is longer,
 /// they go right through and tear the building down (DESIGN.md 8.1).
 pub(super) const BUILDING_DETOUR: u32 = 10;
+/// A leap over a wall (`leap_over`) takes this many ticks in the air – 0.6 s …
+const LEAP_TICKS: u32 = 12;
+/// … and goes this high at its top (tile widths) – only the look (`leap_height`).
+const LEAP_HEIGHT: f32 = 0.8;
+/// Looking for where to land behind a wall: a point every this many tiles along the way.
+const LEAP_LOOK: f32 = 0.1;
 /// A lured zombie this close to where it was lured to has arrived (tiles).
 const LURE_ARRIVED: f32 = 1.5;
 /// It gives up after this many seconds if it isn't there yet (stuck somewhere) – and stays where it is.
@@ -64,6 +95,7 @@ const NEW_LURE_FIELDS: usize = 8;
 /// A way nobody needed for this long (seconds) is thrown away.
 const LURE_FIELD_KEPT: f32 = 10.0;
 
+#[derive(Clone)]
 pub struct Zombie {
     pub pos: Vec2,
     /// Position in the previous tick – for drawing between two ticks.
@@ -93,12 +125,28 @@ pub struct Zombie {
     pub(super) siege: bool,
     /// Came with the final wave (or was called by it) – the round is won once none of these is left (`round.rs`).
     pub final_wave: bool,
-    /// Its step per tick as it last decided – a calm zombie walks on with it until it thinks again (`is_calm`).
+    /// The swarm of a wave it came out with – everyone of one wave out of one side has the same number (0: none). The
+    /// minimap marks the middle of every swarm (`swarms`).
+    pub swarm: u32,
+    /// Its step per tick as it last decided – a calm zombie walks on with it until it thinks again (`is_calm`), a busy
+    /// one keeps a part of it (`INERTIA`) and steps aside to the side it points to (`crowd_step`).
     pub(super) step: Vec2,
     /// Ticks it has been calm in a row – long enough, and far from your eyes, it falls asleep (`sleep.rs`).
     pub(super) calm_for: u32,
-    /// A screamer: ticks until it can scream again (0: ready).
-    pub(super) scream_in: u32,
+    /// How far the others pushed it this tick (`crowd_step`). The next tick it presses on with it against the ones in
+    /// front of it – so a push goes on through the crowd (`move_zombies`).
+    pub(super) shove: Vec2,
+    /// In the air over a wall (a harpy, `leap_over`) – nobody pushes it, it pushes nobody, it hits nothing.
+    pub(super) leap: Option<Leap>,
+}
+
+/// A leap over a wall: from where it took off to where it lands.
+#[derive(Clone, Copy)]
+pub(super) struct Leap {
+    from: Vec2,
+    to: Vec2,
+    /// Ticks in the air so far – it lands after `LEAP_TICKS`.
+    flown: u32,
 }
 
 /// Where a zombie was lured to.
@@ -142,11 +190,13 @@ pub enum Breed {
     Spitter,
     /// Like StarCraft 2's infested marine: shoots back, just a little less far than your soldiers.
     Infested,
-    /// Weak, but sees far: when it spots one of your units it screams (`scream` in `data\zombies.json`) – a loud
-    /// noise that brings everything around it. Kill it first!
-    Screamer,
+    /// Like TAB's harpy: weak, but fast and very alert – it hears a fight from much further than the others and comes
+    /// first. Every hit it lands is loud (`hit_noise`), louder the longer it goes on: kill it before the rest come.
+    /// `alias`: map files from before 2026-10-25 still have the screamer in them – it is a harpy now.
+    #[serde(alias = "Screamer")]
+    Harpy,
     /// Like TAB's giant, a bit smaller and weaker: huge, slow, smashes walls in a few hits. Only a few per map, far out
-    /// (`giants` of the difficulty, `place_giants`) – and in the final wave, which calls everyone.
+    /// (`giants` of the map, `place_giants`) – and in the final wave, which calls everyone.
     Giant,
 }
 
@@ -158,7 +208,7 @@ impl Breed {
         Breed::Armored,
         Breed::Spitter,
         Breed::Infested,
-        Breed::Screamer,
+        Breed::Harpy,
         Breed::Giant,
     ];
 
@@ -186,6 +236,11 @@ impl Breed {
     /// Ticks between two of its attacks: its own `attack_seconds`, otherwise `hit_every_seconds` of all zombies.
     pub fn attack_ticks(self) -> u32 {
         self.stats().attack.unwrap_or(values().hit_cooldown).max(1)
+    }
+
+    /// How much noise one of its hits makes: its own `hit_noise`, otherwise `zombie_hit` of `data\sound.json`.
+    pub fn hit_noise(self) -> u32 {
+        self.stats().hit_noise.unwrap_or(data::get().sound.zombie_hit)
     }
 }
 
@@ -239,6 +294,15 @@ impl Zombie {
     /// Where it was lured to – for the panel and the editor.
     pub fn lured_to(&self) -> Option<Vec2> {
         self.lure.map(|lure| lure.to)
+    }
+
+    /// How high it is in the air right now (tile widths, 0: on the ground) – a harpy leaping over a wall goes up in an
+    /// arc. `alpha`: how far between the last tick and the next, like the position (`draw.rs`). Only the look.
+    pub fn leap_height(&self, alpha: f32) -> f32 {
+        self.leap.map_or(0.0, |leap| {
+            let t = ((leap.flown as f32 - 1.0 + alpha) / LEAP_TICKS as f32).clamp(0.0, 1.0);
+            LEAP_HEIGHT * (t * std::f32::consts::PI).sin()
+        })
     }
 }
 
@@ -299,9 +363,11 @@ impl World {
             lure: None,
             siege,
             final_wave: false,
+            swarm: 0,
             step: Vec2::ZERO,
             calm_for: 0,
-            scream_in: 0,
+            shove: Vec2::ZERO,
+            leap: None,
         });
     }
 
@@ -371,6 +437,36 @@ impl World {
         self.grid.rebuild(self.zombies.iter().map(|z| (z.pos, z.radius, z.id)));
     }
 
+    /// The number of a new swarm of a wave (`Zombie::swarm`).
+    pub(super) fn new_swarm(&mut self) -> u32 {
+        self.next_swarm += 1;
+        self.next_swarm
+    }
+
+    /// The middle of every swarm of a wave still alive, and how many it still has – one mark each on the minimap,
+    /// wherever the swarm is. In the order the swarms came.
+    pub fn swarms(&self) -> Vec<(Vec2, usize)> {
+        // (number, sum of the positions, how many) – only a handful of swarms at a time, so a plain list will do.
+        let mut swarms: Vec<(u32, Vec2, usize)> = Vec::new();
+        for zombie in self.zombies.iter().filter(|z| z.swarm != 0 && z.is_alive()) {
+            match swarms.iter_mut().find(|s| s.0 == zombie.swarm) {
+                Some(swarm) => {
+                    swarm.1 += zombie.pos;
+                    swarm.2 += 1;
+                }
+                None => swarms.push((zombie.swarm, zombie.pos, 1)),
+            }
+        }
+        swarms.sort_by_key(|s| s.0);
+        swarms.into_iter().map(|(_, sum, n)| (sum / n as f32, n)).collect()
+    }
+
+    /// Where the giants are – awake or asleep. The minimap always shows them, fog or not.
+    pub fn giants(&self) -> impl Iterator<Item = Vec2> + '_ {
+        let awake = self.zombies.iter().filter(|z| z.breed == Breed::Giant && z.is_alive()).map(|z| z.pos);
+        awake.chain(self.sleep.iter().filter(|s| s.breed == Breed::Giant).map(|s| s.pos))
+    }
+
     pub(super) fn new_zombie_id(&mut self) -> u32 {
         self.next_zombie_id += 1;
         self.next_zombie_id
@@ -408,28 +504,49 @@ impl World {
         }
         self.update_minds(&noticing);
         self.prepare_lure_fields();
-        // Who is calm (`is_calm`) – and who of them rests this tick: it isn't its tick to think.
+        // Who is calm (`is_calm`) – and who of them rests this tick: it isn't its tick to think, and no busy one is next
+        // to it. Whoever doesn't rest may be pushed (`crowd_step`) – a calm one only next to a busy one, so it moves
+        // every tick then; otherwise it would only be pushed every 8th tick, in jerks.
         let calm: Vec<bool> = self.zombies.iter().zip(&noticing).map(|(z, &n)| !n && self.is_calm(z)).collect();
-        let resting: Vec<bool> = self.zombies.iter().zip(&calm).map(|(z, &c)| c && !self.thinks_now(z)).collect();
+        let near_busy = self.next_to_busy(&calm);
+        let every_tick: Vec<bool> = calm.iter().zip(&near_busy).map(|(&c, &near)| !c || near).collect();
+        let resting: Vec<bool> = self.zombies.iter().zip(&every_tick).map(|(z, &e)| !e && !self.thinks_now(z)).collect();
 
-        // 2. For every zombie compute where it walks and whether it hits – only reading, so with many busy ones on all
-        // cores at once (`par_iter`, see the top of the file). A resting one walks on as it decided.
+        // 2. For every zombie compute where it wants to walk this tick (tiles) and whether it hits – only reading, so with
+        // many busy ones on all cores at once (see the top of the file). A resting one walks on as it decided.
         let world = &*self;
-        let think = |(i, zombie): (usize, &Zombie)| {
+        let busy = resting.iter().filter(|&&r| !r).count();
+        // A harpy in the air flies on; one at a wall that can leap over it takes off (the last: where it lands).
+        let intents: Vec<(Vec2, Option<Hit>, Option<Vec2>, Option<Vec2>)> = world.per_zombie(busy, |(i, zombie)| {
             if resting[i] {
-                return (zombie.step, None, None);
+                return (zombie.step, None, None, None);
+            }
+            if zombie.leap.is_some() {
+                return (Vec2::ZERO, None, None, None);
             }
             let (dir, hit, seen) = world.zombie_intent(zombie, noticing[i]);
-            let hit = hit.filter(|_| zombie.cooldown == 0);
-            let push = world.zombie_separation(i, zombie);
-            ((dir + push) * zombie.speed * TICK, hit, seen)
-        };
-        let busy = resting.iter().filter(|&&r| !r).count();
-        let moves: Vec<(Vec2, Option<Hit>, Option<Vec2>)> = if busy >= SIDE_BY_SIDE_FROM {
-            world.zombies.par_iter().enumerate().with_min_len(PER_CORE).map(think).collect()
-        } else {
-            world.zombies.iter().enumerate().map(think).collect()
-        };
+            if let Some(to) = world.leap_over(zombie, hit, seen) {
+                return (Vec2::ZERO, None, seen, Some(to));
+            }
+            (dir * zombie.speed * TICK, hit.filter(|_| zombie.cooldown == 0), seen, None)
+        });
+        // Then its step in the crowd (`crowd_step`) – only now, it needs to know what the others want: who walks into
+        // it pushes it. How hard each one presses on the ones in front of it: what it wants and how far it was pushed
+        // last tick (`shove`) – so the mass behind pushes through to the front. But never harder than it walks itself:
+        // added up through a deep crowd, one was shoved almost twice as fast as a zombie walks.
+        let wants: Vec<Vec2> = intents.iter().map(|&(want, _, _, _)| want).collect();
+        let presses: Vec<Vec2> =
+            wants.iter().zip(&world.zombies).map(|(&want, z)| (want + z.shove).clamp_length_max(z.speed * TICK)).collect();
+        let steps = world.per_zombie(busy, |(i, zombie)| {
+            if resting[i] {
+                (zombie.step, Vec2::ZERO)
+            } else if zombie.leap.is_some() || intents[i].3.is_some() {
+                (Vec2::ZERO, Vec2::ZERO)
+            } else {
+                world.crowd_step(i, zombie, &wants, &presses, every_tick[i])
+            }
+        });
+        let moves = steps.into_iter().zip(intents).map(|((step, shove), (_, hit, seen, leap))| (step, shove, hit, seen, leap));
 
         // 3. Only now move everyone and deal damage – writing. The world border doesn't stop zombies.
         let map = &self.map;
@@ -438,22 +555,35 @@ impl World {
         let mut infected = Vec::new();
         // The shots of the ranged zombies – fired after the loop (`ranged.rs`), they need all of `self`.
         let mut shots = Vec::new();
-        // Every hit makes a little noise (`sound.rs`) – a crowd tearing at a wall gets loud.
+        // Every hit makes noise (`sound.rs`) – a crowd tearing at a wall gets loud, a harpy alone does.
         let mut hits = Vec::new();
-        // Screamers that saw one of your units this tick: where, and how loud.
-        let mut screams = Vec::new();
-        for (i, (zombie, (velocity, hit, seen))) in self.zombies.iter_mut().zip(moves).enumerate() {
-            // It sees one of your units: it remembers where – and goes there when it loses sight of it. A screamer
-            // screams.
-            zombie.scream_in = zombie.scream_in.saturating_sub(1);
+        for (i, (zombie, (velocity, shove, hit, seen, leap))) in self.zombies.iter_mut().zip(moves).enumerate() {
+            zombie.shove = shove;
+            // It sees one of your units: it remembers where – and goes there when it loses sight of it.
             if let Some(at) = seen {
                 zombie.lure = Some(Lure::seen(at, tick));
                 zombie.wander = None;
-                let stats = zombie.breed.stats();
-                if stats.scream > 0 && zombie.scream_in == 0 {
-                    screams.push((zombie.pos, stats.scream));
-                    zombie.scream_in = stats.scream_every.max(1);
+            }
+            // Over a wall: takes off, flies on in a straight line – over the wall and whoever stands there – and lands
+            // after `LEAP_TICKS`. Nothing else happens to it in the air.
+            if let Some(to) = leap {
+                zombie.leap = Some(Leap { from: zombie.pos, to, flown: 0 });
+            }
+            if let Some(leap) = zombie.leap.as_mut() {
+                leap.flown += 1;
+                let at = leap.from.lerp(leap.to, leap.flown as f32 / LEAP_TICKS as f32);
+                if leap.flown >= LEAP_TICKS {
+                    zombie.leap = None;
                 }
+                zombie.prev = zombie.pos;
+                zombie.pos = at;
+                zombie.step = Vec2::ZERO;
+                zombie.calm_for = 0;
+                zombie.cooldown = zombie.cooldown.saturating_sub(1);
+                zombie.alert = zombie.alert.saturating_sub(1);
+                zombie.seek = zombie.seek.saturating_sub(1);
+                self.grid.moved(i, at);
+                continue;
             }
             zombie.prev = zombie.pos;
             zombie.step = velocity;
@@ -468,7 +598,7 @@ impl World {
             zombie.seek = zombie.seek.saturating_sub(1);
             if hit.is_some() {
                 zombie.cooldown = zombie.breed.attack_ticks();
-                hits.push(zombie.pos);
+                hits.push((zombie.pos, zombie.breed.hit_noise()));
             }
             match hit {
                 Some(hit) if zombie.breed.is_ranged() => shots.push((zombie.pos, zombie.breed, hit)),
@@ -487,17 +617,14 @@ impl World {
         for (from, breed, hit) in shots {
             self.zombie_shoots(from, breed, hit);
         }
-        for at in hits {
-            self.make_sound(at, data::get().sound.zombie_hit);
-        }
-        // A scream is the zombies' noise: it brings them and wakes the sleepers around like any sound (`sound.rs`) –
-        // but it doesn't add to your colony's unrest.
-        for (at, loud) in screams {
+        // The zombies' noise: it brings them and wakes the sleepers around like any sound, but it doesn't add to your
+        // colony's unrest.
+        for (at, loud) in hits {
             self.make_sound(at, loud);
         }
 
-        // 4. Nobody stands inside anybody else: whoever overlaps is pushed apart, like a liquid. Only the busy ones – a
-        // calm crowd sorts itself out slowly by its soft push (`zombie_separation`). The grid still has everyone in the
+        // 4. Nobody stands deeper inside anybody else than its core: whoever does is pushed apart. Only the busy ones – a
+        // calm crowd sorts itself out slowly by its soft push (`crowd_step`). The grid still has everyone in the
         // tile where the tick began, their bodies where they stand now (`moved`) – nobody moves more than a step.
         for _ in 0..CROWD_PASSES {
             self.unpile_zombies(&calm);
@@ -615,6 +742,7 @@ impl World {
     /// units. Then it only has to think every `THINK_EVERY` ticks. Asked every tick – the lookups are cheap.
     fn is_calm(&self, zombie: &Zombie) -> bool {
         zombie.wander.is_some()
+            && zombie.leap.is_none()
             && zombie.lure.is_none()
             && zombie.cooldown == 0
             && zombie.seek == 0
@@ -668,7 +796,7 @@ impl World {
                 // Clear way: straight there. Otherwise follow the way around the obstacles.
                 let target = self.units[u].pos;
                 let dir = if step == Vec2::ZERO || clear_line(&self.map, pos, target) {
-                    (target - pos).normalize_or_zero()
+                    arrive(zombie, target, zombie.radius + UNIT_RADIUS)
                 } else {
                     step
                 };
@@ -686,7 +814,7 @@ impl World {
                 }
                 // Clear way: straight there. Otherwise one step along the way.
                 if step == Vec2::ZERO || clear_line(&self.map, pos, target) {
-                    return ((target - pos).normalize_or_zero(), None, Some(target));
+                    return (arrive(zombie, target, zombie.radius + UNIT_RADIUS), None, Some(target));
                 }
                 // The step leads onto a building (a wall in the way, or the tower the unit sits in): hit it as soon
                 // as you touch it.
@@ -695,10 +823,11 @@ impl World {
             }
         }
 
-        if let Some(b) = self.building_aggro.near(pos) {
+        // (A harpy leaves alone the walls that aren't in its way – the one it just leaped over, `leaves_alone`.)
+        if let Some(b) = self.building_aggro.near(pos).filter(|&b| !self.leaves_alone(zombie, b)) {
             // Already standing at a wall: hit that one – otherwise to the nearest spot of the building. A ranged one
             // doesn't have to touch it: in range is enough.
-            if let Some(touching) = self.touching_building(zombie) {
+            if let Some(touching) = self.touching_building(zombie).filter(|&t| !self.leaves_alone(zombie, t)) {
                 return (Vec2::ZERO, Some(Hit::Building(touching)), None);
             }
             if zombie.breed.is_ranged() && self.buildings[b].distance_to(pos) <= zombie.breed.stats().range {
@@ -711,7 +840,7 @@ impl World {
             // command center – and finds the building from there instead of pushing against the water.
             let short_of_it = closest + (pos - closest).normalize_or_zero() * 0.05;
             if clear_line(&self.map, pos, short_of_it) {
-                return ((closest - pos).normalize_or_zero(), None, None);
+                return (arrive(zombie, closest, zombie.radius + ARM), None, None);
             }
         }
 
@@ -753,6 +882,59 @@ impl World {
         }
     }
 
+    /// A harpy (`jump` in `data\zombies.json`) about to hit a wall or a gate leaps over it instead – if what it is after
+    /// lies behind it: the unit it sees, otherwise where it was lured to, otherwise the command center. Straight towards
+    /// that it looks for free ground behind the wall, at most `jump` tiles of wall away: where it lands (the middle of
+    /// that tile). Not over anything else – a house, a tower, water, a mountain, a forest, a wall too thick: it hits.
+    fn leap_over(&self, zombie: &Zombie, hit: Option<Hit>, seen: Option<Vec2>) -> Option<Vec2> {
+        let jump = zombie.breed.stats().jump;
+        let Some(Hit::Building(b)) = hit else {
+            return None;
+        };
+        if jump <= 0.0 || !self.buildings[b].kind.is_wall() {
+            return None;
+        }
+        let pos = zombie.pos;
+        let goal = seen.or(zombie.lure.map(|lure| lure.to)).unwrap_or(self.base);
+        let dir = (goal - pos).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            return None;
+        }
+        // From its body's edge over at most `jump` tiles of wall.
+        let reach = zombie.radius + ARM + jump + LEAP_LOOK;
+        let mut over_wall = false;
+        let mut s = 0.0;
+        while s < reach {
+            s += LEAP_LOOK;
+            let p = pos + dir * s;
+            let (x, y) = (p.x.floor() as i32, p.y.floor() as i32);
+            match self.building_on_tile(x, y).filter(|&w| !self.buildings[w].zombies_ignore()) {
+                Some(w) if self.buildings[w].kind.is_wall() => over_wall = true,
+                Some(_) => return None,
+                None if self.map.is_blocked(x, y) => return None,
+                None if over_wall => {
+                    let land = vec2(x as f32 + 0.5, y as f32 + 0.5);
+                    return (land.distance(goal) < pos.distance(goal)).then_some(land);
+                }
+                None => {}
+            }
+        }
+        None
+    }
+
+    /// Does a harpy leave this building alone? A wall that isn't between it and where it's heading (where it was lured
+    /// to, otherwise the command center) – it doesn't turn back to tear down the wall it just leaped over. Walls in
+    /// its way it leaps over (`leap_over`) – or hits, if too thick.
+    fn leaves_alone(&self, zombie: &Zombie, b: usize) -> bool {
+        let building = &self.buildings[b];
+        if zombie.breed.stats().jump <= 0.0 || !building.kind.is_wall() {
+            return false;
+        }
+        let goal = zombie.lure.map_or(self.base, |lure| lure.to);
+        let closest = zombie.pos.clamp(building.corner(), building.far_corner());
+        (closest - zombie.pos).dot(goal - zombie.pos) <= 0.0
+    }
+
     /// Does this zombie touch a building it would hit – one of yours, not an infected one or a trap? Only looks into the tiles
     /// around it.
     fn touching_building(&self, zombie: &Zombie) -> Option<usize> {
@@ -770,19 +952,19 @@ impl World {
         None
     }
 
-    /// The crowd can't be squeezed: every pair of zombies that overlaps is pushed apart by half the overlap each.
-    /// `zombie_separation` is only a soft push – against a zombie walking at full speed it loses, so the ones
-    /// behind slid into the ones in front. This correction moves the positions directly. Whoever presses from
-    /// behind shoves the front ones sideways – the horde piles up in front of a gap and flows like water.
+    /// The crowd can't be squeezed: every pair of zombies closer than their cores (`CORE`) is pushed apart by half of
+    /// that each. Walking, nobody goes into another's core (`crowd_step`) – but two stepping into the same gap at once,
+    /// or one pushed out of a wall or knocked back, still end up deeper inside each other. This correction moves the
+    /// positions directly.
     /// First all corrections are computed (only reading), then applied – so the order in the list doesn't matter.
     /// A calm zombie (`calm`, see `move_zombies`) isn't pushed – the others are still pushed away from it. The grid has
     /// to be filled before, with the bodies where they stand now (`move_zombies`). Zombies that came out during this
     /// tick (an infected house) are in neither yet – they aren't calm, and the others find them next tick.
     fn unpile_zombies(&mut self, calm: &[bool]) {
         // Only reading – with many busy ones on all cores at once (see the top of the file).
-        let grid = &self.grid;
+        let (grid, zombies) = (&self.grid, &self.zombies);
         let push = |(me, zombie): (usize, &Zombie)| {
-            if calm.get(me).copied().unwrap_or(false) {
+            if calm.get(me).copied().unwrap_or(false) || zombie.leap.is_some() {
                 return Vec2::ZERO;
             }
             let pos = zombie.pos;
@@ -794,13 +976,16 @@ impl World {
                         if other.index as usize == me {
                             continue;
                         }
-                        // Bodies touch at the sum of both radii. Even two fat ones touch closer than one tile, so
-                        // looking into the 3 × 3 tiles around is still enough.
-                        let min_dist = zombie.radius + other.radius;
+                        // Bodies touch at the sum of both radii, their cores a little closer. Even two fat ones touch
+                        // closer than one tile, so looking into the 3 × 3 tiles around is still enough.
+                        let min_dist = (zombie.radius + other.radius) * CORE;
                         let away = pos - other.pos;
                         // Most don't touch: the squared distance tells that without the slow square root.
                         let d2 = away.length_squared();
                         if d2 >= min_dist * min_dist {
+                            continue;
+                        }
+                        if zombies[other.index as usize].leap.is_some() {
                             continue;
                         }
                         let d = d2.sqrt();
@@ -814,11 +999,7 @@ impl World {
             fix.clamp_length_max(MAX_UNPILE)
         };
         let busy = self.zombies.len() - calm.iter().filter(|&&c| c).count();
-        let fixes: Vec<Vec2> = if busy >= SIDE_BY_SIDE_FROM {
-            self.zombies.par_iter().enumerate().with_min_len(PER_CORE).map(push).collect()
-        } else {
-            self.zombies.iter().enumerate().map(push).collect()
-        };
+        let fixes = self.per_zombie(busy, push);
         // Moved: its body in the grid too, so the next pass sees it where it is now.
         let map = &self.map;
         for (i, (zombie, fix)) in self.zombies.iter_mut().zip(fixes).enumerate().filter(|(_, (_, fix))| *fix != Vec2::ZERO) {
@@ -827,31 +1008,163 @@ impl World {
         }
     }
 
-    /// Pushes overlapping zombies apart – and away from units.
-    fn zombie_separation(&self, me: usize, zombie: &Zombie) -> Vec2 {
-        let (pos, radius) = (zombie.pos, zombie.radius);
-        let mut push = Vec2::ZERO;
-        let (cx, cy) = (pos.x.floor() as i32, pos.y.floor() as i32);
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                for other in self.grid.bodies(cx + dx, cy + dy).iter().filter(|b| b.index as usize != me) {
-                    push += push_apart(pos, other.pos, radius + other.radius);
-                }
-                for u in self.unit_grid.cell(cx + dx, cy + dy) {
-                    let unit = &self.units[u];
-                    if !unit.is_inside() {
-                        push += push_apart(pos, unit.pos, radius + UNIT_RADIUS);
+    /// Per zombie: is there a busy one (not `calm`) on its tile or a tile around it? Only then can somebody walk into a
+    /// calm one and push it – touching, even two giants are less than a tile apart. Marked tile by tile around the busy
+    /// ones, so a calm crowd far from them costs nothing more.
+    fn next_to_busy(&self, calm: &[bool]) -> Vec<bool> {
+        // Nobody calm (the final wave called them all) or nobody busy: nothing to look for.
+        if !calm.contains(&true) || !calm.contains(&false) {
+            return vec![false; calm.len()];
+        }
+        let n = self.map.size as i32;
+        let tile = |x: i32, y: i32| (x >= 0 && y >= 0 && x < n && y < n).then(|| (y * n + x) as usize);
+        let mut near = vec![false; (n * n) as usize];
+        for (zombie, _) in self.zombies.iter().zip(calm).filter(|&(_, &c)| !c) {
+            let (x, y) = (zombie.pos.x.floor() as i32, zombie.pos.y.floor() as i32);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if let Some(k) = tile(x + dx, y + dy) {
+                        near[k] = true;
                     }
                 }
             }
         }
-        push
+        self.zombies.iter().map(|z| tile(z.pos.x.floor() as i32, z.pos.y.floor() as i32).is_some_and(|k| near[k])).collect()
+    }
+
+    /// Works `f` out for every zombie, in the order of the list – with at least `SIDE_BY_SIDE_FROM` busy ones on all
+    /// cores at once (see the top of the file). One core or many: the same result.
+    fn per_zombie<T: Send>(&self, busy: usize, f: impl Fn((usize, &Zombie)) -> T + Sync + Send) -> Vec<T> {
+        if busy >= SIDE_BY_SIDE_FROM {
+            self.zombies.par_iter().enumerate().with_min_len(PER_CORE).map(f).collect()
+        } else {
+            self.zombies.iter().enumerate().map(f).collect()
+        }
+    }
+
+    /// Its step this tick (tiles): what it wants (its entry in `wants`, everyone's step as they want it) and how the
+    /// others push it (`PUSH`, by how hard they press: `presses` – if it moves every tick: `pushable`), half of it what
+    /// it walked last tick (`INERTIA`) – but toward a zombie or one of your units close by only up to its core (`CORE`),
+    /// what's left slides along it, and three quarters of what's blocked it takes sideways (`SIDESTEP`). On top of that a
+    /// soft push away from the zombies it overlaps (`SOFT_PUSH`) and from units. Also how far it was pushed (`shove`).
+    /// Walking into each other as far as they liked, three of four stood more than half inside each other in front of a
+    /// wall; only up to touching and without the sidestep, a crowd stood in rows; with a soft push five times as strong,
+    /// it jittered. Pushing by walking into each other and being pushed apart afterwards (`unpile_zombies`), like before
+    /// the cores, 600 zombies at a wall stepped back and forth 23,000 times in 3 s – now about 70 times.
+    fn crowd_step(&self, me: usize, zombie: &Zombie, wants: &[Vec2], presses: &[Vec2], pushable: bool) -> (Vec2, Vec2) {
+        let (pos, radius) = (zombie.pos, zombie.radius);
+        let want = wants[me];
+        let length = want.length();
+        let (cx, cy) = (pos.x.floor() as i32, pos.y.floor() as i32);
+        // 1. The soft push, the sidestep around every core in the way – to the side it already moves to (its last step,
+        // so it doesn't zigzag), straight behind one by its number –, the pushes it gets, and which cores its step could
+        // reach: with the sidestep it gets at most twice as long. Of a few hundred zombies around in a thick crowd, only
+        // these few are looked at again below.
+        let (mut push, mut aside, mut shove) = (Vec2::ZERO, Vec2::ZERO, Vec2::ZERO);
+        let mut strongest = 0.0f32;
+        let mut close = [(Vec2::ZERO, 0.0); CLOSE];
+        let mut count = 0;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for other in self.grid.bodies(cx + dx, cy + dy).iter().filter(|b| b.index as usize != me) {
+                    let touching = radius + other.radius;
+                    let closest = touching * CORE;
+                    let toward = other.pos - pos;
+                    let d2 = toward.length_squared();
+                    let reach = touching.max(closest + 2.0 * length);
+                    if d2 >= reach * reach || d2 == 0.0 {
+                        continue;
+                    }
+                    // One in the air over a wall isn't in the way.
+                    if self.zombies[other.index as usize].leap.is_some() {
+                        continue;
+                    }
+                    let d = d2.sqrt();
+                    let n = toward / d;
+                    if d < touching {
+                        push -= n * (1.0 - d / touching);
+                    }
+                    let gap = (d - closest).max(0.0);
+                    let blocked = want.dot(n) - gap;
+                    if blocked > 0.0 {
+                        let side = vec2(-n.y, n.x);
+                        let lean = zombie.step.dot(side);
+                        let leans = lean.abs() > 0.05 * zombie.speed * TICK;
+                        let sign = if leans { lean.signum() } else if zombie.id.is_multiple_of(2) { 1.0 } else { -1.0 };
+                        aside += side * sign * blocked * SIDESTEP;
+                    }
+                    // Pushed by as much as the other presses further into its core than its own step goes into the
+                    // other's: two walking into each other head-on push nobody, one walking away from a faster one is
+                    // pushed.
+                    let pressed = -presses[other.index as usize].dot(n) - gap - blocked.max(0.0);
+                    if pushable && pressed > 0.0 {
+                        let share = push_share(other.radius, radius);
+                        shove -= n * pressed * share;
+                        strongest = strongest.max(pressed * share);
+                    }
+                    if count < CLOSE {
+                        close[count] = (n, gap);
+                        count += 1;
+                    }
+                }
+            }
+        }
+        // Your units: a soft push away from them – and not into their cores either. Pushed into them by a crowd, more
+        // zombies stood deep inside each other around them, and the units were shoved around further.
+        let mut from_units = Vec2::ZERO;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for u in self.unit_grid.cell(cx + dx, cy + dy) {
+                    let unit = &self.units[u];
+                    let toward = unit.pos - pos;
+                    let d = toward.length();
+                    if unit.is_inside() || d == 0.0 {
+                        continue;
+                    }
+                    from_units += push_apart(pos, unit.pos, radius + UNIT_RADIUS);
+                    if count < CLOSE {
+                        close[count] = (toward / d, (d - (radius + UNIT_RADIUS) * CORE).max(0.0));
+                        count += 1;
+                    }
+                }
+            }
+        }
+        // 2. What it wants, the sidestep and the pushes – several push it no further than the strongest of them – and a
+        // part of its last step (`INERTIA`). Into nobody's core: what's left slides along it.
+        let shove = shove.clamp_length_max(strongest);
+        let wish = want + aside.clamp_length_max(length) + shove;
+        let mut step = wish.lerp(zombie.step, INERTIA);
+        for &(n, gap) in &close[..count] {
+            let into = step.dot(n) - gap;
+            if into > 0.0 {
+                step -= n * into;
+            }
+        }
+        (step + (push * SOFT_PUSH + from_units) * zombie.speed * TICK, shove)
     }
 }
 
 /// The zombies' values from `data\zombies.json`.
 pub(super) fn values() -> &'static data::Zombies {
     &data::get().zombies
+}
+
+/// How much of its step into another's core a zombie of size `pusher` (radius, tiles) passes on to one of size `pushed`
+/// (`PUSH`): by their weight – the size squared, like the area of their bodies. A fat one or a giant shoves a walker the
+/// whole way, a walker hardly moves a giant.
+fn push_share(pusher: f32, pushed: f32) -> f32 {
+    let (a, b) = (pusher * pusher, pushed * pushed);
+    (PUSH * 2.0 * a / (a + b)).min(1.0)
+}
+
+/// Where a zombie walks to get to `to` (length 1 = its full step): straight there – but its last step only as long as it
+/// needs to come within `stop` (tiles). One walking to a wall to hit it stops right where it reaches it, instead of a
+/// step too far: then the crowd pushed it back out of reach, it walked in again – in front of a wall dozens stepped back
+/// and forth every few ticks. To one of your units it walks until its body touches – within its reach with an arm's
+/// length to spare, so it still hits one that steps back a little.
+fn arrive(zombie: &Zombie, to: Vec2, stop: f32) -> Vec2 {
+    let need = (zombie.pos.distance(to) - stop) / (zombie.speed * TICK).max(f32::EPSILON);
+    (to - zombie.pos).normalize_or_zero() * need.clamp(0.0, 1.0)
 }
 
 /// Direction for two zombies standing exactly on top of each other: one of 8 directions, picked from both
