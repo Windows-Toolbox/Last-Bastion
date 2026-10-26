@@ -589,6 +589,8 @@
   "tower_bonus": 2.0,
   "zombie_free_radius": 4,
   "replace_refund_percent": 50,
+  "demolish_refund_percent": 25,
+  "demolish_unfinished_refund_percent": 75,
   "repair_seconds": 10,
   "build_start_percent": 10
 }

@@ -13,6 +13,7 @@ use crate::hud::{draw_life, hp_color};
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
 use crate::map::{Ore, Region, Terrain};
+use crate::picture;
 use crate::sim::{Breed, Building, DoomHouse, LootKind, Mark, TICK, UNIT_RADIUS, World};
 use crate::sprites::{Pose, Sprite, Sprites};
 use crate::vision::Vision;
@@ -103,6 +104,8 @@ pub struct View<'a> {
     pub always_bars: bool,
     /// Whose eyes: fog of war like in the game, the zombies' view, or none (editor).
     pub fog: Fog<'a>,
+    /// That fog, painted for this frame (`FogPicture::paint`).
+    pub fog_picture: &'a FogPicture,
     /// What the picture remembers about each zombie: how visible it still is, which way it faces.
     pub looks: &'a Looks,
     /// The pictures of zombies and units.
@@ -188,8 +191,8 @@ pub enum Fog<'a> {
 
 /// A spawner as the editor shows it.
 pub struct SpawnerShape {
-    /// Where it lies – a straight rectangle on screen.
-    pub region: Region,
+    /// Where it lies – its four corners on the ground, in order around it (straight on screen or slanted).
+    pub corners: [Vec2; 4],
     pub name: String,
     /// Selected: the edge glows.
     pub selected: bool,
@@ -249,7 +252,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // Fog of war on top of the ground – before the figures, which are hidden in the fog anyway (zombies) or
     // always visible (your own units and buildings see themselves).
     if !matches!(view.fog, Fog::Off) {
-        draw_fog(camera, &rows, |x, y| fog_cover(world, &view.fog, x, y));
+        view.fog_picture.draw(camera, area);
     }
     for spawner in &view.spawners {
         draw_spawner(camera, spawner);
@@ -510,7 +513,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // coming. Then the spawner names: always on top, so they can always be read.
     cover_outside(camera, area);
     for spawner in &view.spawners {
-        let s = camera.world_to_screen(spawner.region.center());
+        let s = camera.world_to_screen(spawner.corners.iter().sum::<Vec2>() / 4.0);
         let w = measure_text(&spawner.name, None, 18, 1.0).width;
         draw_text(&spawner.name, s.x - w / 2.0 + 1.0, s.y + 6.0 + 1.0, 18.0, BLACK);
         draw_text(&spawner.name, s.x - w / 2.0, s.y + 6.0, 18.0, if spawner.selected { SPAWNER_GLOW } else { WHITE });
@@ -528,22 +531,50 @@ fn fog_cover(world: &World, fog: &Fog, x: i32, y: i32) -> Option<Color> {
     }
 }
 
-/// The fog over the tiles of `rows` (`Region::rows`). `cover` says what lies over a tile: nothing (visible), or a
-/// darkening colour. Row by row: neighbouring tiles with the same cover become one long strip, so it's a few hundred
-/// strips instead of 16,000 single diamonds.
-fn draw_fog(camera: &Camera, rows: &[(i32, std::ops::Range<i32>)], cover: impl Fn(i32, i32) -> Option<Color>) {
-    for (y, xs) in rows.iter().cloned() {
-        let hi = xs.end;
-        let mut x = xs.start;
-        while x < hi {
-            let here = cover(x, y);
-            let start = x;
-            while x < hi && cover(x, y) == here {
-                x += 1;
+/// The fog as a picture of the whole grid – one pixel per tile in its cover colour, see-through where someone looks –
+/// laid over the map as two triangles, like the minimap (`picture::draw_tiles`). Before, it was one long strip per row
+/// of tiles: neighbouring rows ended at different corners, and along the edge where they met rounding left a gap
+/// thinner than a pixel – at some zoom levels it caught a whole row of pixels, a line through the black.
+pub struct FogPicture {
+    image: Image,
+    /// `None` until painted for the first time.
+    texture: Option<Texture2D>,
+}
+
+impl FogPicture {
+    pub fn new() -> FogPicture {
+        FogPicture { image: Image { bytes: Vec::new(), width: 0, height: 0 }, texture: None }
+    }
+
+    /// Paints the tiles of `area` anew – every frame, the fog changes with every step of every unit. Tiles outside
+    /// it keep what they had: they aren't drawn (`draw_world` covers everything outside `area`).
+    pub fn paint(&mut self, world: &World, fog: &Fog, area: Region) {
+        let n = world.map.size;
+        if self.image.width as usize != n {
+            self.image = Image { bytes: vec![0; n * n * 4], width: n as u16, height: n as u16 };
+        }
+        let rgba = |c: Color| [(c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, (c.a * 255.0) as u8];
+        for (y, xs) in area.rows(1.0) {
+            for x in xs.filter(|&x| x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n) {
+                let i = (y as usize * n + x as usize) * 4;
+                let c = fog_cover(world, fog, x, y).unwrap_or(Color::new(0.0, 0.0, 0.0, 0.0));
+                self.image.bytes[i..i + 4].copy_from_slice(&rgba(c));
             }
-            if let Some(color) = here {
-                draw_diamond(camera, vec2(start as f32, y as f32), vec2((x - start) as f32, 1.0), color);
+        }
+        match &self.texture {
+            Some(texture) if texture.width() as usize == n => texture.update(&self.image),
+            _ => {
+                let texture = Texture2D::from_image(&self.image);
+                // Sharp pixels: every tile stays a sharp diamond, like the strips were.
+                texture.set_filter(FilterMode::Nearest);
+                self.texture = Some(texture);
             }
+        }
+    }
+
+    fn draw(&self, camera: &Camera, area: Region) {
+        if let Some(texture) = &self.texture {
+            picture::draw_tiles(texture, area, |p| camera.world_to_screen(p));
         }
     }
 }
@@ -570,7 +601,7 @@ fn draw_quad(camera: &Camera, corners: [Vec2; 4], color: Color) {
 
 /// A spawner on the ground: see-through area with an edge. The selected one's edge glows (pulsing).
 fn draw_spawner(camera: &Camera, spawner: &SpawnerShape) {
-    let corners = spawner.region.corners();
+    let corners = spawner.corners;
     draw_quad(camera, corners, Color { a: 0.18, ..SPAWNER });
     let edge = |width: f32, color: Color| {
         for k in 0..4 {

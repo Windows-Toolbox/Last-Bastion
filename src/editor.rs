@@ -4,12 +4,15 @@
 //! Either way you see the whole map, including the ring outside the border where the zombies come from.
 //!
 //! The panel has tabs like TAB's map editor (DESIGN.md 12.6):
-//! - **Map** – name, save, close, a new map – and the round: how many days, the gold and wood at the start (TAB's
-//!   "Info").
+//! - **Map** – name, save, close, a new map – the round: how many days, the gold and wood at the start (TAB's
+//!   "Info") – and where the playing field lies in the whole map (SC2's map bounds and map size).
 //! - **Terrain** – paint mountains, forest, water, erase, ore (TAB's painter).
 //! - **Entities** – units, buildings (without the rules of the game), zombies, spawners, the eraser.
 //! - **Waves** – send waves now, the **timeline** (waves that come by themselves on a given day and hour, like TAB's
-//!   events "32d 12h", the final wave among them) and the **constant spawn**.
+//!   events "32d 12h", the final wave among them – each with groups of several breeds, from sides or from chosen
+//!   spawners) and the **constant spawn**.
+//!
+//! A right click on a spawner opens its properties in a small window of their own (`properties_window`).
 //!
 //! It's made with **egui** (DESIGN.md 12.9, step 1): fields to type numbers and names into (or drag them), drop-down
 //! lists, sections that fold, a list that scrolls. egui works like macroquad's drawing – *immediate mode*: every frame
@@ -28,7 +31,11 @@ use crate::data::{ConstantSpecial, Stage};
 use crate::hud::Layout;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Ore, Terrain};
-use crate::sim::{day_and_hour, Breed, Order, SpawnMode, TimedWave, WaveFrom, World, DAY_TICKS, HOUR_TICKS};
+use crate::map::BORDER;
+use crate::sim::{
+    day_and_hour, Axes, Breed, BreedCount, Order, SpawnMode, Spawner, TimedWave, WaveFrom, WaveGroup, World, DAY_TICKS,
+    HOUR_TICKS, MAP_SIZES, MOST_PER_TILE,
+};
 
 /// Width of the panel. egui counts in points – here the same as macroquad's pixels.
 const WIDTH: f32 = 320.0;
@@ -42,10 +49,15 @@ const MAX_NAME: usize = 24;
 const MAX_DAYS: u32 = 200;
 /// The most a number field takes (gold, wood, zombies) – far more than a map needs, only so nothing overflows.
 const MAX_AMOUNT: u32 = 10_000_000;
-/// The final wave stands out on the timeline.
+/// The final wave stands out on the timeline – and so does a group with no spawner ticked.
 const FINAL: Color32 = Color32::from_rgb(242, 115, 89);
-/// Where a wave on the timeline can come from.
+/// Where a group of a wave can come from at random (besides chosen spawners).
 const WAVE_FROM: [WaveFrom; 5] = [WaveFrom::OneSpawner, WaveFrom::Sides(1), WaveFrom::Sides(2), WaveFrom::Sides(3), WaveFrom::Sides(4)];
+/// What the zombie brush and drop can place: every breed but the giant – it has a tool of its own (`Tool::Giant`),
+/// one at a time. A new breed in `Breed::ALL` gets its slider by itself.
+fn small_breeds() -> Vec<Breed> {
+    Breed::ALL.into_iter().filter(|&b| b != Breed::Giant).collect()
+}
 /// The buildings of the "Entities" tab, in this order.
 const BUILDINGS: &[BuildingKind] = &[
     BuildingKind::CommandCenter,
@@ -116,10 +128,15 @@ pub enum Tool {
     Ore(Option<Ore>),
     /// The eraser: everything on the brush area goes – buildings, units, zombies (hold and drag).
     Remove,
-    /// Zombie brush: while the left mouse button is held, every tick a few zombies on the brush area.
+    /// Zombie brush, like TAB: on every tile of the brush area so many of each breed (`Editor::per_tile`) – hold and
+    /// drag, painting over a tile again only fills it up.
     ZombieBrush,
     /// A whole crowd of zombies at once at the click.
     ZombieDrop,
+    /// One giant on the tile clicked.
+    Giant,
+    /// The playing field's edges (the world border) can be grabbed and dragged – inside it, it moves as a whole.
+    PlayArea,
     /// One unit at the click.
     Unit(UnitKind),
     /// A new spawner at the click.
@@ -143,6 +160,8 @@ impl Tool {
             Tool::Remove => "Remove all on it",
             Tool::ZombieBrush => "Brush",
             Tool::ZombieDrop => "Drop",
+            Tool::Giant => "Giant",
+            Tool::PlayArea => "Drag the border",
             Tool::Unit(kind) => &kind.stats().name,
             Tool::Spawner => "+ Spawner",
             Tool::Doom => "Doom house",
@@ -152,9 +171,9 @@ impl Tool {
         }
     }
 
-    /// Does it paint along the way the mouse is dragged (terrain, ore, the eraser)?
+    /// Does it paint along the way the mouse is dragged (terrain, ore, the eraser, the zombie brush)?
     pub fn paints(self) -> bool {
-        matches!(self, Tool::Paint(_) | Tool::Ore(_) | Tool::Remove)
+        matches!(self, Tool::Paint(_) | Tool::Ore(_) | Tool::Remove | Tool::ZombieBrush)
     }
 }
 
@@ -207,6 +226,12 @@ pub struct Editor {
     pub brush: i32,
     /// The selected spawner (its `id`) – its edge glows and can be dragged.
     pub spawner: Option<u32>,
+    /// The selected spawner's properties are open in a window of their own (right click on it) – and where it goes
+    /// when it's shown next (screen, once: then it stays where it's dragged to).
+    properties: bool,
+    properties_at: Option<Vec2>,
+    /// "Grid" while it's being changed – until "Apply" (`None`: the size the map has).
+    grid_size: Option<usize>,
     /// While the selected spawner's name field has the keyboard: the text so far (`ui.rs` shows it on the map).
     pub name_edit: Option<String>,
     /// The same for the map name.
@@ -228,12 +253,12 @@ pub struct Editor {
     placing: Option<BuildingKind>,
     /// Whose view the editor shows (stays when switching back and forth).
     sight: Sight,
-    /// What the zombie brush and drop place: breed, wandering or storming, how many.
-    pub breed: Breed,
+    /// Wandering (asleep, like the zombies a new map starts with) or storming – brush, drop and giant.
     pub wander: bool,
-    /// Zombies per tick of the brush.
-    pub rate: u32,
-    /// Zombies per drop.
+    /// The brush: how many of each breed on every tile (0 to `MOST_PER_TILE`).
+    pub per_tile: Vec<(Breed, u32)>,
+    /// The drop: which breed, how many.
+    pub breed: Breed,
     pub drop: u32,
     /// Is the mouse on the panel, or is one of its fields being dragged? Then the map doesn't get it (`show`).
     on_panel: bool,
@@ -255,6 +280,9 @@ impl Editor {
             tool: None,
             brush: 3,
             spawner: None,
+            properties: false,
+            properties_at: None,
+            grid_size: None,
             name_edit: None,
             map_name_edit: None,
             map_name: "Untitled".to_owned(),
@@ -265,9 +293,11 @@ impl Editor {
             place: None,
             placing: None,
             sight: Sight::All,
+            // Like the zombies a new map starts with – asleep, strolling around.
+            wander: true,
+            // A walker on every tile to begin with – the other sliders at 0.
+            per_tile: small_breeds().into_iter().map(|b| (b, u32::from(b == Breed::Walker))).collect(),
             breed: Breed::Walker,
-            wander: false,
-            rate: 2,
             drop: 100,
             on_panel: false,
             typing: false,
@@ -281,17 +311,27 @@ impl Editor {
         self.placing = placing;
     }
 
-    /// Zombie brush or drop: the order for `count` zombies around `center`, in the radius of the brush – a drop at
-    /// least as big as the crowd needs.
-    pub fn zombie_order(&self, center: Vec2, count: u32) -> Order {
-        let radius = self.zombie_radius(count);
-        Order::PlaceZombies { center, radius, count: count as usize, breed: self.breed, wander: self.wander }
+    /// The drop: `drop` zombies around `center`, in the radius of the brush – at least as big as the crowd needs.
+    pub fn drop_order(&self, center: Vec2) -> Order {
+        let radius = self.drop_radius();
+        Order::PlaceZombies { center, radius, count: self.drop as usize, breed: self.breed, wander: self.wander }
     }
 
-    /// The radius (tiles) zombies are placed in: the brush – a drop at least as big as its crowd needs.
-    pub fn zombie_radius(&self, count: u32) -> f32 {
-        let crowd = if self.tool == Some(Tool::ZombieDrop) { 0.5 + (count as f32).sqrt() * 0.3 } else { 0.0 };
-        (self.brush as f32 / 2.0).max(crowd)
+    /// The radius (tiles) a drop lands in: the brush – at least as big as its crowd needs.
+    pub fn drop_radius(&self) -> f32 {
+        (self.brush as f32 / 2.0).max(0.5 + (self.drop as f32).sqrt() * 0.3)
+    }
+
+    /// The zombie brush on these tiles (`Order::PaintZombies`) – only the breeds whose slider isn't at 0.
+    pub fn brush_order(&self, tiles: Vec<(i32, i32)>) -> Order {
+        let per_tile = self.per_tile.iter().copied().filter(|&(_, n)| n > 0).collect();
+        Order::PaintZombies { tiles, per_tile, wander: self.wander }
+    }
+
+    /// What the brush puts on a tile, as a short text on the mouse: "2 Walker, 1 Runner".
+    pub fn brush_text(&self) -> String {
+        let parts: Vec<String> = self.per_tile.iter().filter(|&&(_, n)| n > 0).map(|&(b, n)| format!("{n} {}", b.name())).collect();
+        if parts.is_empty() { "nothing - push a slider".to_owned() } else { parts.join(", ") + " per tile" }
     }
 
     /// The editor's tools and the whole map – only in the editor program, in both modes.
@@ -315,15 +355,24 @@ impl Editor {
         self.mode = mode;
         self.spawner = None;
         self.name_edit = None;
+        self.properties = false;
     }
 
     /// Selects a spawner (or none). A name being typed for the previous one was already saved by `show` – the click
-    /// that selects took the keyboard away from the field.
+    /// that selects took the keyboard away from the field. Its properties window closes.
     pub fn select_spawner(&mut self, spawner: Option<u32>) {
         if spawner != self.spawner {
             self.name_edit = None;
+            self.properties = false;
         }
         self.spawner = spawner;
+    }
+
+    /// Right click on a spawner: select it and open its properties next to the mouse (`mouse`: on screen).
+    pub fn open_properties(&mut self, spawner: u32, mouse: Vec2) {
+        self.select_spawner(Some(spawner));
+        self.properties = true;
+        self.properties_at = Some(mouse + Vec2::new(16.0, 8.0));
     }
 
     /// Is something being typed into the panel (a name, a number)? Then the keyboard belongs to it and no key does
@@ -394,6 +443,7 @@ impl Editor {
                 ui.separator();
                 ui.label(RichText::new(self.hint()).small().weak());
             });
+        self.properties_window(ctx, world, enabled, orders);
         keep_focus_for_text(ctx);
         // Esc and Enter take the keyboard away from a field before `show` even starts – but in that frame the key
         // was still meant for the field (not for the menu or the selection). So "typing" lasts one frame longer.
@@ -445,6 +495,7 @@ impl Editor {
             "Test - Edit (F10): the map as before the test"
         } else {
             match self.tab {
+                _ if self.tool == Some(Tool::PlayArea) => "Grab an edge of the border - inside: move it",
                 Tab::Map | Tab::Waves => "Numbers: drag them, or click and type",
                 _ => "Right click or Esc: put the tool away",
             }
@@ -499,6 +550,65 @@ impl Editor {
                 ui.end_row();
             });
         });
+        self.play_section(ui, world, orders);
+        self.grid_section(ui, world, orders);
+    }
+
+    /// "Playing field": the world border – where units may go, the camera and the minimap. Drag its edges on the map
+    /// (`Tool::PlayArea`, `ui.rs`) or type its size: across and down in steps of the screen axes (a step across is
+    /// half a tile wide), around the same middle. Nothing on the map moves.
+    fn play_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        section(ui, "Playing field", "the world border - units stay inside, zombies come from outside", |ui| {
+            let (min, size) = world.map.play_steps();
+            ui.horizontal(|ui| {
+                self.tool_button(ui, Tool::PlayArea);
+                // As many tiles as a square of this edge: one step across and down is half a tile.
+                let tiles = ((size.0 * size.1) as f32 / 2.0).sqrt().round();
+                ui.label(RichText::new(format!("like {tiles} x {tiles} tiles")).weak());
+            });
+            ui.horizontal(|ui| {
+                ui.label("across");
+                // `settled`: one order when the number is let go – every new border recomputes the zombies' ways.
+                let w = settled(ui, size.0, |v| DragValue::new(v).range(crate::map::MIN_PLAY..=world.map.size as i32));
+                ui.label("down");
+                let h = settled(ui, size.1, |v| DragValue::new(v).range(crate::map::MIN_PLAY..=world.map.size as i32));
+                if w.is_some() || h.is_some() {
+                    let new = (w.unwrap_or(size.0), h.unwrap_or(size.1));
+                    // Around the same middle.
+                    let min = (min.0 + (size.0 - new.0) / 2, min.1 + (size.1 - new.1) / 2);
+                    orders.push(Order::SetPlayArea { min, size: new });
+                }
+                ui.label("steps");
+            });
+            if ui.button("Like a new map").on_hover_text("In the middle, the ring of a new map around it").clicked() {
+                let region = crate::map::Map::play_area_of(world.map.size, world.map.border.max(BORDER));
+                let (min, extent) = (region.min.round(), (region.max - region.min).round());
+                orders.push(Order::SetPlayArea { min: (min.x as i32, min.y as i32), size: (extent.x as i32, extent.y as i32) });
+            }
+        });
+    }
+
+    /// "Grid": the whole map the playing field lies in (SC2's map size) – more room around it, or less. It only changes
+    /// with "Apply": the map is loaded anew then (`World::resize`), and smaller, what lies outside is gone (undo brings
+    /// it back). Not during a test.
+    fn grid_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        section(ui, "Grid", "the whole map - grows or shrinks on every side", |ui| {
+            let now = world.map.size;
+            let mut size = self.grid_size.unwrap_or(now);
+            ui.horizontal(|ui| {
+                // `speed(2)` and the rounding below: always even, the map has a middle tile pair.
+                ui.add(DragValue::new(&mut size).range(MAP_SIZES).speed(2).suffix(" tiles"));
+                size = size / 2 * 2;
+                let apply = egui::Button::new("Apply");
+                if ui.add_enabled(size != now && self.mode == Mode::Edit, apply).clicked() {
+                    orders.push(Order::ResizeMap { size });
+                    size = now;
+                }
+            });
+            // `then_some`: `Some(size)` if the condition holds, otherwise `None`.
+            self.grid_size = (size != now).then_some(size);
+            ui.label(RichText::new("Everything stays where it is, new ground is grass. Then drag the border.").small().weak());
+        });
     }
 
     fn terrain_tab(&mut self, ui: &mut Ui) {
@@ -535,27 +645,26 @@ impl Editor {
             });
         });
         section(ui, "Remove", "hold and drag (brush)", |ui| self.tool_button(ui, Tool::Remove));
-        section(ui, "Zombies", "brush: hold, drop: click", |ui| {
+        section(ui, "Zombies", "brush: per tile, hold and drag - drop: a crowd - giant: one", |ui| {
             ui.horizontal(|ui| {
                 self.tool_button(ui, Tool::ZombieBrush);
                 self.tool_button(ui, Tool::ZombieDrop);
+                self.tool_button(ui, Tool::Giant);
             });
-            egui::Grid::new("zombies").num_columns(2).show(ui, |ui| {
-                ui.label("Breed");
-                breed_box(ui, "brush breed", &mut self.breed);
-                ui.end_row();
+            ui.horizontal(|ui| {
                 ui.label("They");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.wander, false, "storm the CC");
-                    ui.radio_value(&mut self.wander, true, "wander");
-                });
-                ui.end_row();
-                ui.label("Brush");
-                ui.add(DragValue::new(&mut self.rate).range(1..=100).suffix(" per tick"));
-                ui.end_row();
+                ui.radio_value(&mut self.wander, true, "sleep and wander");
+                ui.radio_value(&mut self.wander, false, "storm the CC");
+            });
+            ui.label(format!("Brush - on every tile, at most {MOST_PER_TILE} of each (like TAB):"));
+            // `&mut (breed, n)`: each pair of the list lent to change `n` – the breed stays.
+            for (breed, n) in &mut self.per_tile {
+                ui.add(Slider::new(n, 0..=MOST_PER_TILE).text(breed.name()));
+            }
+            ui.horizontal(|ui| {
                 ui.label("Drop");
                 ui.add(DragValue::new(&mut self.drop).range(1..=10_000).suffix(" zombies"));
-                ui.end_row();
+                breed_list_box(ui, "drop breed", &mut self.breed, &small_breeds());
             });
         });
         section(ui, "Villages of doom and loot", "click", |ui| {
@@ -569,19 +678,79 @@ impl Editor {
         self.spawner_section(ui, world, orders);
     }
 
-    /// The selected spawner: its name, how it sends zombies by itself, remove it.
+    /// The selected spawner in the panel – unless its properties window is open (right click): the same fields twice
+    /// would fight over the name being typed (`name_edit`).
     fn spawner_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
-        let Some((spawner, s)) = self.spawner.and_then(|id| Some((id, world.find_spawner(id)?))) else {
+        let Some(s) = self.spawner.and_then(|id| world.find_spawner(id)) else {
             return;
         };
-        let (name, mode) = (&world.spawners[s].name, world.spawners[s].mode);
-        section(ui, "Selected spawner", "drag its edge", |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Name");
-                if let Some(name) = name_field(ui, &mut self.name_edit, name) {
-                    orders.push(Order::RenameSpawner { spawner, name });
+        section(ui, "Selected spawner", "drag its edge - right click: its window", |ui| {
+            if self.properties {
+                ui.label(RichText::new("Its properties are open in their own window.").weak());
+            } else {
+                self.spawner_fields(ui, &world.spawners[s], orders);
+            }
+        });
+    }
+
+    /// The selected spawner's properties in a window of their own, next to where it was right-clicked – like TAB's
+    /// entity properties. Its X, Esc or selecting something else closes it.
+    fn properties_window(&mut self, ctx: &egui::Context, world: &World, enabled: bool, orders: &mut Vec<Order>) {
+        if !self.properties {
+            return;
+        }
+        let Some(s) = self.spawner.and_then(|id| world.find_spawner(id)) else {
+            self.properties = false;
+            return;
+        };
+        let mut open = true;
+        // `id`: egui knows the window by it (and where it was dragged to) – not by its title, which shows the name.
+        let mut window = egui::Window::new(format!("Spawner - {}", world.spawners[s].name))
+            .id(egui::Id::new("spawner properties"))
+            .collapsible(false)
+            .resizable(false)
+            .min_width(250.0)
+            .open(&mut open);
+        // `take`: only the first time after the right click – after that it stays where it was dragged.
+        if let Some(at) = self.properties_at.take() {
+            window = window.current_pos([at.x, at.y]);
+        }
+        window.show(ctx, |ui| {
+            if !enabled {
+                ui.disable();
+            }
+            self.spawner_fields(ui, &world.spawners[s], orders);
+        });
+        if !open {
+            self.properties = false;
+        }
+    }
+
+    /// What can be set on a spawner: its name, straight or slanted, how it sends zombies by itself – and remove it.
+    fn spawner_fields(&mut self, ui: &mut Ui, spawner: &Spawner, orders: &mut Vec<Order>) {
+        let (id, name, mode) = (spawner.id, &spawner.name, spawner.mode);
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            if let Some(name) = name_field(ui, &mut self.name_edit, name) {
+                orders.push(Order::RenameSpawner { spawner: id, name });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Lies");
+            for (axes, text, hint) in [
+                (Axes::Screen, "straight", "A rectangle straight on screen, like the world border"),
+                (Axes::Tiles, "slanted", "Slanted like the tiles - turned by 45 degrees, about as big"),
+            ] {
+                if ui.selectable_label(spawner.axes == axes, text).on_hover_text(hint).clicked() && spawner.axes != axes {
+                    orders.push(Order::SetSpawnerAxes { spawner: id, axes });
                 }
-            });
+            }
+            let (w, h) = spawner.size;
+            let unit = if spawner.axes == Axes::Tiles { "tiles" } else { "steps" };
+            ui.label(RichText::new(format!("{w} x {h} {unit}")).weak());
+        });
+        let spawner = id;
+        {
             ui.label("Sends zombies by itself:");
             let mut new = mode;
             ui.horizontal(|ui| {
@@ -609,11 +778,10 @@ impl Editor {
                 orders.push(Order::SetSpawnMode { spawner, mode: new });
             }
             if ui.button("Remove spawner (Del)").clicked() {
-                self.spawner = None;
-                self.name_edit = None;
+                self.select_spawner(None);
                 orders.push(Order::RemoveSpawner { spawner });
             }
-        });
+        }
     }
 
     fn brush_size(&mut self, ui: &mut Ui) {
@@ -671,26 +839,27 @@ fn waves_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
     section(ui, "Timeline", "comes by itself", |ui| {
         let (day, hour) = world.clock();
         ui.label(format!("Now: day {day}, {hour:02}:00"));
-        for (i, &wave) in world.waves.iter().enumerate() {
-            timed_wave(ui, i, wave, world.tick, orders);
+        for (i, wave) in world.waves.iter().enumerate() {
+            timed_wave(ui, i, wave, world, orders);
         }
         if ui.button("+ Add wave").clicked() {
             // A day after the last wave (or after now), on the full hour – but before a final wave.
             let last = world.waves.iter().filter(|w| !w.final_wave).map(|w| w.at).max().unwrap_or(0).max(world.tick);
             let at = (last + DAY_TICKS) / HOUR_TICKS * HOUR_TICKS;
-            orders.push(Order::AddTimedWave(TimedWave { at, count: 200, from: WaveFrom::Sides(1), breed: Breed::Runner, final_wave: false, reveal: false }));
+            orders.push(Order::AddTimedWave(TimedWave::new(at, WaveFrom::Sides(1), Breed::Runner, 200)));
         }
     });
-    section(ui, "Constant spawn", "groups out of the spawners set to Constant", |ui| {
+    section(ui, "Constant spawn", "groups out of the spawners set to Constant - or the stage's own", |ui| {
         let constant = &world.constant;
-        for (i, &stage) in constant.stages.iter().enumerate() {
-            stage_row(ui, i, stage, orders);
+        for (i, stage) in constant.stages.iter().enumerate() {
+            stage_row(ui, i, stage, &world.spawners, orders);
         }
         if ui.button("+ Add stage").clicked() {
-            // A day after the last one, with its values – or single walkers on day 2 if there is none yet.
+            // A day after the last one, with its values – or single walkers on day 2 if there is none yet. `clone`:
+            // a stage has a list (its spawners), so it's no longer copied by itself like a number.
             let stage = match constant.stages.last() {
-                Some(&last) => Stage { day: last.day + 1, ..last },
-                None => Stage { day: 2, hour: 0, breed: Breed::Walker, every_seconds: 30.0, group: [1, 1] },
+                Some(last) => Stage { day: last.day + 1, ..last.clone() },
+                None => Stage { day: 2, hour: 0, breed: Breed::Walker, every_seconds: 30.0, group: [1, 1], spawners: None },
             };
             orders.push(Order::AddStage(stage));
         }
@@ -719,17 +888,17 @@ fn waves_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
     });
 }
 
-/// One wave of the timeline, in a box of two lines: when (day, hour), final, reveal, remove – how many, which breed,
-/// from where. All fields work on a copy (`changed`); if it differs at the end, one order sets it.
-fn timed_wave(ui: &mut Ui, i: usize, wave: TimedWave, now: u64, orders: &mut Vec<Order>) {
-    let mut changed = wave;
+/// One wave of the timeline, in a box: when (day, hour), final, reveal, remove – then its groups (`wave_group`) and
+/// "+ group". All fields work on a copy (`changed`); if it differs at the end, one order sets it.
+fn timed_wave(ui: &mut Ui, i: usize, wave: &TimedWave, world: &World, orders: &mut Vec<Order>) {
+    let mut changed = wave.clone();
     let mut removed = false;
     Frame::group(ui.style()).show(ui, |ui| {
         // Every box as wide as the panel, whatever is in it.
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             // A wave whose time has passed won't come any more – greyed out. The final wave in its colour.
-            let color = if wave.at < now {
+            let color = if wave.at < world.tick {
                 ui.visuals().weak_text_color()
             } else if wave.final_wave {
                 FINAL
@@ -746,29 +915,106 @@ fn timed_wave(ui: &mut Ui, i: usize, wave: TimedWave, now: u64, orders: &mut Vec
             }
             ui.toggle_value(&mut changed.final_wave, "Final").on_hover_text("Calls every zombie on the map");
             ui.toggle_value(&mut changed.reveal, "Reveal").on_hover_text("Shows the whole map when it comes");
-            removed = ui.small_button("x").on_hover_text("Remove").clicked();
+            removed = ui.small_button("x").on_hover_text("Remove the wave").clicked();
         });
-        ui.horizontal(|ui| {
-            ui.add(DragValue::new(&mut changed.count).range(1..=MAX_AMOUNT).speed(5).suffix(" zombies"));
-            // `("wave breed", i)`: a pair as the list's name – one per wave.
-            breed_box(ui, ("wave breed", i), &mut changed.breed);
-            ComboBox::from_id_salt(("wave from", i)).width(80.0).selected_text(from_label(changed.from)).show_ui(ui, |ui| {
-                for from in WAVE_FROM {
-                    ui.selectable_value(&mut changed.from, from, from_label(from));
-                }
-            });
-        });
+        // The group the "x" of was clicked – taken out after the loop, a list can't change while it's gone through.
+        let mut gone = None;
+        // `iter_mut`: every group lent to change it in place (`&mut`).
+        for (g, group) in changed.groups.iter_mut().enumerate() {
+            if wave_group(ui, (i, g), group, &world.spawners) {
+                gone = Some(g);
+            }
+        }
+        if let Some(g) = gone {
+            changed.groups.remove(g);
+        }
+        if ui.small_button("+ group").on_hover_text("More zombies at the same time - from somewhere else").clicked() {
+            let zombies = vec![BreedCount { count: 100, breed: Breed::Runner }];
+            changed.groups.push(WaveGroup { from: WaveFrom::Sides(1), breeds: zombies });
+        }
     });
     if removed {
         orders.push(Order::RemoveTimedWave { index: i });
-    } else if changed != wave {
+    } else if changed != *wave {
         orders.push(Order::SetTimedWave { index: i, wave: changed });
     }
 }
 
-/// One stage of the constant spawn, in a box: from when, which breed, remove – every how many seconds, how big a group.
-fn stage_row(ui: &mut Ui, i: usize, stage: Stage, orders: &mut Vec<Order>) {
-    let mut changed = stage;
+/// One group of a wave, in a box of its own: from where (a random side, … or chosen spawners – then a tick box per
+/// spawner), and a line per breed: how many, which one. `id`: (wave, group) – egui tells the lists apart by it.
+/// Returns whether its "x" was clicked.
+fn wave_group(ui: &mut Ui, id: (usize, usize), group: &mut WaveGroup, spawners: &[Spawner]) -> bool {
+    let mut removed = false;
+    Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label("From");
+            from_box(ui, ("wave from", id), &mut group.from);
+            removed = ui.small_button("x").on_hover_text("Remove this group").clicked();
+        });
+        if let WaveFrom::Spawners(ids) = &mut group.from {
+            spawner_checks(ui, ids, spawners);
+        }
+        let many = group.breeds.len() > 1;
+        let mut gone = None;
+        for (k, z) in group.breeds.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(DragValue::new(&mut z.count).range(0..=MAX_AMOUNT).speed(5).suffix(" zombies"));
+                // A triple as the list's name – one per breed of every group of every wave.
+                breed_box(ui, ("wave breed", id, k), &mut z.breed);
+                if many && ui.small_button("x").on_hover_text("Remove this breed").clicked() {
+                    gone = Some(k);
+                }
+            });
+        }
+        if let Some(k) = gone {
+            group.breeds.remove(k);
+        }
+        if ui.small_button("+ breed").on_hover_text("Another breed out of the same spawners").clicked() {
+            // The first breed that isn't in the group yet.
+            let breed = Breed::ALL.into_iter().find(|b| group.breeds.iter().all(|z| z.breed != *b)).unwrap_or(Breed::Runner);
+            group.breeds.push(BreedCount { count: 50, breed });
+        }
+    });
+    removed
+}
+
+/// Where a group of a wave comes from: at random (one spawner, 1–4 sides) or chosen spawners. Chosen ones start with
+/// none ticked – the group says so in red until one is.
+fn from_box(ui: &mut Ui, id: impl std::hash::Hash, from: &mut WaveFrom) {
+    let chosen = matches!(from, WaveFrom::Spawners(_));
+    ComboBox::from_id_salt(id).width(130.0).selected_text(from_label(from)).show_ui(ui, |ui| {
+        for option in WAVE_FROM {
+            let label = from_label(&option);
+            ui.selectable_value(from, option, label);
+        }
+        if ui.selectable_label(chosen, "chosen spawners").clicked() && !chosen {
+            *from = WaveFrom::Spawners(Vec::new());
+        }
+    });
+}
+
+/// A tick box for every spawner of the map, by name – the ticked ones are in `ids`, in the order of the map's list.
+fn spawner_checks(ui: &mut Ui, ids: &mut Vec<u32>, spawners: &[Spawner]) {
+    ui.horizontal_wrapped(|ui| {
+        for s in spawners {
+            let mut on = ids.contains(&s.id);
+            if ui.checkbox(&mut on, s.name.as_str()).changed() {
+                // Anew from the map's list: in its order, and without spawners that are gone.
+                let ticked = |t: &Spawner| if t.id == s.id { on } else { ids.contains(&t.id) };
+                *ids = spawners.iter().filter(|t| ticked(t)).map(|t| t.id).collect();
+            }
+        }
+    });
+    if ids.is_empty() {
+        ui.label(RichText::new("No spawner ticked - nobody comes").color(FINAL));
+    }
+}
+
+/// One stage of the constant spawn, in a box: from when, which breed, remove – every how many seconds, how big a group
+/// – out of which spawners: those set to "Constant", or its own (a tick box per spawner).
+fn stage_row(ui: &mut Ui, i: usize, stage: &Stage, spawners: &[Spawner], orders: &mut Vec<Order>) {
+    let mut changed = stage.clone();
     let mut removed = false;
     Frame::group(ui.style()).show(ui, |ui| {
         // Every box as wide as the panel, whatever is in it.
@@ -796,10 +1042,28 @@ fn stage_row(ui: &mut Ui, i: usize, stage: Stage, orders: &mut Vec<Order>) {
             ui.add(DragValue::new(to).range(*from..=MAX_AMOUNT));
             ui.label("zombies");
         });
+        ui.horizontal(|ui| {
+            ui.label("From");
+            let chosen = changed.spawners.is_some();
+            let shown = if chosen { "chosen spawners" } else { "those set to Constant" };
+            ComboBox::from_id_salt(("stage from", i)).width(160.0).selected_text(shown).show_ui(ui, |ui| {
+                if ui.selectable_label(!chosen, "those set to Constant").clicked() {
+                    changed.spawners = None;
+                }
+                if ui.selectable_label(chosen, "chosen spawners").clicked() && !chosen {
+                    // Starting with those set to "Constant" – nothing changes until one is ticked or unticked.
+                    changed.spawners = Some(spawners.iter().filter(|s| s.mode == SpawnMode::Constant).map(|s| s.id).collect());
+                }
+            });
+        });
+        // `as_mut`: the list inside the `Option`, lent to change it.
+        if let Some(ids) = changed.spawners.as_mut() {
+            spawner_checks(ui, ids, spawners);
+        }
     });
     if removed {
         orders.push(Order::RemoveStage { index: i });
-    } else if changed != stage {
+    } else if changed != *stage {
         orders.push(Order::SetStage { index: i, stage: changed });
     }
 }
@@ -866,38 +1130,51 @@ fn name_field(ui: &mut Ui, edit: &mut Option<String>, name: &str) -> Option<Stri
 /// spawn: the simulation keeps the stages in order of time, so a stage dragged past another would swap rows under the
 /// mouse – and the drag would go on with the wrong one.
 ///
-/// `field` makes the field for a value: `impl FnOnce(&mut u64) -> DragValue<'_>` – a closure that gets the value
+/// `field` makes the field for a value: `impl FnOnce(&mut T) -> DragValue<'_>` – a closure that gets the value
 /// lent (`&mut`) and gives back a field that borrows it (`'_`: as long as the value is lent).
-fn settled(ui: &mut Ui, value: u64, field: impl FnOnce(&mut u64) -> DragValue<'_>) -> Option<u64> {
+///
+/// `<T>`: a *generic* function – it works for any type `T` that fulfils what stands after `where`: a number egui can
+/// drag (`Numeric`), and one egui's memory may keep (`Send + Sync`: safe across threads). Here the days of a stage
+/// (`u64`) and the size of the playing field (`i32`) – the compiler makes one copy of the function for each.
+fn settled<T>(ui: &mut Ui, value: T, field: impl FnOnce(&mut T) -> DragValue<'_>) -> Option<T>
+where
+    T: egui::emath::Numeric + Send + Sync,
+{
     // The id the field is going to get – `with`: one of its own, derived from it.
     let id = ui.next_auto_id().with("settled");
-    let mut shown = ui.data(|data| data.get_temp::<u64>(id)).unwrap_or(value);
+    let mut shown = ui.data(|data| data.get_temp::<T>(id)).unwrap_or(value);
     let response = ui.add(field(&mut shown).update_while_editing(false));
     if response.dragged() || response.has_focus() {
         ui.data_mut(|data| data.insert_temp(id, shown));
         return None;
     }
-    ui.data_mut(|data| data.remove::<u64>(id));
+    ui.data_mut(|data| data.remove::<T>(id));
     (shown != value).then_some(shown)
 }
 
 /// A drop-down list of the zombie breeds. `id`: egui tells the lists apart by it.
 fn breed_box(ui: &mut Ui, id: impl std::hash::Hash, breed: &mut Breed) {
+    breed_list_box(ui, id, breed, &Breed::ALL);
+}
+
+/// A drop-down list of these breeds.
+fn breed_list_box(ui: &mut Ui, id: impl std::hash::Hash, breed: &mut Breed, breeds: &[Breed]) {
     ComboBox::from_id_salt(id).width(90.0).selected_text(breed.name()).show_ui(ui, |ui| {
-        for b in Breed::ALL {
+        for &b in breeds {
             ui.selectable_value(breed, b, b.name());
         }
     });
 }
 
-/// Where a wave of the timeline comes from, as a short text.
-fn from_label(from: WaveFrom) -> &'static str {
+/// Where a group of a wave comes from, as a short text.
+fn from_label(from: &WaveFrom) -> &'static str {
     match from {
-        WaveFrom::OneSpawner => "1 spawner",
-        WaveFrom::Sides(1) => "1 side",
-        WaveFrom::Sides(2) => "2 sides",
-        WaveFrom::Sides(3) => "3 sides",
-        WaveFrom::Sides(_) => "4 sides",
+        WaveFrom::OneSpawner => "1 random spawner",
+        WaveFrom::Sides(1) => "1 random side",
+        WaveFrom::Sides(2) => "2 random sides",
+        WaveFrom::Sides(3) => "3 random sides",
+        WaveFrom::Sides(_) => "all 4 sides",
+        WaveFrom::Spawners(_) => "chosen spawners",
     }
 }
 

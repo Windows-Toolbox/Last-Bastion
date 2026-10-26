@@ -10,7 +10,7 @@ use super::zombies::{values, Breed};
 use super::{World, DAY_TICKS, HOUR_TICKS, TICKS_PER_SECOND};
 use crate::data::{self, ConstantSpawn, Stage};
 use crate::kinds::UnitKind;
-use crate::map::{from_frame, Map, Region};
+use crate::map::{from_frame, to_frame, Map, Region};
 
 /// So many random spots in the spawners are tried for a new zombie before giving up
 /// (e.g. when the base has been walled off with water and is unreachable from everywhere).
@@ -19,20 +19,71 @@ const SPAWN_TRIES: u32 = 1000;
 pub(super) const NEW_SPAWNER_SIZE: i32 = 8;
 
 /// An area on the map where zombies come from – the only place they come from. Placed, renamed and resized
-/// in the editor; players don't see spawners. A straight rectangle on screen like the world border: `min` and
-/// `size` are in the screen axes (`map::to_frame`), in whole steps.
+/// in the editor; players don't see spawners. A rectangle: straight on screen like the world border, or slanted like
+/// the tiles (`axes`) – `min` and `size` count in those axes, in whole steps.
 #[derive(Clone)]
 pub struct Spawner {
     pub id: u32,
     pub name: String,
-    /// The top left corner on screen.
+    /// The corner with the smallest values – on screen the top left one, slanted the top one.
     pub min: (i32, i32),
     /// Width and height.
     pub size: (i32, i32),
+    pub axes: Axes,
     /// What it sends all by itself (waves come on top).
     pub mode: SpawnMode,
     /// Periodic: ticks since it last sent zombies.
     pub(super) timer: u32,
+}
+
+/// The axes a spawner's corner and size count in (editor: right click on it).
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub enum Axes {
+    /// The screen's (`map::to_frame`): straight on screen, like the world border – a step across is half a tile wide.
+    /// `default`: every spawner in map files before format 4.
+    #[default]
+    Screen,
+    /// The tiles': slanted on screen like every tile – a step is one tile.
+    Tiles,
+}
+
+impl Axes {
+    /// A world point in these axes.
+    pub fn of(self, p: Vec2) -> Vec2 {
+        match self {
+            Axes::Screen => to_frame(p),
+            Axes::Tiles => p,
+        }
+    }
+
+    /// The other way: a point in these axes as a world point.
+    pub fn back(self, a: Vec2) -> Vec2 {
+        match self {
+            Axes::Screen => from_frame(a),
+            Axes::Tiles => a,
+        }
+    }
+}
+
+/// The four corners (world points, in order around it) of a rectangle from `min`, `size` big, in `axes` – for drawing
+/// a spawner, also one that is being dragged.
+pub fn corners(axes: Axes, min: (i32, i32), size: (i32, i32)) -> [Vec2; 4] {
+    let (x0, y0) = (min.0 as f32, min.1 as f32);
+    let (x1, y1) = (x0 + size.0 as f32, y0 + size.1 as f32);
+    [vec2(x0, y0), vec2(x1, y0), vec2(x1, y1), vec2(x0, y1)].map(|a| axes.back(a))
+}
+
+/// The tiles such a rectangle covers (straight on screen: those whose middle lies inside) – for the pictures of maps.
+pub fn tiles(axes: Axes, min: (i32, i32), size: (i32, i32)) -> Vec<(i32, i32)> {
+    match axes {
+        Axes::Screen => {
+            let (x0, y0) = (min.0 as f32, min.1 as f32);
+            let region = Region { min: vec2(x0, y0), max: vec2(x0 + size.0 as f32, y0 + size.1 as f32) };
+            // `move`: the closure takes `y` along – it lives on after this line, the loop variable wouldn't.
+            region.rows(0.0).flat_map(|(y, xs)| xs.map(move |x| (x, y))).collect()
+        }
+        Axes::Tiles => (min.1..min.1 + size.1).flat_map(|y| (min.0..min.0 + size.0).map(move |x| (x, y))).collect(),
+    }
 }
 
 /// How a spawner sends zombies by itself (set in the editor).
@@ -53,51 +104,135 @@ impl SpawnMode {
 }
 
 impl Spawner {
-    /// Where it lies – the rectangle in the screen axes.
-    pub fn region(&self) -> Region {
-        let min = vec2(self.min.0 as f32, self.min.1 as f32);
-        Region { min, max: min + vec2(self.size.0 as f32, self.size.1 as f32) }
+    pub fn contains(&self, p: Vec2) -> bool {
+        let a = self.axes.of(p);
+        let (x0, y0) = (self.min.0 as f32, self.min.1 as f32);
+        a.x > x0 && a.y > y0 && a.x < x0 + self.size.0 as f32 && a.y < y0 + self.size.1 as f32
     }
 
-    pub fn contains(&self, p: Vec2) -> bool {
-        self.region().contains(p)
+    /// The middle (world point).
+    pub fn center(&self) -> Vec2 {
+        self.point_at(0.5, 0.5)
+    }
+
+    /// The point `u` of the way across and `v` of the way down (0 to 1, in its axes).
+    fn point_at(&self, u: f32, v: f32) -> Vec2 {
+        let min = vec2(self.min.0 as f32, self.min.1 as f32);
+        self.axes.back(min + vec2(u * self.size.0 as f32, v * self.size.1 as f32))
     }
 
     /// Which side of the map it is closest to, as you see it: 0 top, 1 bottom, 2 left, 3 right.
     pub(super) fn side(&self, map: &Map) -> u32 {
-        map.full_area().nearest_side(self.region().center())
+        map.full_area().nearest_side(self.center())
+    }
+
+    /// The same spawner in the other axes (`Axes`): around the same middle, about as many tiles, as long and thin –
+    /// turned by 45°. A step of the screen axes is `1 / √2` of a tile edge, so the sides grow or shrink by `√2`.
+    pub(super) fn turn_to(&mut self, axes: Axes) {
+        if axes == self.axes {
+            return;
+        }
+        let factor = if axes == Axes::Tiles { std::f32::consts::FRAC_1_SQRT_2 } else { std::f32::consts::SQRT_2 };
+        let side = |n: i32| ((n as f32 * factor).round() as i32).max(1);
+        let size = (side(self.size.0), side(self.size.1));
+        let center = axes.of(self.center());
+        self.min = ((center.x - size.0 as f32 / 2.0).round() as i32, (center.y - size.1 as f32 / 2.0).round() as i32);
+        self.size = size;
+        self.axes = axes;
     }
 }
 
-/// Where a wave comes from (editor).
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+/// Where a group of a wave comes from (editor).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum WaveFrom {
     /// All of them from one random spawner.
     OneSpawner,
     /// This many different random sides of the map – on each side the full count, spread over its spawners.
     Sides(u32),
+    /// These spawners (their `id`): the count once, spread over all of them – "5000 runners out of C, D, F and G". A
+    /// spawner that is removed leaves the list (`World::forget_spawner`); with none left nobody comes.
+    Spawners(Vec<u32>),
 }
 
 /// A wave on the timeline of the map (editor, "Waves" tab – like TAB's events "on day 12, 6:00 a wave from the
 /// north"). It comes all by itself when the clock gets there. A new round plans its waves itself (`plan_waves`).
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+/// `from = "WaveInFile"`: a file is read through that type – it also knows the waves of older files.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(from = "WaveInFile")]
 pub struct TimedWave {
     /// At this tick (`DAY_TICKS`, `HOUR_TICKS`).
     pub at: u64,
-    /// How many – from every side it comes from (`WaveFrom::Sides`), or in total from one spawner.
-    pub count: u32,
-    pub from: WaveFrom,
-    /// Which zombies. `default`: map files from before 2026-10-17 have no breed – their waves were runners.
-    #[serde(default = "runner")]
-    pub breed: Breed,
     /// Part of the final wave: when every final wave has come and none of its zombies is left, the round is won
     /// (`round.rs`). It also calls every zombie on the map – they all belong to it then (`World::call_everyone`).
-    /// `default`: old files have no final wave.
-    #[serde(default)]
     pub final_wave: bool,
-    /// When it comes, the whole map is shown from then on (`World::revealed`). `default`: old files don't.
-    #[serde(default)]
+    /// When it comes, the whole map is shown from then on (`World::revealed`).
     pub reveal: bool,
+    /// Its groups: each from its own place, with its own breeds – "5000 runners out of C, D, F, G and 200 spitters out
+    /// of B" is one wave of two groups.
+    pub groups: Vec<WaveGroup>,
+}
+
+/// One group of a wave: where it comes out – picked once, all its breeds come out there together – and how many of
+/// each breed. (`breeds`, not `zombies`: in the map file the waves come before the map's own field `zombies`, and
+/// `mapfile::pretty` finds that one by where it first appears.)
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct WaveGroup {
+    pub from: WaveFrom,
+    pub breeds: Vec<BreedCount>,
+}
+
+/// So many zombies of one breed – from every side the group comes from (`WaveFrom::Sides`), or in total.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct BreedCount {
+    pub count: u32,
+    pub breed: Breed,
+}
+
+impl TimedWave {
+    /// A wave of one group with one breed.
+    pub fn new(at: u64, from: WaveFrom, breed: Breed, count: u32) -> TimedWave {
+        TimedWave { at, final_wave: false, reveal: false, groups: vec![WaveGroup { from, breeds: vec![BreedCount { count, breed }] }] }
+    }
+
+    /// How many zombies it brings in all – a group from several sides brings its count from each of them (as long as
+    /// there are spawners on that many sides).
+    pub fn zombies(&self) -> u32 {
+        let times = |from: &WaveFrom| match from {
+            WaveFrom::Sides(n) => (*n).min(4),
+            _ => 1,
+        };
+        self.groups.iter().map(|g| g.breeds.iter().map(|z| z.count).sum::<u32>() * times(&g.from)).sum()
+    }
+}
+
+/// A wave as a map file has it. `untagged`: the file doesn't say which of the two it is – serde tries them in order,
+/// and the first one whose fields fit is it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WaveInFile {
+    /// Since map format 4: with groups.
+    Groups {
+        at: u64,
+        #[serde(default)]
+        final_wave: bool,
+        #[serde(default)]
+        reveal: bool,
+        groups: Vec<WaveGroup>,
+    },
+    /// Before: one breed per wave – several of them at the same time came out of the same random sides together
+    /// (`merge_old_waves` makes one wave of them). Files from before 2026-10-17 have no breed (their waves were
+    /// runners) and no final wave.
+    Single {
+        at: u64,
+        count: u32,
+        from: WaveFrom,
+        #[serde(default = "runner")]
+        breed: Breed,
+        #[serde(default)]
+        final_wave: bool,
+        #[serde(default)]
+        reveal: bool,
+    },
 }
 
 /// What a wave without a breed in its file sends – for `#[serde(default = "runner")]` above, which wants a function.
@@ -105,8 +240,42 @@ fn runner() -> Breed {
     Breed::Runner
 }
 
+/// `impl From`: how serde makes a `TimedWave` out of what it read (`#[serde(from = …)]`).
+impl From<WaveInFile> for TimedWave {
+    fn from(wave: WaveInFile) -> TimedWave {
+        match wave {
+            WaveInFile::Groups { at, final_wave, reveal, groups } => TimedWave { at, final_wave, reveal, groups },
+            WaveInFile::Single { at, count, from, breed, final_wave, reveal } => {
+                TimedWave { final_wave, reveal, ..TimedWave::new(at, from, breed, count) }
+            }
+        }
+    }
+}
+
+/// The waves of a map file before format 4 had one breed each; at the same time and from the same kind of place they
+/// came out of the same random spawners. Now that's one wave with one group per kind of place – it comes the same.
+/// In the order of the list: the first wave at a time takes in the later ones.
+pub fn merge_old_waves(waves: Vec<TimedWave>) -> Vec<TimedWave> {
+    let mut merged: Vec<TimedWave> = Vec::new();
+    for wave in waves {
+        let Some(into) = merged.iter_mut().find(|w| w.at == wave.at && w.final_wave == wave.final_wave) else {
+            merged.push(wave);
+            continue;
+        };
+        into.reveal |= wave.reveal;
+        for group in wave.groups {
+            match into.groups.iter_mut().find(|g| g.from == group.from) {
+                Some(same) => same.breeds.extend(group.breeds),
+                None => into.groups.push(group),
+            }
+        }
+    }
+    merged
+}
+
 /// What the constant spawn sends right now: a group of `min` to `max` zombies of this breed every `every` ticks –
-/// `specials` of them other breeds (breed, share), `unrest` of them more because of the colony's noise.
+/// `specials` of them other breeds (breed, share), `unrest` of them more because of the colony's noise. Out of these
+/// spawners (`id`s) – `None`: out of those set to "Constant".
 #[derive(Debug, PartialEq)]
 pub struct Group {
     pub breed: Breed,
@@ -115,6 +284,7 @@ pub struct Group {
     pub max: u32,
     pub specials: Vec<(Breed, f32)>,
     pub unrest: u32,
+    pub spawners: Option<Vec<u32>>,
 }
 
 /// The constant spawn `spawning` with every group `percent` as big (`constant_spawn_percent` of the difficulty) – the
@@ -140,12 +310,12 @@ pub fn stage_start(stage: &Stage) -> u64 {
 /// growing by `extra_per_day`.
 pub(super) fn group_at(spawning: &ConstantSpawn, tick: u64) -> Option<Group> {
     let i = spawning.stages.iter().rposition(|s| stage_start(s) <= tick)?;
-    let stage = spawning.stages[i];
+    let stage = &spawning.stages[i];
     let (mut every, mut min, mut max) = (stage.every_seconds, stage.group[0] as f32, stage.group[1] as f32);
-    let since = (tick - stage_start(&stage)) as f32;
+    let since = (tick - stage_start(stage)) as f32;
     match spawning.stages.get(i + 1) {
-        Some(next) if next.breed == stage.breed && stage_start(next) > stage_start(&stage) => {
-            let share = since / (stage_start(next) - stage_start(&stage)) as f32;
+        Some(next) if next.breed == stage.breed && stage_start(next) > stage_start(stage) => {
+            let share = since / (stage_start(next) - stage_start(stage)) as f32;
             every += (next.every_seconds - every) * share;
             min += (next.group[0] as f32 - min) * share;
             max += (next.group[1] as f32 - max) * share;
@@ -168,7 +338,7 @@ pub(super) fn group_at(spawning: &ConstantSpawn, tick: u64) -> Option<Group> {
         .filter(|s| s.day.saturating_sub(1) * DAY_TICKS <= tick)
         .map(|s| (s.breed, s.share))
         .collect();
-    Some(Group { breed: stage.breed, every, min, max: round(max).max(min), specials, unrest: 0 })
+    Some(Group { breed: stage.breed, every, min, max: round(max).max(min), specials, unrest: 0, spawners: stage.spawners.clone() })
 }
 
 /// One of your units has fallen: it lies there and rises as a walker when `rise_in` runs out.
@@ -327,10 +497,25 @@ impl World {
         }
     }
 
-    pub fn add_spawner(&mut self, name: String, min: (i32, i32), size: (i32, i32), mode: SpawnMode) {
-        self.next_spawner_id += 1;
-        self.spawners.push(Spawner { id: self.next_spawner_id, name, min, size, mode, timer: 0 });
+    /// A new spawner. `id`: the number it had in its map file – waves name their spawners by it (`WaveFrom::Spawners`).
+    /// 0, or one that's taken already: the next free number.
+    pub fn add_spawner(&mut self, id: u32, name: String, min: (i32, i32), size: (i32, i32), axes: Axes, mode: SpawnMode) {
+        let id = if id == 0 || self.find_spawner(id).is_some() { self.next_spawner_id + 1 } else { id };
+        self.next_spawner_id = self.next_spawner_id.max(id);
+        self.spawners.push(Spawner { id, name, min, size, axes, mode, timer: 0 });
         self.keep_spawner_on_map(self.spawners.len() - 1);
+    }
+
+    /// Spawner `id` is gone: the waves and stages that named it don't any more.
+    pub(super) fn forget_spawner(&mut self, id: u32) {
+        for group in self.waves.iter_mut().flat_map(|w| w.groups.iter_mut()) {
+            if let WaveFrom::Spawners(ids) = &mut group.from {
+                ids.retain(|&s| s != id);
+            }
+        }
+        for ids in self.constant.stages.iter_mut().filter_map(|s| s.spawners.as_mut()) {
+            ids.retain(|&s| s != id);
+        }
     }
 
     /// The number the next spawner will get – the editor selects a spawner right after placing it.
@@ -360,93 +545,110 @@ impl World {
         }
     }
 
-    /// `count` zombies of this breed, each from a random one of these spawners (indices into `spawners`). They storm
-    /// the command center. `final_wave`: they belong to the final wave – the round is won once they're all dead.
-    /// `swarm`: the swarm of a wave they belong to (`new_swarm`), 0: none.
-    pub(super) fn spawn_from(&mut self, spawners: &[usize], count: usize, breed: Breed, final_wave: bool, swarm: u32) {
+    /// `count` zombies of this breed, each from a random one of these spawners – `(index into spawners, swarm)`: the
+    /// swarm of a wave it then belongs to (`new_swarm`), 0: none. They storm the command center. `final_wave`: they
+    /// belong to the final wave – the round is won once they're all dead.
+    pub(super) fn spawn_from(&mut self, spawners: &[(usize, u32)], count: usize, breed: Breed, final_wave: bool) {
+        let indices: Vec<usize> = spawners.iter().map(|&(s, _)| s).collect();
         for _ in 0..count {
-            let Some(pos) = self.spawn_point(spawners) else {
+            let Some((pos, k)) = self.spawn_point(&indices) else {
                 break; // no spot in these spawners leads to the base: nobody can come
             };
             self.spawn_zombie_as(pos, breed, false);
             if let Some(zombie) = self.zombies.last_mut() {
                 zombie.final_wave = final_wave;
-                zombie.swarm = swarm;
+                zombie.swarm = spawners[k].1;
             }
         }
     }
 
-    /// A wave out of the spawners: `count` zombies from one random spawner, or `count` from each of `sides` different
-    /// random sides (only sides that have spawners at all), spread over the spawners there. One swarm per side.
-    pub(super) fn send_wave(&mut self, count: usize, from: WaveFrom, breed: Breed, final_wave: bool) {
-        for spawners in self.wave_spawners(from) {
-            let swarm = self.new_swarm();
-            self.spawn_from(&spawners, count, breed, final_wave, swarm);
+    /// A group of a wave (or "send now" in the editor): where it comes out is picked once (`wave_spawners`) – every
+    /// breed of it comes out there, one after the other.
+    pub(super) fn send_group(&mut self, group: &WaveGroup, final_wave: bool) {
+        for spawners in self.wave_spawners(&group.from) {
+            for z in &group.breeds {
+                self.spawn_from(&spawners, z.count as usize, z.breed, final_wave);
+            }
         }
     }
 
-    /// Where a wave comes out (`WaveFrom`), picked at random: one group of spawners (indices) per side – or a single
-    /// random spawner. Each group gets the wave's full count.
-    fn wave_spawners(&mut self, from: WaveFrom) -> Vec<Vec<usize>> {
+    /// Where a group of a wave comes out (`WaveFrom`), the sides picked at random: a list of spawners (indices, each
+    /// with its swarm) per side – each list gets the group's full count. A single random spawner is one list too. The
+    /// chosen spawners are one list – the count spread over them – with one swarm per side they lie on.
+    fn wave_spawners(&mut self, from: &WaveFrom) -> Vec<Vec<(usize, u32)>> {
         match from {
             WaveFrom::OneSpawner if self.spawners.is_empty() => Vec::new(),
-            WaveFrom::OneSpawner => vec![vec![self.rng.below(self.spawners.len() as u32) as usize]],
+            WaveFrom::OneSpawner => {
+                let s = self.rng.below(self.spawners.len() as u32) as usize;
+                vec![vec![(s, self.new_swarm())]]
+            }
             WaveFrom::Sides(sides) => {
                 let map = &self.map;
                 let mut left: Vec<u32> = (0..4).filter(|&side| self.spawners.iter().any(|s| s.side(map) == side)).collect();
                 let mut groups = Vec::new();
-                for _ in 0..sides.min(left.len() as u32) {
+                for _ in 0..(*sides).min(left.len() as u32) {
                     let side = left.remove(self.rng.below(left.len() as u32) as usize);
-                    groups.push((0..self.spawners.len()).filter(|&s| self.spawners[s].side(&self.map) == side).collect());
+                    let swarm = self.new_swarm();
+                    groups.push((0..self.spawners.len()).filter(|&s| self.spawners[s].side(&self.map) == side).map(|s| (s, swarm)).collect());
                 }
                 groups
+            }
+            WaveFrom::Spawners(ids) => {
+                // (side, swarm) of every side so far.
+                let mut swarms: Vec<(u32, u32)> = Vec::new();
+                let mut list = Vec::new();
+                let found: Vec<usize> = ids.iter().filter_map(|&id| self.find_spawner(id)).collect();
+                for s in found {
+                    let side = self.spawners[s].side(&self.map);
+                    let swarm = match swarms.iter().find(|(other, _)| *other == side) {
+                        Some(&(_, swarm)) => swarm,
+                        None => {
+                            let swarm = self.new_swarm();
+                            swarms.push((side, swarm));
+                            swarm
+                        }
+                    };
+                    list.push((s, swarm));
+                }
+                if list.is_empty() { Vec::new() } else { vec![list] }
             }
         }
     }
 
-    /// A random free point in a random one of these spawners, from which the base can be reached.
-    /// `None` if there are no spawners, or nothing was found after `SPAWN_TRIES` tries (base cut off,
-    /// spawners painted over).
-    fn spawn_point(&mut self, spawners: &[usize]) -> Option<Vec2> {
+    /// A random free point in a random one of these spawners (indices), from which the base can be reached – and
+    /// which one of the list it is. `None` if there are no spawners, or nothing was found after `SPAWN_TRIES` tries
+    /// (base cut off, spawners painted over).
+    fn spawn_point(&mut self, spawners: &[usize]) -> Option<(Vec2, usize)> {
         if spawners.is_empty() {
             return None;
         }
         for _ in 0..SPAWN_TRIES {
-            let region = self.spawners[spawners[self.rng.below(spawners.len() as u32) as usize]].region();
-            let pos = from_frame(region.min + vec2(self.rng.unit_f32(), self.rng.unit_f32()) * (region.max - region.min));
+            let k = self.rng.below(spawners.len() as u32) as usize;
+            let (u, v) = (self.rng.unit_f32(), self.rng.unit_f32());
+            let pos = self.spawners[spawners[k]].point_at(u, v);
             let (x, y) = (pos.x.floor() as i32, pos.y.floor() as i32);
+            // A slanted spawner may stick out of the map at a corner (`Map::is_blocked`: off the map is blocked).
             if !self.map.is_blocked(x, y) && self.to_base.reachable(x, y) {
-                return Some(pos);
+                return Some((pos, k));
             }
         }
         None
     }
 
-    /// The waves of the timeline whose time has come. Waves at the same time from the same kind of place (`from`) come
-    /// together – out of the same random spawners: the runners of a wave and the riots, spitters … that come along
-    /// (`plan_waves`). A final wave first calls every zombie on the map (`call_everyone`); a wave that shows the map
-    /// shows it from now on. In the order of the list – the same on every PC.
+    /// The waves of the timeline whose time has come, group by group (`send_group`). A final wave first calls every
+    /// zombie on the map (`call_everyone`); a wave that shows the map shows it from now on. In the order of the list –
+    /// the same on every PC.
     pub(super) fn fire_timed_waves(&mut self) {
-        let due: Vec<TimedWave> = self.waves.iter().filter(|w| w.at == self.tick).copied().collect();
+        let due: Vec<TimedWave> = self.waves.iter().filter(|w| w.at == self.tick).cloned().collect();
         if due.iter().any(|w| w.final_wave) {
             self.call_everyone();
         }
         if due.iter().any(|w| w.reveal) {
             self.revealed = true;
         }
-        let mut froms: Vec<WaveFrom> = Vec::new();
         for wave in &due {
-            if !froms.contains(&wave.from) {
-                froms.push(wave.from);
-            }
-        }
-        // Every side a wave comes out of is one swarm – the runners and whoever comes along with them.
-        for from in froms {
-            let groups: Vec<(Vec<usize>, u32)> = self.wave_spawners(from).into_iter().map(|g| (g, self.new_swarm())).collect();
-            for wave in due.iter().filter(|w| w.from == from) {
-                for (spawners, swarm) in &groups {
-                    self.spawn_from(spawners, wave.count as usize, wave.breed, wave.final_wave, *swarm);
-                }
+            for group in &wave.groups {
+                self.send_group(group, wave.final_wave);
             }
         }
     }
@@ -463,7 +665,7 @@ impl World {
             if self.spawners[s].timer as f32 >= every as f32 * TICKS_PER_SECOND {
                 self.spawners[s].timer = 0;
                 let swarm = self.new_swarm();
-                self.spawn_from(&[s], count as usize, Breed::Runner, false, swarm);
+                self.spawn_from(&[(s, swarm)], count as usize, Breed::Runner, false);
             }
         }
     }
@@ -478,9 +680,10 @@ impl World {
         Some(group)
     }
 
-    /// The constant spawn (`spawn_group`): when its time has come, one group out of one random spawner set to
-    /// "constant" – all of them crowded on one random spot in it (`spawn_crowd`). Then the next group is due `every`
-    /// ticks later – how often is read anew each time, so it gets more frequent over the round.
+    /// The constant spawn (`spawn_group`): when its time has come, one group out of one random spawner of its stage –
+    /// those it names, otherwise one set to "constant" – all of them crowded on one random spot in it
+    /// (`spawn_crowd`). Then the next group is due `every` ticks later – how often is read anew each time, so it gets
+    /// more frequent over the round.
     fn constant_spawn(&mut self) {
         if self.tick < self.next_group {
             return;
@@ -492,11 +695,14 @@ impl World {
             return;
         };
         self.next_group = self.tick + group.every;
-        let constant: Vec<usize> = (0..self.spawners.len()).filter(|&s| self.spawners[s].mode == SpawnMode::Constant).collect();
-        if constant.is_empty() {
+        let from: Vec<usize> = match &group.spawners {
+            Some(ids) => ids.iter().filter_map(|&id| self.find_spawner(id)).collect(),
+            None => (0..self.spawners.len()).filter(|&s| self.spawners[s].mode == SpawnMode::Constant).collect(),
+        };
+        if from.is_empty() {
             return;
         }
-        let s = constant[self.rng.below(constant.len() as u32) as usize];
+        let s = from[self.rng.below(from.len() as u32) as usize];
         let count = group.min + self.rng.below(group.max - group.min + 1);
         self.spawn_crowd(s, count, &group);
     }
@@ -505,7 +711,7 @@ impl World {
     /// crowded around it – the more, the bigger the crowd – not spread over the whole spawner. Each one is the group's
     /// breed, or one of its specials by their shares (`roll_special`).
     fn spawn_crowd(&mut self, s: usize, count: u32, group: &Group) {
-        let Some(center) = self.spawn_point(&[s]) else {
+        let Some((center, _)) = self.spawn_point(&[s]) else {
             return; // nothing in this spawner leads to the base
         };
         let radius = 0.5 + (count as f32).sqrt() * 0.4;
@@ -547,12 +753,17 @@ impl World {
         self.next_group = self.tick;
     }
 
-    /// A spawner always lies completely on the map (`Map::full_area`) and is at least 1 × 1 step.
+    /// A spawner always lies completely on the map and is at least 1 × 1 step: straight on screen inside
+    /// `Map::full_area`, slanted inside the grid (its corners are off the map – no zombie comes out there).
     pub(super) fn keep_spawner_on_map(&mut self, s: usize) {
         // The whole map in the screen axes: across from −size / 2 to size / 2, down from size / 2 to 3 · size / 2.
+        // The grid: from 0 to size both ways.
         let n = self.map.size as i32;
-        let (left, top) = (-n / 2, n - n / 2);
         let spawner = &mut self.spawners[s];
+        let (left, top) = match spawner.axes {
+            Axes::Screen => (-n / 2, n - n / 2),
+            Axes::Tiles => (0, 0),
+        };
         let w = spawner.size.0.clamp(1, n);
         let h = spawner.size.1.clamp(1, n);
         spawner.size = (w, h);

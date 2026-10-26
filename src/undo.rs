@@ -156,4 +156,21 @@ mod tests {
         history.apply(&mut world, &[Order::SetGold { gold: 5 }], false);
         assert_eq!(history.counts(), (STEPS, 0));
     }
+
+    /// "Map size" is an order like any other: undo gives the map back as it was before, redo makes it as big again –
+    /// exactly, the map loaded anew from its file comes out the same every time.
+    #[test]
+    fn undo_takes_a_new_map_size_back() {
+        let mut world = World::new(4);
+        let mut history = History::new();
+        let before = state(&world);
+        let n = world.map.size;
+        history.apply(&mut world, &[Order::ResizeMap { size: n - 60 }], false);
+        let smaller = state(&world);
+        assert_eq!(world.map.size, n - 60);
+        assert!(history.undo(&mut world));
+        assert!(state(&world) == before, "undo isn't the map as it was");
+        assert!(history.redo(&mut world));
+        assert!(state(&world) == smaller, "redo isn't the smaller map");
+    }
 }

@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use macroquad::math::vec2;
+use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::data::{self, ConstantSpawn};
@@ -21,12 +21,14 @@ use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
-use crate::sim::{Breed, LootKind, SpawnMode, TimedWave, World};
+use crate::sim::{merge_old_waves, Axes, Breed, LootKind, SpawnMode, TimedWave, World};
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
 /// 2 (2026-10-17): the round, the constant spawn, the setup, and waves with breed and final wave.
 /// 3 (2026-10-20): dirt (`D`), the villages of doom, the loot – an older game can't read that, so it refuses the file.
-const VERSION: u32 = 3;
+/// 4: waves with groups (several breeds, chosen spawners), spawners with their number and axes, custom levels, the
+/// playing field anywhere on the map.
+const VERSION: u32 = 4;
 
 /// The fields in the order they are in the file: the short ones on top, the terrain at the end.
 /// `#[serde(default …)]`: a field a file from version 1 doesn't have yet gets this value instead of an error.
@@ -34,9 +36,16 @@ const VERSION: u32 = 3;
 pub struct MapFile {
     pub version: u32,
     pub name: String,
+    /// Saved in the editor: a custom level – the game's "New game" lists it under "Custom levels" (like TAB's).
+    /// The file every new round writes for itself isn't one. `default`: files before format 4 aren't.
+    #[serde(default)]
+    pub custom: bool,
     pub seed: u64,
     pub size: usize,
     pub border: usize,
+    /// The playing field (the world border) – files before format 4: in the middle, `border` inside the edge.
+    #[serde(default)]
+    pub play_area: Option<PlayArea>,
     #[serde(default)]
     pub round: RoundData,
     /// The constant spawn of this map (`sim/spawning.rs`) – older files: what `data\spawning.json` says now.
@@ -110,11 +119,32 @@ pub struct DepositData {
     pub amount: u32,
 }
 
+/// Where a new map's playing field lies (`Map::play_area_of`) – for files from before format 4.
+fn default_play(size: usize, border: usize) -> PlayArea {
+    let region = Map::play_area_of(size, border);
+    let (min, extent) = (region.min.round(), (region.max - region.min).round());
+    PlayArea { min: (min.x as i32, min.y as i32), size: (extent.x as i32, extent.y as i32) }
+}
+
+/// Where the playing field lies: its top left corner and its size, in whole steps of the screen axes (`map::to_frame`) –
+/// like a straight spawner (`Map::set_play_area`).
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+pub struct PlayArea {
+    pub min: (i32, i32),
+    pub size: (i32, i32),
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct SpawnerData {
     pub name: String,
+    /// Its number – the waves name their spawners by it. 0 in files before format 4: numbered in order (`upgrade`).
+    #[serde(default)]
+    pub id: u32,
     pub min: (i32, i32),
     pub size: (i32, i32),
+    /// Straight on screen or slanted like the tiles – files before format 4: straight.
+    #[serde(default)]
+    pub axes: Axes,
     pub mode: SpawnMode,
 }
 
@@ -186,9 +216,14 @@ impl MapFile {
         MapFile {
             version: VERSION,
             name: name.to_owned(),
+            custom: false,
             seed: world.seed,
             size: world.map.size,
             border: world.map.border,
+            play_area: Some({
+                let (min, size) = world.map.play_steps();
+                PlayArea { min, size }
+            }),
             round: RoundData { days: world.days, gold: world.gold, wood: world.stock.get(Resource::Wood), difficulty: world.difficulty.clone() },
             constant_spawn: world.constant.clone(),
             waves: world.waves.clone(),
@@ -196,7 +231,7 @@ impl MapFile {
             spawners: world
                 .spawners
                 .iter()
-                .map(|s| SpawnerData { name: s.name.clone(), min: s.min, size: s.size, mode: s.mode })
+                .map(|s| SpawnerData { name: s.name.clone(), id: s.id, min: s.min, size: s.size, axes: s.axes, mode: s.mode })
                 .collect(),
             buildings: world.buildings.iter().map(|b| BuildingData { kind: b.kind, tile: b.tile, turned: b.turned }).collect(),
             units: world.units.iter().map(|u| UnitData { kind: u.kind, pos: (u.pos.x, u.pos.y) }).collect(),
@@ -214,35 +249,23 @@ impl MapFile {
 
     /// A world from the file – at tick 0, as the round starts. `Err` with a reason if the file doesn't add up.
     pub fn to_world(&self) -> Result<World, String> {
-        if self.version > VERSION {
-            return Err(format!("made by a newer version of the game (format {})", self.version));
-        }
-        if self.terrain.len() != self.size {
-            return Err(format!("{} rows of terrain, but the map is {} big", self.terrain.len(), self.size));
-        }
-        let mut terrain = Vec::with_capacity(self.size * self.size);
-        for (y, row) in self.terrain.iter().enumerate() {
-            let tiles: Option<Vec<Terrain>> = row.chars().map(from_letter).collect();
-            match tiles {
-                Some(tiles) if tiles.len() == self.size => terrain.extend(tiles),
-                _ => return Err(format!("row {y} of the terrain is broken")),
-            }
-        }
-        let mut map = Map::from_terrain(self.size, self.border, terrain);
-        for d in &self.deposits {
-            map.set_deposit(d.tile.0, d.tile.1, Some(Deposit { ore: d.ore, amount: d.amount }));
-        }
-        let mut world = World::empty(self.seed, map);
+        let mut world = World::empty(self.seed, self.map()?);
         world.set_difficulty(data::get().difficulty(&self.round.difficulty));
         world.days = self.round.days;
         world.gold = self.round.gold;
         world.stock.set(Resource::Wood, self.round.wood);
         world.constant = self.constant_spawn.clone();
         for s in &self.spawners {
-            world.add_spawner(s.name.clone(), s.min, s.size, s.mode);
+            world.add_spawner(s.id, s.name.clone(), s.min, s.size, s.axes, s.mode);
         }
         for b in &self.buildings {
             world.add_building_anywhere(b.kind, b.tile, b.turned);
+        }
+        // The base is where the command center stands – on a map made in the editor it may stand anywhere, a new map has
+        // it in the middle (`World::empty`, the same point). What the zombies keep away from (`keep_out`) and where waves
+        // go without a command center.
+        if let Some(cc) = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter) {
+            world.base = cc.center();
         }
         for u in &self.units {
             world.add_unit(u.kind, vec2(u.pos.0, u.pos.1));
@@ -262,9 +285,115 @@ impl MapFile {
         for l in &self.loot {
             world.add_loot(vec2(l.pos.0, l.pos.1), l.loot, l.amount, l.guards);
         }
-        world.waves = self.waves.clone();
+        world.waves = if self.version < 4 { merge_old_waves(self.waves.clone()) } else { self.waves.clone() };
         world.settle();
         Ok(world)
+    }
+
+    /// Only the map – terrain and ore, without anything on it: for `to_world`, and for the preview of a custom level
+    /// (`home.rs`), which needs nothing else. `Err` with a reason if the file doesn't add up.
+    pub fn map(&self) -> Result<Map, String> {
+        if self.version > VERSION {
+            return Err(format!("made by a newer version of the game (format {})", self.version));
+        }
+        if self.terrain.len() != self.size {
+            return Err(format!("{} rows of terrain, but the map is {} big", self.terrain.len(), self.size));
+        }
+        let mut terrain = Vec::with_capacity(self.size * self.size);
+        for (y, row) in self.terrain.iter().enumerate() {
+            let tiles: Option<Vec<Terrain>> = row.chars().map(from_letter).collect();
+            match tiles {
+                Some(tiles) if tiles.len() == self.size => terrain.extend(tiles),
+                _ => return Err(format!("row {y} of the terrain is broken")),
+            }
+        }
+        let mut map = Map::from_terrain(self.size, self.border, terrain);
+        if let Some(play) = self.play_area {
+            map.set_play_area(play.min, play.size);
+        }
+        for d in &self.deposits {
+            map.set_deposit(d.tile.0, d.tile.1, Some(Deposit { ore: d.ore, amount: d.amount }));
+        }
+        Ok(map)
+    }
+
+    /// Every tile one of its spawners covers – for the preview.
+    pub fn spawner_tiles(&self) -> Vec<(i32, i32)> {
+        self.spawners.iter().flat_map(|s| crate::sim::spawner_tiles(s.axes, s.min, s.size)).collect()
+    }
+
+    /// A file of an older format as it would be written now (format 4): its waves of one breed each become waves with
+    /// groups (`merge_old_waves`), its spawners get their numbers – the same ones `World::add_spawner` gives them. So
+    /// an old map opened in the editor doesn't count as changed right away.
+    fn upgrade(&mut self) {
+        if self.version >= 4 {
+            return;
+        }
+        self.waves = merge_old_waves(std::mem::take(&mut self.waves));
+        let mut last = 0;
+        let mut taken = Vec::new();
+        for s in &mut self.spawners {
+            if s.id == 0 || taken.contains(&s.id) {
+                s.id = last + 1;
+            }
+            last = last.max(s.id);
+            taken.push(s.id);
+        }
+        self.version = VERSION;
+    }
+
+    /// The same map on a grid with an edge of `size` tiles (`Map::size`, even – the editor's "Grid"): it grows or shrinks
+    /// by the same number of tiles on every side, everything on it stays where it is – the playing field and the
+    /// spawners too; drag them where you want them. New ground is grass, what doesn't fit any more goes (the playing field
+    /// gets smaller then, `Map::set_play_area`).
+    pub fn resized(&self, size: usize) -> MapFile {
+        let (old, new) = (self.size as i32, size as i32);
+        // On every side this many tiles more (or fewer, if it's negative) – both sizes are even.
+        let d = (new - old) / 2;
+        let full = Map::full_area_of(size);
+        let on_map = |x: i32, y: i32| full.contains_tile(x, y);
+        let moved = |p: (f32, f32)| (p.0 + d as f32, p.1 + d as f32);
+        let point_on_map = |p: (f32, f32)| full.contains(Vec2::new(p.0, p.1));
+        let all_on_map = |tile: (i32, i32), w: i32, h: i32| (0..h).all(|y| (0..w).all(|x| on_map(tile.0 + x, tile.1 + y)));
+
+        // Only what was on the old map comes along: the grid's corners beyond it were never part of it (`Map::index`),
+        // whatever the generator left there – grown, they'd be a wall through the new ring.
+        let was_on_map = Map::full_area_of(self.size);
+        let terrain = (0..new)
+            .map(|y| {
+                let row: Vec<char> = self.terrain.get((y - d) as usize).map_or(Vec::new(), |r| r.chars().collect());
+                let old_letter = |x: i32| was_on_map.contains_tile(x - d, y - d).then(|| row.get((x - d) as usize).copied()).flatten();
+                (0..new).map(|x| old_letter(x).unwrap_or('.')).collect()
+            })
+            .collect();
+        let mut file = self.clone();
+        file.size = size;
+        file.terrain = terrain;
+        let shift = |t: (i32, i32)| (t.0 + d, t.1 + d);
+        file.deposits = self.deposits.iter().map(|o| DepositData { tile: shift(o.tile), ..o.clone() }).filter(|o| on_map(o.tile.0, o.tile.1)).collect();
+        file.buildings = self
+            .buildings
+            .iter()
+            .map(|b| BuildingData { tile: shift(b.tile), ..b.clone() })
+            .filter(|b| {
+                let (w, h) = b.kind.footprint(b.turned);
+                all_on_map(b.tile, w, h)
+            })
+            .collect();
+        file.doom = self.doom.iter().map(|h| DoomData { house: shift(h.house), ..h.clone() }).filter(|h| all_on_map(h.house, h.size.0, h.size.1)).collect();
+        file.units = self.units.iter().map(|u| UnitData { pos: moved(u.pos), ..u.clone() }).filter(|u| point_on_map(u.pos)).collect();
+        file.zombies = self.zombies.iter().map(|z| ZombieData { pos: moved(z.pos), ..z.clone() }).filter(|z| point_on_map(z.pos)).collect();
+        file.loot = self.loot.iter().map(|l| LootData { pos: moved(l.pos), ..l.clone() }).filter(|l| point_on_map(l.pos)).collect();
+        // In the screen axes (`map::to_frame`: across x − y, down x + y) d tiles both ways are 0 across and 2 · d down.
+        let down = |min: (i32, i32)| (min.0, min.1 + 2 * d);
+        file.spawners = self
+            .spawners
+            .iter()
+            .map(|s| SpawnerData { min: if s.axes == Axes::Screen { down(s.min) } else { shift(s.min) }, ..s.clone() })
+            .collect();
+        let play = self.play_area.unwrap_or_else(|| default_play(self.size, self.border));
+        file.play_area = Some(PlayArea { min: down(play.min), ..play });
+        file
     }
 
     /// One line about the map: how it was made, how long its round is and how hard – for the editor's "Map" tab.
@@ -292,7 +421,9 @@ impl MapFile {
 
     pub fn load(path: &Path) -> Result<MapFile, String> {
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&text).map_err(|e| format!("not a map file: {e}"))
+        let mut file: MapFile = serde_json::from_str(&text).map_err(|e| format!("not a map file: {e}"))?;
+        file.upgrade();
+        Ok(file)
     }
 }
 
@@ -308,12 +439,12 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "seed", "size", "border", "round", "constant_spawn", "waves", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
+    for key in ["name", "custom", "seed", "size", "border", "play_area", "round", "constant_spawn", "waves", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
-    // One entry per line: waves start with "at", stages with "day", spawners with "name", buildings and units with
-    // "kind", houses of doom with "house", piles of loot with "loot".
-    for first in ["at", "day", "name", "kind", "house", "loot"] {
+    // One entry per line: waves start with "at", their groups with "from", stages with "day", spawners with "name",
+    // buildings and units with "kind", houses of doom with "house", piles of loot with "loot".
+    for first in ["at", "from", "day", "name", "kind", "house", "loot"] {
         text = text.replace(&format!("{{\"{first}\":"), &format!("\n  {{\"{first}\":"));
     }
     // The terrain: rows only have the letters `. D M F T W`, so between two rows there's always `","`.
@@ -353,6 +484,9 @@ pub struct Entry {
     /// with as many tiles) – `None` if the file can't be read.
     pub days: Option<u32>,
     pub field: Option<usize>,
+    /// Saved in the editor (`MapFile::custom`) – and how hard: the name of its difficulty.
+    pub custom: bool,
+    pub difficulty: String,
 }
 
 /// Only what the list shows of a file. Everything else in it is skipped (serde ignores fields it doesn't know).
@@ -361,7 +495,11 @@ struct Summary {
     size: usize,
     border: usize,
     #[serde(default)]
+    play_area: Option<PlayArea>,
+    #[serde(default)]
     round: RoundData,
+    #[serde(default)]
+    custom: bool,
 }
 
 /// All maps in the folder, the one changed last on top.
@@ -381,11 +519,17 @@ pub fn list() -> Vec<Entry> {
             let name = path.file_stem()?.to_string_lossy().into_owned();
             let age = fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok());
             let summary: Option<Summary> = fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok());
-            let (days, field) = match summary {
-                Some(s) => (Some(s.round.days), Some(Map::play_area_of(s.size, s.border).area().sqrt().round() as usize)),
-                None => (None, None),
+            let (days, field, custom, difficulty) = match summary {
+                Some(s) => {
+                    // As many tiles as the playing field covers – one step across and down is half a tile.
+                    let play = s.play_area.unwrap_or_else(|| default_play(s.size, s.border));
+                    let field = ((play.size.0 * play.size.1) as f32 / 2.0).sqrt().round() as usize;
+                    let difficulty = data::get().difficulty(&s.round.difficulty).name.clone();
+                    (Some(s.round.days), Some(field), s.custom, difficulty)
+                }
+                None => (None, None, false, String::new()),
             };
-            Some(Entry { name, path, age, days, field })
+            Some(Entry { name, path, age, days, field, custom, difficulty })
         })
         .collect();
     // Newest first; without an age at the end.
@@ -412,18 +556,24 @@ pub fn file_stem(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::map::Ore;
-    use crate::sim::{Order, WaveFrom};
+    use crate::sim::{BreedCount, Order, WaveFrom, WaveGroup};
 
-    /// Saved and loaded again, everything is still there: terrain, ore, spawners, buildings, units, zombies, waves –
-    /// and the round with its constant spawn.
+    /// Saved and loaded again, everything is still there: terrain, ore, spawners (a slanted one too), buildings, units,
+    /// zombies, waves (groups out of chosen spawners too) – and the round with its constant spawn.
     #[test]
     fn a_map_comes_back_the_same() {
         let mut world = World::new(4);
         let c = world.map.size as i32 / 2;
+        let (first, last) = (world.spawners[0].id, world.spawners[11].id);
+        let mut wave = TimedWave { final_wave: true, reveal: true, ..TimedWave::new(1234, WaveFrom::Sides(2), Breed::Fat, 300) };
+        let zombies = vec![BreedCount { count: 50, breed: Breed::Harpy }, BreedCount { count: 7, breed: Breed::Giant }];
+        wave.groups.push(WaveGroup { from: WaveFrom::Spawners(vec![first, last]), breeds: zombies });
         world.step(&[
             Order::PaintTerrain { terrain: Terrain::Water, tiles: vec![(c + 20, c + 20), (c + 21, c + 20)] },
             Order::PlaceBuilding { kind: BuildingKind::Wall, tile: (c + 6, c), turned: false, editor: true },
-            Order::AddTimedWave(TimedWave { at: 1234, count: 300, from: WaveFrom::Sides(2), breed: Breed::Fat, final_wave: true, reveal: true }),
+            Order::AddTimedWave(wave),
+            Order::RemoveSpawner { spawner: world.spawners[3].id },
+            Order::SetSpawnerAxes { spawner: last, axes: Axes::Tiles },
             Order::PaintOre { ore: Some(Ore::Coal), tiles: vec![(c + 3, c + 9)] },
             Order::SetDays { days: 25 },
             Order::SetGold { gold: 777 },
@@ -443,6 +593,9 @@ mod tests {
         let loaded = back.to_world().unwrap();
         assert!(loaded.map.same_terrain(&world.map));
         assert_eq!(loaded.spawners.len(), world.spawners.len());
+        // The numbers stay – the waves name their spawners by them – also with a gap where one was removed.
+        let numbered = |w: &World| w.spawners.iter().map(|s| (s.id, s.axes, s.min, s.size)).collect::<Vec<_>>();
+        assert_eq!(numbered(&loaded), numbered(&world));
         assert_eq!(loaded.buildings.len(), world.buildings.len());
         assert_eq!(loaded.units.len(), world.units.len());
         assert_eq!(loaded.zombies.len() + loaded.sleep.len(), world.zombies.len() + world.sleep.len());
@@ -463,6 +616,10 @@ mod tests {
         let text = pretty(&serde_json::to_string(&file).unwrap());
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines.iter().any(|l| l.starts_with("\"round\":{\"days\":10")), "no line for the round");
+        // Every field of the map in a line of its own – also those whose names are used further up (in the waves).
+        for key in ["waves", "spawners", "units", "zombies", "doom", "terrain"] {
+            assert!(lines.iter().any(|l| l.starts_with(&format!("\"{key}\":"))), "no line for {key}");
+        }
         let rows = lines.iter().filter(|l| l.len() >= world.map.size && l.trim_matches(|c| c == '"' || c == ',' || c == ']' || c == '}').len() == world.map.size).count();
         assert_eq!(rows, world.map.size, "not one line per row of terrain");
         let back: MapFile = serde_json::from_str(&text).unwrap();
@@ -479,10 +636,45 @@ mod tests {
         let normal = data::get().difficulty("");
         assert_eq!(file.round, RoundData { days: 0, gold: normal.start_gold, wood: normal.start_wood, difficulty: String::new() });
         assert_eq!(file.constant_spawn, data::get().spawning.constant);
-        assert_eq!((file.waves[0].breed, file.waves[0].final_wave), (Breed::Runner, false));
+        assert_eq!(file.waves[0], TimedWave::new(100, WaveFrom::OneSpawner, Breed::Runner, 20));
         let world = file.to_world().unwrap();
         assert_eq!(world.map.terrain(1, 0), Terrain::Mountain);
         assert_eq!(world.keep_out, normal.keep_out, "an old file doesn't get the default difficulty");
+    }
+
+    /// A file of format 3 had one breed per wave; those at the same time and from the same kind of place came out of the
+    /// same random spawners. Now they're one wave with one group per kind of place – and the spawners get their
+    /// numbers in order – the same as when it's loaded, so an old map opened in the editor doesn't count as changed.
+    #[test]
+    fn old_waves_become_groups() {
+        let old = r#"{"version":3,"name":"Old","seed":7,"size":2,"border":0,"terrain":["..",".."],
+            "spawners":[{"name":"A","min":[0,1],"size":[1,1],"mode":"Constant"},{"name":"B","min":[0,1],"size":[1,1],"mode":"Off"}],
+            "buildings":[],"units":[],"zombies":[],"waves":[
+            {"at":100,"count":20,"from":{"Sides":1},"breed":"Runner"},
+            {"at":100,"count":5,"from":{"Sides":1},"breed":"Armored"},
+            {"at":100,"count":3,"from":"OneSpawner","breed":"Fat"},
+            {"at":900,"count":50,"from":{"Sides":4},"breed":"Runner","final_wave":true,"reveal":true}]}"#;
+        let mut file: MapFile = serde_json::from_str(old).unwrap();
+        let world = file.to_world().unwrap();
+        file.upgrade();
+        assert_eq!(file.version, VERSION);
+        assert_eq!(file.waves, world.waves, "loaded and upgraded give other waves");
+        assert_eq!(file.waves.len(), 2);
+        let first = &file.waves[0];
+        assert_eq!(first.groups.len(), 2, "the runners and riots aren't one group");
+        assert_eq!(first.groups[0].breeds, vec![BreedCount { count: 20, breed: Breed::Runner }, BreedCount { count: 5, breed: Breed::Armored }]);
+        assert_eq!(first.groups[1].from, WaveFrom::OneSpawner);
+        assert!(file.waves[1].final_wave && file.waves[1].reveal);
+        assert_eq!(file.spawners.iter().map(|s| s.id).collect::<Vec<_>>(), world.spawners.iter().map(|s| s.id).collect::<Vec<_>>());
+    }
+
+    /// A round from its file starts with the command center's gold as the income – nobody has paid yet, but it will at
+    /// the first payout. Before, the HUD showed only the upkeep there.
+    #[test]
+    fn the_income_shows_before_the_first_payout() {
+        let world = MapFile::from_world(&World::new(4), "x").to_world().unwrap();
+        assert_eq!(world.tick, 0);
+        assert_eq!(world.income(), BuildingKind::CommandCenter.stats().gold);
     }
 
     /// A broken file gives a reason, not a crash.

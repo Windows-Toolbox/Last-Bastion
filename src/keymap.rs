@@ -206,7 +206,7 @@ fn lines(tab: usize) -> Vec<Line> {
             let trains = BARRACKS_BUTTONS.into_iter().filter(|b| b.trains().is_some()).map(Action::of);
             binds(&mut lines, trains.chain([Action::of(Button::Rally)]));
             heading(&mut lines, "Other buildings");
-            let others = [Button::Repair, Button::Switch, Button::Unload, Button::MakeBarrel, Button::Sell];
+            let others = [Button::Repair, Button::Switch, Button::Demolish, Button::Unload, Button::MakeBarrel, Button::Sell];
             binds(&mut lines, others.into_iter().map(Action::of));
         }
     }

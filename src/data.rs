@@ -121,6 +121,10 @@ pub struct Buildings {
     pub zombie_free_radius: i32,
     /// Built over another building (a gate on walls), this many percent of its price come back.
     pub replace_refund_percent: u32,
+    /// Torn down by the player (Del): this many percent of its price come back – gold, wood, stone, coal, iron –
+    /// of one that is still being built this many (`sim/buildings.rs`, `demolish`).
+    pub demolish_refund_percent: u32,
+    pub demolish_unfinished_refund_percent: u32,
     /// A repair from nothing to full takes this many seconds – a smaller one less (`BuildingStats::repair_cost`).
     pub repair_seconds: f32,
     /// A building being built starts with this many percent of its hit points and grows to full until it's finished,
@@ -572,7 +576,7 @@ pub struct GameMap {
 }
 
 /// From this time on: every `every_seconds` a group of `group[0]` to `group[1]` zombies of this breed.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Stage {
     /// Day of the round (from 1) and hour (0–23).
     pub day: u64,
@@ -580,6 +584,10 @@ pub struct Stage {
     pub breed: Breed,
     pub every_seconds: f32,
     pub group: [u32; 2],
+    /// Out of these spawners (their `id` in the map, editor) – not there (`None`): out of those set to "Constant".
+    /// `skip_serializing_if`: then it isn't written either, `data\spawning.json` doesn't need it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawners: Option<Vec<u32>>,
 }
 
 impl GameData {

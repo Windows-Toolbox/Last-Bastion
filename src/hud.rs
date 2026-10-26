@@ -7,7 +7,7 @@ use macroquad::prelude::*;
 
 use crate::draw::{breed_color, building_color, kind_color, loot_color, ZOMBIE};
 use crate::formation::Shape;
-use crate::iso::Camera;
+use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::editor::Sight;
 use crate::data;
 use crate::keys::Action;
@@ -104,6 +104,9 @@ pub enum Button {
     Repair,
     /// Buildings that run (`can_switch_off`): switch the selected ones off – or on again (Y, like in TAB).
     Switch,
+    /// Every building but the command center: tear the selected ones down, part of the price comes back (Del, like
+    /// TAB). In the editor: remove them, the command center too.
+    Demolish,
 }
 
 /// The build menus of the command center – the keys on the left of the keyboard, like TAB's build categories.
@@ -253,6 +256,10 @@ pub fn building_buttons(kind: BuildingKind) -> Vec<Button> {
     if kind.can_switch_off() {
         card.push(Button::Switch);
     }
+    // Everything can be torn down – but not the command center: losing it loses the round.
+    if kind != BuildingKind::CommandCenter {
+        card.push(Button::Demolish);
+    }
     card
 }
 
@@ -263,8 +270,10 @@ pub fn all_cards() -> Vec<Vec<Button>> {
     let mut cards = vec![[UNIT_BUTTONS.as_slice(), &[Button::Drop]].concat(), COMMAND_CENTER_BUTTONS.to_vec()];
     cards.extend(build_menus().map(menu_buttons));
     for buttons in [&BARRACKS_BUTTONS[..], &INN_BUTTONS, &MUNITIONS_BUTTONS, &MARKET_BUTTONS, &TOWER_BUTTONS, &REPAIR_BUTTONS] {
-        cards.push([buttons, &[Button::Switch]].concat());
+        cards.push([buttons, &[Button::Switch, Button::Demolish]].concat());
     }
+    // The command center's card in the editor (`Ui::card`).
+    cards.push([COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Demolish]].concat());
     cards
 }
 
@@ -320,6 +329,7 @@ impl Button {
             Button::Unload => "Unload",
             Button::Repair => "Repair",
             Button::Switch => "On/Off",
+            Button::Demolish => "Demolish",
         }
     }
 
@@ -346,8 +356,8 @@ impl Button {
             Button::FormBox => KeyCode::C,
             Button::FormCircle => KeyCode::V,
             Button::Drop => KeyCode::D,
-            // Not a letter: sending units away for good shouldn't happen by a slip of the finger.
-            Button::Dismiss => KeyCode::Delete,
+            // Not a letter: sending units away or tearing buildings down shouldn't happen by a slip of the finger.
+            Button::Dismiss | Button::Demolish => KeyCode::Delete,
             _ => GRID_KEYS[self.slot()],
         }
     }
@@ -372,7 +382,7 @@ impl Button {
             Button::FormLine => 10,
             Button::FormBox => 11,
             Button::FormCircle => 12,
-            Button::Back | Button::Dismiss => 14,
+            Button::Back | Button::Dismiss | Button::Demolish => 14,
         }
     }
 
@@ -451,6 +461,7 @@ impl Button {
             Button::Unload => "Everyone out of the tower - on the side of the rally point, then they walk there.",
             Button::Repair => "Repair all selected buildings: pay gold for what's missing, it comes back over a few seconds. An infected building is cured once it's whole - it's yours again and pays gold.",
             Button::Switch => "Switch the selected buildings off: no upkeep, no workers, no power - and they do nothing. Again: on - if there are enough free workers, spare power and gold income for its upkeep.",
+            Button::Demolish => "Tear them down at once: part of the price comes back, more while still being built. Not the command center, not infected ones.",
         }
     }
 }
@@ -632,15 +643,27 @@ impl Layout {
         Some(HudHit::Panel)
     }
 
-    // --- Minimap: the map turned the same way as on screen, only small – `area` fills it exactly (both are twice as
-    // wide as high) ---
+    // --- Minimap: the map turned the same way as on screen, only small – `area` as big as fits, not stretched ---
+
+    /// The part of the minimap `area` takes: all of it if the area is twice as wide as high on screen like the minimap
+    /// (a new map's playing field, the whole map in the editor), otherwise a narrower or flatter rectangle in its
+    /// middle. A step of the screen axes across is `TILE_W / 2` pixels, one down `TILE_H / 2`.
+    fn minimap_fit(&self, area: Region) -> Rect {
+        let extent = area.max - area.min;
+        let on_screen = vec2(extent.x * TILE_W, extent.y * TILE_H);
+        let scale = (self.minimap.w / on_screen.x).min(self.minimap.h / on_screen.y);
+        let (w, h) = (on_screen.x * scale, on_screen.y * scale);
+        Rect::new(self.minimap.x + (self.minimap.w - w) / 2.0, self.minimap.y + (self.minimap.h - h) / 2.0, w, h)
+    }
 
     fn world_to_minimap(&self, p: Vec2, area: Region) -> Vec2 {
-        self.minimap.point() + (to_frame(p) - area.min) / (area.max - area.min) * self.minimap.size()
+        let fit = self.minimap_fit(area);
+        fit.point() + (to_frame(p) - area.min) / (area.max - area.min) * fit.size()
     }
 
     fn minimap_to_world(&self, m: Vec2, area: Region) -> Vec2 {
-        from_frame(area.min + (m - self.minimap.point()) / self.minimap.size() * (area.max - area.min))
+        let fit = self.minimap_fit(area);
+        from_frame(area.min + (m - fit.point()) / fit.size() * (area.max - area.min))
     }
 
     // --- Where the individual fields lie ---
@@ -799,7 +822,8 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
     // On top, through the fog: every giant, awake or asleep, and the middle of every swarm of a wave – the bigger the
     // swarm, the bigger its triangle. A mark outside what the minimap shows (a wave still in the spawn ring) sits at
     // its edge, on the side it comes from.
-    let (lo, hi) = (layout.minimap.point(), layout.minimap.point() + layout.minimap.size());
+    let fit = layout.minimap_fit(area);
+    let (lo, hi) = (fit.point(), fit.point() + fit.size());
     let pin = |p: Vec2, r: f32| to_mini(p).clamp(lo + Vec2::splat(r), hi - Vec2::splat(r));
     for giant in world.giants() {
         let m = pin(giant, 4.0);
@@ -819,9 +843,8 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
     }
 
     // What the camera shows right now: a rectangle, because the map and the minimap are rotated the same way.
-    let top_left = to_mini(camera.screen_to_world(Vec2::ZERO)).max(layout.minimap.point());
-    let bottom_right = to_mini(camera.screen_to_world(vec2(screen_width(), layout.panel.y)))
-        .min(layout.minimap.point() + layout.minimap.size());
+    let top_left = to_mini(camera.screen_to_world(Vec2::ZERO)).max(lo);
+    let bottom_right = to_mini(camera.screen_to_world(vec2(screen_width(), layout.panel.y))).min(hi);
     let size = bottom_right - top_left;
     draw_rectangle_lines(top_left.x, top_left.y, size.x, size.y, 1.5, WHITE);
 }
@@ -1486,6 +1509,8 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
                 format!("{} ({}) - {}", button.title(), key, nothing_to_repair(&plan))
             }
             (None, Button::Planned(_)) => format!("{} ({}) - planned, not in the game yet", button.title(), key),
+            (None, Button::Demolish) if ui.editor.editing() && !ui.editor.testing() => format!("Remove ({key}) - nothing comes back"),
+            (None, Button::Demolish) => format!("{} ({}) - {}", button.title(), key, refund_text(world, &ui.selected_building_indices(world))),
             (None, _) => format!("{} ({})", button.title(), key),
         };
         draw_tooltip(&[&title, button.help()], layout.card.x, layout.panel.y - 4.0);
@@ -1530,6 +1555,19 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
         text += &format!(" - needs a {} first", needed.stats().name.to_lowercase());
     }
     text
+}
+
+/// What tearing these buildings down gives back (`World::demolish_refund`) – the ones that may be torn down.
+fn refund_text(world: &World, buildings: &[usize]) -> String {
+    let mut sum = [0; 5];
+    for &b in buildings.iter().filter(|&&b| world.can_demolish(b)) {
+        for (total, n) in sum.iter_mut().zip(world.demolish_refund(b)) {
+            *total += n;
+        }
+    }
+    let names = ["gold", "wood", "stone", "coal", "iron"];
+    let parts: Vec<String> = sum.iter().zip(names).filter(|(n, _)| **n > 0).map(|(n, name)| format!("{n} {name}")).collect();
+    if parts.is_empty() { "nothing comes back".to_owned() } else { format!("back: {}", parts.join(", ")) }
 }
 
 /// The price on a button: what it trains or places – for Repair what repairing the selection costs right now

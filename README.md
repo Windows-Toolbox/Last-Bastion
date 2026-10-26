@@ -94,9 +94,12 @@
 
 ### Startbildschirm und Karten-Einstellung
 
-- New game, Map editor, **Custom maps** (Play / Edit / Delete), Settings, **Key mapping**, Quit.
+- New game, Map editor, **Custom maps** (alle Dateien: Play / Edit / Delete), Settings, **Key mapping**, Quit.
 - **New game** (wie TAB): **Karte**, **Schwierigkeit** und **Dauer** wählen, Seed, Vorschau – dazu der
   **Score-Faktor** (Karte × Schwierigkeit × Dauer; eine Punktzahl gibt es noch nicht).
+  - **Custom levels** (zweiter Reiter, wie TABs „Custom Levels“): jede **im Editor gespeicherte** Karte – nicht die
+    Dateien, die jede neue Runde anlegt. Ihre Runde steht in der Datei (Tage, Schwierigkeit, Wellen, Start), also nur
+    Vorschau, „Start game“ und „Edit in the editor“.
   - **Karten** (`data\game_maps.json`): **Peaceful Lowlands** (Wild wie TABs Karte: trockene Ebenen, grüne Wiesen mit
     Hainen, große glatte Seen), Green Valley (Wild), Broken Lands (Regions), Old Fortress (Rings), Red Canyons
     (Canyons), Open Plains (Blank mit einzelnen Waldkacheln).
@@ -128,6 +131,7 @@
 - **Weltgrenze:** gerade auf dem Bildschirm wie in TAB – die Spielfläche ist ein Rechteck (doppelt so breit wie
   hoch), die Minimap auch. Außen ein Ring offenen Geländes (≈ 11 Kacheln) mit den **Spawnern** (3 pro Seite, fast die
   ganze Seite breit). Dahinter sieht und läuft man nicht. Größe = so viele Kacheln wie ein Quadrat dieser Kante.
+  Im Editor lässt sich die Spielfläche überallhin ziehen und beliebig groß machen – Kamera und Minimap folgen ihr.
 - **Erz:** Eisenerz (rostbraun), Kohle (schwarz), Stein (hellgrau) als Felder; neben der Basis je ein kleines (Stein
   12–16 Kacheln weg, Eisen und Kohle 14–24 – ein, zwei Tesla-Türme), draußen größer und reicher. Abgebaut von der **Mine** –
   am besten mitten aufs Feld, sie baut auch das Erz unter sich ab.
@@ -274,7 +278,7 @@
 | **Shift** + bauen / ausbilden | Fehlt nur Gold: ins Minus, in den Dispo der Banken (ohne Shift ist 0 die Grenze) |
 | **Strg** + ausbilden | 5 auf einmal (auch Fässer) – anders als SC2, dort ist es Shift |
 | D | Einheiten mit Fass: abstellen |
-| Entf | Ausgewählte Einheiten entlassen |
+| Entf | Ausgewählte Einheiten entlassen / Gebäude abreißen |
 | Strg / Shift / Strg+Shift + 1–0 | Gruppe setzen / dazu / „stehlen“ – auch mit Gebäuden. 1–0: auswählen, zweimal: Kamera hin |
 | WASD, Pfeile, Rand, Mausrad | Kamera, Zoom. **WASD nur ohne Auswahl** (sonst gehören die Tasten der Befehlskarte) |
 | Mittlere Maus ziehen | Karte verschieben |
@@ -345,6 +349,9 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
   G = Sammelpunkt. 1 Kachel Abstand zum nächsten Turm.
 - **Zelt:** 4 Kolonisten, 2 Arbeiter. Isst 1 Nahrung pro Abrechnung – satt zahlt es 8 Gold (× Stromanteil), hungrig
   nichts. Schild weg = infiziert (dann keine Arbeiter).
+- **Abreißen (Entf, „Demolish“)** bei jedem Gebäude außer dem Kommandozentrum, für alle ausgewählten: sofort weg,
+  **25 %** des Preises kommen zurück (Gold, Holz, Stein …), **75 %**, solange es noch gebaut wird
+  (`demolish_…_percent` in `data\buildings.json`). Nicht bei infizierten. Der Tooltip zeigt, was zurückkommt.
 - **Reparieren (F)** bei jedem Gebäude, für alle ausgewählten: kostet den fehlenden Anteil von `repair_cost`
   (`data\buildings.json`, z. B. Mauer 5, Zelt 50, Kommandozentrum 300 für eine volle Reparatur), sofort bezahlt; die
   HP kommen über bis zu 10 s zurück. Ein infiziertes Gebäude ist danach geheilt (zu, zahlt wieder Gold).
@@ -422,17 +429,21 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 - **Speichern:** Save / Strg+S. Ungespeichertes → Frage Save / Don't save / Cancel. „Revert to saved“ im Esc-Menü.
 - **Rückgängig:** Undo / Strg+Z, Redo / Strg+Y (oder Strg+Shift+Z) – die letzten 20 Schritte, nur in Edit. Ein Schritt =
   alles, solange die linke Maustaste gedrückt ist (ein ganzer Pinselstrich), oder eine einzelne Änderung.
-- **Gebäude** gehen im Editor überall hin und kosten nichts.
+- **Gebäude** gehen im Editor überall hin und kosten nichts. **Entf** (oder „Demolish“) nimmt die ausgewählten weg –
+  auch das Kommandozentrum, ohne Rückgeld –, dazu den ausgewählten Spawner. Der Radierer nimmt alles unter dem Pinsel.
+- **Speichern = Custom Level:** jede im Editor gespeicherte Karte steht im Spiel unter New game → **Custom levels**.
+- **Spawner:** **Rechtsklick** (ohne Auswahl) öffnet ein Fenster: Name, **gerade** (wie die Weltgrenze) oder **schräg**
+  (wie die Kacheln, um 45° gedreht), was er von selbst schickt, entfernen.
 - **Panel** (egui): Zahlen ziehen oder anklicken und tippen (Enter: übernehmen, Esc: abbrechen), Listen zum Aufklappen,
   Abschnitte klappen mit einem Klick auf die Überschrift zu, das Mausrad scrollt das Panel. Solange man tippt, wirkt
   keine Taste im Spiel.
 
 | Tab | Was |
 |---|---|
-| **Map** | Name (= Dateiname), Save, Close, New map, Tage, Startgold, Startholz |
+| **Map** | Name (= Dateiname), Save, Close, New map, Tage, Startgold, Startholz, **Playing field** (die Weltgrenze wie SC2s Map Bounds: „Drag the border“ – Kante greifen und ziehen, innen ganz verschieben – oder Breite/Höhe tippen; das Gelände bleibt, nur die Grenze wandert; „Like a new map“ setzt zurück), **Grid** (die ganze Karte darum, wie SC2s Map Size: Apply – wächst/schrumpft an allen Seiten, alles bleibt, wo es ist, neues Land ist Gras; Undo geht) |
 | **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinselgröße |
-| **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies (Pinsel / Drop, jede Art, stürmen / wandern, wie viele), **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Constant / Periodic mit Sekunden und Anzahl / Off) |
-| **Waves** | Sofort-Wellen, Zeitleiste der Wellen (Tag und Stunde, **Final** = ruft alle Zombies der Karte, **Reveal** = deckt die Karte auf, Anzahl, Art, woher) und der konstante Spawn (Stufen: ab wann, Art, alle wie viele Sekunden, Gruppengröße – Zuwachs pro Tag danach – **Specials**: Anteil einer Art an jeder Gruppe ab einem Tag) |
+| **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies: **Pinsel wie TAB** (pro Kachel ein Regler je Art, 0–3; nochmal drübermalen füllt nur auf), **Drop** (eine Menge einer Art), **Giant** (einer pro Klick) – schlafend/bummelnd oder stürmend, **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Constant / Periodic mit Sekunden und Anzahl / Off) |
+| **Waves** | Sofort-Wellen, Zeitleiste der Wellen (Tag und Stunde, **Final** = ruft alle Zombies der Karte, **Reveal** = deckt die Karte auf) – jede Welle hat **Gruppen**: woher (1 zufälliger Spawner, 1–4 zufällige Seiten oder **ausgewählte Spawner** per Häkchen bei ihren Namen – die Zahl verteilt sich auf sie) und **mehrere Arten** mit Anzahl („+ breed“, „+ group“). Und der konstante Spawn (Stufen: ab wann, Art, alle wie viele Sekunden, Gruppengröße, **woher**: die auf Constant oder eigene Spawner – Zuwachs pro Tag danach – **Specials**: Anteil einer Art an jeder Gruppe ab einem Tag) |
 | **View** (immer) | All / Player / Zombies – durch wessen Augen man schaut |
 
 ### Für Entwickler

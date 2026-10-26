@@ -274,6 +274,10 @@ Costs and stats live in `data\buildings.json` (12.4).
   later also wood/stone …), paid at once; the damage comes back over `repair_seconds` (full repair 10 s). Not enough
   gold: cheapest first, as many as it pays for. Not with a zombie in the build zone (`can_repair` in
   `placement.rs`), later not on creep (8.4).
+- **Demolish** (Del): any selected building but the command center, gone at once – part of its price comes back
+  (`demolish_refund_percent` 25 %, still being built `demolish_unfinished_refund_percent` 75 %, `data\buildings.json`;
+  as far as I know TAB gives nothing back). Not an infected one – it belongs to the zombies. In the editor: removed,
+  nothing back.
 - **Roads:** units **and zombies** are faster on them – a road into the base is also a fast lane for the horde.
 - **Build menus (2026-10-18):** one per key on the command center, like TAB's categories – **Q** colonists,
   **W** resources, **E** energy, **A** industry and trade, **S** military, **D** defence, **Y** wonders. Planned
@@ -454,13 +458,15 @@ and stroll further per trip (`stroll` per breed: walker 8 tiles … fat 30) – 
   announced ≈ 2 days ahead.
 - **In the prototype:** waves planned from the duration (on which days, `data\game_durations.json`) and the difficulty
   (how strong, `waves_percent`) – the rest in `data\spawning.json`: runners, from a share of the round on
-  riots, infested, spitters and fat ones along (out of the same spawners); the final wave from all sides with every
-  breed. In the editor every wave has two switches: **Final** (calls everyone, counts for the win) and **Reveal**.
-  Killed zombies never come back.
+  riots, infested, spitters and fat ones along (one group of the wave, so out of the same spawners); the final wave
+  from all sides with every breed. In the editor every wave has two switches: **Final** (calls everyone, counts for the
+  win) and **Reveal** – and **groups**: each from its own place (a random spawner, 1–4 random sides, or **chosen
+  spawners** – the count spread over them) with several breeds, e.g. 5,000 runners out of C, D, F, G and 200 spitters
+  out of B in one wave. Killed zombies never come back.
 - **Constant spawn:** walkers from day 2, runners instead from day 10, specials along from day 15 on (a
   share of every group, `specials` in `data\spawning.json`). Each group comes crowded on one spot of a spawner, not
-  spread along a whole side. Bigger for good with the colony's unrest (8.3). Specials are only editable in the file
-  so far, not in the editor.
+  spread along a whole side. Bigger for good with the colony's unrest (8.3). In the editor a stage can have spawners
+  of its own instead of those set to "Constant".
 
 ### 8.3 Noise (TAB's noise)
 
@@ -571,9 +577,13 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   map with 10 seeds.
 - **World border:** straight on screen like TAB's – the playing field is a rectangle twice as wide as high (a
   diamond in the grid), the minimap too. Around it a ring of open ground (16 steps, ≈ 11 tiles); the grid corners
-  beyond are off the map. Units and the camera stop at the border. Spawners are rectangles on screen as well.
+  beyond are off the map. Units and the camera stop at the border. Spawners are rectangles on screen as well – in the
+  editor also slanted like the tiles. Like SC2's map bounds inside its map size, the playing field is a rectangle of
+  its own: a new map has it in the middle, the editor drags it anywhere on the grid (any size, the ground stays);
+  minimap and camera follow it. The base is the command center, wherever it stands.
 - **Spawners:** zombies only come out of them – 3 per side in the ring, covering nearly the whole side. Mode per
-  spawner: constant / periodic / off. Nests and wave directions can become spawners later.
+  spawner: constant / periodic / off. Each has a number (`id`) the waves name it by. Nests and wave directions can
+  become spawners later.
 - **Ways in:** winding open lanes from every side to the base that join like branches – the places to wall off.
   Fords in rivers, passes in region walls. A safety net connects anything cut off.
 - **Ore:** iron ore, coal, stone patches; one of each next to the base, bigger and richer further out.
@@ -614,7 +624,9 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 - **In the prototype:** "New game" like TAB – a **map** (`data\game_maps.json`, for now one generator with its values
   each), a **difficulty** (`game_difficulties.json`: start, how many zombies, how close each breed comes, zombies per
   house of doom, loot guards, waves, constant spawn) and a **duration** (`game_durations.json`). The score factor is the
-  three multiplied – shown, no score yet. "Custom setup" shows every value of the generator.
+  three multiplied – shown, no score yet. "Custom setup" shows every value of the generator. Like TAB's "Custom
+  Levels", a second list: every map saved in the editor (`custom` in its file) – its round is in the file, so there's
+  nothing to pick and no score factor.
 
 ### 10.2 Meta progression (like TAB)
 
@@ -859,8 +871,15 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      the simulation is deterministic (dice included); new orders need nothing extra for it.
   2. **Map settings (TAB's Info):** every value of the difficulty and duration per map (start, `keep_out`, zombies per
      house, wave plan – planned anew from rules or by hand), description; the constant spawn's specials.
+     *In the prototype:* the **playing field** (the world border) dragged anywhere and to any size, and the **grid**
+     around it (grows or shrinks on every side through the map file, new ground is grass) – like SC2's map bounds and
+     map size; waves with **groups** (several breeds, chosen spawners by name), stages of the constant spawn with
+     spawners of their own (map format 4). Later a trigger action "playing field to region X" makes missions in parts.
   3. **Properties of what's placed (TAB's Entities):** select one or many and edit – zombies per house and their breeds,
      loot, a zombie's breed and state, HP, owner; move, copy, delete.
+     *In the prototype:* a right click on a spawner opens its properties (name, straight or slanted, mode, remove); Del
+     removes selected buildings (the command center too). The zombie brush works like TAB's: per tile up to 3 of each
+     breed (a slider each), painting again only fills up; giants are placed one at a time.
   4. **Painter:** line, rectangle, fill, noise brush, a generator on a part of the map, copy and paste areas.
   5. **Regions and points (SC2):** named areas and spots – what triggers talk about ("north gate", "village 3").
   6. **Triggers (SC2):** events + conditions + actions, variables. Events: a time, a unit in a region, built/destroyed,
@@ -878,7 +897,7 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
   8. **Data per map (SC2's data editor, light):** a map overrides values of `data\` for itself.
 - **Hooks:** allies need an **owner on every unit and building** – it reaches combat, vision, selection, upkeep. Co-op
   (12.8) needs the same, so build it once, early. Triggers must stay deterministic (integers, fixed order). Players and
-  triggers make map format 4.
+  triggers make map format 5.
 
 ---
 
@@ -950,4 +969,9 @@ Ideas that don't serve a pillar yet, or are too big for now.
 - **Mod support** via the JSON files. **Replays** (seed + orders, almost free with lockstep).
 - **Air units** (until the era is clear – a hot-air balloon would fit low tech).
 - **Rally point into a control group.**
+- **Several maps in one round** – regions or Factorio's planets, travelled by train or plane. On **one grid** (regions
+  the playing field moves between, like SC2's missions in parts) it comes almost free with the playing field and
+  triggers (12.9 steps 5–6). **Separate grids** ("planets", each simulated all the time): `World` would hold several
+  surfaces – every system and every co-op checksum per surface, and the cost of the horde times their number. And it
+  pulls against the core: TAB's tension is one base against one horde. Maybe for a campaign or an endless mode.
 - Taken out: belts, the crawler, scout/engineer/grenadier units, the hero (question 8).

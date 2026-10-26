@@ -2,7 +2,7 @@
 //! ends – lost when the last command center falls, won when the final wave is dead (`check_outcome`) – and what
 //! happened in it along the way (`Score`, for the end screen).
 
-use super::spawning::{TimedWave, WaveFrom};
+use super::spawning::{BreedCount, TimedWave, WaveFrom, WaveGroup};
 use super::zombies::{Breed, Zombie};
 use super::{World, DAY_TICKS, HOUR_TICKS};
 use crate::data::{self, GameDuration};
@@ -52,10 +52,10 @@ pub fn tick_of(day: u32, hour: u32) -> u64 {
 /// The waves of a new round of `days` days (DESIGN.md 8.2, the numbers are `waves` in `data\spawning.json`): from
 /// `first_wave_day` of the `duration` on one every `wave_every_days` days, growing from `first` to `last` runners per
 /// side – in the first half of the round from one side, then from two. The first waves are only runners; the
-/// `specials` (riots, infested, spitters, fat ones) come along from their share of the waves on, more and more of them – one entry per breed at the same time,
-/// from the same sides (`fire_timed_waves`). On the last day the final wave from all four sides with every breed in
-/// full: it calls every zombie on the map and shows the whole map. `strength`: every count times this
-/// (`waves_percent` of the difficulty, 1 = 100 %). 0 days: no waves – a map without a set length.
+/// `specials` (riots, infested, spitters, fat ones) come along from their share of the waves on, more and more of them –
+/// each wave is one group, so they all come out of the same sides (`send_group`). On the last day the final wave from
+/// all four sides with every breed in full: it calls every zombie on the map and shows the whole map. `strength`: every
+/// count times this (`waves_percent` of the difficulty, 1 = 100 %). 0 days: no waves – a map without a set length.
 pub fn plan_waves(days: u32, duration: &GameDuration, strength: f32) -> Vec<TimedWave> {
     let plan = &data::get().spawning.waves;
     let mut waves = Vec::new();
@@ -64,13 +64,15 @@ pub fn plan_waves(days: u32, duration: &GameDuration, strength: f32) -> Vec<Time
     }
     // Rounded with `floor` – the list of float operations allowed in the simulation stays short (`sim/mod.rs`).
     let scaled = |count: f32| (count * strength + 0.5).floor() as u32;
-    let wave = |at: u64, count: u32, sides: u32, breed: Breed, last: bool| TimedWave {
+    // One wave of one group: `zombies` (breed, how many) out of `sides` random sides. Breeds with none are left out.
+    let wave = |at: u64, sides: u32, zombies: Vec<(Breed, u32)>, last: bool| TimedWave {
         at,
-        count,
-        from: WaveFrom::Sides(sides),
-        breed,
         final_wave: last,
         reveal: last,
+        groups: vec![WaveGroup {
+            from: WaveFrom::Sides(sides),
+            breeds: zombies.into_iter().filter(|&(_, count)| count > 0).map(|(breed, count)| BreedCount { count, breed }).collect(),
+        }],
     };
     // The days with a wave: from the first one every few days, but not on the last day – that one is the final wave's.
     let wave_days: Vec<u32> = (duration.first_wave_day.max(1)..days).step_by(duration.wave_every_days.max(1) as usize).collect();
@@ -80,24 +82,19 @@ pub fn plan_waves(days: u32, duration: &GameDuration, strength: f32) -> Vec<Time
         let share = if n > 1 { i as f32 / (n - 1) as f32 } else { 0.0 };
         let runners = plan.first as f32 + (plan.last as f32 - plan.first as f32) * share;
         let sides = if 2 * i < n { 1 } else { 2 };
-        let at = tick_of(day, plan.hour);
-        waves.push(wave(at, scaled(runners).max(1), sides, Breed::Runner, false));
+        let mut zombies = vec![(Breed::Runner, scaled(runners).max(1))];
         for special in plan.specials.iter().filter(|s| share >= s.from) {
             // A quarter of its share where it starts, all of it by the last wave.
             let grown = if special.from < 1.0 { (share - special.from) / (1.0 - special.from) } else { 1.0 };
-            let count = scaled(runners * special.share * (0.25 + 0.75 * grown));
-            if count > 0 {
-                waves.push(wave(at, count, sides, special.breed, false));
-            }
+            zombies.push((special.breed, scaled(runners * special.share * (0.25 + 0.75 * grown))));
         }
+        waves.push(wave(tick_of(day, plan.hour), sides, zombies, false));
     }
-    let at = tick_of(days, plan.final_hour);
     let finals = std::iter::once((Breed::Runner, 1.0)).chain(plan.specials.iter().map(|s| (s.breed, s.share)));
-    for (breed, share) in finals {
-        let count = scaled(plan.final_runners as f32 * share);
-        if count > 0 {
-            waves.push(wave(at, count, 4, breed, true));
-        }
+    let zombies: Vec<(Breed, u32)> = finals.map(|(breed, share)| (breed, scaled(plan.final_runners as f32 * share))).collect();
+    // Waves at 0 % have no final wave either – such a round can't be won by waiting.
+    if zombies.iter().any(|&(_, count)| count > 0) {
+        waves.push(wave(tick_of(days, plan.final_hour), 4, zombies, true));
     }
     waves
 }

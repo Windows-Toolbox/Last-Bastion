@@ -14,10 +14,10 @@ use crate::hud::{building_buttons, menu_buttons, Button, HudHit, Layout, Submenu
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::keys::Action;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
-use crate::map::{from_frame, to_frame, Ore, Region, Terrain};
+use crate::map::{to_frame, Ore, Region, Terrain};
 use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
-use crate::sim::{Command, Mark, Order, Rally, Spawner, SwitchBlock, World, MAX_PRODUCTION, UNIT_RADIUS};
+use crate::sim::{spawner_corners, Axes, Breed, Command, Mark, Order, Rally, SwitchBlock, World, MAX_PRODUCTION, UNIT_RADIUS};
 
 /// One entry of the selection, as an index into the world's list of units or buildings.
 #[derive(Clone, Copy, PartialEq)]
@@ -182,27 +182,38 @@ impl Edges {
     const ALL: Edges = Edges { x_min: true, x_max: true, y_min: true, y_max: true };
 }
 
-/// A spawner being dragged in the editor (its edge or the whole spawner). Like the spawner itself in the screen axes
-/// (`map::to_frame`): x across the screen, y down.
+/// What is being dragged in the editor.
+#[derive(Clone, Copy, PartialEq)]
+enum Dragged {
+    /// A spawner (its `id`).
+    Spawner(u32),
+    /// The playing field – the world border (`Tool::PlayArea`).
+    PlayArea,
+}
+
+/// A rectangle being dragged in the editor – a spawner or the playing field: one or two of its edges, or the whole of
+/// it. In its axes (`Axes`): straight on screen x across, y down – slanted along the tiles. More things to drag later
+/// (regions, DESIGN.md 12.9 step 5) are one more `Dragged`.
 #[derive(Clone, Copy)]
-struct SpawnerDrag {
-    spawner: u32,
+struct RectDrag {
+    what: Dragged,
     edges: Edges,
-    /// Where the mouse went down (world), and where the spawner lay at that moment.
+    /// Where the mouse went down (world), and where the rectangle lay at that moment.
     start: Vec2,
     min: (i32, i32),
     size: (i32, i32),
+    axes: Axes,
 }
 
-impl SpawnerDrag {
-    /// Where the spawner lies with the mouse at `point` (world): the grabbed edges snap to the nearest whole step.
+impl RectDrag {
+    /// Where the rectangle lies with the mouse at `point` (world): the grabbed edges snap to the nearest whole step.
     /// It never gets smaller than 1 × 1 – an edge can't be pulled across the opposite one.
     fn rect_at(&self, point: Vec2) -> ((i32, i32), (i32, i32)) {
         let (x0, y0) = self.min;
         let (x1, y1) = (x0 + self.size.0, y0 + self.size.1);
-        let point = to_frame(point);
+        let point = self.axes.of(point);
         if self.edges == Edges::ALL {
-            let d = (point - to_frame(self.start)).round();
+            let d = (point - self.axes.of(self.start)).round();
             return ((x0 + d.x as i32, y0 + d.y as i32), self.size);
         }
         let (px, py) = (point.x.round() as i32, point.y.round() as i32);
@@ -274,13 +285,11 @@ pub struct Ui {
     pub formation: Shape,
     /// A formation being drawn with the mouse.
     form_drag: Option<FormDrag>,
-    /// A spawner being dragged in the editor.
-    spawner_drag: Option<SpawnerDrag>,
+    /// A spawner or the playing field being dragged in the editor.
+    rect_drag: Option<RectDrag>,
     /// While building with the left mouse button down: the tile where it started. On release the whole
     /// line from there to the mouse is built.
     place_start: Option<(i32, i32)>,
-    /// While the zombie brush is held on the map: where it is (world). Every tick zombies go there.
-    brush_at: Option<Vec2>,
     /// While painting terrain with the left mouse button down: the tile painted last. If the mouse moves
     /// quickly, the line in between is painted too, so the stroke has no holes.
     paint_last: Option<(i32, i32)>,
@@ -332,9 +341,8 @@ impl Ui {
             turned: false,
             formation: Shape::Line,
             form_drag: None,
-            spawner_drag: None,
+            rect_drag: None,
             place_start: None,
-            brush_at: None,
             paint_last: None,
             groups: Default::default(),
             last_group: None,
@@ -388,13 +396,6 @@ impl Ui {
     /// Whose eyes the picture shows: the player's in the game view, in the editor the chosen view.
     pub fn sight(&self) -> Sight {
         self.editor.sight()
-    }
-
-    /// Once per tick (from the tick loop in `main`, so "per tick" really means per tick – and nothing while paused):
-    /// the zombies of the brush, if it's held on the map.
-    pub fn brush_order(&self) -> Option<Order> {
-        let at = self.brush_at.filter(|_| self.editor.tool == Some(Tool::ZombieBrush))?;
-        Some(self.editor.zombie_order(at, self.editor.rate))
     }
 
     /// Does the building on the mouse go without the rules of the game (anywhere, for free)? While editing always; in a
@@ -617,16 +618,15 @@ impl Ui {
             .iter()
             .map(|s| {
                 let selected = self.editor.spawner == Some(s.id);
-                let (min, size) = match self.spawner_drag {
-                    Some(drag) if drag.spawner == s.id => drag.rect_at(point),
+                let (min, size) = match self.rect_drag {
+                    Some(drag) if drag.what == Dragged::Spawner(s.id) => drag.rect_at(point),
                     _ => (s.min, s.size),
                 };
                 let name = match &self.editor.name_edit {
                     Some(text) if selected => text.clone(),
                     _ => s.name.clone(),
                 };
-                let min = tile_corner(min);
-                SpawnerShape { region: Region { min, max: min + tile_corner(size) }, name, selected }
+                SpawnerShape { corners: spawner_corners(s.axes, min, size), name, selected }
             })
             .collect()
     }
@@ -654,6 +654,8 @@ impl Ui {
                 card
             }
             Some(Sub::Building(BuildingKind::CommandCenter)) => match self.submenu {
+                // In the editor the command center can be removed like anything else.
+                None if self.editor.editing() && !self.editor.testing() => [COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Demolish]].concat(),
                 None => COMMAND_CENTER_BUTTONS.to_vec(),
                 Some(menu) => menu_buttons(menu),
             },
@@ -804,7 +806,7 @@ impl Ui {
             if id < world.next_spawner_id() && world.find_spawner(id).is_none() {
                 self.editor.spawner = None;
                 self.editor.name_edit = None;
-                self.spawner_drag = None;
+                self.rect_drag = None;
             }
         }
     }
@@ -841,7 +843,7 @@ impl Ui {
 
         if is_mouse_button_pressed(MouseButton::Left) {
             if let (Some(tool), None) = (self.editor.tool, hit) {
-                self.use_tool(tool, world, orders, point);
+                self.use_tool(tool, world, camera, orders, point);
             } else if let (Some(kind), None) = (self.placing, hit) {
                 // Building on the mouse: the line starts here. It's built on release.
                 self.place_start = Some(placement_tile(kind, self.turned, point));
@@ -905,12 +907,6 @@ impl Ui {
                     self.paint(tool, last, now, orders);
                 }
             }
-            // The zombie brush follows the mouse – but only while it's held on the map.
-            if self.brush_at.is_some() {
-                self.brush_at = if hit.is_none() && self.editor.tool == Some(Tool::ZombieBrush) { Some(point) } else { None };
-            }
-        } else {
-            self.brush_at = None;
         }
         if is_mouse_button_released(MouseButton::Left) {
             self.minimap_drag = false;
@@ -933,11 +929,14 @@ impl Ui {
             if let Some(start) = self.drag_start.take() {
                 self.select(world, camera, layout, start, mouse, shift, ctrl);
             }
-            // A spawner let go: move it there for real (one order, not one per frame).
-            if let Some(drag) = self.spawner_drag.take() {
+            // A spawner or the border let go: put it there for real (one order, not one per frame).
+            if let Some(drag) = self.rect_drag.take() {
                 let (min, size) = drag.rect_at(point);
                 if (min, size) != (drag.min, drag.size) {
-                    orders.push(Order::ResizeSpawner { spawner: drag.spawner, min, size });
+                    orders.push(match drag.what {
+                        Dragged::Spawner(spawner) => Order::ResizeSpawner { spawner, min, size },
+                        Dragged::PlayArea => Order::SetPlayArea { min, size },
+                    });
                 }
             }
         }
@@ -958,6 +957,14 @@ impl Ui {
                 self.editor.tool = None;
                 self.form_drag = None;
                 return;
+            }
+            // Editor: right click on a spawner, with nothing selected that would take it as an order – its properties
+            // (the one on top, placed last).
+            if self.editor.editing() && hit.is_none() && !self.has_selection() {
+                if let Some(s) = world.spawners.iter().rposition(|s| s.contains(point)) {
+                    self.editor.open_properties(world.spawners[s].id, mouse);
+                    return;
+                }
             }
             // Selected buildings set their rally point (like in StarCraft) – selected units still get their command.
             let rallying = self.rally_buildings(world, false);
@@ -1039,9 +1046,9 @@ impl Ui {
     /// Left click in the editor (no tool): grab the edge of the selected spawner, or the inside of a spawner to
     /// move it. Returns whether a spawner was hit – if not, the selection box starts as usual.
     fn spawner_press(&mut self, world: &World, camera: &Camera, point: Vec2) -> bool {
-        let tolerance = grab_tolerance(camera);
         let selected = self.editor.spawner.and_then(|id| world.find_spawner(id));
-        let grabbed = match selected.and_then(|s| grab(&world.spawners[s], point, tolerance).map(|e| (s, e))) {
+        let grab_spawner = |s: usize| grab(world.spawners[s].min, world.spawners[s].size, world.spawners[s].axes, point, camera);
+        let grabbed = match selected.and_then(|s| grab_spawner(s).map(|e| (s, e))) {
             Some(hit) => Some(hit),
             // Another spawner (the one on top, i.e. placed last), unless there's a unit under the mouse.
             None if unit_under_mouse(world, camera, camera.world_to_screen(point)).is_none() => {
@@ -1055,20 +1062,31 @@ impl Ui {
         };
         let spawner = &world.spawners[s];
         self.editor.select_spawner(Some(spawner.id));
-        self.spawner_drag = Some(SpawnerDrag { spawner: spawner.id, edges, start: point, min: spawner.min, size: spawner.size });
+        let what = Dragged::Spawner(spawner.id);
+        self.rect_drag = Some(RectDrag { what, edges, start: point, min: spawner.min, size: spawner.size, axes: spawner.axes });
         true
     }
 
     /// Left click on the map with an editor tool in hand.
-    fn use_tool(&mut self, tool: Tool, world: &World, orders: &mut Vec<Order>, point: Vec2) {
+    fn use_tool(&mut self, tool: Tool, world: &World, camera: &Camera, orders: &mut Vec<Order>, point: Vec2) {
         match tool {
-            Tool::Paint(_) | Tool::Ore(_) | Tool::Remove => {
+            Tool::Paint(_) | Tool::Ore(_) | Tool::Remove | Tool::ZombieBrush => {
                 let tile = tile_of(point);
                 self.paint(tool, tile, tile, orders);
             }
-            Tool::ZombieDrop => orders.push(self.editor.zombie_order(point, self.editor.drop)),
-            // The brush places its zombies tick by tick while the button is held (`brush_order`).
-            Tool::ZombieBrush => self.brush_at = Some(point),
+            Tool::ZombieDrop => orders.push(self.editor.drop_order(point)),
+            // One giant on the tile: the brush with one giant on one tile.
+            Tool::Giant => {
+                let wander = self.editor.wander;
+                orders.push(Order::PaintZombies { tiles: vec![tile_of(point)], per_tile: vec![(Breed::Giant, 1)], wander });
+            }
+            // An edge of the border (or two at a corner) – or, inside, all of it.
+            Tool::PlayArea => {
+                let (min, size) = world.map.play_steps();
+                if let Some(edges) = grab(min, size, Axes::Screen, point, camera) {
+                    self.rect_drag = Some(RectDrag { what: Dragged::PlayArea, edges, start: point, min, size, axes: Axes::Screen });
+                }
+            }
             Tool::Unit(kind) => orders.push(Order::SpawnUnit { kind, point }),
             // A 3 × 3 house with its middle tile under the mouse.
             Tool::Doom => {
@@ -1110,6 +1128,7 @@ impl Ui {
             Tool::Paint(terrain) => orders.push(Order::PaintTerrain { terrain, tiles }),
             Tool::Ore(ore) => orders.push(Order::PaintOre { ore, tiles }),
             Tool::Remove => orders.push(Order::RemoveAt { tiles }),
+            Tool::ZombieBrush => orders.push(self.editor.brush_order(tiles)),
             _ => {}
         }
         self.paint_last = Some(to);
@@ -1228,6 +1247,13 @@ impl Ui {
             },
             Button::Drop => orders.push(Order::DropBarrels { units: self.selected.clone() }),
             Button::Dismiss => orders.push(Order::Dismiss { units: self.selected.clone() }),
+            // All selected buildings, like repairing. In the editor's Edit mode they're only removed: no time passes
+            // there, nothing is paid – and nothing comes back.
+            Button::Demolish => {
+                let buildings = self.selected_buildings.clone();
+                let editing = self.editor.editing() && !self.editor.testing();
+                orders.push(if editing { Order::RemoveBuildings { buildings } } else { Order::Demolish { buildings } });
+            }
             // All selected markets: if one of them sells, all stop – otherwise all sell again.
             Button::Sell => {
                 let on = !self.selling(world);
@@ -1779,7 +1805,7 @@ impl Ui {
         // At the edge only the real mouse counts: if the window has no focus or the mouse is outside
         // (e.g. on the second monitor), nothing scrolls. Also not while a selection box is being dragged
         // (it hangs on the screen, not on the world) or the camera is moved another way.
-        let busy = self.drag_start.is_some() || self.minimap_drag || self.pan_drag.is_some() || self.spawner_drag.is_some();
+        let busy = self.drag_start.is_some() || self.minimap_drag || self.pan_drag.is_some() || self.rect_drag.is_some();
         if let Some(mouse) = self.real_mouse.filter(|_| self.settings.edge_scroll && !busy) {
             if mouse.x < EDGE {
                 pan.x -= 1.0;
@@ -1993,12 +2019,13 @@ impl Ui {
         // Editor tool on the mouse: the brush in the colour of the terrain, or the name of what gets spawned.
         if let Some(tool) = self.editor.tool.filter(|_| !self.editor.has_mouse()) {
             match tool {
-                Tool::Paint(_) | Tool::Ore(_) | Tool::Remove => {
+                Tool::Paint(_) | Tool::Ore(_) | Tool::Remove | Tool::ZombieBrush => {
                     let color = match tool {
                         Tool::Paint(Terrain::Grass) | Tool::Ore(None) => Color::new(1.0, 1.0, 1.0, 0.25),
                         Tool::Paint(terrain) => Color { a: 0.6, ..terrain_color(terrain) },
                         Tool::Ore(Some(ore)) => Color { a: 0.6, ..ore_color(ore) },
                         Tool::Remove => Color::new(0.9, 0.15, 0.15, 0.35),
+                        Tool::ZombieBrush => Color { a: 0.35, ..ZOMBIE },
                         _ => WHITE,
                     };
                     let tile = tile_of(camera.screen_to_world(mouse));
@@ -2006,24 +2033,22 @@ impl Ui {
                     for (x, y) in tiles {
                         draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, color);
                     }
+                    if tool == Tool::ZombieBrush {
+                        draw_text(self.editor.brush_text(), mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
+                    }
                 }
-                Tool::ZombieBrush | Tool::ZombieDrop => {
+                Tool::ZombieDrop => {
                     // The area where they land: a circle on the ground – on screen a flat ellipse (like the tiles).
-                    let radius = self.editor.zombie_radius(if tool == Tool::ZombieDrop { self.editor.drop } else { 1 });
-                    let s = mouse;
-                    let w = radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom;
-                    draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 2.0, ZOMBIE);
-                    let text = match tool {
-                        Tool::ZombieBrush => format!("{} per tick", self.editor.rate),
-                        _ => format!("{} zombies", self.editor.drop),
-                    };
-                    draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
+                    let w = self.editor.drop_radius() * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom;
+                    draw_ellipse_lines(mouse.x, mouse.y, w, w / 2.0, 0.0, 2.0, ZOMBIE);
+                    draw_text(format!("{} zombies", self.editor.drop), mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
                 }
-                Tool::Unit(_) | Tool::Spawner | Tool::Doom | Tool::Loot => {
+                Tool::Unit(_) | Tool::Spawner | Tool::Doom | Tool::Loot | Tool::Giant => {
                     draw_circle_lines(mouse.x, mouse.y, 10.0, 2.0, YELLOW);
                     draw_text(tool.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
                 }
-                Tool::Building(_) => {}
+                // Its edges light up – below.
+                Tool::PlayArea | Tool::Building(_) => {}
             }
         }
         // Formation being drawn: the dragged line and a ring at every spot – soldiers in front. Only once it's really
@@ -2048,37 +2073,30 @@ impl Ui {
                 draw_ring(camera, spot, UNIT_RADIUS, 1.5, ring);
             }
         }
-        // Editor: the edge of the selected spawner under the mouse (or being dragged) lights up white.
-        if let Some(s) = self.editor.spawner.and_then(|id| world.find_spawner(id)).filter(|_| self.editor.editing()) {
+        // Editor: the edge under the mouse (or being dragged) lights up white – of the selected spawner, or of the border
+        // while its tool is in hand. The border being dragged shows where it will lie.
+        if self.editor.editing() {
             let point = camera.screen_to_world(mouse);
-            let tolerance = grab_tolerance(camera);
-            let edges = match self.spawner_drag {
-                Some(drag) => Some(drag.edges),
-                None if !self.editor.has_mouse() && self.editor.tool.is_none() => grab(&world.spawners[s], point, tolerance),
-                None => None,
+            let free = !self.editor.has_mouse();
+            let spawner = self.editor.spawner.and_then(|id| world.find_spawner(id)).map(|s| &world.spawners[s]);
+            // (axes, corner, size, the edges under the mouse)
+            let lit = match (self.rect_drag, self.editor.tool, spawner) {
+                (Some(drag), _, _) => {
+                    let (min, size) = drag.rect_at(point);
+                    if drag.what == Dragged::PlayArea {
+                        draw_edges(camera, drag.axes, min, size, Edges::ALL, 2.0);
+                    }
+                    Some((drag.axes, min, size, Some(drag.edges)))
+                }
+                (None, Some(Tool::PlayArea), _) if free => {
+                    let (min, size) = world.map.play_steps();
+                    Some((Axes::Screen, min, size, grab(min, size, Axes::Screen, point, camera)))
+                }
+                (None, None, Some(s)) if free => Some((s.axes, s.min, s.size, grab(s.min, s.size, s.axes, point, camera))),
+                _ => None,
             };
-            if let Some(edges) = edges.filter(|&e| e != Edges::ALL) {
-                let (min, size) = match self.spawner_drag {
-                    Some(drag) => drag.rect_at(point),
-                    None => (world.spawners[s].min, world.spawners[s].size),
-                };
-                let (min, max) = (tile_corner(min), tile_corner(min) + tile_corner(size));
-                let line = |p: Vec2, q: Vec2| {
-                    let (p, q) = (camera.world_to_screen(from_frame(p)), camera.world_to_screen(from_frame(q)));
-                    draw_line(p.x, p.y, q.x, q.y, 4.0, WHITE);
-                };
-                if edges.x_min {
-                    line(min, vec2(min.x, max.y));
-                }
-                if edges.x_max {
-                    line(vec2(max.x, min.y), max);
-                }
-                if edges.y_min {
-                    line(min, vec2(max.x, min.y));
-                }
-                if edges.y_max {
-                    line(vec2(min.x, max.y), max);
-                }
+            if let Some((axes, min, size, Some(edges))) = lit.filter(|l| l.3 != Some(Edges::ALL)) {
+                draw_edges(camera, axes, min, size, edges, 4.0);
             }
         }
         if let Some((target, time_left, mark)) = self.marker {
@@ -2143,19 +2161,50 @@ fn draw_ground_circle(camera: &Camera, center: Vec2, radius: f32, thickness: f32
     draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, thickness, color);
 }
 
-/// How close to its edge (in steps of the screen axes, across and down) a spawner can be grabbed: `GRAB_PIXELS` on
-/// screen – a step across is twice as wide as a step down.
-fn grab_tolerance(camera: &Camera) -> Vec2 {
-    let down = (GRAB_PIXELS / (TILE_H / 2.0 * camera.zoom)).clamp(0.4, 3.0);
-    vec2(down / 2.0, down)
+/// How close to its edge (in steps of its axes) a spawner can be grabbed: `GRAB_PIXELS` on screen. Straight: a step
+/// across the screen is twice as wide as a step down. Slanted: one tile – two lines a tile apart along a tile's edge lie
+/// `TILE_W · TILE_H / 2 / edge` pixels apart (the area of a tile's diamond over the length of its edge).
+fn grab_tolerance(camera: &Camera, axes: Axes) -> Vec2 {
+    match axes {
+        Axes::Screen => {
+            let down = (GRAB_PIXELS / (TILE_H / 2.0 * camera.zoom)).clamp(0.4, 3.0);
+            vec2(down / 2.0, down)
+        }
+        Axes::Tiles => {
+            let apart = TILE_W * TILE_H / 2.0 / vec2(TILE_W / 2.0, TILE_H / 2.0).length() * camera.zoom;
+            Vec2::splat((GRAB_PIXELS / apart).clamp(0.2, 1.5))
+        }
+    }
 }
 
-/// Which edges of the spawner lie within `tolerance` of the world point `point` – at a corner two. Inside, away from
-/// the edges: all four (the whole spawner moves). `None` if the point lies outside.
-fn grab(spawner: &Spawner, point: Vec2, tolerance: Vec2) -> Option<Edges> {
-    let Region { min, max } = spawner.region();
-    let t = tolerance;
-    let p = to_frame(point);
+/// These edges of a rectangle (`min`, `size` in `axes`, like a spawner) as white lines on the ground, `width` pixels.
+fn draw_edges(camera: &Camera, axes: Axes, min: (i32, i32), size: (i32, i32), edges: Edges, width: f32) {
+    let (min, max) = (tile_corner(min), tile_corner(min) + tile_corner(size));
+    let line = |p: Vec2, q: Vec2| {
+        let (p, q) = (camera.world_to_screen(axes.back(p)), camera.world_to_screen(axes.back(q)));
+        draw_line(p.x, p.y, q.x, q.y, width, WHITE);
+    };
+    if edges.x_min {
+        line(min, vec2(min.x, max.y));
+    }
+    if edges.x_max {
+        line(vec2(max.x, min.y), max);
+    }
+    if edges.y_min {
+        line(min, vec2(max.x, min.y));
+    }
+    if edges.y_max {
+        line(vec2(min.x, max.y), max);
+    }
+}
+
+/// Which edges of a rectangle (`min`, `size` in `axes` – a spawner, the border) lie close to the world point `point`
+/// (`grab_tolerance`) – at a corner two. Inside, away from the edges: all four (it moves as a whole). `None` if the
+/// point lies outside.
+fn grab(min: (i32, i32), size: (i32, i32), axes: Axes, point: Vec2, camera: &Camera) -> Option<Edges> {
+    let (min, max) = (tile_corner(min), tile_corner(min) + tile_corner(size));
+    let t = grab_tolerance(camera, axes);
+    let p = axes.of(point);
     if p.x < min.x - t.x || p.y < min.y - t.y || p.x > max.x + t.x || p.y > max.y + t.y {
         return None;
     }
@@ -2172,7 +2221,7 @@ fn grab(spawner: &Spawner, point: Vec2, tolerance: Vec2) -> Option<Edges> {
     }
     if e.x_min || e.x_max || e.y_min || e.y_max {
         Some(e)
-    } else if spawner.contains(point) {
+    } else if p.x > min.x && p.y > min.y && p.x < max.x && p.y < max.y {
         Some(Edges::ALL)
     } else {
         None

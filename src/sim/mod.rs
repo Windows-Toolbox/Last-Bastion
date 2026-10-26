@@ -73,11 +73,11 @@ pub use debt::DebtStage;
 pub use doom::{DoomHouse, Loot, LootKind};
 pub use economy::{Power, Stock};
 pub use ranged::Spit;
-pub use orders::Order;
+pub use orders::{Order, MAP_SIZES, MOST_PER_TILE};
 pub use round::{plan_waves, Outcome, Score};
 pub use scan::Scanned;
 pub use sleep::Sleep;
-pub use spawning::{scaled_groups, Corpse, SpawnMode, Spawner, TimedWave, WaveFrom};
+pub use spawning::{corners as spawner_corners, tiles as spawner_tiles, merge_old_waves, scaled_groups, Axes, BreedCount, Corpse, SpawnMode, Spawner, TimedWave, WaveFrom, WaveGroup};
 pub use units::Unit;
 pub use zombies::{Breed, Zombie};
 
@@ -254,7 +254,7 @@ impl World {
         world.waves = plan_waves(world.days, duration, difficulty.waves_percent as f32 / 100.0);
         world.constant = scaled_groups(&data::get().spawning.constant, difficulty.constant_spawn_percent);
         for spot in generated.spawners {
-            world.add_spawner(spot.name, spot.min, spot.size, SpawnMode::Constant);
+            world.add_spawner(0, spot.name, spot.min, spot.size, Axes::Screen, SpawnMode::Constant);
         }
         // The villages of doom and the loot where the generator put them (`doom.rs`) – every house as full as the
         // difficulty says; what lies in each pile is rolled here.
@@ -437,6 +437,7 @@ impl World {
         self.map_changed = false;
         self.wake_near_eyes();
         self.update_vision();
+        self.expect_first_payout();
     }
 
     /// Day (from 1) and hour (0–23) of the round right now.

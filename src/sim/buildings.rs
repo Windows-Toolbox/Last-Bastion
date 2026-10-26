@@ -10,7 +10,7 @@ use super::terrain::free_point_near;
 use super::zombies::Breed;
 use super::{payout_ticks, World, TICKS_PER_SECOND};
 use crate::data;
-use crate::kinds::{BuildingKind, BuildingStats, UnitKind};
+use crate::kinds::{BuildingKind, BuildingStats, Resource, UnitKind};
 
 /// This many units fit into a building's production queue (like in StarCraft).
 pub const MAX_PRODUCTION: usize = 5;
@@ -52,7 +52,8 @@ pub struct Building {
     /// A tower that shoots by itself (`sim/towers.rs`): thousandths of a tick until it can shoot again – every tick
     /// takes off its power share, so short of power it reloads slower.
     pub reload: u32,
-    /// A house: did its colonists get their food at the last payout – and the gold they paid then (`economy_payout`).
+    /// A house: did its colonists get their food at the last payout – and the gold they paid then (`economy_payout`;
+    /// before the first payout what they will pay, `expect_first_payout`).
     pub fed: bool,
     pub paid: u32,
     /// Where new units go (right click with the building selected).
@@ -373,6 +374,42 @@ impl World {
             }
             self.map_changed = true;
         }
+    }
+
+    /// May the player tear building `b` down (Del)? Not the command center – losing it loses the round – and not an
+    /// infected one: it belongs to the zombies now (repair it or shoot it).
+    pub fn can_demolish(&self, b: usize) -> bool {
+        let building = &self.buildings[b];
+        building.kind != BuildingKind::CommandCenter && !building.infected
+    }
+
+    /// What tearing building `b` down gives back: `demolish_refund_percent` of its price (`data\buildings.json`), of
+    /// one still being built `demolish_unfinished_refund_percent` – gold, then wood, stone, coal, iron (rounded down).
+    pub fn demolish_refund(&self, b: usize) -> [u32; 5] {
+        let building = &self.buildings[b];
+        let data = &data::get().buildings;
+        let percent = if building.is_built() { data.demolish_refund_percent } else { data.demolish_unfinished_refund_percent };
+        let s = building.stats();
+        [s.cost, s.cost_wood, s.cost_stone, s.cost_coal, s.cost_iron].map(|n| n * percent / 100)
+    }
+
+    /// The player tears building `id` down (`Order::Demolish`, like TAB): it goes at once, part of its price comes back
+    /// (`demolish_refund`) – as much as the stock and the gold storage take, like any income. A barrel goes back into
+    /// the store if there is room. Its workers are free again (they're counted from what stands), units in a tower
+    /// stand on the ground.
+    pub(super) fn demolish(&mut self, id: u32) {
+        let Some(b) = self.find_building(id).filter(|&b| self.can_demolish(b)) else {
+            return;
+        };
+        let [gold, wood, stone, coal, iron] = self.demolish_refund(b);
+        self.gold = (self.gold + gold).min(self.gold.max(self.gold_storage()));
+        for (r, n) in [(Resource::Wood, wood), (Resource::Stone, stone), (Resource::Coal, coal), (Resource::Iron, iron)] {
+            self.stock.add(r, n, self.storage(r));
+        }
+        if self.buildings[b].kind == BuildingKind::Barrel && self.barrels < self.barrel_room() {
+            self.barrels += 1;
+        }
+        self.take_down(id);
     }
 
     /// Destroyed buildings: free their tiles, then recompute the index and the zombies' path.

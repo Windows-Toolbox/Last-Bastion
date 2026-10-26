@@ -33,7 +33,7 @@ use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::kinds::BuildingKind;
-use crate::map::{Map, Region, Terrain, BORDER};
+use crate::map::{Map, Terrain, BORDER};
 use crate::noise::Noise;
 use crate::rng::Rng;
 use lanes::Lanes;
@@ -471,9 +471,11 @@ pub struct SpawnerSpot {
 }
 
 impl SpawnerSpot {
-    pub fn region(&self) -> Region {
+    /// Where it lies, in the screen axes – only the tests ask (the pictures take its tiles, `sim::spawner_tiles`).
+    #[cfg(test)]
+    pub fn region(&self) -> crate::map::Region {
         let min = vec2(self.min.0 as f32, self.min.1 as f32);
-        Region { min, max: min + vec2(self.size.0 as f32, self.size.1 as f32) }
+        crate::map::Region { min, max: min + vec2(self.size.0 as f32, self.size.1 as f32) }
     }
 }
 

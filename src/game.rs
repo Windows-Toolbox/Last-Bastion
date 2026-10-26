@@ -21,7 +21,7 @@ use crate::menu::{Menu, MenuAction};
 use crate::overlay::{self, Action, Overlay, Switch};
 use crate::picture::{Extras, MapPicture};
 use crate::settings::Settings;
-use crate::sim::{day_and_hour, Breed, Order, Outcome, TimedWave, WaveFrom, World, TICK};
+use crate::sim::{day_and_hour, Breed, Order, Outcome, TimedWave, World, TICK};
 use crate::sprites::Sprites;
 use crate::ui::Ui;
 use crate::undo::History;
@@ -62,8 +62,6 @@ pub struct Game {
     history: History,
     orders: Vec<Order>,
     accumulator: f32,
-    /// Editor (Edit): no tick runs there, but the zombie brush still places its zombies 20 times a second.
-    brush_clock: f32,
     checksum_at_check: Option<u64>,
     // Moving averages, so the display doesn't jump.
     avg_tick_ms: f64,
@@ -74,6 +72,8 @@ pub struct Game {
     zombie_view_tick: Option<u64>,
     // Zombies that leave your sight fade out instead of vanishing, and turn the way they walk.
     looks: draw::Looks,
+    /// The fog of war as a picture, painted anew every frame (`draw.rs`).
+    fog_picture: draw::FogPicture,
     /// The pictures of zombies and units – read again on "Restart" (`restart`).
     sprites: Sprites,
     /// The picture on the minimap – painted only when the map or the fog changed (`picture.rs`).
@@ -120,12 +120,12 @@ impl Game {
             history: History::new(),
             orders: Vec::new(),
             accumulator: 0.0,
-            brush_clock: 0.0,
             checksum_at_check: None,
             avg_tick_ms: 0.0,
             avg_draw_ms: 0.0,
             zombie_view_tick: None,
             looks: draw::Looks::default(),
+            fog_picture: draw::FogPicture::new(),
             sprites: Sprites::default(),
             minimap: MapPicture::new(),
             end_hidden: false,
@@ -255,10 +255,6 @@ impl Game {
         if runs {
             self.accumulator += dt.min(0.25) * self.ui.speed as f32;
             while self.accumulator >= TICK && ticks < MAX_TICKS_PER_FRAME {
-                // The zombie brush of the editor places its zombies every tick.
-                if let Some(order) = self.ui.brush_order() {
-                    self.orders.push(order);
-                }
                 self.world.step(&self.orders);
                 self.orders.clear();
                 self.accumulator -= TICK;
@@ -271,15 +267,6 @@ impl Game {
                 }
             }
         } else {
-            if editing && !self.menu.open {
-                self.brush_clock += dt;
-                while self.brush_clock >= TICK {
-                    self.brush_clock -= TICK;
-                    if let Some(order) = self.ui.brush_order() {
-                        self.orders.push(order);
-                    }
-                }
-            }
             if !self.orders.is_empty() {
                 // Paused (Space) or editing: take the orders over right away – you see the lines, queues and rally
                 // points, the painted terrain, the placed zombies – but no time passes, so nobody starts moving.
@@ -300,20 +287,30 @@ impl Game {
             let tick_ms = sim_start.elapsed().as_secs_f64() * 1000.0 / ticks as f64;
             self.avg_tick_ms = smooth(self.avg_tick_ms, tick_ms);
         }
+        self.follow_size();
         self.announce_waves(first_tick);
+    }
+
+    /// The map got another size (editor: "Map size", or undo / redo of it): what is as big as the map starts anew –
+    /// and what names units, buildings and zombies by their number, because the map was loaded again (`World::resize`)
+    /// and they got new ones.
+    fn follow_size(&mut self) {
+        if self.zombie_view.size() == self.world.map.size {
+            return;
+        }
+        self.zombie_view = Vision::new(self.world.map.size);
+        self.zombie_view_tick = None;
+        self.looks = draw::Looks::default();
+        self.ui.forget_selection();
     }
 
     /// A wave of the timeline came in the ticks since `from`: say so at the top of the screen.
     fn announce_waves(&mut self, from: u64) {
-        let came: Vec<TimedWave> = self.world.waves.iter().filter(|w| w.at >= from && w.at < self.world.tick).copied().collect();
+        let came: Vec<&TimedWave> = self.world.waves.iter().filter(|w| w.at >= from && w.at < self.world.tick).collect();
         if came.is_empty() {
             return;
         }
-        let sides = |from: WaveFrom| match from {
-            WaveFrom::OneSpawner => 1,
-            WaveFrom::Sides(n) => n.min(4),
-        };
-        let zombies: u32 = came.iter().map(|w| w.count * sides(w.from)).sum();
+        let zombies: u32 = came.iter().map(|w| w.zombies()).sum();
         let text = if came.iter().any(|w| w.final_wave) {
             format!("THE FINAL WAVE is coming - {zombies} zombies, and every zombie on the map comes with it!")
         } else {
@@ -376,6 +373,7 @@ impl Game {
             self.ui.editor.select_spawner(None);
             self.zombie_view_tick = None;
             self.looks = draw::Looks::default();
+            self.follow_size();
         }
     }
 
@@ -384,9 +382,10 @@ impl Game {
         self.stash.as_ref().unwrap_or(&self.world)
     }
 
-    /// What the map's file would hold if it were saved now. `..`: all other fields from `from_world`.
+    /// What the map's file would hold if it were saved now. `..`: all other fields from `from_world`. Whether it's a
+    /// custom level stays as the file says until it's saved (`write_file`).
     fn current_file(&self) -> MapFile {
-        MapFile { setup: self.file.setup.clone(), ..MapFile::from_world(self.edited(), &self.ui.editor.map_name) }
+        MapFile { setup: self.file.setup.clone(), custom: self.file.custom, ..MapFile::from_world(self.edited(), &self.ui.editor.map_name) }
     }
 
     /// Editor: Edit ↔ Test. The test plays the map as the game would – from its file as it would be saved now, on a
@@ -437,8 +436,9 @@ impl Game {
     }
 
     /// `save` without the messages: `Ok` with the file name, or `Err` with the reason. `?` returns the error early.
+    /// Saved in the editor, a map is a custom level (`MapFile::custom`) – also the file of a round that was opened here.
     fn write_file(&mut self) -> Result<String, String> {
-        let file = self.current_file();
+        let file = MapFile { custom: true, ..self.current_file() };
         let target = mapfile::path_for(&file.name).ok_or("Windows doesn't say where APPDATA is")?;
         // Windows doesn't care about upper and lower case in file names – "wild 1" is the file "Wild 1".
         let same = |a: &PathBuf, b: &PathBuf| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy());
@@ -552,14 +552,19 @@ impl Game {
                 Fog::Zombies(&self.zombie_view)
             }
         };
+        let area = self.ui.view_area(world);
+        if !matches!(fog, Fog::Off) {
+            self.fog_picture.paint(world, &fog, area);
+        }
         let view = draw::View {
-            area: self.ui.view_area(world),
+            area,
             editing: self.ui.editor.editing(),
             full_plan: self.ui.settings.always_full_queue
                 || is_key_down(KeyCode::LeftShift)
                 || is_key_down(KeyCode::RightShift),
             always_bars: self.ui.settings.always_health_bars,
             fog,
+            fog_picture: &self.fog_picture,
             looks: &self.looks,
             sprites: &self.sprites,
             spawners: self.ui.spawner_shapes(world, &self.camera),

@@ -3,7 +3,8 @@
 //!   Settings, Quit. In front of a map of the current setup.
 //! - **New game** (the game, like TAB's): pick a map (`data\game_maps.json`), a difficulty (`game_difficulties.json`)
 //!   and how long the round lasts (`game_durations.json`) – the preview shows the map, the score factor what the
-//!   round is worth. "Custom setup" goes on to the setup page with the picked map's values.
+//!   round is worth. "Custom setup" goes on to the setup page with the picked map's values. Or, like TAB's "Custom
+//!   Levels", one of the maps saved in the editor – its round is in its file.
 //! - **Setup page** (the game's "Custom setup", the editor's "New map"): pick a generator, change its values, pick a
 //!   seed, set the round (difficulty, days) – the preview on the right shows the map right away. "Start game" plays
 //!   it, "Open in the editor" edits it.
@@ -23,15 +24,15 @@ use crate::app::{self, Program};
 use crate::data;
 use crate::iso::{iso, TILE_H, TILE_W};
 use crate::keymap::KeyMap;
-use crate::map::{Map, Region};
+use crate::map::Map;
 use crate::mapfile::{self, Entry, MapFile};
 use crate::mapgen::{self, Generator, MapSetup, RoundSetup};
 use crate::menu::settings_page;
 use crate::picture::{Extras, MapPicture};
 use crate::rng::Rng;
 use crate::settings::{self, Settings};
-use crate::sim::{DAY_TICKS, TICKS_PER_SECOND};
-use crate::widgets::{self, button, button_lit, field_slider, pick, text_box, tooltip, type_into, Column, ACCENT, DIM};
+use crate::sim::{spawner_tiles, Axes, DAY_TICKS, TICKS_PER_SECOND};
+use crate::widgets::{self, button, button_lit, field_slider, pick, text_box, tooltip, type_into, Column, ACCENT, DIM, GAP, ROW};
 
 /// What the home screen wants `app.rs` to do.
 pub enum HomeAction {
@@ -76,6 +77,14 @@ pub struct Home {
     delete_armed: Option<(PathBuf, f64)>,
     /// A line for the player (a map that couldn't be loaded, the editor that couldn't be started …).
     pub message: Option<String>,
+    /// New game: the custom levels instead of the game's maps (like TAB's "Custom Levels") – the maps saved in the
+    /// editor (read when the list is opened), how many of them are scrolled past, and the picked one with its file.
+    custom: bool,
+    levels: Vec<Entry>,
+    level_scroll: usize,
+    level: Option<(PathBuf, MapFile)>,
+    /// The edge of the map in the preview right now – the setup's, or the picked level's (`draw_preview`).
+    preview_size: usize,
     /// The page "Key mapping" (`keymap.rs`) – the same as in the Esc menu.
     keymap: KeyMap,
 }
@@ -116,6 +125,11 @@ impl Home {
             scroll: 0,
             delete_armed: None,
             message: None,
+            custom: false,
+            levels: Vec::new(),
+            level_scroll: 0,
+            level: None,
+            preview_size: 0,
             keymap: KeyMap::new(),
         }
     }
@@ -164,22 +178,33 @@ impl Home {
 
     /// Paints the preview anew when something changed – but at most every 0.15 s while a slider is being dragged,
     /// a big map takes up to 30 ms.
+    /// On the new game page with a custom level picked, the preview shows that one – from its file, nothing to generate.
     fn refresh_preview(&mut self) {
         let dragging = is_mouse_button_down(MouseButton::Left);
         if !self.preview_stale || (dragging && get_time() - self.preview_time < 0.15) {
             return;
         }
-        let generated = mapgen::generate(self.seed, &self.setup);
-        let spawners: Vec<Region> = generated.spawners.iter().map(|s| s.region()).collect();
+        let level = self.level.as_ref().filter(|_| self.custom && self.page == Page::NewGame);
+        let (map, spawners) = match level.map(|(_, file)| (file.map(), file.spawner_tiles())) {
+            Some((Ok(map), spawners)) => (map, spawners),
+            // `Some((Err(_), _))`: a level whose map is broken – it can't be started either, the setup's map is shown.
+            _ => {
+                let generated = mapgen::generate(self.seed, &self.setup);
+                // `flat_map`: every spawner gives a list of tiles, one after the other they make one list.
+                let spawners = generated.spawners.iter().flat_map(|s| spawner_tiles(Axes::Screen, s.min, s.size)).collect();
+                (generated.map, spawners)
+            }
+        };
         let extras = Extras { fog: None, spawners: &spawners, base: true, shade_ring: true };
-        self.preview.paint(&generated.map, &extras);
+        self.preview.paint(&map, &extras);
+        self.preview_size = map.size;
         self.preview_stale = false;
         self.preview_time = get_time();
     }
 
     /// The preview of the whole map (turned like on screen, twice as wide as high), as big as fits into `r`.
     fn draw_preview(&self, r: Rect) {
-        let n = self.setup.map_size();
+        let n = self.preview_size.max(1);
         let area = Map::full_area_of(n);
         let size = vec2(n as f32 * TILE_W, n as f32 * TILE_H) / 2.0;
         let scale = (r.w / size.x).min(r.h / size.y);
@@ -285,8 +310,19 @@ impl Home {
         let mut col = Column::boxed("New game", left);
         // `&'static`: the values live as long as the program (`data::get`) – borrowing them doesn't hold up `self`.
         let data = data::get();
+        // Like TAB's new game: the game's maps – or the custom levels, made in the editor.
+        let tabs = col.split(2);
+        if button_lit(tabs[0], "Maps", true, !self.custom) && self.custom {
+            self.custom = false;
+            self.preview_stale = true;
+        }
+        if button_lit(tabs[1], "Custom levels", true, self.custom) && !self.custom {
+            self.open_levels();
+        }
+        if self.custom {
+            return self.levels_page(col, left);
+        }
 
-        col.heading("Map");
         for map in &data.maps.maps {
             let picked = map.name == self.setup.map;
             if pick(col.row(), &map.name, &format!("{} %", map.score_percent), picked) && !picked {
@@ -326,6 +362,105 @@ impl Home {
         if button(start, "Start game", true) {
             save_setup(&self.setup);
             action = HomeAction::Start { seed: self.seed, setup: self.setup.clone() };
+        }
+        draw_rectangle_lines(start.x, start.y, start.w, start.h, 2.0, ACCENT);
+        action
+    }
+
+    /// "Custom levels" on the new game page: the list of maps saved in the editor (newest first) is read anew, the first
+    /// one picked – or the one picked before, if it's still there.
+    fn open_levels(&mut self) {
+        self.custom = true;
+        self.levels = mapfile::list().into_iter().filter(|entry| entry.custom).collect();
+        self.level_scroll = 0;
+        let before = self.level.take().map(|(path, _)| path);
+        let pick = before.filter(|path| self.levels.iter().any(|e| e.path == *path)).or(self.levels.first().map(|e| e.path.clone()));
+        if let Some(path) = pick {
+            self.pick_level(path);
+        }
+        self.preview_stale = true;
+    }
+
+    /// Picks a custom level: its file is read (for the preview and what it says about its round).
+    fn pick_level(&mut self, path: PathBuf) {
+        match MapFile::load(&path) {
+            Ok(file) => self.level = Some((path, file)),
+            Err(e) => {
+                self.level = None;
+                self.message = Some(format!("Couldn't load it: {e}"));
+            }
+        }
+        self.preview_stale = true;
+    }
+
+    /// The new game page with "Custom levels": on the left the levels, on the right the picked one. Its round is in its
+    /// file – days, difficulty, waves, what the colony starts with – so there's nothing else to pick, and no score
+    /// factor: a level made by hand isn't measured against the game's maps.
+    fn levels_page(&mut self, mut col: Column, left: Rect) -> HomeAction {
+        col.heading("Custom levels");
+        if self.levels.is_empty() {
+            col.wrap("None yet. Every map saved in the map editor is a custom level - it shows up here.");
+        }
+        // As many rows as fit into the box, the mouse wheel scrolls the rest.
+        let fit = (((left.bottom() - col.y - 40.0) / (ROW + GAP)) as usize).max(1);
+        let wheel = mouse_wheel().1;
+        if wheel < 0.0 {
+            self.level_scroll = (self.level_scroll + 1).min(self.levels.len().saturating_sub(fit));
+        } else if wheel > 0.0 {
+            self.level_scroll = self.level_scroll.saturating_sub(1);
+        }
+        let mut picked = None;
+        for entry in self.levels.iter().skip(self.level_scroll).take(fit) {
+            let lit = self.level.as_ref().is_some_and(|(path, _)| *path == entry.path);
+            let detail = match entry.days {
+                Some(0) | None => entry.difficulty.clone(),
+                Some(days) => format!("{days} days - {}", entry.difficulty),
+            };
+            if pick(col.row(), &entry.name, &detail, lit) && !lit {
+                picked = Some(entry.path.clone());
+            }
+        }
+        if let Some(path) = picked {
+            self.pick_level(path);
+        }
+        if self.levels.len() > fit {
+            let shown = format!("{} - {} of {} (mouse wheel)", self.level_scroll + 1, (self.level_scroll + fit).min(self.levels.len()), self.levels.len());
+            col.note(&shown);
+        }
+
+        // Right side: the preview, what the level is, the buttons.
+        let h = screen_height();
+        let right = Rect::new(left.right() + 16.0, 16.0, screen_width() - left.right() - 32.0, h - 32.0);
+        self.draw_preview(Rect::new(right.x, right.y, right.w, right.h - 130.0));
+        let level = self.level.as_ref().map(|(_, file)| file);
+        if let Some(file) = level {
+            let difficulty = &data::get().difficulty(&file.round.difficulty).name;
+            let length = match file.round.days {
+                0 => "no set length".to_owned(),
+                days => format!("{days} days ({})", play_time(days)),
+            };
+            draw_text(format!("{} - {difficulty} - {length}", file.name), right.x, right.bottom() - 98.0, 24.0, WHITE);
+            draw_text("Custom level - its round is in the file: days, difficulty, waves, the start.", right.x, right.bottom() - 70.0, 19.0, ACCENT);
+        } else if let Some(message) = &self.message {
+            draw_text(message, right.x, right.bottom() - 70.0, 19.0, ACCENT);
+        }
+        let third = (right.w - 16.0) / 3.0;
+        let row = right.bottom() - 44.0;
+        let mut action = HomeAction::Nothing;
+        if button(Rect::new(right.x, row, third, 40.0), "Back", true) {
+            self.page = Page::Main;
+            self.preview_stale = true;
+        }
+        let path = self.level.as_ref().map(|(path, _)| path.clone());
+        if button(Rect::new(right.x + third + 8.0, row, third, 40.0), "Edit in the editor", path.is_some()) {
+            self.message = path.as_ref().and_then(|path| app::launch_editor(Some(path)).err());
+        }
+        let start = Rect::new(right.x + 2.0 * (third + 8.0), row, third, 40.0);
+        if button(start, "Start game", path.is_some()) {
+            // Played from its own file, like "Custom maps - Play": "Restart" reads it anew.
+            if let Some((path, file)) = self.level.clone() {
+                action = HomeAction::Open { file, path };
+            }
         }
         draw_rectangle_lines(start.x, start.y, start.w, start.h, 2.0, ACCENT);
         action

@@ -5,7 +5,7 @@ use macroquad::math::{vec2, Vec2};
 
 use super::buildings::{Product, Rally, MAX_PRODUCTION};
 use super::commands::Command;
-use super::spawning::{SpawnMode, TimedWave, WaveFrom, NEW_SPAWNER_SIZE};
+use super::spawning::{Axes, BreedCount, SpawnMode, TimedWave, WaveFrom, WaveGroup, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
 use crate::data::{self, ConstantSpecial, Stage};
@@ -15,6 +15,12 @@ use crate::map::{Deposit, Ore, Terrain};
 
 /// How much ore the editor's brush puts on a tile – about the middle of a patch near the base (`mapgen/ores.rs`).
 const PAINTED_ORE: u32 = 1000;
+/// The editor's "Grid" makes the whole map at least and at most this big (`Map::size`, edge in tiles) – room for a
+/// playing field of about 512 × 512, twice TAB's 256 across. Every tile of the grid costs memory and time, also outside
+/// the playing field.
+pub const MAP_SIZES: std::ops::RangeInclusive<usize> = 64..=760;
+/// The editor's zombie brush puts at most this many of each breed on a tile (like TAB: never more than 3).
+pub const MOST_PER_TILE: u32 = 3;
 
 /// The players' orders. They only reach the simulation through the order list of a tick.
 /// Units are named by their `id`, not by their index in the list.
@@ -37,10 +43,15 @@ pub enum Order {
     /// (`#[cfg(test)]`); the editor has `PlaceZombies`.
     #[cfg(test)]
     SpawnZombiesAt { count: usize, point: Vec2 },
-    /// Editor brush: `count` zombies of one breed at random spots within `radius` of `center`, storming the command
+    /// Editor "Drop": `count` zombies of one breed at random spots within `radius` of `center`, storming the command
     /// center or wandering around there.
     PlaceZombies { center: Vec2, radius: f32, count: usize, breed: Breed, wander: bool },
-    /// A wave of `count` zombies from the spawners.
+    /// The editor's zombie brush, like TAB: on each of these tiles so many of each breed (at most `MOST_PER_TILE`) –
+    /// what stands there already counts, painting over a tile again only fills it up. `wander`: asleep and strolling
+    /// like the zombies a new map starts with, otherwise awake and storming the command center. A giant is one tile
+    /// with one giant.
+    PaintZombies { tiles: Vec<(i32, i32)>, per_tile: Vec<(Breed, u32)>, wander: bool },
+    /// A wave of `count` runners from the spawners.
     SpawnWave { count: usize, from: WaveFrom },
     /// A wave onto the timeline, change one (`index` in `World::waves`), take one off.
     AddTimedWave(TimedWave),
@@ -60,8 +71,11 @@ pub enum Order {
     /// Move a spawner or change its size – it always stays on the map and at least 1 × 1.
     ResizeSpawner { spawner: u32, min: (i32, i32), size: (i32, i32) },
     RenameSpawner { spawner: u32, name: String },
+    /// Straight on screen or slanted like the tiles – around the same middle, about as big (`Spawner::turn_to`).
+    SetSpawnerAxes { spawner: u32, axes: Axes },
     /// Constantly / periodically / off. Periodic starts counting from 0 again.
     SetSpawnMode { spawner: u32, mode: SpawnMode },
+    /// Gone – and out of every wave and stage that named it.
     RemoveSpawner { spawner: u32 },
     /// Editor: a house of a village of doom (top left tile, width and depth) with as many zombies inside as the generator
     /// would put there (`World::doom_zombies`). Only inside the world border, on open ground nothing else takes.
@@ -71,6 +85,15 @@ pub enum Order {
     /// Editor eraser: everything on these tiles goes – buildings standing on one of them, houses of doom, units,
     /// zombies, loot, the dead.
     RemoveAt { tiles: Vec<(i32, i32)> },
+    /// Editor (Del): these buildings go, whatever they are – nothing comes back.
+    RemoveBuildings { buildings: Vec<u32> },
+    /// Editor "Grid": the whole map gets this edge length (`Map::size`, even) – it grows or shrinks on every side,
+    /// everything on it stays where it is, new ground is grass (`mapfile::MapFile::resized`).
+    ResizeMap { size: usize },
+    /// Editor (later triggers too): the playing field – the world border – lies here now, in whole steps of the screen
+    /// axes (`Map::set_play_area`). The ground and what stands on it stay; units outside go to the nearest free spot
+    /// inside (`push_out_of_terrain`), buildings outside simply stand outside.
+    SetPlayArea { min: (i32, i32), size: (i32, i32) },
 
     // --- The round (editor) ---
     /// The round lasts this many days (at least 1) – the final waves move to the new last day.
@@ -120,6 +143,9 @@ pub enum Order {
     /// Repair these buildings – each one only if it may be repaired now and the gold is still enough for it
     /// (`start_repair`), in this order.
     Repair { buildings: Vec<u32> },
+    /// Tear these buildings down (Del, like TAB): part of their price comes back (`demolish`). Not the command center,
+    /// not an infected building.
+    Demolish { buildings: Vec<u32> },
     /// Switch these buildings off (`off`) or on again (Y) – only those that can be (`can_switch_off`), not infected
     /// ones. On again only if there are enough free workers for it, in this order.
     SwitchOff { buildings: Vec<u32>, off: bool },
@@ -159,8 +185,8 @@ impl World {
                 self.score.units_dismissed += (before - self.units.len()) as u32;
             }
             Order::SpawnZombies { count } => {
-                let all: Vec<usize> = (0..self.spawners.len()).collect();
-                self.spawn_from(&all, *count, Breed::Runner, false, 0);
+                let all: Vec<(usize, u32)> = (0..self.spawners.len()).map(|s| (s, 0)).collect();
+                self.spawn_from(&all, *count, Breed::Runner, false);
             }
             #[cfg(test)]
             Order::SpawnZombiesAt { count, point } => self.spawn_cluster(*count, *point),
@@ -178,11 +204,14 @@ impl World {
                     }
                 }
             }
-            Order::SpawnWave { count, from } => self.send_wave(*count, *from, Breed::Runner, false),
-            Order::AddTimedWave(wave) => self.waves.push(*wave),
+            Order::SpawnWave { count, from } => {
+                let group = WaveGroup { from: from.clone(), breeds: vec![BreedCount { count: *count as u32, breed: Breed::Runner }] };
+                self.send_group(&group, false);
+            }
+            Order::AddTimedWave(wave) => self.waves.push(wave.clone()),
             Order::SetTimedWave { index, wave } => {
                 if let Some(w) = self.waves.get_mut(*index) {
-                    *w = *wave;
+                    *w = wave.clone();
                 }
             }
             Order::RemoveTimedWave { index } => {
@@ -218,7 +247,7 @@ impl World {
                 let half = NEW_SPAWNER_SIZE / 2;
                 let name = format!("Spawner {}", self.next_spawner_id + 1);
                 let (min, size) = ((center.0 - half, center.1 - half), (NEW_SPAWNER_SIZE, NEW_SPAWNER_SIZE));
-                self.add_spawner(name, min, size, SpawnMode::Constant);
+                self.add_spawner(0, name, min, size, Axes::Screen, SpawnMode::Constant);
             }
             Order::ResizeSpawner { spawner, min, size } => {
                 if let Some(s) = self.find_spawner(*spawner) {
@@ -239,7 +268,16 @@ impl World {
                     self.spawners[s].timer = 0;
                 }
             }
-            Order::RemoveSpawner { spawner } => self.spawners.retain(|s| s.id != *spawner),
+            Order::SetSpawnerAxes { spawner, axes } => {
+                if let Some(s) = self.find_spawner(*spawner) {
+                    self.spawners[s].turn_to(*axes);
+                    self.keep_spawner_on_map(s);
+                }
+            }
+            Order::RemoveSpawner { spawner } => {
+                self.spawners.retain(|s| s.id != *spawner);
+                self.forget_spawner(*spawner);
+            }
             Order::PlaceDoom { tile, size } => {
                 let free = (tile.1..tile.1 + size.1)
                     .all(|y| (tile.0..tile.0 + size.0).all(|x| self.map.in_play(x, y) && !self.map.is_solid(x, y) && !self.map.is_built(x, y)));
@@ -257,6 +295,17 @@ impl World {
                 }
             }
             Order::RemoveAt { tiles } => self.remove_at(tiles),
+            Order::RemoveBuildings { buildings } => {
+                for &id in buildings {
+                    self.take_down(id);
+                }
+            }
+            Order::ResizeMap { size } => self.resize(*size),
+            Order::SetPlayArea { min, size } => {
+                self.map.set_play_area(*min, *size);
+                self.map_changed = true;
+            }
+            Order::PaintZombies { tiles, per_tile, wander } => self.paint_zombies(tiles, per_tile, *wander),
             Order::SetDays { days } => self.set_days(*days),
             Order::SetGold { gold } => {
                 self.gold = *gold;
@@ -264,12 +313,12 @@ impl World {
             }
             Order::SetWood { wood } => self.stock.set(Resource::Wood, *wood),
             Order::AddStage(stage) => {
-                self.constant.stages.push(*stage);
+                self.constant.stages.push(stage.clone());
                 self.constant_spawn_changed();
             }
             Order::SetStage { index, stage } => {
                 if let Some(s) = self.constant.stages.get_mut(*index) {
-                    *s = *stage;
+                    *s = stage.clone();
                     self.constant_spawn_changed();
                 }
             }
@@ -375,6 +424,11 @@ impl World {
                     }
                 }
             }
+            Order::Demolish { buildings } => {
+                for &id in buildings {
+                    self.demolish(id);
+                }
+            }
             Order::SwitchOff { buildings, off } => {
                 for &id in buildings {
                     if let Some(b) = self.find_building(id) {
@@ -443,5 +497,61 @@ impl World {
         self.sleep.remove(on);
         self.loot.retain(|l| !on(l.pos));
         self.corpses.retain(|c| !on(c.pos));
+    }
+
+    /// The zombie brush (`Order::PaintZombies`). Who stands on a painted tile already is counted first – awake or asleep
+    /// – so a tile never gets more than it should have of a breed. Then the rest, each at a random spot of its tile, not
+    /// quite at its edge (like `scatter_roamers`). Tiles that are blocked (water, a building) or off the map get none.
+    fn paint_zombies(&mut self, tiles: &[(i32, i32)], per_tile: &[(Breed, u32)], wander: bool) {
+        let n = self.map.size as i32;
+        let tiles: Vec<(i32, i32)> = tiles.iter().copied().filter(|&(x, y)| !self.map.is_blocked(x, y)).collect();
+        // Per tile of the map: its place in `tiles` plus 1 – 0 for one that isn't painted. A list, no `HashMap`:
+        // nothing in the simulation may depend on the order of one (DESIGN.md 12.8).
+        let mut slot = vec![0usize; (n * n) as usize];
+        for (k, &(x, y)) in tiles.iter().enumerate() {
+            slot[(y * n + x) as usize] = k + 1;
+        }
+        // How many of each breed of `per_tile` stand on every painted tile already.
+        let mut there = vec![vec![0u32; per_tile.len()]; tiles.len()];
+        let standing = self.zombies.iter().map(|z| (z.pos, z.breed)).chain(self.sleep.iter().map(|s| (s.pos, s.breed)));
+        for (pos, breed) in standing {
+            let (x, y) = (pos.x.floor() as i32, pos.y.floor() as i32);
+            if x < 0 || y < 0 || x >= n || y >= n {
+                continue;
+            }
+            let k = slot[(y * n + x) as usize];
+            if let (true, Some(b)) = (k > 0, per_tile.iter().position(|&(other, _)| other == breed)) {
+                there[k - 1][b] += 1;
+            }
+        }
+        for (k, &(x, y)) in tiles.iter().enumerate() {
+            for (b, &(breed, wanted)) in per_tile.iter().enumerate() {
+                for _ in there[k][b]..wanted.min(MOST_PER_TILE) {
+                    let pos = vec2(x as f32 + 0.15 + 0.7 * self.rng.unit_f32(), y as f32 + 0.15 + 0.7 * self.rng.unit_f32());
+                    if wander {
+                        self.lay_to_sleep(pos, breed);
+                    } else {
+                        self.spawn_zombie_as(pos, breed, false);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The editor's "Grid" (`Order::ResizeMap`): the map gets an edge of `size` tiles (even, within `MAP_SIZES`).
+    /// Done through the map file – as if it were saved, made bigger or smaller there (`MapFile::resized`) and loaded
+    /// again: everything a map is (terrain, buildings, zombies, spawners …) is in it, and loading builds everything that
+    /// depends on the size anew (ways, sight, the zombies' grid). Like loading, the spawners and units get new numbers.
+    /// `sim` uses `mapfile` here, the other way round than usual – Rust doesn't mind modules that use each other.
+    fn resize(&mut self, size: usize) {
+        let size = size.clamp(*MAP_SIZES.start(), *MAP_SIZES.end()) / 2 * 2;
+        if size == self.map.size {
+            return;
+        }
+        let file = crate::mapfile::MapFile::from_world(self, "").resized(size);
+        // It can't fail – `from_world` writes what `to_world` reads; if it ever did, the map stays as it is.
+        if let Ok(world) = file.to_world() {
+            *self = world;
+        }
     }
 }

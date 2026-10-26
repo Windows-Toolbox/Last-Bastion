@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 /// 16 pixels up and down; a straight distance of 16 / √2 ≈ 11 tiles). How big the playing field is, is chosen per
 /// map – `mapgen::Common::size`.
 pub const BORDER: usize = 16;
+/// The playing field is at least this many steps of the screen axes across and down (`Map::set_play_area`).
+pub const MIN_PLAY: i32 = 8;
 
 // What a tile is like, as bits of one byte (`Map::flags`): one look into memory answers "can a zombie go here?",
 // "can a unit go here?", "can you see through it?". The terrain bits are worked out from `terrain` and kept in step
@@ -175,7 +177,8 @@ impl Region {
         [min, vec2(max.x, min.y), max, vec2(min.x, max.y)].map(from_frame)
     }
 
-    /// The middle, as a world point.
+    /// The middle, as a world point. Only the tests still need it (`cfg(test)`: only built for them).
+    #[cfg(test)]
     pub fn center(&self) -> Vec2 {
         from_frame((self.min + self.max) / 2.0)
     }
@@ -233,8 +236,11 @@ impl Region {
 #[derive(Clone)]
 pub struct Map {
     pub size: usize,
-    /// Width of the ring outside the world border.
+    /// Width of the ring outside the world border a new map gets – where its playing field lies until it's moved.
     pub border: usize,
+    /// The playing field inside the world border: a straight rectangle on screen, anywhere on the map (`set_play_area`)
+    /// – like SC2's map bounds inside its map size. A new map has it in the middle, `border` steps inside the edge.
+    play: Region,
     /// One row after the other: tile (x, y) is at index y * size + x.
     terrain: Vec<Terrain>,
     /// Per tile the bits from the top of the file (`SOLID`, `BUILT`, `DOOR` …), in the same order as `terrain`.
@@ -251,13 +257,43 @@ impl Map {
     /// A map from finished terrain (`mapgen` makes it, or a saved map file): `size` × `size` tiles, row by row.
     pub fn from_terrain(size: usize, border: usize, terrain: Vec<Terrain>) -> Map {
         assert_eq!(terrain.len(), size * size, "terrain doesn't fit the size");
-        let mut map = Map { size, border, terrain, flags: vec![0; size * size], revision: 0, deposits: vec![None; size * size] };
+        let play = Map::play_area_of(size, border);
+        let mut map = Map { size, border, play, terrain, flags: vec![0; size * size], revision: 0, deposits: vec![None; size * size] };
         for i in 0..size * size {
             let (x, y) = ((i % size) as i32, (i / size) as i32);
             let outside = if map.in_play(x, y) { 0 } else { OUTSIDE };
             map.flags[i] = map.terrain[i].flags() | outside;
         }
         map
+    }
+
+    /// The playing field gets new bounds – `min` (the top left corner on screen) and `size` in whole steps of the
+    /// screen axes, like a straight spawner. Always on the map and at least `MIN_PLAY` steps each way. The world border
+    /// lies there from now on: outside of it is outside (`OUTSIDE` – zombies come from there, units can't go there).
+    /// The ground and whatever stands on it stay as they are.
+    pub fn set_play_area(&mut self, min: (i32, i32), size: (i32, i32)) {
+        // The whole map in the screen axes: across from −size / 2 to size / 2, down from size / 2 to 3 · size / 2.
+        let n = self.size as i32;
+        let (left, top) = (-n / 2, n - n / 2);
+        let (w, h) = (size.0.clamp(MIN_PLAY.min(n), n), size.1.clamp(MIN_PLAY.min(n), n));
+        let min = (min.0.clamp(left, left + n - w), min.1.clamp(top, top + n - h));
+        let corner = vec2(min.0 as f32, min.1 as f32);
+        self.play = Region { min: corner, max: corner + vec2(w as f32, h as f32) };
+        for i in 0..self.size * self.size {
+            let (x, y) = ((i % self.size) as i32, (i / self.size) as i32);
+            if self.play.contains_tile(x, y) {
+                self.flags[i] &= !OUTSIDE;
+            } else {
+                self.flags[i] |= OUTSIDE;
+            }
+        }
+        self.revision += 1;
+    }
+
+    /// The playing field in whole steps of the screen axes: top left corner and size (`set_play_area`).
+    pub fn play_steps(&self) -> ((i32, i32), (i32, i32)) {
+        let (min, size) = (self.play.min.round(), (self.play.max - self.play.min).round());
+        ((min.x as i32, min.y as i32), (size.x as i32, size.y as i32))
     }
 
     /// Only grass – for tests.
@@ -274,7 +310,7 @@ impl Map {
 
     /// The playing field inside the world border.
     pub fn play_area(&self) -> Region {
-        Map::play_area_of(self.size, self.border)
+        self.play
     }
 
     /// The whole map, including the ring outside the border – the diamond touching the edges of the grid.
@@ -282,7 +318,7 @@ impl Map {
         Map::full_area_of(self.size)
     }
 
-    /// `play_area` of a map that doesn't exist yet (`mapgen`).
+    /// Where the playing field of a new map lies (`mapgen`): in the middle, `border` steps inside the edge.
     pub fn play_area_of(size: usize, border: usize) -> Region {
         Region::around(Vec2::splat(size as f32 / 2.0), (size as f32 / 2.0 - border as f32).max(0.0))
     }

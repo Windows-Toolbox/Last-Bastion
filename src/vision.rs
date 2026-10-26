@@ -25,6 +25,11 @@ impl Vision {
         Vision { size, visible: vec![false; size * size], explored: vec![false; size * size] }
     }
 
+    /// The edge of the map it was made for.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
     /// Forgets what is visible and looks again from every eye: (position, sight range in tiles).
     pub fn update(&mut self, map: &Map, eyes: impl Iterator<Item = (Vec2, f32)>) {
         self.visible.fill(false);

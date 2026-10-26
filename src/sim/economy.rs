@@ -410,8 +410,7 @@ impl World {
             }
             let food = building.stats().food;
             let fed = food == 0 || self.stock.take(Resource::Food, food);
-            let bonus = self.market_bonus(b);
-            let paid = if fed { self.buildings[b].full_income() * share / 1000 * (100 + bonus) / 100 } else { 0 };
+            let paid = if fed { self.gold_paid(b, share) } else { 0 };
             let building = &mut self.buildings[b];
             building.fed = fed;
             building.paid = paid;
@@ -419,5 +418,21 @@ impl World {
         }
         self.sell_surplus();
         self.pay_upkeep();
+    }
+
+    /// The gold building `b` pays when it's fed: its `gold`, as much of it as the power is enough for (`share`,
+    /// thousandths) – a house around a market more (`market_bonus`).
+    fn gold_paid(&self, b: usize, share: u32) -> u32 {
+        self.buildings[b].full_income() * share / 1000 * (100 + self.market_bonus(b)) / 100
+    }
+
+    /// When the round starts nobody has paid yet – the HUD (gold of the last payout minus the upkeep) would show only
+    /// the upkeep, as if the command center paid nothing. So every finished building counts with what it will pay at
+    /// the first payout, as if fed.
+    pub(super) fn expect_first_payout(&mut self) {
+        let power = self.power();
+        for b in 0..self.buildings.len() {
+            self.buildings[b].paid = if self.buildings[b].is_built() { self.gold_paid(b, power.share(self, b)) } else { 0 };
+        }
     }
 }

@@ -33,8 +33,8 @@ pub struct MapPicture {
 pub struct Extras<'a> {
     /// Fog of war: unexplored tiles black.
     pub fog: Option<&'a Vision>,
-    /// Spawners – shown in previews.
-    pub spawners: &'a [Region],
+    /// The tiles of the spawners – shown in previews.
+    pub spawners: &'a [(i32, i32)],
     /// Mark the base in the middle (previews).
     pub base: bool,
     /// Darken the ring outside the world border (previews).
@@ -84,12 +84,8 @@ impl MapPicture {
                 self.image.bytes[i..i + 4].copy_from_slice(&rgba(c));
             }
         };
-        for spawner in extras.spawners {
-            for (y, xs) in spawner.rows(0.0) {
-                for x in xs {
-                    dot(x, y, SPAWNER);
-                }
-            }
+        for &(x, y) in extras.spawners {
+            dot(x, y, SPAWNER);
         }
         if extras.base {
             let c = n as i32 / 2;
@@ -115,17 +111,23 @@ impl MapPicture {
     /// Draws the part `area` of the map. `to_screen` turns a world point into a screen point – the four corners of
     /// `area` become the four corners of a rectangle, and that piece of the picture is stretched over it.
     pub fn draw(&self, area: Region, to_screen: impl Fn(Vec2) -> Vec2) {
-        let Some(texture) = &self.texture else {
-            return;
-        };
-        let n = texture.width();
-        let vertices = area.corners()
-            .iter()
-            .map(|&c| {
-                let s = to_screen(c);
-                Vertex::new(s.x, s.y, 0.0, c.x / n, c.y / n, WHITE)
-            })
-            .collect();
-        draw_mesh(&Mesh { vertices, indices: vec![0, 1, 2, 0, 2, 3], texture: Some(texture.clone()) });
+        if let Some(texture) = &self.texture {
+            draw_tiles(texture, area, to_screen);
+        }
     }
+}
+
+/// Stretches a picture of the whole grid (one pixel per tile, `texture`) over the part `area` of the map: its four
+/// corners become the four corners on screen (`to_screen`), the piece of the picture between them lies on top. Two
+/// triangles – also for the fog of war (`draw.rs`).
+pub fn draw_tiles(texture: &Texture2D, area: Region, to_screen: impl Fn(Vec2) -> Vec2) {
+    let n = texture.width();
+    let vertices = area.corners()
+        .iter()
+        .map(|&c| {
+            let s = to_screen(c);
+            Vertex::new(s.x, s.y, 0.0, c.x / n, c.y / n, WHITE)
+        })
+        .collect();
+    draw_mesh(&Mesh { vertices, indices: vec![0, 1, 2, 0, 2, 3], texture: Some(texture.clone()) });
 }

@@ -121,6 +121,8 @@ Dazu für alle:
 | `tower_bonus` | So viel weiter schießen und sehen Einheiten im Turm |
 | `zombie_free_radius` | So viele Kacheln um einen Bauplatz darf kein Zombie stehen |
 | `replace_refund_percent` | Wird ein Gebäude überbaut (Tor auf Mauern), kommt so viel Prozent seines Preises zurück. Unter 100 bleiben, sonst wären „erst Mauern, dann Tor“ billiger als das Tor |
+| `demolish_refund_percent` | **Abreißen** (Entf): so viel Prozent des Preises kommen zurück – Gold, Holz, Stein, Kohle, Eisen, abgerundet (25 = ein kleiner Teil; 0 = wie TAB) |
+| `demolish_unfinished_refund_percent` | … eines Gebäudes, das **noch gebaut wird** (falsch gesetzt? fast alles zurück) |
 | `repair_seconds` | So viele Sekunden dauert eine volle Reparatur – eine kleinere entsprechend kürzer |
 | `build_start_percent` | Ein Gebäude im Bau fängt mit so viel Prozent seiner HP an und wächst bis voll; den Schild hat es erst fertig. Ein Treffer im Bau bleibt (später reparieren) |
 | `trap_every_seconds` | So oft treffen Fallen die Zombies auf ihnen |
@@ -248,7 +250,8 @@ oder direkt in der Kartendatei. Hier steht also nur, womit neue Karten anfangen.
 Nachschub aus den Spawnern, die auf „Constant“ stehen (neue Karten: alle). Getötete Zombies kommen **nie** wieder –
 was du freiräumst, bleibt frei, bis neue nachkommen.
 
-`stages` ist eine Liste von Abschnitten, **nach Zeit sortiert**. Jeder gilt ab seinem Zeitpunkt bis zum nächsten:
+`stages` ist eine Liste von Abschnitten, **nach Zeit sortiert**. Jeder gilt ab seinem Zeitpunkt bis zum nächsten
+(`spawners` gibt es nur in der Kartendatei, siehe unten):
 
 | Wert | Bedeutung |
 |---|---|
@@ -262,7 +265,9 @@ was du freiräumst, bleibt frei, bis neue nachkommen.
 - Wechselt die Art, bleiben die Werte bis zum Wechsel gleich.
 - Nach dem **letzten** Abschnitt wird jede Gruppe pro Tag um `extra_per_day` Zombies größer.
 - `specials`: je `day` (ab diesem Tag), `breed` und `share` – so ein Anteil jeder Gruppe ist ab dann diese Art statt der
-  des Abschnitts (per Zufall, nach der Reihe der Liste). Im Editor noch nicht änderbar, nur in der Datei.
+  des Abschnitts (per Zufall, nach der Reihe der Liste) – so hat der konstante Spawn mehrere Arten.
+- In der Kartendatei kann ein Abschnitt `"spawners": [3, 7]` haben (Editor: „From chosen spawners“): dann kommen seine
+  Gruppen nur aus diesen Spawnern (ihre Nummern `id`), egal worauf die stehen.
 - Die Schwierigkeit macht jede Gruppe `constant_spawn_percent` so groß (auch `extra_per_day`) – beim Anlegen der Karte.
 - Dazu kommt die **Unruhe** (`unrest_per_zombie` in `sound.json`): jede Gruppe für immer so viele Zombies mehr.
 - Was gerade kommt, zeigt die Entwickler-Anzeige (**F3**): „Spawn: 4-5 Runners every 60.0 s“.
@@ -276,7 +281,7 @@ Aus der Dauer (`game_durations.json`: wie viele Tage, ab wann und wie oft) wird 
 |---|---|
 | `hour` | Jede Welle kommt zu dieser Stunde |
 | `first`, `last` | Die erste Welle hat so viele Runner, die letzte vor der Schlusswelle so viele – dazwischen gleichmäßig mehr. Die erste Hälfte der Wellen kommt von 1 Seite, die zweite von 2 |
-| `specials` | Arten, die mitkommen: je `breed`, `from` (ab diesem Anteil der Wellen: 0 = erste, 1 = letzte vor der Schlusswelle) und `share` (so viele pro Runner bei der letzten Welle – beim ersten Auftauchen ein Viertel davon). Die ersten Wellen sind also nur Runner. Sie kommen gleichzeitig aus denselben Spawnern wie die Runner |
+| `specials` | Arten, die mitkommen: je `breed`, `from` (ab diesem Anteil der Wellen: 0 = erste, 1 = letzte vor der Schlusswelle) und `share` (so viele pro Runner bei der letzten Welle – beim ersten Auftauchen ein Viertel davon). Die ersten Wellen sind also nur Runner. Sie sind mit den Runnern **eine Gruppe** der Welle – kommen also aus denselben Spawnern |
 | `final_hour` | Die **Schlusswelle** kommt am letzten Tag zu dieser Stunde, von **allen 4 Seiten** … |
 | `final_runners` | … mit so vielen Runnern pro Seite und allen `specials` in vollem Anteil. Sie **ruft alle Zombies der Karte** (auch die in Häusern und um Beute) – die gehören dann zur Schlusswelle – und **deckt die Karte auf** |
 

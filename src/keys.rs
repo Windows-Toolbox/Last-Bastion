@@ -131,6 +131,7 @@ impl Action {
             Card(Button::MakeBarrel) => "Barrel (munitions factory)".to_owned(),
             Card(Button::Sell) => "Selling on/off (market)".to_owned(),
             Card(Button::Switch) => "On/Off (buildings that run)".to_owned(),
+            Card(Button::Demolish) => "Demolish (buildings; editor: remove)".to_owned(),
             Card(button) => button.title().to_owned(),
         }
     }
