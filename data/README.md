@@ -52,7 +52,7 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 | `requires` | Muss erst stehen, damit sie ausgebildet werden kann – Soldat und Scharfschütze: `"MunitionsFactory"`. Weglassen = nichts |
 | `trained_in` | Wo sie ausgebildet wird: `"Barracks"` (weglassen) oder `"Inn"` (die Söldner) |
 | `mercenary` | `true` = Söldner: bei Schulden geht er zuerst, schon ab Stufe 2 (`colony.json`), und trägt eine goldene Marke. Weglassen = `false` |
-| `noise` | **Lärm pro Schuss** wie in TAB (Ranger 1, Soldat 3, Scharfschütze 10). Er sammelt sich dort, wo geschossen wird – ein langer Kampf wird immer lauter (siehe `sound.json`) |
+| `noise` | **Lärm pro Schuss** wie in TAB (Ranger 1, Soldat 3, Scharfschütze 10). Er sammelt sich dort, wo geschossen wird, und halbiert sich jede Sekunde – ein langer Kampf pendelt sich ein (siehe `sound.json`) |
 | `heals` | `true` = schießt nicht, sondern richtet den Strahl auf eigene Einheiten (Medic) … |
 | `heal_per_second` | … und heilt so viele HP pro Sekunde … |
 | `heal_after_seconds` | … aber nur eine Einheit, die so lange nicht getroffen wurde – kein Heilen mitten im Kampf (nicht wie SC2) |
@@ -139,7 +139,7 @@ etwas kleiner – wie viele: `giants` der Karte), je mit:
 | Wert | Bedeutung |
 |---|---|
 | `name` | Name im Spiel. In Karten- und Datendateien heißt die Art weiter wie ihr Block (`"Armored"`) – ein neuer Name ist also nur diese Zeile |
-| `alertness` | **Wachsamkeit** wie in TAB: kommt bei Lärm ab `threshold` (in `sound.json`) / `alertness` (Walker 2 → 500, Runner, Fat, Riot, Infested 3 → 333, Spitter 4 → 250) |
+| `awareness` | **Wachsamkeit** wie TABs `ActivityAwarenessFactor`: Wie sicher er bei Lärm kommt, wächst damit (Formel bei `sound.json`). Walker 2, Runner, Fat, Riot, Infested 3, Spitter 4, Harpyie 8 |
 | `speed` | Laufgeschwindigkeit (jeder Zombie bekommt zufällig ±20 %) |
 | `hp` | Lebenspunkte |
 | `armor` | Wird von jedem Schuss abgezogen (mindestens 1 Schaden kommt immer durch) |
@@ -153,7 +153,7 @@ etwas kleiner – wie viele: `giants` der Karte), je mit:
 | `projectile_speed` | Sein Schuss fliegt so viele Kacheln pro Sekunde und landet, wo das Ziel stand – wer rechtzeitig weggeht, wird nicht getroffen (Spitter). Weglassen = trifft sofort |
 | `xp` | Erfahrung, wenn er stirbt – geteilt unter deinen Einheiten in der Nähe (`veterans` in `units.json`). Weglassen = 1 |
 | `jump` | Springt über Mauern und Tore bis so viele Kacheln dick, statt sie einzuschlagen – wenn sein Ziel dahinter liegt (Harpyie). Weglassen = 0, springt nie |
-| `hit_noise` | So viel Lärm macht jeder seiner Treffer, wo er steht (holt Zombies, weckt Schlafende; zählt nicht zur Unruhe). Trifft er öfter als der Lärm verklingt (`quiet_seconds` in `sound.json`), wird es immer lauter (Harpyie). Weglassen = `zombie_hit` aus `sound.json` |
+| `hit_noise` | So viel Lärm macht jeder seiner Treffer, wo er steht (holt Zombies, weckt Schlafende; zählt nicht zur Unruhe). Trifft er öfter, als der Lärm sich halbiert (`halve_seconds` in `sound.json`), wird es lauter (Harpyie). Weglassen = `zombie_hit` aus `sound.json` |
 | `sprite` | Nur die Optik: sein Bild in `assets\`, wie bei den Einheiten. Weglassen = Kästchen |
 
 Dazu für alle:
@@ -174,13 +174,22 @@ Dazu für alle:
 
 ## `sound.json` – Lärm
 
-**Lärm** wie in TAB: Er sammelt sich dort, wo etwas passiert (je 4 × 4 Kacheln), solange es weitergeht. Wie laut ein
-Schuss ist: `noise` in `units.json`.
+**Lärm** genau wie in TAB (aus dessen Code): Er sammelt sich dort, wo etwas passiert (je 4 × 4 Kacheln), und jede
+Sekunde halbiert sich jede Zelle. Wie laut ein Schuss ist: `noise` in `units.json`.
+
+**Wer kommt:** Jeder Zombie hört alle `listen_seconds` (jeder zu einem anderen Tick) und nimmt von den lauten Zellen in
+Hörweite die, die er am besten hört: **Lärm × `per_awareness` × `awareness` / Entfernung²** (Kacheln). So viel Prozent
+Chance hat er zu kommen – ab 100 sicher; doppelt so weit weg ein Viertel so sicher. Er geht zur Mitte der Zelle, solange
+es dort laut ist. Ist es dort still, wenn er das nächste Mal hört, vergisst er es und streift von da weiter. Wer gerade
+auf eine Einheit losgeht, zu ihrem letzten Platz läuft oder mit einer Welle kommt, hört nicht hin.
 
 | Wert | Bedeutung |
 |---|---|
-| `threshold`, `hearing` | Ein Zombie kommt bei so viel Lärm geteilt durch seine `alertness` und hört so viel mal seine Sichtweite weit (TAB: 1000 und 4). Weiter weg ist es leiser (am Rand halb so laut); er kommt per Zufall – gerade laut genug jedes zweite Mal, doppelt so laut immer. Er geht **dorthin, wo der Lärm war**, und bleibt da |
-| `quiet_seconds`, `halve_seconds` | Ist es dort so lange still, halbiert sich der Lärm – danach immer wieder nach so vielen Sekunden (TAB: 1 und 1) |
+| `hearing` | Ein Zombie hört so viel mal seine Sichtweite weit, in x und y (TAB: 4) |
+| `per_awareness` | Der Faktor in der Formel oben (TAB: 20) |
+| `halve_seconds` | So oft halbiert sich jede Zelle, ob still oder nicht (TAB: 1) |
+| `listen_seconds` | So oft hört jeder Zombie hin, auch die Schlafenden (TAB: 4) |
+| `places_listen_seconds` | So oft hören die Häuser des Untergangs und die versteckten Wächter der Beute hin (TAB: 1) |
 | `zombie_hit`, `unit_dies`, `building_placed`, `building_destroyed` | So laut: jeder Treffer eines Zombies, eine sterbende Einheit, ein platziertes Gebäude, ein zerstörtes Gebäude |
 | `building_infected`, `per_infected` | Ein infiziertes Gebäude – plus so viel für jeden, der herauskommt. Ein Gebäude mit Arbeitern, das fällt, ist infiziert: die Arbeiter kommen als Zombies heraus (TAB: eine überrannte Jägerhütte weit draußen lockt die Horde) |
 | `work_every_seconds` | So oft macht jedes arbeitende Gebäude seinen Lärm (`noise` in `buildings.json`) – alle im selben Moment, Nachbarn zählen zusammen |
@@ -212,8 +221,8 @@ viele Zombies in einem Haus schlafen: `doom_zombies` der Schwierigkeit – in je
 |---|---|
 | `hp`, `armor` | Lebenspunkte eines Hauses, Rüstung gegen jeden Schuss |
 | `wake_radius`, `near_zombies`, `near_every_seconds` | Steht eine Einheit so nah (Kacheln ab der Wand), kommen nur **ein paar** heraus (so viele) – wieder nach so vielen Sekunden, solange sie bleibt. Sie gehen auf die Einheit los |
-| `hearing`, `hear_threshold` | Hört das Haus **Lärm** so nah, mindestens so laut, … |
-| `release_per_second` | … strömen so viele pro Sekunde heraus, solange der Lärm anhält – und gehen dorthin, wo er war. Abgeschossen: der Rest kommt auf einmal und geht auf den Schützen los |
+| `hearing`, `awareness` | Hört das Haus **Lärm** so nah – so sicher wie ein Zombie mit dieser `awareness` (Formel bei `sound.json`) –, … |
+| `release_per_second` | … strömen so viele pro Sekunde heraus, bis es das nächste Mal hinhört – und gehen zur Mitte der gehörten Zelle. Abgeschossen: der Rest kommt auf einmal und geht auf den Schützen los |
 | `hit_zombies` | Jeder Treffer lässt so viele **zusätzlich** heraus (nicht von den drinnen abgezogen), solange es nicht leer ist |
 | `loot_gold`, `loot_goods` | Ein abgeschossenes Haus lässt Beute fallen: so viel Gold – oder so viel Holz, Stein, Eisenerz oder Kohle |
 
@@ -224,7 +233,7 @@ Schwierigkeit.
 
 | Wert | Bedeutung |
 |---|---|
-| `wake_radius`, `hearing`, `hear_threshold` | Kommt eine Einheit so nah – oder ist Lärm so nah mindestens so laut –, kommen die versteckten Wächter auf einmal aus dem Boden (und gehen auf die Einheit bzw. zum Lärm) |
+| `wake_radius`, `hearing`, `awareness` | Kommt eine Einheit so nah – oder hören sie Lärm so nah, so sicher wie ein Zombie mit dieser `awareness` –, kommen die versteckten Wächter auf einmal aus dem Boden (und gehen auf die Einheit bzw. zum Lärm) |
 | `gold`, `goods`, `gold_share` | Ein Haufen: so viel Gold oder Holz/Stein/Eisenerz/Kohle – Gold in diesem Anteil der Haufen |
 
 ## `colony.json` – Kolonie

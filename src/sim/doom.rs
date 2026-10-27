@@ -37,7 +37,7 @@ pub struct DoomHouse {
     pub hp: u32,
     /// Zombies still inside.
     pub inside: u32,
-    /// Ticks left in which it lets its zombies out – a loud enough sound rouses it (`rouse_houses`), and it stays roused
+    /// Ticks left in which it lets its zombies out – a sound it hears rouses it (`listen_houses`), and it stays roused
     /// as long as the sound goes on.
     pub roused: u32,
     /// Where they go: the sound that roused it, or the last unit that shot it.
@@ -246,7 +246,7 @@ impl World {
             house.release += per_tick;
             let count = (house.release / 1000).min(house.inside);
             house.release %= 1000;
-            let bound = if house.final_call { Bound::Final } else { Bound::To(Lure::new(house.call, doom.hear_threshold, tick)) };
+            let bound = if house.final_call { Bound::Final } else { Bound::To(Lure::sent(house.call, tick)) };
             self.let_out(d, count, bound, false);
         }
 
@@ -279,30 +279,50 @@ impl World {
         }
     }
 
-    /// A sound `level` loud at `at` (`sound.rs`): every house that hears it – within `hearing` tiles, at least
-    /// `hear_threshold` – is roused until the next listening, and its zombies go there.
-    pub(super) fn rouse_houses(&mut self, at: Vec2, level: u32) {
-        let doom = &data::get().doom;
-        if level < doom.hear_threshold {
+    /// Every `places_listen_seconds` each house that still has zombies inside listens – each on the tick its number
+    /// gives it – like a zombie with its `awareness` (TAB's nests, `sound.rs`): heard, it is roused until it listens
+    /// again, and its zombies go to the middle of the cell it heard.
+    pub(super) fn listen_houses(&mut self) {
+        if self.sound.is_quiet() {
             return;
         }
-        for house in self.doom.iter_mut().filter(|d| d.distance_to(at) <= doom.hearing) {
-            house.roused = house.roused.max(super::sound::LISTEN_EVERY as u32 * 2);
-            house.call = at;
+        let doom = &data::get().doom;
+        let every = data::get().sound.places_listen.max(1) as u64;
+        let factor = super::sound::hear_factor(doom.awareness);
+        for d in 0..self.doom.len() {
+            let house = &self.doom[d];
+            if !(self.tick + house.id as u64).is_multiple_of(every) || house.inside == 0 || house.final_call {
+                continue;
+            }
+            let best = self.sound.best(house.center(), doom.hearing, factor);
+            if let Some((c, _)) = best.filter(|&(_, chance)| self.rng.below(100) < chance) {
+                let call = self.sound.middle(c);
+                let house = &mut self.doom[d];
+                house.roused = every as u32;
+                house.call = call;
+            }
         }
     }
 
-    /// The same for the hidden guards of loot: within `hearing`, at least `hear_threshold` – they all come out, and go
-    /// where the sound was.
-    pub(super) fn rouse_guards(&mut self, at: Vec2, level: u32) {
-        let loot = &data::get().loot;
-        if level < loot.hear_threshold {
+    /// The same for the hidden guards of loot, with their `awareness`: heard, they all come out of the ground and go to
+    /// the middle of the cell they heard.
+    pub(super) fn listen_guards(&mut self) {
+        if self.sound.is_quiet() {
             return;
         }
+        let loot = &data::get().loot;
+        let every = data::get().sound.places_listen.max(1) as u64;
+        let factor = super::sound::hear_factor(loot.awareness);
         let tick = self.tick;
         for l in 0..self.loot.len() {
-            if self.loot[l].guards > 0 && self.loot[l].pos.distance(at) <= loot.hearing {
-                self.raise_guards(l, Bound::To(Lure::new(at, level, tick)));
+            let pile = &self.loot[l];
+            if !(tick + pile.id as u64).is_multiple_of(every) || pile.guards == 0 {
+                continue;
+            }
+            let best = self.sound.best(pile.pos, loot.hearing, factor);
+            if let Some((c, _)) = best.filter(|&(_, chance)| self.rng.below(100) < chance) {
+                let to = self.sound.middle(c);
+                self.raise_guards(l, Bound::To(Lure::sent(to, tick)));
             }
         }
     }

@@ -1,7 +1,7 @@
 {
   "wake_radius": 5.0,
   "hearing": 20.0,
-  "hear_threshold": 400,
+  "awareness": 1.5,
   "gold": 500,
   "goods": 10,
   "gold_share": 0.4

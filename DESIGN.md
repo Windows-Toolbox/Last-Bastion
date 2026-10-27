@@ -475,17 +475,23 @@ and stroll further per trip (`stroll` per breed: walker 8 tiles … fat 30) – 
 - → Expanding and fighting make you stronger **and** louder. Quiet tech (wind, solar, dampeners) is a real choice.
 - Noise overlay like Factorio's pollution map (later).
 
-**In the prototype (like TAB, numbers in `data\sound.json`):** noise adds up per cell of 4 × 4 tiles; after
-1 s of quiet it halves every second. Per shot ranger 1, soldier 3, sniper 10 (TAB's values); a zombie hit 1, a building
-placed 40, a unit dying 50, a building destroyed 100, a building infected 100 + 50 per zombie coming out – a building
-with workers that falls is infected (TAB's overrun hunter cottage). Zombies hear 4 × their sight and come at
-1000 / alertness (walker 2, runner/fat/riot/infested 3, spitter 4), by chance – the louder, the surer. Houses of doom
-and loot guards hear it too. Twice a second, `src/sim/sound.rs`; the way to the noise: a small field per place,
-`src/lure.rs`.
+**In the prototype (TAB's rules from its code, numbers in `data\sound.json`):** noise adds up per cell of 4 × 4 tiles;
+every second every cell halves, quiet or not – a fight that goes on settles at about twice what it makes in a second.
+Per shot ranger 1, soldier 3, sniper 10; a zombie hit 1, a building placed 40, a unit dying 50, a building destroyed
+100, a building infected 100 + 50 per zombie coming out – a building with workers that falls is infected (TAB's overrun
+hunter cottage).
+- **Listening:** every 4 s each zombie (each on another tick, sleepers too) takes the loud cell within 4 × its sight
+  (in x and y) it hears best – `noise × 20 × awareness / distance²` (tiles) – and comes with that many percent, 100 and
+  more for sure (awareness: walker 2, runner/fat/riot/infested 3, spitter 4, harpy 8). It goes to the middle of the
+  cell while it's loud there; quiet there at its next listening, it forgets it and strolls on from where it is.
+- Who storms one of your units, heads for where it last saw one or comes with a wave doesn't listen.
+- Houses of doom and loot guards listen every second, with their own awareness (2 and 1.5).
+- `src/sim/sound.rs`; the way to the noise: a small field per place, `src/lure.rs`.
 
 **Machines and unrest (Factorio's pollution as TAB's noise):** every 10 s each working building makes its
 `noise` – hunter 50, sawmill and munitions factory 100, mine and charcoal burner 150, all at once, so neighbours add up
-per cell. One alone lures nobody; a mine field with a burner wakes a village 24 tiles away. Everything the colony makes
+per cell – a short burst that halves away within seconds, so far away it rarely lures anyone, close by it does.
+Everything the colony makes
 (shots, machines, blasts, building – not the zombies' noise) also adds to the **unrest**, which never goes down: every
 50,000 of it, each group of the constant spawn brings one zombie more, for good. Luring the near zombies into the
 walls is fine – the noise brings new ones from the edge; a silenced army stays worth it to the end; tearing the
@@ -542,8 +548,8 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
 - **Falling asleep again:** a stroller that has been calm for **20 s** and is further than sight **+ 16 tiles** from
   every eye falls asleep where it stands (its hit points kept) – and strolls on asleep. Never after the final wave's
   call. Far away nothing costs anything, but the horde keeps moving.
-- **Lured** zombies (a sound, the place they last saw a unit) go there and then stroll from there; **wave** zombies head
-  for the command center. Neither falls asleep while busy.
+- **Lured** zombies go there and then stroll from there: to the place they last saw a unit always, to a sound only
+  while it's loud there (8.3); **wave** zombies head for the command center. Neither falls asleep while busy.
 
 ---
 

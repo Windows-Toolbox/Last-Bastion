@@ -241,20 +241,24 @@ pub struct Roaming {
     pub giants_from: f32,
 }
 
-/// `data\sound.json`: sound like in TAB (`sim/sound.rs`): every event adds noise where it happens; it adds up while it
-/// goes on and fades once it's quiet. A zombie comes when it hears enough of it. The shots of your units: `noise` in `data\units.json`.
+/// `data\sound.json`: sound like in TAB (`sim/sound.rs`): every event adds noise where it happens; it adds up and
+/// halves every second. A zombie comes by chance – the louder and the closer, the surer. The shots of your units:
+/// `noise` in `data\units.json`.
 #[derive(Deserialize)]
 pub struct SoundValues {
-    /// A zombie needs this much noise divided by its `alertness` to come (TAB: 1000 / 2 for the slow ones …).
-    pub threshold: u32,
     /// It hears this many times as far as it sees (TAB: 4).
     pub hearing: f32,
-    /// Once a spot has been quiet this long (read in seconds, kept in ticks) its noise halves …
-    #[serde(rename = "quiet_seconds", deserialize_with = "seconds")]
-    pub quiet: u32,
-    /// … and then again every this long.
+    /// How sure a listener is to come, in percent: noise × this × its `awareness` / distance² (tiles). TAB: 20.
+    pub per_awareness: u32,
+    /// Every this long (read in seconds, kept in ticks) every spot's noise halves (TAB: every second).
     #[serde(rename = "halve_seconds", deserialize_with = "seconds")]
     pub halve: u32,
+    /// Every this long every zombie listens, each on another tick (TAB: 4 s).
+    #[serde(rename = "listen_seconds", deserialize_with = "seconds")]
+    pub listen: u32,
+    /// … and every this long the houses of doom and the guards of loot (TAB's nests: every second).
+    #[serde(rename = "places_listen_seconds", deserialize_with = "seconds")]
+    pub places_listen: u32,
     /// How loud: a zombie hitting a unit or a building, a unit dying, a building placed, a building destroyed …
     pub zombie_hit: u32,
     pub unit_dies: u32,
@@ -291,10 +295,10 @@ pub struct Doom {
     pub near_zombies: u32,
     #[serde(rename = "near_every_seconds", deserialize_with = "seconds")]
     pub near_every: u32,
-    /// A sound at least `hear_threshold` loud within `hearing` tiles rouses it: it lets out `release_per_second`
-    /// zombies while the sound goes on – they go where the sound was.
+    /// It hears sounds within `hearing` tiles, as surely as a zombie with this `awareness` (`sim/sound.rs`). Heard, it
+    /// lets out `release_per_second` zombies until it listens again – they go where the sound was.
     pub hearing: f32,
-    pub hear_threshold: u32,
+    pub awareness: f32,
     pub release_per_second: f32,
     /// Every hit lets out this many more – on top of the ones inside, as long as it isn't empty.
     pub hit_zombies: u32,
@@ -306,11 +310,11 @@ pub struct Doom {
 /// `data\loot.json`: loot lying around, like TAB's: picked up by walking onto it. Zombies lie hidden around it.
 #[derive(Deserialize)]
 pub struct LootValues {
-    /// A unit this close (tiles) – or a sound at least `hear_threshold` loud within `hearing` tiles – and the guards
-    /// come out of the ground.
+    /// A unit this close (tiles) – or a sound within `hearing` tiles, heard as surely as a zombie with this `awareness`
+    /// would (`sim/sound.rs`) – and the guards come out of the ground.
     pub wake_radius: f32,
     pub hearing: f32,
-    pub hear_threshold: u32,
+    pub awareness: f32,
     /// One pile: this much gold – or this much wood, stone, iron ore or coal …
     pub gold: u32,
     pub goods: u32,
@@ -323,9 +327,9 @@ pub struct LootValues {
 pub struct BreedStats {
     /// Shown in the game. Only here – the breed's name in the files (`"Armored"`) stays, so a new name is one line.
     pub name: String,
-    /// How easily it hears a sound: it comes at `threshold` / `alertness` of noise (`SoundValues`). TAB: slow ones 2,
-    /// fast ones and fat ones 3, venoms 4.
-    pub alertness: u32,
+    /// How easily it hears a sound – TAB's `ActivityAwarenessFactor`: how sure it is to come grows with it
+    /// (`per_awareness` of `SoundValues`, `sim/sound.rs`).
+    pub awareness: f32,
     /// Tiles per second.
     pub speed: f32,
     pub hp: u32,

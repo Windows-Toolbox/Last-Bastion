@@ -153,21 +153,40 @@ pub(super) struct Leap {
 #[derive(Clone, Copy)]
 pub(super) struct Lure {
     pub(super) to: Vec2,
-    /// How loud the sound was there – a louder one may draw it elsewhere, a quieter one doesn't. Seen with its own eyes:
-    /// the most.
-    pub(super) loud: u32,
+    pub(super) why: Why,
     /// It gives up at this tick, if it isn't there yet.
     until: u64,
 }
 
+/// Why a zombie goes somewhere – TAB keeps these apart, and they come at different places in its mind.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Why {
+    /// It saw one of your units there. Nothing draws it more: on its way there it doesn't listen.
+    Seen,
+    /// A sound in this cell of the sound grid (`sound.rs`): it goes there as long as it's loud there.
+    Sound(usize),
+    /// Sent there – out of a house of doom, out of the ground around loot: it goes, however quiet it is there.
+    Sent,
+}
+
 impl Lure {
-    pub(super) fn new(to: Vec2, loud: u32, tick: u64) -> Lure {
-        Lure { to, loud, until: tick + (LURE_PATIENCE * TICKS_PER_SECOND) as u64 }
+    fn new(to: Vec2, why: Why, tick: u64) -> Lure {
+        Lure { to, why, until: tick + (LURE_PATIENCE * TICKS_PER_SECOND) as u64 }
     }
 
-    /// Where one of your units was seen – nothing draws a zombie more.
+    /// Where one of your units was seen.
     pub(super) fn seen(to: Vec2, tick: u64) -> Lure {
-        Lure::new(to, u32::MAX, tick)
+        Lure::new(to, Why::Seen, tick)
+    }
+
+    /// The middle `to` of cell `cell` of the sound grid, where it heard a sound.
+    pub(super) fn sound(cell: usize, to: Vec2, tick: u64) -> Lure {
+        Lure::new(to, Why::Sound(cell), tick)
+    }
+
+    /// Sent to `to`.
+    pub(super) fn sent(to: Vec2, tick: u64) -> Lure {
+        Lure::new(to, Why::Sent, tick)
     }
 }
 
@@ -255,7 +274,7 @@ pub(super) struct Wander {
 
 impl Wander {
     /// Strolling, starting by standing where it is.
-    fn new() -> Wander {
+    pub(super) fn new() -> Wander {
         Wander { goal: None, timer: 0 }
     }
 
@@ -727,7 +746,11 @@ impl World {
         } else if self.building_aggro.near(zombie.pos).is_some() {
             "Tearing down a building"
         } else if let Some(lure) = zombie.lure {
-            if lure.loud == u32::MAX { "Going where it last saw your units" } else { "Lured by a sound" }
+            match lure.why {
+                Why::Seen => "Going where it last saw your units",
+                Why::Sound(_) => "Lured by a sound",
+                Why::Sent => "Sent somewhere",
+            }
         } else if zombie.wander.is_some() {
             "Wandering around"
         } else if zombie.siege {

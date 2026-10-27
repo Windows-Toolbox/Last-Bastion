@@ -56,7 +56,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0xcf85_0fa1_cd61_c50a;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0xf8a7_0153_d109_5f9c;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -1491,8 +1491,8 @@ fn zombies_see_as_far_as_their_breed() {
     assert!(world.zombies[1].wander.is_some(), "the walker saw further than 5 tiles");
 }
 
-/// Noise like in TAB adds up: a long fight of eight soldiers (3 per shot) is heard by a walker 12 tiles away – too far
-/// to see them – and it comes to where the noise is. Eight rangers (1 per arrow) are quiet enough: it stays.
+/// Noise like in TAB: a long fight is heard by walkers 12 tiles away – too far to see the squad – and they come by
+/// chance, the louder the surer. Eight soldiers (3 per shot) bring many more of them than eight rangers (1 per arrow).
 #[test]
 fn a_long_loud_fight_is_heard_far_away() {
     let lured = |kind: UnitKind| {
@@ -1505,53 +1505,70 @@ fn a_long_loud_fight_is_heard_far_away() {
         for k in 0..8 {
             world.spawn_unit(kind, p + vec2((k % 4) as f32 * 0.5 - 0.75, (k / 4) as f32 * 0.5 - 0.25));
         }
-        // The targets: in front, standing still and too tough to die. Behind: the wanderer.
+        // The targets: in front, standing still and too tough to die. Behind: the wanderers, in a column 12 tiles away.
         for k in 0..3 {
             world.spawn_zombie_as(p + vec2(4.0, k as f32 - 1.0), Breed::Walker, false);
         }
-        world.spawn_zombie_as(p + vec2(-12.0, 0.0), Breed::Walker, true);
+        for k in 0..WANDERERS {
+            world.spawn_zombie_as(p + vec2(-12.0, (k % 5) as f32 - 2.0), Breed::Walker, true);
+        }
         for z in &mut world.zombies[..3] {
             z.speed = 0.0;
             z.hp = 1_000_000;
         }
-        // By its number: the list is sorted by place now and then (`sort_by_place`).
-        let wanderer = world.zombies[3].id;
+        // By their numbers: the list is sorted by place now and then (`sort_by_place`).
+        let wanderers: Vec<u32> = world.zombies[3..].iter().map(|z| z.id).collect();
+        let mut came = std::collections::BTreeSet::new();
         for _ in 0..600 {
             world.step(&[]);
-            if world.zombies.iter().any(|z| z.id == wanderer && z.lure.is_some()) {
-                return true;
+            for z in world.zombies.iter().filter(|z| wanderers.contains(&z.id) && z.lure.is_some()) {
+                came.insert(z.id);
             }
         }
-        false
+        came.len()
     };
-    assert!(lured(UnitKind::Soldier), "the soldiers' fight wasn't heard 12 tiles away");
-    assert!(!lured(UnitKind::Ranger), "the rangers' arrows were heard 12 tiles away");
+    const WANDERERS: usize = 20;
+    let (soldiers, rangers) = (lured(UnitKind::Soldier), lured(UnitKind::Ranger));
+    assert!(soldiers >= WANDERERS / 3, "only {soldiers} of {WANDERERS} heard the soldiers' fight 12 tiles away");
+    assert!(rangers * 2 <= soldiers, "the rangers' arrows brought {rangers}, the soldiers' shots {soldiers}");
 }
 
-/// The sound grid: noise in the same cell adds up; once it's quiet for `quiet_seconds` it halves, then every
-/// `halve_seconds` again, until it's gone.
+/// The sound grid like TAB's: noise in the same cell adds up, and every `halve_seconds` every cell halves – quiet or
+/// not. A noise that goes on settles at about twice what it makes in that time instead of growing for ever.
 #[test]
-fn noise_adds_up_and_fades() {
+fn noise_adds_up_and_halves_every_second() {
     let (mut world, _) = quiet_world();
-    let sound = &data::get().sound;
+    let halve = data::get().sound.halve as usize;
+    let level = |world: &World| world.loudest_sound().map(|(_, level)| level);
     let at = vec2((world.base.x / 4.0).floor() * 4.0 + 1.0, (world.base.y / 4.0).floor() * 4.0 + 1.0) + vec2(20.0, 20.0);
     world.make_sound(at, 100);
     world.make_sound(at + vec2(1.5, 1.5), 60);
-    assert_eq!(world.loudest_sound().map(|(_, level)| level), Some(160), "it doesn't add up");
-    for _ in 0..sound.quiet {
+    assert_eq!(level(&world), Some(160), "it doesn't add up");
+    let levels: Vec<Option<u32>> = (0..halve * 2).map(|_| {
+        world.step(&[]);
+        level(&world)
+    }).collect();
+    // Halved within one beat, then again exactly one beat later.
+    let first = levels.iter().position(|&l| l == Some(80)).expect("it never halved");
+    assert!(first < halve, "it waited {first} ticks to halve");
+    assert_eq!(levels[first + halve], Some(40), "it didn't halve again a beat later");
+    for _ in 0..halve * 8 {
         world.step(&[]);
     }
-    assert_eq!(world.loudest_sound().map(|(_, level)| level), Some(160), "it got quieter too early");
-    world.step(&[]);
-    assert_eq!(world.loudest_sound().map(|(_, level)| level), Some(80));
-    for _ in 0..sound.halve {
+    assert_eq!(level(&world), None, "it never went quiet");
+
+    // Going on: the same noise every tick settles.
+    let (mut world, _) = quiet_world();
+    let mut loudest = 0;
+    for t in 0..halve * 20 {
+        world.make_sound(at, 10);
         world.step(&[]);
+        if t >= halve * 10 {
+            loudest = loudest.max(level(&world).unwrap_or(0));
+        }
     }
-    assert_eq!(world.loudest_sound().map(|(_, level)| level), Some(40));
-    for _ in 0..sound.halve * 8 {
-        world.step(&[]);
-    }
-    assert_eq!(world.loudest_sound(), None, "it never went quiet");
+    let per_beat = 10 * halve as u32;
+    assert!(loudest > per_beat && loudest <= 2 * per_beat, "a steady noise got to {loudest}, a beat makes {per_beat}");
 }
 
 /// A roamer that saw one of your units – and lost it – goes to where it last saw it and stays there, strolling around.
@@ -3268,13 +3285,13 @@ fn spearmen_push_zombies_back() {
     assert!(stats.noise > zombie_hit && stats.noise < UnitKind::Soldier.stats().noise, "a spear makes {} noise", stats.noise);
 }
 
-/// The harpy (TAB's): it hears further than every other breed – and every hit it lands is loud (`hit_noise`), quicker
-/// than the noise fades, so it adds up the longer it hits. It's the zombies' noise: the colony's unrest stays.
+/// The harpy (TAB's): it hears better than every other breed – and every hit it lands is loud (`hit_noise`), quicker
+/// than the noise halves, so it adds up while it hits. It's the zombies' noise: the colony's unrest stays.
 #[test]
 fn a_harpy_gets_louder_the_longer_it_hits() {
     let harpy = Breed::Harpy;
     for breed in Breed::ALL.into_iter().filter(|&b| b != harpy) {
-        assert!(harpy.threshold() < breed.threshold(), "the {breed:?} hears as well as the harpy");
+        assert!(harpy.hear_factor() > breed.hear_factor(), "the {breed:?} hears as well as the harpy");
     }
     let (mut world, _) = quiet_world();
     world.units.clear();
@@ -3284,14 +3301,16 @@ fn a_harpy_gets_louder_the_longer_it_hits() {
     bait(&mut world, UnitKind::Ranger, p);
     world.spawn_zombie_as(p + vec2(1.0, 0.0), harpy, true);
     let unrest = world.unrest;
-    let loudest = |world: &World| world.loudest_sound().map_or(0, |(_, level)| level);
-    // Four seconds: five hits – had the noise faded between them, it would stay below two hits' worth.
+    let level = |world: &World| world.loudest_sound().map_or(0, |(_, level)| level);
+    // Four seconds of hits: had the noise faded between two of them, it would never get past one hit's worth.
+    let mut loudest = 0;
     for _ in 0..80 {
         world.step(&[]);
+        loudest = loudest.max(level(&world));
     }
     let one = harpy.hit_noise();
     assert!(one > 10 * data::get().sound.zombie_hit, "a harpy's hit is no louder than anybody's");
-    assert!(loudest(&world) >= 4 * one, "it doesn't add up – the loudest is {}, one hit {one}", loudest(&world));
+    assert!(loudest >= 2 * one, "it doesn't add up – the loudest was {loudest}, one hit {one}");
     assert_eq!(world.unrest, unrest, "the harpy's noise counted as the colony's");
 }
 
@@ -3551,8 +3570,9 @@ fn a_unit_close_to_a_village_lets_only_a_few_out() {
     assert_eq!(world.doom[d].inside, inside - 2 * doom.near_zombies, "the unit stayed, but no more came");
 }
 
-/// What really rouses a village is noise (`sound.rs`): a sound loud enough within its `hearing` and its zombies pour
-/// out – `release_per_second` – and go where the sound was. A quieter one does nothing. The guards of loot the same.
+/// What really rouses a village is noise (`sound.rs`): a house listens every `places_listen_seconds` like a zombie
+/// with its `awareness` – heard, its zombies pour out (`release_per_second`) and go to the middle of the cell it heard.
+/// A sound so quiet that the chance is 0 % does nothing. The guards of loot the same.
 #[test]
 fn noise_rouses_a_village_and_its_zombies_go_there() {
     let (mut world, _) = quiet_world();
@@ -3560,22 +3580,23 @@ fn noise_rouses_a_village_and_its_zombies_go_there() {
     let center = world.doom[d].center();
     world.add_loot(center + vec2(-6.0, 6.0), LootKind::Wood, 10, 5);
     let at = center + vec2(-10.0, 0.0);
-    let doom = &data::get().doom;
-    world.make_sound(at, doom.hear_threshold / 2);
-    for _ in 0..20 {
+    let middle = vec2((at.x / 4.0).floor() * 4.0 + 2.0, (at.y / 4.0).floor() * 4.0 + 2.0);
+    let beat = data::get().sound.places_listen as usize;
+    world.make_sound(at, 1);
+    for _ in 0..beat {
         world.step(&[]);
     }
     assert!(world.zombies.is_empty() && world.loot[0].guards == 5, "a quiet sound roused them");
 
-    let loud = data::get().loot.hear_threshold.max(doom.hear_threshold) * 2;
-    world.make_sound(at, loud);
-    for _ in 0..20 {
+    // Loud enough for both to hear it for sure, at every listening until it has halved a few times.
+    world.make_sound(at, 4000);
+    for _ in 0..beat * 2 {
         world.step(&[]);
     }
     assert_eq!(world.loot[0].guards, 0, "the loud sound didn't raise the guards");
     let out = world.zombies.len() as f32 - 5.0;
-    assert!(out >= doom.release_per_second * 0.5, "only {out} came out of the house");
-    assert!(world.zombies.iter().all(|z| z.lure.is_some_and(|l| l.to == at)), "they don't go to the sound");
+    assert!(out >= data::get().doom.release_per_second * 0.5, "only {out} came out of the house");
+    assert!(world.zombies.iter().all(|z| z.lure.is_some_and(|l| l.to == middle)), "they don't go to the sound");
 }
 
 /// Your units shoot a house of doom when no zombie is in range – a sniper even from outside its wake radius. Every hit
@@ -4278,7 +4299,7 @@ fn sleepers_wake_before_your_eyes_get_there() {
     assert_eq!(seen, 0, "{seen} still asleep within the ranger's sight");
 }
 
-/// A sound wakes the sleepers that hear it loud enough – and they go where it was, like the zombies awake.
+/// Sleepers listen like the zombies awake: one that hears a sound wakes and goes to the middle of its cell.
 #[test]
 fn a_loud_sound_wakes_sleepers_and_lures_them() {
     let (mut world, _) = quiet_world();
@@ -4291,15 +4312,16 @@ fn a_loud_sound_wakes_sleepers_and_lures_them() {
         world.step(&[]);
     }
     assert_eq!((world.sleep.len(), world.zombies.len()), (1, 0), "it woke without a reason");
-    // Loud enough for a walker this close, every time – heard at the next listening (twice a second).
+    // Loud enough for a walker this close for sure, even halved a few times – heard when its block's turn comes.
     let noise = p + vec2(5.0, 0.0);
     world.make_sound(noise, 2000);
-    for _ in 0..sound::LISTEN_EVERY {
+    for _ in 0..data::get().sound.listen {
         world.step(&[]);
     }
     assert!(world.sleep.is_empty(), "the sound didn't wake it");
     let zombie = world.zombies.iter().find(|z| z.id > id).expect("it isn't awake");
-    assert_eq!(zombie.lured_to(), Some(noise), "it doesn't go to the sound");
+    let middle = vec2((noise.x / 4.0).floor() * 4.0 + 2.0, (noise.y / 4.0).floor() * 4.0 + 2.0);
+    assert_eq!(zombie.lured_to(), Some(middle), "it doesn't go to the sound");
 }
 
 /// A calm stroller far from all your eyes falls asleep after a while – and wakes again with the hit points it had.

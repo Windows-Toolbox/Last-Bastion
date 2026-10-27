@@ -35,6 +35,7 @@
 | Datei | Was |
 |---|---|
 | `DESIGN.md` | Design-Dokument: Säulen, Runde, Wirtschaft, Einheiten, Zombies, Karte, Technik, Fahrplan, offene Fragen |
+| `docs\tab-nachbau.md` | **TAB-Nachbau:** die nächsten Schritte, je einer pro Unterhaltung – wie TAB es macht (aus dem dekompilierten Code), was entschieden ist, welche Dateien betroffen sind |
 | `Cargo.toml` / `Cargo.lock` | Rust-Projekt und Bibliotheken (`macroquad`, `egui-macroquad`, `serde`/`serde_json`, `libm`, `rayon`) / ihre genauen Versionen |
 | `build.ps1` | Baut beide Programme nach `dist\LastBastion.exe` und `dist\LastBastionEditor.exe` |
 | `data\` | **Alle Spielwerte** als JSON (Einheiten, Gebäude, Zombies, Lärm, Streuner, Villages of Doom, Beute, Kolonie, Spawn, Schwierigkeiten, Spieldauer, Karten) – erklärt in `data\README.md` |
@@ -163,8 +164,9 @@
   schnell, Rüstung 3 – ein Pfeil macht nur 7), **Spitter** (TABs Venom: spuckt Säure 3,5 Kacheln weit, über Mauern;
   sie fliegt kurz und trifft alle im Umkreis von 1 Kachel – wer rechtzeitig weggeht, entkommt), **Infested** (SC2s
   Infested Marine: schießt 4,5 Kacheln, knapp unter dem Soldaten), **Harpyie** (TABs Harpy, gelb: schnell, ihr
-  reicht 2–4× leiserer Lärm als den anderen, sie hört 32 Kacheln weit und kommt zu jedem Kampf als Erste; jeder ihrer Treffer macht Lärm 200, alle 0,75 s –
-  das addiert sich, nach ein paar Sekunden kommt alles in der Nähe – zuerst erschießen! **Springt über Mauern und
+  hört 2–4× sicherer als die anderen und 32 Kacheln weit, kommt zu jedem Kampf als Erste; jeder ihrer Treffer macht
+  Lärm 200, alle 0,75 s – schneller, als er sich halbiert, also wird es laut und alles in der Nähe kommt – zuerst
+  erschießen! **Springt über Mauern und
   Tore** bis 3 Kacheln dick (0,6 s in der Luft), wenn ihr Ziel dahinter liegt; eine dickere Mauer schlägt sie ein),
   **Riese** (wie TAB, etwas kleiner: 3.000 HP, Rüstung 6, 150 Schaden – eine Mauer in 3 Schlägen; nur ein paar pro
   Karte weit draußen – **wie viele, sagt die Karte** (Einstellung „Giants“, Standard 4 auf 256er-Karten, Peaceful
@@ -200,20 +202,25 @@
   liegen Zombies versteckt (Normal 8–50, mehr weiter draußen), die auf 5 Kacheln oder bei Lärm aus dem Boden kommen.
 - Häuser und Beute bleiben auf der Karte sichtbar, sobald man sie einmal gesehen hat, auch auf der Minimap (rot).
 - **Sehen** nur 5–6 Kacheln (nicht durch Wald), **hören** Einheiten 3 Kacheln weit, angeschossen stürmen sie 5 s los.
-- **Lärm wie in TAB** (`data\sound.json`): Er sammelt sich dort, wo etwas passiert – je Schuss Ranger 1,
-  Soldat 3, Scharfschütze 10; jeder Zombie-Treffer 1, ein platziertes Gebäude 40, eine sterbende Einheit 50, ein
-  zerstörtes Gebäude 100, ein **infiziertes** 100 + 50 je Zombie, der herauskommt. Ein langer Kampf wird also immer
-  lauter, eine Gruppe dicht beieinander lauter als verteilt. Nach 1 s Ruhe halbiert er sich jede Sekunde.
+- **Lärm genau wie in TAB** (aus dessen Code, `data\sound.json`): Er sammelt sich dort, wo etwas passiert (je 4 × 4
+  Kacheln) – je Schuss Ranger 1, Soldat 3, Scharfschütze 10; jeder Zombie-Treffer 1, ein platziertes Gebäude 40, eine
+  sterbende Einheit 50, ein zerstörtes Gebäude 100, ein **infiziertes** 100 + 50 je Zombie, der herauskommt. **Jede
+  Sekunde halbiert sich jede Zelle** – ein langer Kampf pendelt sich bei etwa dem Doppelten ein, was er pro Sekunde
+  macht; eine Gruppe dicht beieinander ist lauter als verteilt.
 - **Maschinen sind laut** (wie Factorios Verschmutzung): alle 10 s macht jedes arbeitende Gebäude seinen Lärm, alle
   im selben Moment – Jägerhütte 50, Sägewerk und Munitionsfabrik 100, Mine und Köhlerei 150 (mal Stromanteil; aus,
-  infiziert, Köhlerei ohne Holz: still). **Eins allein lockt niemanden**; Mine + Köhlerei im selben 4 × 4-Feld (300)
-  weckt ein Dorf in 24 Kacheln, ein Industriegebiet lockt Runner von 20 Kacheln weit.
+  infiziert, Köhlerei ohne Holz: still). Ein kurzer Stoß, der sich in Sekunden weghalbiert: weit weg lockt er selten
+  jemanden, nah dran schon – Nachbarn im selben 4 × 4-Feld zählen zusammen.
 - **Unruhe:** aller Lärm der Kolonie (Schüsse, Maschinen, Explosionen, Bauen – nicht der der Zombies) zählt zusammen
   und **sinkt nie**: je 50.000 bringt jede Gruppe des konstanten Spawns **für immer** einen Zombie mehr. Die Fabrik
   vor der Schlusswelle abzureißen, nimmt das nicht zurück. F3 zeigt sie.
-- **Wer kommt:** Zombies hören 4 × ihre Sichtweite weit (Walker 20 Kacheln) und kommen ab 1000 / Wachsamkeit (Walker
-  500, Runner 333, Spitter 250) – per Zufall, je lauter, desto sicherer. Mit F3 sieht man den lautesten Ort.
-- **Gedächtnis:** Ein Zombie geht dorthin, wo der Lärm war oder wo er zuletzt eine Einheit gesehen hat, und bleibt
+- **Wer kommt:** Jeder Zombie hört alle 4 s hin (jeder zu einem anderen Zeitpunkt, Schlafende auch) – 4 × seine
+  Sichtweite weit (Walker 20 Kacheln). Von den lauten Stellen nimmt er die, die er am besten hört: **Lärm × 20 ×
+  Wachsamkeit / Entfernung²** ist seine Chance in Prozent (Wachsamkeit Walker 2, Runner 3, Spitter 4, Harpyie 8) –
+  doppelt so weit weg nur ein Viertel so sicher. Häuser und Beute-Wächter hören jede Sekunde hin. Mit F3 sieht man den
+  lautesten Ort und wie sicher ein Walker in 10 Kacheln käme.
+- **Gedächtnis:** Ein Zombie geht zum Lärm, **solange es dort laut ist** – ist es still, wenn er das nächste Mal
+  hinhört, vergisst er es und bummelt von da weiter. Wo er zuletzt eine Einheit gesehen hat, geht er hin und bleibt
   dort, wenn er nichts findet. Nur Wellen-Zombies laufen danach weiter zum Kommandozentrum. Angeklickt zeigt ein Zombie
   mit einer roten Linie, wohin er will. Auf dem Weg laufen sie um Wasser und Berge, aber **durch Mauern** (einreißen);
   ein paar Angeschossene suchen die Lücke.

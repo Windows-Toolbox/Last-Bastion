@@ -1,8 +1,9 @@
 {
-  "threshold": 1000,
   "hearing": 4.0,
-  "quiet_seconds": 1.0,
+  "per_awareness": 20,
   "halve_seconds": 1.0,
+  "listen_seconds": 4.0,
+  "places_listen_seconds": 1.0,
   "zombie_hit": 1,
   "unit_dies": 50,
   "building_placed": 40,

@@ -5,8 +5,8 @@
 //! They wake – become zombies in the list again, right where they lay – when
 //! 1. one of your eyes comes close (a unit or a building: its sight plus `WAKE_MARGIN` tiles), before it can see them.
 //!    In the picture they fade in (`draw.rs`) instead of popping up at the edge of sight;
-//! 2. a sound is loud enough for one of them – the same rule and the same dice as for the zombies that are awake
-//!    (`sound.rs`). It goes where the sound was;
+//! 2. it hears a sound – it listens like the zombies awake, by the same rule and dice (`sound.rs`), and goes to the
+//!    middle of the cell it heard;
 //! 3. the scan shows their place, or a barrel goes off next to them;
 //! 4. the final wave calls everyone: then all of them, `WAKE_PER_TICK` a tick, the nearest to the base first – they're
 //!    the first to arrive anyway.
@@ -293,34 +293,33 @@ impl World {
         }
     }
 
-    /// A sound `level` loud at `at`: every sleeper that hears it loud enough may wake and come – by the same rule and
-    /// dice as the zombies awake (`lure_to_sound`): just loud enough, every other time; twice as loud, always. Block by
-    /// block, in the order they lay – the same on every PC.
-    pub(super) fn rouse_sleepers(&mut self, at: Vec2, level: u32) {
-        if self.sleep.is_empty() {
+    /// The sleepers listen like the zombies awake (`listen_zombies` in `sound.rs`): every `listen_seconds`, block by
+    /// block – each block on the tick its number gives it. One that comes wakes and goes to the middle of the cell it
+    /// heard best. In the order they lay – the same on every PC.
+    pub(super) fn listen_sleepers(&mut self) {
+        if self.sleep.is_empty() || self.sound.is_quiet() {
             return;
         }
-        let reach = Breed::ALL.iter().map(|b| b.hearing_range()).fold(0.0, f32::max);
-        let blocks: Vec<usize> = self.sleep.blocks_near(at, reach).filter(|&b| !self.sleep.blocks[b].is_empty()).collect();
+        let every = data::get().sound.listen.max(1) as u64;
         let tick = self.tick;
-        for b in blocks {
+        let due: Vec<usize> = (0..self.sleep.blocks.len())
+            .filter(|&b| (tick + b as u64).is_multiple_of(every) && !self.sleep.blocks[b].is_empty())
+            .collect();
+        for b in due {
             let mut stay = Vec::new();
             let mut woken = Vec::new();
             for sleeper in self.sleep.take(b) {
-                let (range, d) = (sleeper.breed.hearing_range(), sleeper.pos.distance(at));
-                let heard = if d <= range { level - (level as f32 * d / (2.0 * range)) as u32 } else { 0 };
-                let threshold = sleeper.breed.threshold();
-                let comes = heard >= threshold && self.rng.unit_f32() < heard as f32 / (2 * threshold.max(1)) as f32;
-                if comes {
-                    woken.push((sleeper, heard));
-                } else {
-                    stay.push(sleeper);
+                let best = self.sound.best(sleeper.pos, sleeper.breed.hearing_range(), sleeper.breed.hear_factor());
+                match best.filter(|&(_, chance)| self.rng.below(100) < chance) {
+                    Some((c, _)) => woken.push((sleeper, c)),
+                    None => stay.push(sleeper),
                 }
             }
             self.sleep.count += stay.len();
             self.sleep.blocks[b] = stay;
-            for (sleeper, heard) in woken {
-                self.wake(sleeper, Waking::Lured(Lure::new(at, heard, tick)));
+            for (sleeper, c) in woken {
+                let lure = Lure::sound(c, self.sound.middle(c), tick);
+                self.wake(sleeper, Waking::Lured(lure));
             }
         }
     }

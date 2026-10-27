@@ -646,7 +646,12 @@ impl Game {
                 world.loot.len()
             ))
             .text(match world.loudest_sound() {
-                Some((at, level)) => format!("Loudest noise {level} at ({:.0}, {:.0}) - a walker comes at {}", at.x, at.y, Breed::Walker.threshold()),
+                Some((at, level)) => format!(
+                    "Loudest noise {level} at ({:.0}, {:.0}) - a walker 10 tiles away comes with {}%",
+                    at.x,
+                    at.y,
+                    Breed::Walker.hears(level, 10).min(100)
+                ),
                 None => "Quiet everywhere".to_owned(),
             })
             .text(format!("Tick {}   speed x{} (+/-)", world.tick, ui.speed))
