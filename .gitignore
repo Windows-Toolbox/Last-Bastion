@@ -28,3 +28,4 @@ desktop.ini
 # --- Claude Code (local only) ---
 CLAUDE.md
 .claude/
+.aider*
