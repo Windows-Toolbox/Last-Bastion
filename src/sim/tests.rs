@@ -4859,3 +4859,88 @@ fn the_owner_can_change_and_back() {
     let back = world.units.iter().find(|u| u.id == unit_id).expect("not back in the colony");
     assert!(back.veteran && back.hp == back.max_hp() * 40 / 100 && back.tag.as_deref() == Some(&tag));
 }
+
+/// The map's story (`story.rs`): the start script runs in the first tick – gold, a message, a counter; a victory goal
+/// on the counter wins the round once a script raised it far enough – and then the victory script runs.
+#[test]
+fn a_story_starts_counts_and_wins() {
+    let mut world = World::new(3);
+    world.events.clear();
+    world.story = Story {
+        on_start: vec![
+            Action::Resources { gold: 500, goods: vec![(Resource::Stone, 7)] },
+            Action::Notify { text: "Hold the line".into() },
+            Action::Counter { name: "keys".into(), add: false, value: 1 },
+        ],
+        on_won: vec![Action::Notify { text: "Well done".into() }],
+        goals: vec![Goal { text: "Find 3 keys".into(), condition: Condition::Counter { name: "keys".into(), at_least: 3 }, defeat: false }],
+        command: Some(CustomCommand { label: "Dig".into(), text: String::new(), script: vec![Action::Counter { name: "keys".into(), add: true, value: 1 }], uses: 2 }),
+        counters: vec![("keys".into(), 0)],
+        on_lost: Vec::new(),
+    };
+    let (gold, stone) = (world.gold, world.stock.get(Resource::Stone));
+    world.step(&[]);
+    assert_eq!((world.gold, world.stock.get(Resource::Stone)), (gold + 500, stone + 7));
+    assert!(world.notices.iter().any(|n| matches!(n, Notice::Message { text } if text == "Hold the line")));
+    assert_eq!((world.counter("keys"), world.goal_progress(0)), (1, 33));
+    // The command center's button, twice – a third time does nothing.
+    world.step(&[Order::CustomCommand]);
+    assert_eq!(world.outcome, None);
+    world.step(&[Order::CustomCommand]);
+    assert!(matches!(world.outcome, Some(Outcome::Won { .. })), "the goal didn't win");
+    assert!(world.notices.iter().any(|n| matches!(n, Notice::Message { text } if text == "Well done")), "no victory script");
+    assert!(!world.command_ready());
+}
+
+/// A choice of a script waits for the player: their pick comes as an order and runs its script. A random action
+/// runs exactly one of its scripts. A defeat goal loses the round.
+#[test]
+fn a_story_lets_the_player_choose() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let gold = |n: i32| vec![Action::Resources { gold: n, goods: Vec::new() }];
+    world.story.on_start = vec![
+        Action::Choose { text: "Pay the raiders?".into(), options: vec![("Pay".into(), gold(-50)), ("Fight".into(), vec![Action::Lose])] },
+        Action::Random { options: vec![(1, gold(1)), (1, gold(2))] },
+    ];
+    world.tick = 0;
+    let before = world.gold;
+    world.step(&[]);
+    let rolled = world.gold - before;
+    assert!(rolled == 1 || rolled == 2, "the random action ran {rolled}");
+    assert_eq!(world.choices.len(), 1);
+    world.step(&[Order::Choose { index: 0 }]);
+    assert!(world.choices.is_empty() && world.gold == before + rolled - 50, "the choice didn't run its script");
+    world.story.goals = vec![Goal { text: "Don't lose 2 units".into(), condition: Condition::Day(1), defeat: true }];
+    world.step(&[]);
+    assert!(matches!(world.outcome, Some(Outcome::Lost { .. })), "the defeat goal didn't lose");
+}
+
+/// An event's script runs every time it comes, its "done" script once when it has come every time. A neutral
+/// thing's script runs when it joins.
+#[test]
+fn events_and_joins_run_their_scripts() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.events.clear();
+    let add = |n: i32| vec![Action::Counter { name: "n".into(), add: true, value: n }];
+    let hour = next_hour(&world);
+    let mut event = Event { every_hours: 1, times: 2, ..one_group(hour, WaveFrom::Sides(1), &[(Breed::Walker, 1)]) };
+    (event.script, event.script_done) = (add(1), add(100));
+    world.step(&[Order::AddEvent(event)]);
+    for _ in 0..3 * HOUR_TICKS {
+        world.step(&[]);
+    }
+    assert_eq!(world.counter("n"), 102);
+
+    let p = world.base + vec2(10.5, 0.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 3);
+    world.add_neutral(Thing::Unit { kind: UnitKind::Soldier, pos: (p.x, p.y) }, true, 100, false, None);
+    let id = world.neutral[0].id;
+    world.step(&[Order::SetJoinScript { neutral: id, script: add(1000) }]);
+    bait(&mut world, UnitKind::Ranger, p + vec2(0.0, 1.0));
+    for _ in 0..20 {
+        world.step(&[]);
+    }
+    assert!(world.neutral.is_empty() && world.counter("n") == 1102, "the join script didn't run");
+}

@@ -1,7 +1,9 @@
 //! The round as a whole (DESIGN.md 4): how it ends – lost when the last command center falls, won like TAB when its
-//! victory event comes, or when the final wave is dead (`check_outcome`) – and what happened in it along the way
-//! (`Score`, for the end screen). Its events are in `events.rs`.
+//! victory event comes, or when the final wave is dead – or as the story says: its goals, a script that wins or loses
+//! (`check_outcome`, `story.rs`) – and what happened in it along the way (`Score`, for the end screen). Its events are
+//! in `events.rs`.
 
+use super::story::Ending;
 use super::zombies::Zombie;
 use super::World;
 use crate::kinds::BuildingKind;
@@ -53,12 +55,17 @@ impl World {
             return;
         }
         let tick = self.tick;
-        if command_center_fell && !self.buildings.iter().any(|b| b.kind == BuildingKind::CommandCenter) {
-            self.outcome = Some(Outcome::Lost { tick });
+        let goals = 0..self.story.goals.len();
+        let lost_goal = goals.clone().any(|g| self.story.goals[g].defeat && self.goal_reached(g));
+        let fell = command_center_fell && !self.buildings.iter().any(|b| b.kind == BuildingKind::CommandCenter);
+        if fell || lost_goal || self.ending == Some(Ending::Lost) {
+            self.decide(Outcome::Lost { tick });
             return;
         }
-        if self.events.iter().any(|e| e.won && e.state.fired > 0) {
-            self.outcome = Some(Outcome::Won { tick });
+        let mut victories = goals.filter(|&g| !self.story.goals[g].defeat).peekable();
+        let goals_won = victories.peek().is_some() && victories.all(|g| self.goal_reached(g));
+        if self.ending == Some(Ending::Won) || goals_won || self.events.iter().any(|e| e.won && e.state.fired > 0) {
+            self.decide(Outcome::Won { tick });
             return;
         }
         let mut finals = self.events.iter().filter(|e| e.won_when_dead).peekable();
@@ -68,8 +75,18 @@ impl World {
         let coming = |z: &&Zombie| z.final_wave && self.to_base.reachable(z.pos.x.floor() as i32, z.pos.y.floor() as i32);
         // Sleepers still waking to join the final wave (`sleep.rs`) count as coming too.
         if all_came && !self.final_wave_pending() && !self.zombies.iter().any(|z| coming(&z)) && !self.sleep.still_waking() {
-            self.outcome = Some(Outcome::Won { tick });
+            self.decide(Outcome::Won { tick });
         }
+    }
+
+    /// The round ends like this – and the story's script for it runs (TAB's "On Game Won" / "On Game Lost").
+    fn decide(&mut self, outcome: Outcome) {
+        self.outcome = Some(outcome);
+        let script = match outcome {
+            Outcome::Won { .. } => self.story.on_won.clone(),
+            Outcome::Lost { .. } => self.story.on_lost.clone(),
+        };
+        self.run(&script);
     }
 
     /// The round lasts `days` days (at least 1) – the events that win the round move to the end of the new last day.

@@ -107,6 +107,8 @@ pub enum Button {
     /// Every building but the command center: tear the selected ones down, part of the price comes back (Del, like
     /// TAB). In the editor: remove them, the command center too.
     Demolish,
+    /// Command center: the map's own button (TAB's custom command, `sim/story.rs`) – only on maps that have one.
+    Custom,
 }
 
 /// The build menus of the command center – the keys on the left of the keyboard, like TAB's build categories.
@@ -272,7 +274,8 @@ pub fn all_cards() -> Vec<Vec<Button>> {
     for buttons in [&BARRACKS_BUTTONS[..], &INN_BUTTONS, &MUNITIONS_BUTTONS, &MARKET_BUTTONS, &TOWER_BUTTONS, &REPAIR_BUTTONS] {
         cards.push([buttons, &[Button::Switch, Button::Demolish]].concat());
     }
-    // The command center's card in the editor (`Ui::card`).
+    // The command center's card with the map's own button, and in the editor (`Ui::card`).
+    cards.push([COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Custom]].concat());
     cards.push([COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Demolish]].concat());
     cards
 }
@@ -330,6 +333,7 @@ impl Button {
             Button::Repair => "Repair",
             Button::Switch => "On/Off",
             Button::Demolish => "Demolish",
+            Button::Custom => "Command",
         }
     }
 
@@ -358,6 +362,7 @@ impl Button {
             Button::Drop => KeyCode::D,
             // Not a letter: sending units away or tearing buildings down shouldn't happen by a slip of the finger.
             Button::Dismiss | Button::Demolish => KeyCode::Delete,
+            Button::Custom => KeyCode::V,
             _ => GRID_KEYS[self.slot()],
         }
     }
@@ -383,6 +388,7 @@ impl Button {
             Button::FormBox => 11,
             Button::FormCircle => 12,
             Button::Back | Button::Dismiss | Button::Demolish => 14,
+            Button::Custom => 13,
         }
     }
 
@@ -433,6 +439,7 @@ impl Button {
 
     fn help(self) -> &'static str {
         match self {
+            Button::Custom => "The map's own command (its story) - what it does, the map says.",
             Button::Move => "Walk there without shooting. Drag: in formation. On a unit: follow it.",
             Button::Stop => "Cancel all commands.",
             Button::Hold => "Stand still and only shoot what comes into range.",
@@ -1523,7 +1530,12 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
         } else if matches!(button, Button::Open(_)) {
             draw_right(">", r.right() - 4.0, r.y + 15.0, 16.0, BRASS);
         }
-        draw_fitted(button.name(), r.x + r.w / 2.0, r.y + r.h - 9.0, r.w - 6.0, 15.0, text);
+        // The map's own button carries the map's name for it, and goes dim once it can't be pressed any more.
+        let (name, text) = match (button, &world.story.command) {
+            (Button::Custom, Some(command)) => (command.label.as_str(), if world.command_ready() { text } else { DIM }),
+            _ => (button.name(), text),
+        };
+        draw_fitted(name, r.x + r.w / 2.0, r.y + r.h - 9.0, r.w - 6.0, 15.0, text);
     }
 
     // Tooltip above the command card, like in StarCraft – with the price.
@@ -1538,9 +1550,17 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
             (None, Button::Planned(_)) => format!("{} ({}) - planned, not in the game yet", button.title(), key),
             (None, Button::Demolish) if ui.editor.editing() && !ui.editor.testing() => format!("Remove ({key}) - nothing comes back"),
             (None, Button::Demolish) => format!("{} ({}) - {}", button.title(), key, refund_text(world, &ui.selected_building_indices(world))),
+            (None, Button::Custom) => {
+                let label = world.story.command.as_ref().map_or("", |c| c.label.as_str());
+                format!("{label} ({key})")
+            }
             (None, _) => format!("{} ({})", button.title(), key),
         };
-        draw_tooltip(&[&title, button.help()], layout.card.x, layout.panel.y - 4.0);
+        let help = match (button, &world.story.command) {
+            (Button::Custom, Some(command)) if !command.text.is_empty() => command.text.as_str(),
+            _ => button.help(),
+        };
+        draw_tooltip(&[&title, help], layout.card.x, layout.panel.y - 4.0);
     }
 }
 
@@ -1836,6 +1856,27 @@ pub fn draw_wrapped(text: &str, x: f32, y: f32, max_w: f32, size: f32, max_lines
     }
 }
 
+/// The map's goals (its story, `sim/story.rs`) in the top left corner, like TAB's mission goals: each with how far along
+/// it is – a tick once reached. Defeat goals in red.
+pub fn draw_goals(world: &World) {
+    let goals = &world.story.goals;
+    if goals.is_empty() {
+        return;
+    }
+    let (x, mut y) = (12.0, 64.0);
+    let w = 340.0;
+    draw_rectangle(x - 6.0, y - 18.0, w, 22.0 * goals.len() as f32 + 26.0, Color::new(0.0, 0.0, 0.0, 0.55));
+    draw_text("Goals", x, y, 18.0, BRASS);
+    for (g, goal) in goals.iter().enumerate() {
+        y += 22.0;
+        let progress = world.goal_progress(g);
+        let mark = if progress >= 100 { "[x]" } else { "[ ]" };
+        let color = if goal.defeat { TOO_DEAR } else if progress >= 100 { GREEN } else { WHITE };
+        let line = if progress >= 100 || progress == 0 { format!("{mark} {}", goal.text) } else { format!("{mark} {} - {progress} %", goal.text) };
+        draw_fitted_left(&line, x, y, w - 12.0, 16.0, color);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1860,3 +1901,4 @@ mod tests {
         }
     }
 }
+

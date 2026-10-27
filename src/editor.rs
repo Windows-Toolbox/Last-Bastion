@@ -8,6 +8,8 @@
 //!   "Info") – and where the playing field lies in the whole map (SC2's map bounds and map size).
 //! - **Terrain** – paint mountains, forest, water, erase, ore (TAB's painter).
 //! - **Entities** – units, buildings (without the rules of the game), zombies, spawners, the eraser.
+//! - **Story** – TAB's "Game Narrative": scripts at the start, victory and defeat, goals, the command center's own
+//!   button, counters (`story_panel.rs`).
 //! - **Events** – send waves now, and the map's **events** like TAB's: each comes by itself at its day and hour (plus a
 //!   random offset), maybe again and again growing each time, announced or silent, with groups of several breeds from
 //!   sides or chosen spawners – the stragglers, the swarms, the final wave and the victory are all events.
@@ -47,7 +49,7 @@ const MAX_NAME: usize = 24;
 /// The round lasts at most this many days.
 const MAX_DAYS: u32 = 200;
 /// The most a number field takes (gold, wood, zombies) – far more than a map needs, only so nothing overflows.
-const MAX_AMOUNT: u32 = 10_000_000;
+pub(crate) const MAX_AMOUNT: u32 = 10_000_000;
 /// The final wave stands out among the events – and so does a group with no spawner ticked.
 const FINAL: Color32 = Color32::from_rgb(242, 115, 89);
 /// Where a group of a wave can come from at random (besides chosen spawners).
@@ -58,7 +60,7 @@ fn small_breeds() -> Vec<Breed> {
     Breed::ALL.into_iter().filter(|&b| b != Breed::Giant).collect()
 }
 /// The buildings of the "Entities" tab, in this order.
-const BUILDINGS: &[BuildingKind] = &[
+pub(crate) const BUILDINGS: &[BuildingKind] = &[
     BuildingKind::CommandCenter,
     BuildingKind::Tent,
     BuildingKind::Wall,
@@ -103,6 +105,7 @@ pub enum Tab {
     Terrain,
     Entities,
     Events,
+    Story,
 }
 
 /// Whose eyes the editor looks through. In the game it's always the player's.
@@ -477,6 +480,7 @@ impl Editor {
                     Tab::Terrain => self.terrain_tab(ui),
                     Tab::Entities => self.entities_tab(ui, world, orders),
                     Tab::Events => events_tab(ui, world, orders),
+                    Tab::Story => crate::story_panel::story_tab(ui, world, orders),
                 });
                 ui.separator();
                 let hint = match self.mouse_tile {
@@ -519,7 +523,7 @@ impl Editor {
             }
         });
         ui.horizontal(|ui| {
-            for (tab, text) in [(Tab::Map, "Map"), (Tab::Terrain, "Terrain"), (Tab::Entities, "Entities"), (Tab::Events, "Events")] {
+            for (tab, text) in [(Tab::Map, "Map"), (Tab::Terrain, "Terrain"), (Tab::Entities, "Entities"), (Tab::Events, "Events"), (Tab::Story, "Story")] {
                 ui.selectable_value(&mut self.tab, tab, text);
             }
         });
@@ -538,7 +542,7 @@ impl Editor {
         } else {
             match self.tab {
                 _ if self.tool == Some(Tool::PlayArea) => "Grab an edge of the border - inside: move it",
-                Tab::Map | Tab::Events => "Numbers: drag them, or click and type",
+                Tab::Map | Tab::Events | Tab::Story => "Numbers: drag them, or click and type",
                 _ => "Right click or Esc: put the tool away",
             }
         }
@@ -865,6 +869,18 @@ impl Editor {
             if changed != tag {
                 orders.push(Order::SetTag { thing, tag: changed });
             }
+            // A neutral one: its script when it joins (TAB's "Script On Join").
+            if let ThingRef::Neutral(id) = thing
+                && let Some(n) = world.find_neutral(id)
+            {
+                let mut script = world.neutral[n].on_join.clone();
+                CollapsingHeader::new("When it joins").id_salt(("join script", id)).show(ui, |ui| {
+                    crate::story_panel::script_ui(ui, egui::Id::new(("join script", id)), &mut script, &world.spawners);
+                });
+                if script != world.neutral[n].on_join {
+                    orders.push(Order::SetJoinScript { neutral: id, script });
+                }
+            }
         });
     }
 
@@ -1124,6 +1140,14 @@ fn event_box(ui: &mut Ui, i: usize, event: &Event, world: &World, orders: &mut V
             let zombies = vec![BreedCount::new(100, Breed::Runner)];
             changed.groups.push(WaveGroup { from: WaveFrom::Sides(1), breeds: zombies });
         }
+        // Its scripts (TAB's event "Script" and "Script On Finished", `story_panel.rs`) – folded away until needed.
+        let scripts = [("When it comes", &mut changed.script), ("When it's done", &mut changed.script_done)];
+        for (title, script) in scripts {
+            let count = if script.is_empty() { String::new() } else { format!(" ({})", script.len()) };
+            CollapsingHeader::new(format!("{title}{count}")).id_salt(("event script", i, title)).show(ui, |ui| {
+                crate::story_panel::script_ui(ui, egui::Id::new(("event script", i, title)), script, &world.spawners);
+            });
+        }
     });
     if removed {
         orders.push(Order::RemoveEvent { index: i });
@@ -1135,7 +1159,7 @@ fn event_box(ui: &mut Ui, i: usize, event: &Event, world: &World, orders: &mut V
 /// One group of an event, in a box of its own: from where (a random side, … or chosen spawners – then a tick box per
 /// spawner), and a line per breed: how many (from … to, TAB's "4-6"), which one. `id`: (event, group) – egui tells the
 /// lists apart by it. Returns whether its "x" was clicked.
-fn wave_group(ui: &mut Ui, id: (usize, usize), group: &mut WaveGroup, spawners: &[Spawner]) -> bool {
+pub(crate) fn wave_group(ui: &mut Ui, id: impl std::hash::Hash + Copy, group: &mut WaveGroup, spawners: &[Spawner]) -> bool {
     let mut removed = false;
     Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -1211,7 +1235,7 @@ fn spawner_checks(ui: &mut Ui, ids: &mut Vec<u32>, spawners: &[Spawner]) {
 /// A section with a heading that folds shut with a click (egui remembers it by the heading) and a grey hint under it.
 /// `add`: what's in it – a *closure*, like a `lambda` in Python, only that it may have many lines. `impl FnOnce(&mut
 /// Ui)`: any closure that takes the section's `Ui` and is called once.
-fn section(ui: &mut Ui, title: &str, hint: &str, add: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(ui: &mut Ui, title: &str, hint: &str, add: impl FnOnce(&mut Ui)) {
     CollapsingHeader::new(RichText::new(title).strong()).default_open(true).show(ui, |ui| {
         if !hint.is_empty() {
             ui.label(RichText::new(hint).small().weak());
@@ -1264,7 +1288,7 @@ where
 
 /// A text field like `settled_name` – but an empty text counts too (it takes the text away), and it may have several
 /// lines.
-fn settled_text(ui: &mut Ui, value: &str, multiline: bool) -> Option<String> {
+pub(crate) fn settled_text(ui: &mut Ui, value: &str, multiline: bool) -> Option<String> {
     let id = ui.next_auto_id().with("settled text");
     let mut text = ui.data(|data| data.get_temp::<String>(id)).unwrap_or_else(|| value.to_owned());
     let field = if multiline {

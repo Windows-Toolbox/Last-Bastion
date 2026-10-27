@@ -27,6 +27,7 @@
 //! - `blast.rs`: explosive barrels – making them, carrying them, and what happens when one goes off.
 //! - `scan.rs`: the command center's scan – a circle of the map shown for a while.
 //! - `terrain.rs`: when the map changes – recompute what depends on it, push everyone off new terrain.
+//! - `story.rs`: the map's story like TAB's – scripts of actions, goals, counters, the command center's own button.
 //! - `round.rs`: the round as a whole – how it ends (won, lost), what happened in it.
 //!
 //! This file: the `World` itself, the order of a tick (`step`) and small helpers that all of them use.
@@ -49,6 +50,7 @@ mod scan;
 mod sleep;
 mod sound;
 mod spawning;
+mod story;
 mod terrain;
 mod towers;
 mod units;
@@ -80,6 +82,7 @@ pub use doom::{DoomHouse, Loot, LootKind};
 pub use economy::{Power, Stock};
 pub use events::{plan_events, Event, Notice};
 pub use neutral::{Neutral, Owner, Tag, Thing, ThingRef};
+pub use story::{Action, Choice, Condition, CustomCommand, Goal, Script, Story};
 pub use ranged::Spit;
 pub use orders::{Order, MAP_SIZES, MOST_PER_TILE};
 pub use round::{Outcome, Score};
@@ -209,6 +212,14 @@ pub struct World {
     requests: Vec<events::Request>,
     /// What the screen should say about the events – the game takes them (`std::mem::take`).
     pub notices: Vec<Notice>,
+    /// The map's story (`story.rs`): scripts, goals, the command center's button, the counters' starting values.
+    pub story: Story,
+    /// While the round runs: the counters, the choices waiting for the player (oldest first), what a script decided
+    /// about the round, how often the command center's button was pressed.
+    pub counters: Vec<(String, i32)>,
+    pub choices: Vec<Choice>,
+    ending: Option<story::Ending>,
+    command_used: u32,
     rng: Rng,
     to_base: FlowField,
     grid: SpatialGrid,
@@ -419,6 +430,11 @@ impl World {
             events: Vec::new(),
             requests: Vec::new(),
             notices: Vec::new(),
+            story: Story::default(),
+            counters: Vec::new(),
+            choices: Vec::new(),
+            ending: None,
+            command_used: 0,
             // Not `Rng::new(seed)`: the map generator already uses that one – this way the two don't repeat each other.
             rng: Rng::new(seed ^ 0x5157_4F52_4C44),
             map_changed: false,
@@ -498,6 +514,9 @@ impl World {
         self.shots.clear();
         self.beams.clear();
         self.zombie_shots.clear();
+        if self.tick == 0 {
+            self.start_story(); // story.rs
+        }
         self.apply_orders(orders); // orders.rs
         self.update_events(); // events.rs
         self.update_spawners(); // spawning.rs

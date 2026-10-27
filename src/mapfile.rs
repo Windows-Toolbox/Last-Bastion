@@ -21,7 +21,7 @@ use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
-use crate::sim::{Axes, Breed, Event, LootKind, SpawnMode, Tag, Thing, ThingRef, WaveFrom, WaveGroup, World};
+use crate::sim::{Axes, Breed, Event, LootKind, Script, SpawnMode, Story, Tag, Thing, ThingRef, WaveFrom, WaveGroup, World};
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
 /// 2 (2026-10-17): the round, the constant spawn, the setup, and waves with breed and final wave.
@@ -68,6 +68,9 @@ pub struct MapFile {
     /// constant spawn is left out: TAB's stragglers are events now.)
     #[serde(default, skip_serializing)]
     pub waves: Vec<OldWave>,
+    /// The map's story (`sim/story.rs`): scripts, goals, the command center's button, counters – not written if empty.
+    #[serde(default, skip_serializing_if = "Story::is_empty")]
+    pub story: Story,
     /// How the map was generated – for the info line and "New map" (same setup, new seed). `None`: not known (files
     /// from before 2026-10-17).
     #[serde(default)]
@@ -272,6 +275,9 @@ pub struct NeutralData {
     pub veteran: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<Tag>,
+    /// Runs when it joins the colony (`sim/story.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_join: Script,
 }
 
 /// 100 – full hit points, when a file says nothing (`#[serde(default = "hundred")]`) …
@@ -367,6 +373,7 @@ impl MapFile {
             round: RoundData { days: world.days, gold: world.gold, wood: world.stock.get(Resource::Wood), difficulty: world.difficulty.clone() },
             events: world.events.clone(),
             waves: Vec::new(),
+            story: world.story.clone(),
             setup: None,
             spawners: world
                 .spawners
@@ -399,7 +406,14 @@ impl MapFile {
             neutral: world
                 .neutral
                 .iter()
-                .map(|n| NeutralData { thing: n.thing, joinable: n.joinable, hp_percent: n.hp_percent, veteran: n.veteran, tag: n.tag.as_deref().cloned() })
+                .map(|n| NeutralData {
+                    thing: n.thing,
+                    joinable: n.joinable,
+                    hp_percent: n.hp_percent,
+                    veteran: n.veteran,
+                    tag: n.tag.as_deref().cloned(),
+                    on_join: n.on_join.clone(),
+                })
                 .collect(),
             zombies: zombie_data(world),
             doom: world.doom.iter().map(|d| DoomData { house: d.tile, size: d.size, zombies: d.inside, factor: d.factor }).collect(),
@@ -443,8 +457,13 @@ impl MapFile {
             world.edit_thing(ThingRef::Unit(id), u.hp_percent, u.veteran, u.tag.as_ref());
         }
         for n in &self.neutral {
+            let before = world.neutral.len();
             world.add_neutral(n.thing, n.joinable, n.hp_percent, n.veteran, n.tag.clone().map(Box::new));
+            if let Some(added) = world.neutral.get_mut(before) {
+                added.on_join = n.on_join.clone();
+            }
         }
+        world.story = self.story.clone();
         // Wanderers lie down asleep – the ones near your eyes wake when the world settles (`World::settle`).
         for z in &self.zombies {
             let pos = vec2(z.pos.0, z.pos.1);
@@ -480,6 +499,7 @@ impl MapFile {
         world.stock.set(Resource::Wood, self.round.wood);
         world.events = self.events.clone();
         world.roll_events();
+        world.story = self.story.clone();
         Ok(world)
     }
 
@@ -652,7 +672,7 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "events", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "deposits", "terrain"] {
+    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "events", "story", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "deposits", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
     // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units
@@ -801,6 +821,8 @@ mod tests {
         let mut file = MapFile::from_world(&world, "Test: map?");
         file.setup = Some(MapSetup::default());
         (file.author, file.description, file.picture, file.regenerate) = ("Me".into(), "A test, \"quoted\".".into(), "pic.png".into(), true);
+        file.story.on_start = vec![crate::sim::Action::Window { title: "Hi".into(), text: "Welcome.".into() }];
+        file.story.counters = vec![("keys".into(), 2)];
         assert!(file.deposits.len() > 20, "the generated ore isn't saved");
         assert!(file.deposits.iter().any(|d| d.tile == (c + 3, c + 9) && d.ore == Ore::Coal), "the painted ore isn't saved");
         assert_eq!(file.round, RoundData { days: 25, gold: world.gold, wood: 55, difficulty: world.difficulty.clone() });
@@ -818,6 +840,7 @@ mod tests {
         assert_eq!(loaded.units.len(), world.units.len());
         assert_eq!(loaded.zombies.len() + loaded.sleep.len(), world.zombies.len() + world.sleep.len());
         assert_eq!(loaded.events, world.events);
+        assert_eq!(loaded.story, file.story, "the story isn't loaded");
         // What the editor gave the things: a tag, hit points, infected, a neutral unit.
         assert_eq!(loaded.units[0].tag.as_ref().map(|t| t.name_id.as_str()), Some("hero"));
         assert_eq!(loaded.units[0].hp, loaded.units[0].max_hp() * 30 / 100);

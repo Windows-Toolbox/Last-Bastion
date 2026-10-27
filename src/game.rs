@@ -82,6 +82,11 @@ pub struct Game {
     end_hidden: bool,
     /// Editor: what to do once the question about unsaved changes is answered (`unsaved_dialog`).
     leaving: Option<GameAction>,
+    /// The windows of the map's scripts still to be read (TAB's "Display Window Message") – the oldest in front; the
+    /// game is paused while one is up. And whether the player has just picked an option of a script's choice – the
+    /// order is on its way, the window waits for it (`story_dialog`).
+    windows: Vec<(String, String)>,
+    chosen: bool,
     /// Editor: the window's X was clicked (`app.rs`).
     quit_asked: bool,
 }
@@ -134,6 +139,8 @@ impl Game {
             minimap: MapPicture::new(),
             end_hidden: false,
             leaving: None,
+            windows: Vec::new(),
+            chosen: false,
             quit_asked: false,
         })
     }
@@ -167,8 +174,10 @@ impl Game {
         let dt = get_frame_time();
         self.ui.update_cursor();
 
-        // A question or the end screen in front: only their buttons count – no Esc menu, no input on the map.
-        let modal = self.leaving.is_some() || self.end_screen_shown();
+        // A question, a script's window or choice, or the end screen in front: only their buttons count – no Esc menu, no
+        // input on the map, no time passing (TAB pauses for them too).
+        let story = !self.windows.is_empty() || (!self.world.choices.is_empty() && !self.chosen);
+        let modal = self.leaving.is_some() || self.end_screen_shown() || story;
         // The editor's panel first (egui): what it takes – a click, a field being typed into – the map and the keys
         // below don't get. Greyed out while the menu or a question is in front.
         if self.ui.editor.available {
@@ -225,6 +234,13 @@ impl Game {
             } else if is_key_pressed(KeyCode::Z) && !self.menu.open {
                 self.undo(true);
             }
+        }
+        if story && !self.end_screen_shown() {
+            self.story_dialog();
+        }
+        // The pick went through: the next choice may show.
+        if self.world.choices.is_empty() || !self.orders.iter().any(|o| matches!(o, Order::Choose { .. })) {
+            self.chosen = false;
         }
         if self.end_screen_shown() {
             action = self.end_screen();
@@ -329,6 +345,12 @@ impl Game {
                 Notice::Came { zombies, final_wave: true, .. } => format!("THE FINAL WAVE is here - {zombies} zombies!"),
                 Notice::Came { zombies, .. } => format!("The swarm is here - {zombies} zombies!"),
                 Notice::Joined { name } => format!("{name} joins the colony!"),
+                Notice::Message { text } => text,
+                // A window: it pauses the game until it's closed (TAB's "Display Window Message").
+                Notice::Window { title, text } => {
+                    self.windows.push((title, text));
+                    continue;
+                }
             };
             self.ui.alert(&text);
         }
@@ -522,6 +544,34 @@ impl Game {
         GameAction::Nothing
     }
 
+    /// A window of the map's story in front of everything: a message to read (OK, Enter or Esc closes it), or a choice –
+    /// one button per option; the pick goes to the simulation as an order (`Order::Choose`), so it counts the same on
+    /// every PC.
+    fn story_dialog(&mut self) {
+        draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.5));
+        if let Some((title, text)) = self.windows.first().cloned() {
+            let mut col = Column::centered(&title, 4, 620.0);
+            col.wrap(&text);
+            col.gap();
+            if button(col.row(), "OK", true) || is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) {
+                self.windows.remove(0);
+            }
+            return;
+        }
+        let Some(choice) = self.world.choices.first().cloned() else {
+            return;
+        };
+        let mut col = Column::centered("Your choice", choice.options.len() + 3, 620.0);
+        col.wrap(&choice.text);
+        col.gap();
+        for (index, (label, _)) in choice.options.iter().enumerate() {
+            if button(col.row(), label, true) {
+                self.orders.push(Order::Choose { index });
+                self.chosen = true;
+            }
+        }
+    }
+
     /// The game: is the round over, and is the end screen up?
     fn end_screen_shown(&self) -> bool {
         self.program == Program::Game && self.world.outcome.is_some() && !self.end_hidden
@@ -534,7 +584,7 @@ impl Game {
         };
         draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.6));
         let (title, line) = match outcome {
-            Outcome::Won { .. } => ("Victory", "The final wave is dead - the colony survived."),
+            Outcome::Won { .. } => ("Victory", "The colony survived."),
             Outcome::Lost { .. } => ("Defeat", "The command center has fallen."),
         };
         let mut col = Column::centered(title, 10, 500.0);
@@ -604,6 +654,10 @@ impl Game {
         let fog = (self.ui.sight() == Sight::Player).then_some(&world.vision);
         self.minimap.refresh(&world.map, &Extras { fog, spawners: &[], base: false, shade_ring: false }, dt);
         hud::draw(&Layout::new(), world, &self.camera, &self.ui, &self.minimap);
+        // The map's goals (its story) – not over the stats of F3.
+        if !self.ui.settings.dev_overlay {
+            hud::draw_goals(world);
+        }
         // A broken file in `data\`: the game runs on with the old values – but you have to see it.
         // The same for a picture in `assets\`: that kind stays a box.
         let problems = [

@@ -191,7 +191,8 @@ pub enum BuildingKind {
 }
 
 /// The goods in the colony's stock (DESIGN.md 5.1) – gold is kept apart (`World::gold`). Oil comes with the oil pump.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// `Serialize, Deserialize`: a script names them in the map file (`sim/story.rs`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Resource {
     Wood,
     Stone,

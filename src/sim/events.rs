@@ -12,6 +12,7 @@ use macroquad::math::Vec2;
 use serde::{Deserialize, Serialize};
 
 use super::spawning::{BreedCount, WaveFrom, WaveGroup};
+use super::story::Script;
 use super::zombies::Breed;
 use super::{World, HOUR_TICKS};
 use crate::data::{self, EventPlan};
@@ -65,6 +66,12 @@ pub struct Event {
     /// `EntityType1` … `EntityType10`).
     #[serde(default)]
     pub groups: Vec<WaveGroup>,
+    /// Scripts (`story.rs`): when it comes (TAB's `Script`, every time), and once when it has come every time (TAB's
+    /// `ScriptOnFinished` – a final wave only once none of it is left).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script: Script,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script_done: Script,
     /// While the round runs – not in the file (`World::roll_events` sets it when the round starts). `pub` only so an
     /// event can be written as `Event { …, ..Event::new(…) }` outside the simulation – only the simulation changes it.
     #[serde(skip)]
@@ -82,6 +89,8 @@ pub struct EventState {
     /// Per group, per side: the spawners (`id`) its zombies come out of next – picked when it's announced (or, silent,
     /// when it comes).
     from: Option<Vec<Vec<Vec<u32>>>>,
+    /// Its `script_done` has run.
+    done_ran: bool,
 }
 
 /// Two events are the same when their settings are – where they are in the round doesn't count (the editor compares
@@ -107,6 +116,9 @@ pub enum Notice {
     Came { name: String, zombies: u32, final_wave: bool },
     /// A neutral building or unit joined the colony (`neutral.rs`).
     Joined { name: String },
+    /// A script's line at the top of the screen, and its window (`story.rs`).
+    Message { text: String },
+    Window { title: String, text: String },
 }
 
 /// Zombies an event still has to bring out of one side (TAB's `GenerationRequest`): every `stream_every_seconds` the
@@ -123,6 +135,15 @@ pub(super) struct Request {
     share: f32,
     swarm: u32,
     final_wave: bool,
+    /// They storm the command center – a script's zombies may idle where they come out instead (`Request::idle`).
+    storm: bool,
+}
+
+impl Request {
+    /// Its zombies idle where they come out instead of storming (`Action::Zombies` with `storm` off).
+    pub(super) fn idle(request: &mut Request) {
+        request.storm = false;
+    }
 }
 
 impl Event {
@@ -143,6 +164,8 @@ impl Event {
             won: false,
             won_when_dead: false,
             groups: vec![WaveGroup { from, breeds: vec![BreedCount::new(count, breed)] }],
+            script: Vec::new(),
+            script_done: Vec::new(),
             state: EventState::default(),
         }
     }
@@ -265,6 +288,7 @@ impl World {
                 self.fire_event(e);
             }
         }
+        self.finish_events();
         self.stream();
     }
 
@@ -321,6 +345,24 @@ impl World {
         if event.notify_hours.is_some() {
             self.notices.push(Notice::Came { name: event.name.clone(), zombies: total, final_wave: event.final_wave });
         }
+        self.run(&event.script);
+    }
+
+    /// Every event that has come every time runs its `script_done` once – a final wave only once none of it is left
+    /// or still to come.
+    fn finish_events(&mut self) {
+        for e in 0..self.events.len() {
+            let event = &self.events[e];
+            if event.state.done_ran || event.script_done.is_empty() || !event.is_done() {
+                continue;
+            }
+            if event.final_wave && (self.final_wave_pending() || self.zombies.iter().any(|z| z.final_wave)) {
+                continue;
+            }
+            self.events[e].state.done_ran = true;
+            let script = self.events[e].script_done.clone();
+            self.run(&script);
+        }
     }
 
     /// Where event `e`'s groups come out this time – per group a list of sides, each a list of spawners (`id`).
@@ -349,7 +391,7 @@ impl World {
     /// One side of an event gets its zombies to let out: one request per breed, all from the same square of one of its
     /// spawners if the event has a `dispersion` (TAB: one seed per side), a swarm of their own if it's announced (the
     /// minimap marks it).
-    fn request(&mut self, side: &[u32], counts: &[(Breed, u32)], dispersion: u32, shown: bool, final_wave: bool) {
+    pub(super) fn request(&mut self, side: &[u32], counts: &[(Breed, u32)], dispersion: u32, shown: bool, final_wave: bool) {
         let alive: Vec<u32> = side.iter().copied().filter(|&id| self.find_spawner(id).is_some()).collect();
         if alive.is_empty() {
             return;
@@ -363,7 +405,7 @@ impl World {
         let swarm = if shown { self.new_swarm() } else { 0 };
         for &(breed, left) in counts.iter().filter(|c| c.1 > 0) {
             let share = self.rng.unit_f32();
-            self.requests.push(Request { spawners: spawners.clone(), square, breed, left, share, swarm, final_wave });
+            self.requests.push(Request { spawners: spawners.clone(), square, breed, left, share, swarm, final_wave, storm: true });
         }
     }
 
@@ -438,7 +480,7 @@ impl World {
                 self.requests[r].left = 0;
                 return;
             };
-            self.spawn_zombie_as(pos, req.breed, false);
+            self.spawn_zombie_as(pos, req.breed, !req.storm);
             if let Some(zombie) = self.zombies.last_mut() {
                 zombie.final_wave = req.final_wave;
                 zombie.swarm = req.swarm;

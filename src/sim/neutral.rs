@@ -12,6 +12,7 @@ use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use super::events::Notice;
+use super::story::Script;
 use super::World;
 use crate::kinds::{BuildingKind, UnitKind};
 
@@ -68,6 +69,8 @@ pub struct Neutral {
     pub hp_percent: u32,
     pub veteran: bool,
     pub tag: Option<Box<Tag>>,
+    /// Runs when it joins the colony (TAB's "Script On Join", `story.rs`).
+    pub on_join: Script,
 }
 
 impl Neutral {
@@ -129,7 +132,7 @@ impl World {
         }
         self.next_neutral_id += 1;
         let hp_percent = hp_percent.clamp(1, 100);
-        self.neutral.push(Neutral { id: self.next_neutral_id, thing, joinable, hp_percent, veteran, tag });
+        self.neutral.push(Neutral { id: self.next_neutral_id, thing, joinable, hp_percent, veteran, tag, on_join: Vec::new() });
     }
 
     /// The number the next neutral thing gets – the editor selects it right after making one.
@@ -153,8 +156,10 @@ impl World {
         for id in joining {
             if let Some(n) = self.find_neutral(id) {
                 let name = self.neutral[n].name().to_owned();
+                let script = self.neutral[n].on_join.clone();
                 self.join_colony(n);
                 self.notices.push(Notice::Joined { name });
+                self.run(&script);
             }
         }
     }
@@ -228,6 +233,13 @@ impl World {
             }
             (_, Owner::Colony) => {}
             (thing, owner) => self.make_neutral(thing, owner == Owner::Joinable),
+        }
+    }
+
+    /// Editor: the script a neutral thing runs when it joins the colony.
+    pub(super) fn set_join_script(&mut self, id: u32, script: &Script) {
+        if let Some(n) = self.neutral.iter_mut().find(|n| n.id == id) {
+            n.on_join = script.clone();
         }
     }
 

@@ -932,6 +932,10 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      objectives, reveal, resources, wait, victory/defeat, orders to allies. Edited as sentences ("When a unit enters
      North gate: 200 runners from spawner 2"). Checked in the simulation every tick in a fixed order – deterministic
      for co-op.
+     *In the prototype:* TAB's story first (`sim/story.rs`, editor tab "Story"): scripts of actions from a fixed list
+     (no free code) at the start, victory and defeat, when an event comes or is done, when a neutral thing joins, from
+     the command center's own button; goals from a fixed list with progress; counters. A player's choice comes as an
+     order. SC2's triggers (regions, "when …") build on it later.
   7. **Players and ally AIs (SC2):** the colony (1–2 humans), ally AIs with colour, start units and buildings, shared
      vision or not; zombies against everyone. Behaviours: hold a region, patrol, guard, attack-move, retreat (building
      later). Steered by triggers ("Ally 1: defend West") and reacting to events ("ally base attacked").

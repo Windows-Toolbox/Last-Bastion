@@ -44,7 +44,7 @@ impl Stock {
     }
 
     /// Takes `units` out – or all there is, if there are fewer.
-    fn take_up_to(&mut self, r: Resource, units: u32) {
+    pub(super) fn take_up_to(&mut self, r: Resource, units: u32) {
         let milli = &mut self.milli[r.index()];
         *milli = milli.saturating_sub(units as u64 * 1000);
     }

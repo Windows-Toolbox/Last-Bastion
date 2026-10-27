@@ -660,6 +660,8 @@ impl Ui {
             Some(Sub::Building(BuildingKind::CommandCenter)) => match self.submenu {
                 // In the editor the command center can be removed like anything else.
                 None if self.editor.editing() && !self.editor.testing() => [COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Demolish]].concat(),
+                // The map's own button, if its story has one (`sim/story.rs`).
+                None if world.story.command.is_some() => [COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Custom]].concat(),
                 None => COMMAND_CENTER_BUTTONS.to_vec(),
                 Some(menu) => menu_buttons(menu),
             },
@@ -1256,6 +1258,7 @@ impl Ui {
                 None => self.targeting = Some(button),
             },
             Button::Drop => orders.push(Order::DropBarrels { units: self.selected.clone() }),
+            Button::Custom => orders.push(Order::CustomCommand),
             Button::Dismiss => orders.push(Order::Dismiss { units: self.selected.clone() }),
             // All selected buildings, like repairing. In the editor's Edit mode they're only removed: no time passes
             // there, nothing is paid – and nothing comes back.

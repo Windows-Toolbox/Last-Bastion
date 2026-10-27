@@ -7,6 +7,7 @@ use super::buildings::{Product, Rally, MAX_PRODUCTION};
 use super::commands::Command;
 use super::events::Event;
 use super::neutral::{Owner, Tag, ThingRef};
+use super::story::{Script, Story};
 use super::spawning::{Axes, BreedCount, SpawnMode, WaveFrom, WaveGroup, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
@@ -97,6 +98,14 @@ pub enum Order {
     SetHealth { thing: ThingRef, percent: u32 },
     SetMark { thing: ThingRef, on: bool },
     RemoveThing { thing: ThingRef },
+    /// Editor: the script a neutral thing runs when it joins the colony (`story.rs`).
+    SetJoinScript { neutral: u32, script: Script },
+    /// Editor: the map's story – scripts, goals, the command center's button, counters (`story.rs`).
+    SetStory { story: Story },
+    /// The player picked option `index` of the oldest waiting choice of a script (`Action::Choose`).
+    Choose { index: usize },
+    /// The player pressed the command center's own button (`Story::command`).
+    CustomCommand,
     /// Editor "Grid": the whole map gets this edge length (`Map::size`, even) – it grows or shrinks on every side,
     /// everything on it stays where it is, new ground is grass (`mapfile::MapFile::resized`).
     ResizeMap { size: usize },
@@ -311,6 +320,10 @@ impl World {
             Order::SetHealth { thing, percent } => self.set_health(*thing, *percent),
             Order::SetMark { thing, on } => self.set_mark(*thing, *on),
             Order::RemoveThing { thing } => self.remove_thing(*thing),
+            Order::SetJoinScript { neutral, script } => self.set_join_script(*neutral, script),
+            Order::SetStory { story } => self.story = story.clone(),
+            Order::Choose { index } => self.choose(*index),
+            Order::CustomCommand => self.custom_command(),
             Order::ResizeMap { size } => self.resize(*size),
             Order::SetPlayArea { min, size } => {
                 self.map.set_play_area(*min, *size);

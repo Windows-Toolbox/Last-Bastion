@@ -34,6 +34,7 @@ mod rng;
 mod settings;
 mod sim;
 mod sprites;
+mod story_panel;
 mod ui;
 mod undo;
 mod vision;

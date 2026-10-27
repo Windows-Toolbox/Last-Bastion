@@ -192,7 +192,8 @@ fn lines(tab: usize) -> Vec<Line> {
             heading(&mut lines, "Command center");
             // The repair button is on every building – it's in the last tab.
             let main = COMMAND_CENTER_BUTTONS.into_iter().filter(|&b| b != Button::Repair).map(Action::of);
-            binds(&mut lines, main.chain([Action::of(Button::Back), Action::TurnGate]));
+            // The map's own button (`sim/story.rs`) – only on maps whose story has one.
+            binds(&mut lines, main.chain([Action::of(Button::Custom), Action::of(Button::Back), Action::TurnGate]));
             for menu in hud::build_menus() {
                 let buildings: Vec<Button> = hud::menu_buttons(menu).into_iter().filter(|b| b.places().is_some()).collect();
                 if !buildings.is_empty() {

@@ -396,7 +396,16 @@ Kacheln über die Dorf-Markierung der Karte), Beitreten wie `CNeutralJoinable` (
 Kachel), Befehle `SetTag`, `SetOwner`, `SetHealth`, `SetMark`, `RemoveThing`; Kartendatei: `hp_percent`, `infected`,
 `veteran`, `tag` an Gebäuden und Einheiten, Liste `neutral`; Editor: Abschnitte „Placed" und „Object"; die Leiste zeigt
 Name und Text, die Minimap eine weiße Raute. Nicht übernommen: TABs Schild-Text, „Center Camera", eigene Töne beim
-Beitreten; „Script On Join" kommt mit (c).
+Beitreten.
+
+**(c) ist fertig:** `src/sim/story.rs` – `Story` (Skripte bei Start/Sieg/Niederlage, `Goal`s, `CustomCommand`,
+Zähler), `Action` (Zombies, Ressourcen, Einheiten, Häuser infizieren, Meldung, Fenster, Zufall, Auswahl, Zähler,
+Beitreten, Aufdecken, Sieg, Niederlage), `Condition` (Kolonisten, Tag, getötete Zombies, gebaut, zerstört, Zähler,
+Event fertig); Events haben `script` und `script_done`, neutrale Dinge `on_join`; Befehle `SetStory`,
+`SetJoinScript`, `Choose`, `CustomCommand`; Knopf `Button::Custom` (V) an der Kommandozentrale; Fenster und Auswahl
+in `game.rs` (`story_dialog`), Ziele oben links (`hud::draw_goals`); Editor-Reiter „Story" (`src/story_panel.rs`,
+`script_ui` auch für Events und Beitritt). Nicht übernommen: freier Code, Schleifen, Töne, Technik, Zug, Bedingungen
+an Events, Fortschritt per Code.
 
 ---
 
