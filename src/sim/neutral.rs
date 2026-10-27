@@ -153,7 +153,7 @@ impl World {
         for id in joining {
             if let Some(n) = self.find_neutral(id) {
                 let name = self.neutral[n].name().to_owned();
-                self.to_colony(n);
+                self.join_colony(n);
                 self.notices.push(Notice::Joined { name });
             }
         }
@@ -161,7 +161,7 @@ impl World {
 
     /// Neutral thing `n` becomes the colony's: an ordinary building (standing at once, like the editor's) or unit,
     /// with its hit points, veteran and tag.
-    fn to_colony(&mut self, n: usize) {
+    fn join_colony(&mut self, n: usize) {
         let neutral = self.neutral.remove(n);
         match neutral.thing {
             Thing::Building { kind, tile, turned } => {
@@ -186,7 +186,7 @@ impl World {
 
     /// A building or unit of the colony becomes neutral (or joinable): out of the colony's lists into `neutral`,
     /// with what it is.
-    fn to_neutral(&mut self, thing: ThingRef, joinable: bool) {
+    fn make_neutral(&mut self, thing: ThingRef, joinable: bool) {
         match thing {
             ThingRef::Building(id) => {
                 let Some(b) = self.buildings.iter().position(|b| b.id == id) else {
@@ -218,7 +218,7 @@ impl World {
         match (thing, owner) {
             (ThingRef::Neutral(id), Owner::Colony) => {
                 if let Some(n) = self.find_neutral(id) {
-                    self.to_colony(n);
+                    self.join_colony(n);
                 }
             }
             (ThingRef::Neutral(id), _) => {
@@ -227,7 +227,7 @@ impl World {
                 }
             }
             (_, Owner::Colony) => {}
-            (thing, owner) => self.to_neutral(thing, owner == Owner::Joinable),
+            (thing, owner) => self.make_neutral(thing, owner == Owner::Joinable),
         }
     }
 
