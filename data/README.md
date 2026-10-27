@@ -316,11 +316,12 @@ gewählt ist – und für eine Karte, deren Schwierigkeit es nicht (mehr) gibt. 
 | `score_percent` | So viel Prozent zählt die Punktzahl (TABs Score-Faktor). Startbildschirm: Karte × Schwierigkeit × Dauer. Eine Punktzahl gibt es noch nicht |
 | `start_gold`, `start_wood` | Gold und Holz zu Beginn (der übrige Vorrat startet leer). Im Editor pro Karte änderbar |
 | `start_soldiers`, `start_rangers`, `start_snipers` | Einheiten zu Beginn |
-| `roaming_zombies` | Streuner zu Beginn, pro 1.000 Kacheln, auf denen sie stehen können – in Grüppchen von `pack` (`roaming.json`), also füllen ≈ 2.000 fast jede Kachel |
-| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `harpy`, `giant`): so nah ans Kommandozentrum (Kacheln) liegt zu Beginn keiner. Beim Wandern dürfen sie näher, wie in TAB (nur der Riese hält seinen `roam_ring`). Kommt mit TABs Kartengenerator dorthin (Plan-Schritt 6) |
-| `villages_percent`, `village_houses_percent` | So viel Prozent so viele Villages of Doom, wie die Karte hat (`villages`), und so viel Prozent ihrer Häuser (`houses_near`, `houses_edge`) |
-| `doom_zombies` | So viele Zombies schlafen in **jedem** Haus der Villages of Doom – fest, egal wie weit draußen |
-| `giants_percent` | So viel Prozent so viele **Riesen**, wie die Karte hat (`giants`) |
+| `roaming_zombies` | Streuner zu Beginn, pro 1.000 Kacheln, auf denen sie stehen können – in Grüppchen von `pack` (`roaming.json`), also füllen ≈ 2.000 fast jede Kachel. Nur auf unseren Karten – auf TABs zählt `population` |
+| `population` | TABs Zombie-Bevölkerung (`FactorZombiePopulation`) für Karten von TABs Generator: so viel mal das `infected` der Karte liegen Zombies; unter 0,5 nur halb so viele Dörfer und keine Riesen, ab 1 / 1,2 / 1,4 einmal / zweimal / dreimal ihre `giants` (darunter die Hälfte) |
+| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `harpy`, `giant`): so nah ans Kommandozentrum (Kacheln) liegt zu Beginn keiner. Beim Wandern dürfen sie näher, wie in TAB (nur der Riese hält seinen `roam_ring`). Nur auf unseren Karten – auf TABs sagt die Karte, ab wo welche Art liegt (`weak_from` …) |
+| `villages_percent`, `village_houses_percent` | So viel Prozent so viele Villages of Doom, wie die Karte hat (`villages`), und so viel Prozent ihrer Häuser (`houses_near`, `houses_edge`) – nur auf unseren Karten |
+| `doom_zombies` | So viele Zombies schlafen in **jedem** Haus der Villages of Doom – fest, egal wie weit draußen. Auf TABs Karten nach Hausgröße: klein 1/5, mittel 2/5, groß alle |
+| `giants_percent` | So viel Prozent so viele **Riesen**, wie die Karte hat (`giants`) – nur auf unseren Karten |
 | `loot_guards` | `[nahe der Basis, am Rand]`: so viele Zombies liegen um einen Haufen Beute versteckt |
 | `waves_percent` | Jede Welle (auch die Schlusswelle) so viel Prozent der Zahlen in `spawning.json` |
 | `constant_spawn_percent` | Jede Gruppe des konstanten Spawns so viel Prozent so groß |
@@ -344,4 +345,22 @@ Die Karten wie in TAB. Vorerst ist eine Karte einer der Generatoren mit seinen W
 | Wert | Bedeutung |
 |---|---|
 | `name`, `about`, `score_percent` | Name, eine Zeile Erklärung, Score-Faktor |
-| `setup` | Wie sie gemacht wird – alles, was die Seite „Custom setup“ hat: `generator` (`wild`, `regions`, `rings`, `canyons`, `blank`), `common` (z. B. `size`, `ways_in`, `loot_piles` und die Dörfer: `villages` pro 10.000 Kacheln, `houses_near` / `houses_edge` Häuser pro Dorf – Open Plains viele kleine, Broken Lands zwei riesige – und `giants`, die Riesen auf einer Karte von TABs Größe 256: auf größeren mehr, auf kleineren weniger, mindestens einer; weit draußen, die Schlusswelle ruft auch sie) und die Werte des Generators (z. B. `"blank": { "trees": 0.02 }`). Was fehlt, bleibt beim Standard. Die Namen der Werte stehen in einer Kartendatei unter `setup` |
+| `setup` | Wie sie gemacht wird – alles, was die Seite „Custom setup“ hat: `generator` (`tab`, `wild`, `regions`, `rings`, `canyons`, `blank`), `common` (z. B. `size`, `ways_in`, `loot_piles` und die Dörfer: `villages` pro 10.000 Kacheln, `houses_near` / `houses_edge` Häuser pro Dorf – Open Plains viele kleine, Broken Lands zwei riesige – und `giants`, die Riesen auf einer Karte von TABs Größe 256: auf größeren mehr, auf kleineren weniger, mindestens einer; weit draußen, die Schlusswelle ruft auch sie) und die Werte des Generators (z. B. `"blank": { "trees": 0.02 }`). Was fehlt, bleibt beim Standard. Die Namen der Werte stehen in einer Kartendatei unter `setup` |
+
+**TABs Generator** (`"generator": "tab"`, die Landschaften „TAB BR“ … „TAB VO“): seine Werte unter `"tab"`, TABs Namen
+in Klammern – alle **geschätzt**, weil TABs `ZXRules.dat` zu bleibt. Von `common` nimmt er nur `size`,
+`spawners_per_side` und `ore_richness`; Anzahlen (Dörfer, Ruinen, Riesen) gelten für TABs 256er-Karte und wachsen
+mit der Fläche.
+
+| Wert | Bedeutung |
+|---|---|
+| `land`, `land_dispersion`, `land_octaves` | Anteil Land, der Rest Seen (`LandWaterFactor`); 0 = große, 1 = kleine Seen (`LandDispersionFactor`); Feinheit der Ufer |
+| `mountains` | Berge auf dem höchsten Land, in 2 × 2-Blöcken (`MountainLandFactor`) |
+| `grass`, `forest_on_grass`, `forest_on_dirt`, `vegetation_octaves` | Gras auf dem Land, sonst Erde (`GrassEarthFactor`); Wald auf Gras (mal `grass`) und auf Erde (`ForestGrassFactor`, `ForestEarthFactor`) |
+| `villages_min`, `villages_max`, `village_size_min`, `village_size_max` | So viele Villages of Doom (`NumDoomVillages`), so groß (Radius, `DoomVillagesSize` – über 8 ein großes Haus in der Mitte, über 12 jedes 8.) |
+| `ruins_min`, `ruins_max` | Ruinen mit 2–4 Haufen Beute nahe der Basis (`NumTreasures`) |
+| `stone`, `iron`, `gold` / `stone_from`, `iron_from`, `gold_from` | Wie viel davon auf freier Erde (`…EarthFactor`) / erst so weit vom Kommandozentrum (`…FormationMinDistance`). Gold statt Kohle – Kohle kommt später wieder |
+| `oil_block` | Eine Ölquelle pro Block dieser Kantenlänge (`NCellsPerOilSource`) |
+| `infected`, `infected_dispersion` | Wie viel des Landes Zombies hat, mal `population` der Schwierigkeit (`InfectedFactor`); wie fein die Flecken (`InfectedDispersion`) |
+| `weak_from`, `medium_from`, `strong_from`, `powerful_from` | Ab so weit draußen: Walker / Runner und Riots / Riots allein / Fat, Harpyie, Spitter (`MinDistanceFor…Infected`) |
+| `giants` | Riesen bei Bevölkerung 1 (`NumInfectedGiants`) – mindestens 70 Kacheln draußen, 40 auseinander |

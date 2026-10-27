@@ -1,6 +1,57 @@
 {
-  "default": "Green Valley",
+  "default": "TAB BR - Moorland",
   "maps": [
+    {
+      "name": "TAB BR - Moorland",
+      "about": "TAB's generator, its first landscape: forests, meadows and dirt, a few lakes and rocks - the zombies get stronger further out",
+      "score_percent": 100,
+      "setup": { "generator": "tab" }
+    },
+    {
+      "name": "TAB TM - Lowlands",
+      "about": "TAB's generator: wide green land for farms, hardly any mountains, the strong zombies far out - wide fronts",
+      "score_percent": 90,
+      "setup": {
+        "generator": "tab",
+        "tab": { "land": 0.74, "mountains": 0.16, "grass": 0.66, "forest_on_grass": 0.32, "forest_on_dirt": 0.26, "villages_min": 3, "villages_max": 5, "village_size_min": 6, "village_size_max": 10, "infected": 0.6, "weak_from": 12, "medium_from": 30, "strong_from": 50, "powerful_from": 72, "giants": 1 }
+      }
+    },
+    {
+      "name": "TAB AL - Highlands",
+      "about": "TAB's generator: mountains and lakes leave little room - more villages, closer and bigger",
+      "score_percent": 120,
+      "setup": {
+        "generator": "tab",
+        "tab": { "land": 0.62, "mountains": 0.31, "land_dispersion": 0.6, "grass": 0.45, "forest_on_grass": 0.45, "forest_on_dirt": 0.36, "villages_min": 4, "villages_max": 6, "village_size_min": 8, "village_size_max": 14, "infected": 0.7, "medium_from": 22, "strong_from": 40, "powerful_from": 58, "giants": 3 }
+      }
+    },
+    {
+      "name": "TAB DS - Wasteland",
+      "about": "TAB's generator: dry dirt, little forest and grass, many rocks - few walls of forest to hide behind",
+      "score_percent": 140,
+      "setup": {
+        "generator": "tab",
+        "tab": { "land": 0.88, "mountains": 0.29, "grass": 0.22, "forest_on_grass": 0.4, "forest_on_dirt": 0.2, "stone": 0.16, "iron": 0.13, "gold": 0.09, "villages_min": 5, "villages_max": 7, "village_size_min": 8, "village_size_max": 16, "infected": 0.75, "medium_from": 20, "strong_from": 35, "powerful_from": 50, "giants": 4 }
+      }
+    },
+    {
+      "name": "TAB FA - Caustic",
+      "about": "TAB's generator: swamp - water and forest everywhere, in small pieces, lots of zombies",
+      "score_percent": 160,
+      "setup": {
+        "generator": "tab",
+        "tab": { "land": 0.63, "land_dispersion": 0.65, "mountains": 0.14, "grass": 0.5, "forest_on_grass": 0.55, "forest_on_dirt": 0.42, "villages_min": 5, "villages_max": 8, "village_size_min": 8, "village_size_max": 16, "infected": 0.8, "infected_dispersion": 0.1, "medium_from": 18, "strong_from": 30, "powerful_from": 45, "giants": 4 }
+      }
+    },
+    {
+      "name": "TAB VO - Volcanic",
+      "about": "TAB's generator: rock everywhere, narrow ways, the strongest zombies close - the hardest",
+      "score_percent": 180,
+      "setup": {
+        "generator": "tab",
+        "tab": { "land": 0.76, "mountains": 0.38, "grass": 0.3, "forest_on_grass": 0.45, "forest_on_dirt": 0.3, "villages_min": 6, "villages_max": 9, "village_size_min": 10, "village_size_max": 18, "infected": 0.85, "weak_from": 8, "medium_from": 16, "strong_from": 28, "powerful_from": 40, "giants": 5 }
+      }
+    },
     {
       "name": "Peaceful Lowlands",
       "about": "Wide dry plains, green meadows with groves, big lakes - lots of room for farms, but wide fronts to hold",

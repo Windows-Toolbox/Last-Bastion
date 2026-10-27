@@ -99,6 +99,8 @@ pub enum Ore {
     /// Not a patch but nodes of exactly 2 × 2 tiles, in groups (`mapgen/ores.rs`) – later an oil pump (2 × 2) goes
     /// on top of one. Two nodes never touch, so every node can be told apart.
     Oil,
+    /// TAB's gold – its map generator puts it where our coal would be (`mapgen/tab.rs`). No mine takes it yet.
+    Gold,
 }
 
 impl Ore {
@@ -111,6 +113,7 @@ impl Ore {
             Ore::Coal => "Coal",
             Ore::Stone => "Stone",
             Ore::Oil => "Oil",
+            Ore::Gold => "Gold",
         }
     }
 }
@@ -587,7 +590,7 @@ mod tests {
     fn default_map_has_everything() {
         use crate::mapgen::{self, MapSetup};
         for seed in 1..=5 {
-            let map = mapgen::generate(seed, &MapSetup::default()).map;
+            let map = mapgen::generate(seed, &MapSetup { generator: mapgen::Generator::Wild, ..MapSetup::default() }).map;
             let tiles = || (0..map.size as i32).flat_map(|y| (0..map.size as i32).map(move |x| (x, y)));
             let count = |t: Terrain| tiles().filter(|&(x, y)| map.terrain(x, y) == t).count();
             for (t, at_least) in [(Terrain::Water, 1000), (Terrain::Mountain, 1000), (Terrain::Forest, 2000)] {

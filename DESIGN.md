@@ -531,7 +531,8 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
   walkers and runners 14, riots and infested 25, spitters 30, fat ones 35; Brutal: all 14). Right at that ring they
   lie thinly, one per tile – over `ring_ramp` (6) tiles they get as many as anywhere, in full packs. None lies closer
   at the start (there it's a walker instead). **Roaming they may come closer, like in TAB** – only the giant never roams
-  within 54 tiles (`roam_ring`). (The distances per breed move into the map generator with TAB's, plan step 6.)
+  within 54 tiles (`roam_ring`). On maps of TAB's generator the map lays the zombies out itself, each kind from its
+  distance (`medium_from` …, 9.1) – `roaming_zombies` and `keep_out` only count on ours.
 - **Asleep:** whoever lies far from your eyes sleeps – only an entry per block of 8 × 8 tiles (`src/sim/sleep.rs`).
   A sleeper doesn't see and costs next to nothing. In the editor's views "All" and "Zombies" they are drawn darker; in
   the player's view you never see one.
@@ -583,10 +584,23 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 
 **In the prototype:**
 
-- **Generators:** Wild (Factorio-like noise), Regions (TAB-like, walls with passes), Rings, Canyons, Blank – each with
-  its own sliders. Same seed + same values = same map. The maps of `data\game_maps.json` are presets of them, like
-  Factorio's: **Peaceful Lowlands** (2026-10-24, after TAB's) is Wild with small groves, smooth lakes and lots of dry
-  land.
+- **Generators:** **TAB** (the default), Wild (Factorio-like noise), Regions (TAB-like, walls with passes), Rings,
+  Canyons, Blank – each with its own sliders. Same seed + same values = same map. The maps of `data\game_maps.json`
+  are presets of them, like Factorio's: TAB's six landscapes (BR, TM, AL, DS, FA, VO), then ours – **Peaceful
+  Lowlands** (2026-10-24, after TAB's) is Wild with small groves, smooth lakes and lots of dry land.
+- **TAB's generator** (`mapgen/tab.rs`, rebuilt from its code, `docs\tab-nachbau.md` step 6): one generator, the
+  landscapes only other numbers – estimated, `ZXRules.dat` stays closed. Noise layers like TAB's (`mapgen/layer.rs`,
+  TAB's simplex noise in `noise.rs`) cut at thresholds: land/water, mountains in 2 × 2 blocks, grass, forest on grass
+  and on dirt. The command center on the free spot nearest the middle; a new seed if fewer than 18 forest tiles lie
+  within 11, if there's too little stone (4 within ±10) or iron (10 within ±25), or – ours – if less than 30 % of the
+  playing field can be reached. Villages of doom (a house in the middle, a spiral of small, medium and big ones
+  around), ruins near the base with 2–4 piles of loot, stone/iron/**gold** patches on free dirt (gold instead of our
+  coal – coal comes back later, no mine takes gold yet), one oil node per block. **The zombies are the map's:** a noise
+  over the reachable land, 1–3 per tile by how high it is, the kind by a roll and the distance (`medium_from` …), giants
+  at least 70 tiles out, 40 apart. The difficulty is TAB's **population** (`population`: how many, half the villages
+  below 0.5, the giants) – not `roaming_zombies`/`keep_out`. A house holds its share of `doom_zombies` by size (small
+  1/5, medium 2/5, big all) until step 4 rebuilds the houses. None of the shared steps (start area, ways in, safety
+  net): what the base can't reach stays empty. Not taken over: old towers, ravens, supplies, mutants, decorations.
 - **Wild like Factorio (2026-10-24):** one moisture noise decides – wet = forest ("Forest size": big forests or many
   groves), next to it green meadow, the driest open ground dirt. Lakes from a height noise ("Shore detail": smooth to
   frayed).
@@ -940,7 +954,7 @@ before step 6.
 | **5. Co-op mini round** | 2 players, direct IP, orders per tick, desync check | No desync to the end | |
 | **6. Production chains** | Drill → stock → smelter → workshop, with power | A small chain runs by itself | Mine → foundry → iron → machine gun tower; tools missing |
 | **7. Houses, gold, upkeep** | Houses consume and pay, units cost upkeep | Economy and army linked | |
-| **8. Map generation** | Terrain, patches, nests, POIs, fog | Two seeds feel different | Partly (generators, ore, oil, fog, villages of doom, loot, dirt) |
+| **8. Map generation** | Terrain, patches, nests, POIs, fog | Two seeds feel different | Partly (TAB's generator and ours, ore, oil, fog, villages of doom, loot, dirt) |
 | **9. Noise and creep** | Noise attracts waves, nests spread creep | Expanding is a decision | Noise like TAB (adds up, lures, villages) – creep missing |
 | **10. Full round** | Section 4 timeline, save and load | A 40-day round playable | |
 | **11. Home screen and meta** | Regions, setup, score %, research | "One more round" | |

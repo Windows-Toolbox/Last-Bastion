@@ -249,6 +249,8 @@ impl World {
     fn generate_with(seed: u64, setup: &MapSetup, difficulty: &Difficulty) -> World {
         let generated = mapgen::generate(seed, &with_villages(setup, difficulty));
         let mut world = World::empty(seed, generated.map);
+        // The base where the generator put it – TAB's moves it off the middle to the nearest free spot.
+        world.base = vec2(generated.base.0 as f32 + 0.5, generated.base.1 as f32 + 0.5);
         world.set_difficulty(difficulty);
         world.days = setup.round.days.round() as u32;
         world.gold = difficulty.start_gold;
@@ -261,19 +263,25 @@ impl World {
             world.add_spawner(0, spot.name, spot.min, spot.size, Axes::Screen, SpawnMode::Constant);
         }
         // The villages of doom and the loot where the generator put them (`doom.rs`) – every house as full as the
-        // difficulty says; what lies in each pile is rolled here.
+        // difficulty says; what lies in each pile is rolled here (or the generator says it). TAB's villages have many
+        // more houses: there a house holds its share by TAB's sizes – small 1, medium 2, big 5 of 5 – until its houses
+        // work like TAB's (`docs\tab-nachbau.md`, step 4).
+        let tab_map = generated.zombies.is_some();
         for house in generated.houses {
-            world.add_doom(house.tile, house.size, difficulty.doom_zombies);
+            let weight = if !tab_map { 5 } else if house.size.0 <= 2 { 1 } else if house.size.0 <= 3 { 2 } else { 5 };
+            world.add_doom(house.tile, house.size, difficulty.doom_zombies * weight / 5);
         }
-        for tile in generated.loot {
-            let pos = vec2(tile.0 as f32 + 0.5, tile.1 as f32 + 0.5);
+        for spot in generated.loot {
+            let pos = vec2(spot.tile.0 as f32 + 0.5, spot.tile.1 as f32 + 0.5);
             let (kind, amount, guards) = world.roll_loot(pos, difficulty.loot_guards);
+            // What lies in it: the generator's (TAB's ruins), else what was rolled.
+            let (kind, amount) = spot.haul.unwrap_or((kind, amount));
             world.add_loot(pos, kind, amount, guards);
         }
         // The command center right on the base, its middle tile on it – however big `data\buildings.json` makes it.
-        let center = world.map.size as i32 / 2;
         let (w, h) = BuildingKind::CommandCenter.footprint(false);
-        world.add_building(BuildingKind::CommandCenter, (center - w / 2, center - h / 2), false);
+        let (bx, by) = generated.base;
+        world.add_building(BuildingKind::CommandCenter, (bx - w / 2, by - h / 2), false);
         world.refresh_map();
 
         // Rows of 6 below it, a tile away from its edge: soldiers in front, then the snipers, then the rangers.
@@ -288,21 +296,31 @@ impl World {
             let pos = world.base + vec2((i % 6) as f32 - 2.5, (i / 6) as f32 + below);
             world.spawn_unit(kind, pos);
         }
-        world.scatter_roamers(difficulty.roaming_zombies);
-        world.place_giants(setup.common.giants * difficulty.giants_percent as f32 / 100.0);
+        // The zombies: the ones TAB's generator laid out – asleep, like the roamers – or scattered by the difficulty.
+        match generated.zombies {
+            Some(spots) => {
+                for spot in spots {
+                    world.lay_to_sleep(spot.pos, spot.breed);
+                }
+            }
+            None => {
+                world.scatter_roamers(difficulty.roaming_zombies);
+                world.place_giants(setup.common.giants * difficulty.giants_percent as f32 / 100.0);
+            }
+        }
         world.wake_near_eyes();
         world.update_vision();
         world
     }
 
-    /// For the tests: the default "Wild" map, but at the old size of 128 tiles – smaller is faster, and the tests
-    /// were written for it. With plenty of gold, so tests that build and train don't depend on the prices – the
+    /// For the tests: a "Wild" map (not TAB's generator, the default since), at the old size of 128 tiles – smaller is
+    /// faster, and the tests were written for it. With plenty of gold, so tests that build and train don't depend on the prices – the
     /// tests about gold set it themselves. Plenty of workers, goods and power too, for the same reason – and buildings
     /// stand at once, without their build time. And the start units the tests were written for: 8 soldiers, 4 snipers,
     /// 4 rangers – whatever the default difficulty says now.
     #[cfg(test)]
     pub fn new(seed: u64) -> World {
-        let mut setup = MapSetup::default();
+        let mut setup = MapSetup { generator: mapgen::Generator::Wild, ..MapSetup::default() };
         setup.common.size = 128.0;
         let mut difficulty = data::get().difficulty("").clone();
         (difficulty.start_soldiers, difficulty.start_snipers, difficulty.start_rangers) = (8, 4, 4);
@@ -595,11 +613,13 @@ fn push_apart(pos: Vec2, other: Vec2, min_dist: f32) -> Vec2 {
 }
 
 /// The map's setup with its villages of doom as the difficulty makes them: `villages_percent` as many,
-/// `village_houses_percent` as big. The generator itself never reads `data\` – it only gets the numbers. The terrain
-/// stays the same: houses only go on open ground with a ring around them.
+/// `village_houses_percent` as big – and TAB's generator with the difficulty's zombie population (`population`). The
+/// generator itself never reads `data\` – it only gets the numbers. The terrain stays the same: houses only go on
+/// open ground with a ring around them.
 fn with_villages(setup: &MapSetup, difficulty: &Difficulty) -> MapSetup {
     let (many, big) = (difficulty.villages_percent as f32 / 100.0, difficulty.village_houses_percent as f32 / 100.0);
     let mut setup = setup.clone();
+    setup.tab.population = difficulty.population;
     setup.common.villages *= many;
     setup.common.houses_near *= big;
     setup.common.houses_edge *= big;

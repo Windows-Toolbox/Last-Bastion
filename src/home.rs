@@ -323,11 +323,15 @@ impl Home {
             return self.levels_page(col, left);
         }
 
-        for map in &data.maps.maps {
-            let picked = map.name == self.setup.map;
-            if pick(col.row(), &map.name, &format!("{} %", map.score_percent), picked) && !picked {
-                self.setup = picked_setup(&map.name, &self.setup.round);
-                self.preview_stale = true;
+        // Two side by side – a dozen maps under each other pushed the difficulty out of a 720 px window. The map's
+        // score is on the right then (the score factor below the preview).
+        for pair in data.maps.maps.chunks(2) {
+            for (r, map) in col.split(2).into_iter().zip(pair) {
+                let picked = map.name == self.setup.map;
+                if pick(r, &map.name, "", picked) && !picked {
+                    self.setup = picked_setup(&map.name, &self.setup.round);
+                    self.preview_stale = true;
+                }
             }
         }
         col.wrap(&data.game_map(&self.setup.map).about);

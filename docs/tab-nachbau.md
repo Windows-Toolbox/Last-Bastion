@@ -53,13 +53,30 @@ setz ihn um."
 
 **Schritt 3 (flüssiges Gedränge) ist fertig** – `src/sim/crowd.rs` (`move_crowd`, `neighbours`, `push_out`,
 `out_of_blocked`), aufgerufen am Ende von `move_zombies`; Felsen der Einheiten in `src/sim/units.rs` (`still`,
-`is_rock`, `shove`). Falls noch nicht committet: zuerst committen. Was er hinterlässt:
+`is_rock`, `shove`). Was er hinterlässt:
 - Geschätzt: `mass` je Art in `data\zombies.json` (Walker 1 … Fat 3,25, Riese 25), Einheiten 1 (`UNIT_MASS`).
   8 Runden × `RELAX` 0,8 pro Tick; ein Zombie behält 30 % seines letzten Schritts (`TURN`, gegen Zucken an Ecken).
 - Unsere Größen sind kleiner als TABs (Walker 0,25 statt 0,4 Durchmesser, Riese 0,9 statt 1,6) – nicht angefasst.
 - TABs Schrittrhythmus (`BellWalkingFactor`) fehlt – erst mit echten Lauf-Animationen, und dann nur im Bild.
 - TABs „angekommen, wenn 1 s lang nicht vorangekommen (innerhalb 2 Kacheln)“ / „aufgeben nach 5 s“ fehlen noch –
   unsere Ziele haben eigene Geduld (`LURE_PATIENCE`, Leerlauf-Timer).
+
+**Schritt 6 (TABs Kartengenerator) ist fertig** – `src/mapgen/tab.rs` (`generate`, `attempt_map`, `Params`), Rausch-
+Ebenen in `src/mapgen/layer.rs` (`Layer`, `spiral`), TABs Simplex-Rauschen in `src/noise.rs` (`simplex`,
+`simplex_octaves`), Landschaften als Karten „TAB BR“ … „TAB VO“ in `data\game_maps.json` (BR ist der Standard),
+`population` der Schwierigkeit, `Ore::Gold`. `World::generate_with` übernimmt Basis, Zombies (`Generated::zombies`,
+schlafend) und Beute (`LootSpot::haul`) vom Generator. Was er hinterlässt:
+- Alle Zahlen der Landschaften geschätzt (gemessen mit `tab_numbers`, `noise_quantiles` – ignorierte Tests in
+  `tab.rs`); mit Screenshots echter TAB-Karten nachstellen.
+- Unsere Ergänzung: unter 30 % der Spielfläche erreichbar → neuer Seed (`MIN_REACHED`) – sonst war bei FA etwa jede
+  zehnte Karte fast leer. TAB prüft das nicht. Anzahlen (Dörfer, Ruinen, Riesen) wachsen mit der Fläche (`TAB_AREA`).
+- Für Schritt 4: ein Dorfhaus bekommt vorerst klein 1/5, mittel 2/5, groß alle `doom_zombies` (`World::generate_with`)
+  – TABs Dörfer haben viel mehr Häuser als unsere. Die Häuser liegen wie in TAB; Schübe, Überfälle usw. fehlen.
+- Gold liegt auf der Karte, aber keine Mine baut es ab (`Resource::from_ore`) – Schritt 8 (Kohle) klärt das mit.
+- Nicht übernommen: alte Türme (Schritt 7, „neutral → Kolonie“), Raben, Vorräte, Mutanten, Deko, TABs Start-Einheiten
+  (unsere kommen von der Schwierigkeit), Kartengröße als Zweierpotenz.
+- `keep_out`, `roaming_zombies`, `villages_percent`, `giants_percent` gelten nur noch für unsere Generatoren. Ob die
+  alten (Wild, Regions …) bleiben, entscheidet der Nutzer.
 
 ---
 

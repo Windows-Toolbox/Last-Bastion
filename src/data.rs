@@ -518,6 +518,10 @@ pub struct Difficulty {
     /// Per breed: none lies closer to the command center at the start (tiles). Roaming they may come closer, like in TAB
     /// – only the giant keeps its `roam_ring`.
     pub keep_out: KeepOut,
+    /// TAB's zombie population (`FactorZombiePopulation`) for maps of TAB's generator: how many zombies it lays out
+    /// (times the map's `infected`), half the villages below 0.5, the giants (`mapgen/tab.rs`). The other maps go by
+    /// `roaming_zombies`, `keep_out` and the percentages.
+    pub population: f32,
     /// The villages of doom: this many percent as many as the map says, this many percent of its houses in each …
     pub villages_percent: u32,
     pub village_houses_percent: u32,

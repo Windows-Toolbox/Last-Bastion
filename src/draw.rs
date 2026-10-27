@@ -931,6 +931,7 @@ pub fn ore_color(ore: Ore) -> Color {
     match ore {
         Ore::Iron => Color::new(0.55, 0.33, 0.24, 1.0),
         Ore::Coal => Color::new(0.10, 0.10, 0.11, 1.0),
+        Ore::Gold => Color::new(0.85, 0.70, 0.20, 1.0),
         Ore::Stone => Color::new(0.62, 0.60, 0.54, 1.0),
         Ore::Oil => Color::new(0.24, 0.10, 0.30, 1.0),
     }

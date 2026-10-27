@@ -12,6 +12,9 @@
 //! open ground (`tools::scatter_dirt` – no farm grows there).
 //!
 //! The generators:
+//! - **TAB** (`tab.rs`, the default): They Are Billions' own generator, rebuilt from its code – it makes everything
+//!   itself (terrain, stone, iron, gold, oil, villages, ruins with loot, the zombies), none of the shared steps.
+//!   Its landscapes are maps of `data\game_maps.json`.
 //! - **Wild** (`wild.rs`): noise like in Factorio – lakes, mountain ridges, forests, winding rivers.
 //! - **Regions** (`regions.rs`): the map split into regions like in TAB; walls of rock or forest between them with
 //!   a few passes – the chokepoints you wall off.
@@ -21,10 +24,12 @@
 
 mod canyons;
 mod lanes;
+mod layer;
 mod ores;
 mod regions;
 mod rings;
 mod start;
+mod tab;
 mod tools;
 mod villages;
 mod wild;
@@ -36,6 +41,7 @@ use crate::kinds::BuildingKind;
 use crate::map::{Map, Terrain, BORDER};
 use crate::noise::Noise;
 use crate::rng::Rng;
+use crate::sim::{Breed, LootKind};
 use lanes::Lanes;
 use tools::Tiles;
 pub use villages::HouseSpot;
@@ -44,6 +50,7 @@ pub use villages::HouseSpot;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Generator {
+    Tab,
     Wild,
     Regions,
     Rings,
@@ -52,10 +59,12 @@ pub enum Generator {
 }
 
 impl Generator {
-    pub const ALL: [Generator; 5] = [Generator::Wild, Generator::Regions, Generator::Rings, Generator::Canyons, Generator::Blank];
+    pub const ALL: [Generator; 6] =
+        [Generator::Tab, Generator::Wild, Generator::Regions, Generator::Rings, Generator::Canyons, Generator::Blank];
 
     pub fn name(self) -> &'static str {
         match self {
+            Generator::Tab => "TAB",
             Generator::Wild => "Wild",
             Generator::Regions => "Regions",
             Generator::Rings => "Rings",
@@ -67,6 +76,7 @@ impl Generator {
     /// One line for the setup screen.
     pub fn about(self) -> &'static str {
         match self {
+            Generator::Tab => "They Are Billions' own generator - the landscapes are maps",
             Generator::Wild => "Noise like Factorio: lakes, ridges, forests, rivers",
             Generator::Regions => "Regions like TAB, walled off - passes are chokepoints",
             Generator::Rings => "Rings around the base with openings - a fortress",
@@ -393,6 +403,8 @@ pub struct MapSetup {
     pub map: String,
     pub generator: Generator,
     pub common: Common,
+    /// `default`: setups saved before TAB's generator have none.
+    pub tab: tab::Params,
     pub wild: wild::Params,
     pub regions: regions::Params,
     pub rings: rings::Params,
@@ -406,8 +418,9 @@ impl Default for MapSetup {
     fn default() -> MapSetup {
         MapSetup {
             map: String::new(),
-            generator: Generator::Wild,
+            generator: Generator::Tab,
             common: Common::default(),
+            tab: tab::Params::default(),
             wild: wild::Params::default(),
             regions: regions::Params::default(),
             rings: rings::Params::default(),
@@ -422,6 +435,7 @@ impl MapSetup {
     /// The values of the chosen generator (without the common ones).
     pub fn generator_fields(&mut self) -> Vec<Field<'_>> {
         match self.generator {
+            Generator::Tab => self.tab.fields(),
             Generator::Wild => self.wild.fields(),
             Generator::Regions => self.regions.fields(),
             Generator::Rings => self.rings.fields(),
@@ -430,13 +444,16 @@ impl MapSetup {
         }
     }
 
+    /// The common values that matter for the chosen generator – TAB's does everything else itself.
     pub fn common_fields(&mut self) -> Vec<Field<'_>> {
-        self.common.fields()
+        let tab = self.generator == Generator::Tab;
+        self.common.fields().into_iter().filter(|f| !tab || matches!(f.label, "Map size" | "Spawners per side")).collect()
     }
 
     /// The chosen generator's values back to the defaults.
     pub fn reset_generator(&mut self) {
         match self.generator {
+            Generator::Tab => self.tab = tab::Params::default(),
             Generator::Wild => self.wild = wild::Params::default(),
             Generator::Regions => self.regions = regions::Params::default(),
             Generator::Rings => self.rings = rings::Params::default(),
@@ -484,8 +501,26 @@ pub struct Generated {
     pub map: Map,
     pub spawners: Vec<SpawnerSpot>,
     pub houses: Vec<HouseSpot>,
-    /// One tile per pile of loot.
-    pub loot: Vec<(i32, i32)>,
+    pub loot: Vec<LootSpot>,
+    /// The command center's middle tile – the middle of the map, TAB's generator puts it on the free spot nearest it.
+    pub base: (i32, i32),
+    /// The zombies lying on the map at the start (TAB's generator) – `None`: the world scatters them by its difficulty
+    /// (`scatter_roamers`, `place_giants`).
+    pub zombies: Option<Vec<ZombieSpot>>,
+}
+
+/// A pile of loot: its tile, and what lies in it – `None`: the world rolls it (`roll_loot`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LootSpot {
+    pub tile: (i32, i32),
+    pub haul: Option<(LootKind, u32)>,
+}
+
+/// A zombie the generator puts on the map – it lies asleep there at the start (`sleep.rs`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZombieSpot {
+    pub pos: Vec2,
+    pub breed: Breed,
 }
 
 /// A start spawner: this deep and this far from the edge of the map (steps of the screen axes) – inside the ring of
@@ -509,6 +544,10 @@ pub fn generate(seed: u64, setup: &MapSetup) -> Generated {
 /// every village of doom (the tests count them).
 fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize, Vec<Vec2>) {
     let size = setup.map_size();
+    if setup.generator == Generator::Tab {
+        let (generated, villages) = tab::generate(seed, size, &setup.common, &setup.tab);
+        return (generated, 0, villages);
+    }
     let mut rng = Rng::new(seed);
     let mut tiles = Tiles::new(size);
     let center = tiles.center();
@@ -529,6 +568,7 @@ fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize, Vec<Vec2
         Generator::Rings => rings::generate(&mut tiles, &setup.rings, &mut rng, &ctx),
         Generator::Canyons => canyons::generate(&mut tiles, &setup.canyons, &mut rng, &ctx),
         Generator::Blank => tools::scatter_trees(&mut tiles, &mut rng, setup.blank.trees),
+        Generator::Tab => unreachable!("TAB's generator makes its map on its own"),
     }
 
     // The ring outside the border is open ground – the terrain ends at the border you see. Zombies coming out of a
@@ -563,7 +603,9 @@ fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize, Vec<Vec2
         map.set_deposit(x, y, Some(deposit));
     }
     let spawners = spawner_spots(size, c.spawners_per_side.round() as i32);
-    (Generated { map, spawners, houses: places.houses, loot: places.loot }, cut, places.villages)
+    let loot = places.loot.into_iter().map(|tile| LootSpot { tile, haul: None }).collect();
+    let base = (size as i32 / 2, size as i32 / 2);
+    (Generated { map, spawners, houses: places.houses, loot, base, zombies: None }, cut, places.villages)
 }
 
 /// The ways in of this map (`lanes.rs`) – none for the generators without them. They get their own random numbers:
@@ -648,6 +690,12 @@ mod tests {
         MapSetup { generator, common: Common { size: 128.0, ..Common::default() }, ..MapSetup::default() }
     }
 
+    /// Our own generators – what the shared steps promise (the ways in, the safety net, the start area, the ore) only
+    /// they keep. TAB's makes its map its own way (`tab.rs` has its tests).
+    fn ours() -> impl Iterator<Item = Generator> {
+        Generator::ALL.into_iter().filter(|&g| g != Generator::Tab)
+    }
+
     /// Tiles you can walk on, reachable from the base (4 neighbours – stricter than the units, who also go diagonally).
     fn reachable(map: &Map) -> Vec<bool> {
         let n = map.size as i32;
@@ -666,11 +714,11 @@ mod tests {
         seen
     }
 
-    /// For every generator and a few seeds: the base is free, every spawner reaches it, and there is no open place
-    /// the base can't reach.
+    /// For every generator of ours and a few seeds: the base is free, every spawner reaches it, and there is no open
+    /// place the base can't reach.
     #[test]
     fn every_generator_keeps_the_base_free_and_everything_connected() {
-        for generator in Generator::ALL {
+        for generator in ours() {
             for seed in 1..=4 {
                 let s = setup(generator);
                 let g = generate(seed, &s);
@@ -743,11 +791,12 @@ mod tests {
     }
 
     /// Every open tile reaches the base: for the zombies anywhere on the map, for your units **inside the world border**
-    /// (they can't leave it) – every generator, default values and rolled ones, full size. Before 2026-10-17 thousands of
-    /// tiles per map were only connected through the ring outside the border.
+    /// (they can't leave it) – every generator of ours, default values and rolled ones, full size. Before 2026-10-17
+    /// thousands of tiles per map were only connected through the ring outside the border. (TAB's leaves closed-off
+    /// pockets as they are – nothing lies in them.)
     #[test]
     fn units_and_zombies_reach_the_base_from_everywhere() {
-        for generator in Generator::ALL {
+        for generator in ours() {
             for seed in 1..=6u64 {
                 let mut s = MapSetup { generator, ..MapSetup::default() };
                 if seed > 3 {
@@ -795,7 +844,7 @@ mod tests {
     #[test]
     fn ore_patches_start_near_the_base_and_get_richer_further_out() {
         use crate::map::Ore;
-        for generator in Generator::ALL {
+        for generator in ours() {
             for seed in 1..=3u64 {
                 let s = MapSetup { generator, ..MapSetup::default() };
                 let map = generate(seed, &s).map;
@@ -826,7 +875,7 @@ mod tests {
             }
         }
         let count = |patches: f32| {
-            let mut s = MapSetup::default();
+            let mut s = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
             s.common.ore_patches = patches;
             let map = generate(2, &s).map;
             (0..map.size as i32)
@@ -867,7 +916,7 @@ mod tests {
             }
             (nodes, vec2(map.size as f32 / 2.0, map.size as f32 / 2.0))
         };
-        for generator in Generator::ALL {
+        for generator in ours() {
             for seed in 1..=3u64 {
                 let s = MapSetup { generator, ..MapSetup::default() };
                 let (nodes, base) = oil_nodes(&s, seed);
@@ -877,7 +926,7 @@ mod tests {
             }
         }
         let count = |groups: f32| {
-            let mut s = MapSetup::default();
+            let mut s = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
             s.common.oil_groups = groups;
             oil_nodes(&s, 2).0.len()
         };
@@ -885,9 +934,11 @@ mod tests {
         assert!(count(3.0) > count(1.0), "the slider doesn't change the oil");
     }
 
-    /// The terrain ends at the world border: the ring outside is open ground on every map, so zombies never have to
-    /// find their way through terrain out there (before 2026-10-17 the corner spawners sent theirs past the other
-    /// spawners). The spawners cover their sides – together nearly the whole length of each side, inside the ring.
+    /// The terrain ends at the world border: the ring outside is open ground on every map (grass – TAB's: dirt, only a
+    /// few of its 2 × 2 mountains reach over the border), so zombies never have to find their way through terrain out
+    /// there (before 2026-10-17 the corner spawners sent
+    /// theirs past the other spawners). The spawners cover their sides – together nearly the whole length of each side,
+    /// inside the ring.
     #[test]
     fn the_ring_is_open_and_the_spawners_cover_every_side() {
         for generator in Generator::ALL {
@@ -895,11 +946,15 @@ mod tests {
             let g = generate(4, &s);
             let n = g.map.size as i32;
             let full = g.map.full_area();
-            for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
-                if full.contains_tile(x, y) && !g.map.in_play(x, y) {
-                    assert_eq!(g.map.terrain(x, y), Terrain::Grass, "{generator:?}: ({x}, {y}) outside the border");
-                }
-            }
+            let open = if generator == Generator::Tab { Terrain::Dirt } else { Terrain::Grass };
+            let ring: Vec<Terrain> = (0..n)
+                .flat_map(|y| (0..n).map(move |x| (x, y)))
+                .filter(|&(x, y)| full.contains_tile(x, y) && !g.map.in_play(x, y))
+                .map(|(x, y)| g.map.terrain(x, y))
+                .collect();
+            let closed = ring.iter().filter(|&&t| t != open).count();
+            let allowed = if generator == Generator::Tab { ring.len() / 100 } else { 0 };
+            assert!(closed <= allowed, "{generator:?}: {closed} tiles outside the border aren't {open:?}");
             let play = g.map.play_area();
             let width = (play.max.x - play.min.x) as i32;
             for side in ["N", "S", "W", "E"] {
@@ -993,7 +1048,7 @@ mod tests {
         let full = map.full_area();
         let scale = 2.0;
         let (w, h) = (((full.max.x - full.min.x) * scale) as usize, ((full.max.y - full.min.y) * scale) as usize);
-        let base = vec2(map.size as f32 / 2.0, map.size as f32 / 2.0);
+        let base = vec2(g.base.0 as f32 + 0.5, g.base.1 as f32 + 0.5);
         let mut bytes = vec![0u8; w * h * 4];
         for py in 0..h {
             for px in 0..w {

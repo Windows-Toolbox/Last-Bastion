@@ -226,13 +226,13 @@ impl Resource {
         }
     }
 
-    /// What a mine gets out of a tile with this ore – oil isn't mined.
+    /// What a mine gets out of a tile with this ore – oil isn't mined, gold not yet (TAB's maps have it, DESIGN.md 5).
     pub fn from_ore(ore: Ore) -> Option<Resource> {
         match ore {
             Ore::Iron => Some(Resource::IronOre),
             Ore::Coal => Some(Resource::Coal),
             Ore::Stone => Some(Resource::Stone),
-            Ore::Oil => None,
+            Ore::Oil | Ore::Gold => None,
         }
     }
 }

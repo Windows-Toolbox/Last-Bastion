@@ -9,6 +9,7 @@ use crate::data;
 use crate::formation::{self, Formation};
 use crate::kinds::Resource;
 use crate::map::{to_frame, Map, Ore, Terrain};
+use crate::mapgen::Generator;
 
 /// A little game of 600 ticks with a bit of everything, returns the checksum at the end.
 /// Also uses the circle formation and `PlaceZombies` – the places with `sin`, `cos` and `atan2`.
@@ -2774,11 +2775,12 @@ fn a_crowd_spreads_its_fire() {
 /// In the fast build, it takes a minute or two:
 /// `cargo test --release balance_mini_round -- --ignored --nocapture`
 /// A new round starts with what its difficulty says (`data\game_difficulties.json`) – units, gold and wood, nothing
-/// else in store. Every difficulty, every house of a village of doom exactly as full as it says.
+/// else in store. Every difficulty, every house of a village of doom exactly as full as it says (on a map of ours –
+/// on TAB's the houses hold their share by size).
 #[test]
 fn a_new_round_starts_with_the_difficulty_values() {
     for difficulty in &data::get().difficulties.difficulties {
-        let mut setup = MapSetup::default();
+        let mut setup = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
         setup.common.size = 128.0;
         setup.round.difficulty = difficulty.name.clone();
         let world = World::generate(3, &setup);
@@ -2795,11 +2797,12 @@ fn a_new_round_starts_with_the_difficulty_values() {
 }
 
 /// A harder difficulty: more zombies roaming, fuller houses, stronger waves, a bigger constant spawn – and the
-/// special breeds closer to the base. The same map either way.
+/// special breeds closer to the base. The same map either way. On a map of ours – on TAB's the difficulty is its
+/// zombie population (`a_tab_map_round`).
 #[test]
 fn a_harder_difficulty_brings_more() {
     let make = |name: &str| {
-        let mut setup = MapSetup::default();
+        let mut setup = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
         setup.common.size = 128.0;
         setup.round.difficulty = name.to_owned();
         World::generate(3, &setup)
@@ -3648,7 +3651,7 @@ fn a_few_giants_lie_far_out() {
     let mut difficulty = data::get().difficulty("").clone();
     difficulty.roaming_zombies = 0.0;
     difficulty.giants_percent = 100;
-    let mut big_setup = MapSetup::default();
+    let mut big_setup = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
     big_setup.common.giants = 4.0;
     let count = |world: &World| world.sleep.iter().filter(|s| s.breed == Breed::Giant).count()
         + world.zombies.iter().filter(|z| z.breed == Breed::Giant).count();
@@ -4098,7 +4101,39 @@ fn a_new_round_has_villages_loot_and_dirt() {
     assert!((share - MapSetup::default().common.dirt).abs() < 0.05, "{:.0} % dirt", share * 100.0);
 }
 
-/// The start area (DESIGN.md 9.1, `mapgen/start.rs`) on every map of `data\game_maps.json`, ten seeds each – checked
+/// A round on a map of TAB's generator (the default now): the command center stands where it put the base, its
+/// zombies lie there asleep (the ones near your eyes awake) – as many as it laid out, none scattered on top – and a
+/// house holds its share of the difficulty's zombies by TAB's sizes (small 1, medium 2, big 5 of 5). The difficulty
+/// is its zombie population: more zombies, the same land.
+#[test]
+fn a_tab_map_round() {
+    let mut setup = MapSetup::default();
+    setup.common.size = 160.0;
+    let difficulty = data::get().difficulty("");
+    let world = World::generate(3, &setup);
+    let generated = mapgen::generate(3, &super::with_villages(&setup, difficulty));
+    let (bx, by) = generated.base;
+    assert_eq!(world.base, vec2(bx as f32 + 0.5, by as f32 + 0.5));
+    let cc = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter).unwrap();
+    assert_eq!(cc.center(), world.base, "the command center isn't on the base");
+    let laid_out = generated.zombies.as_ref().unwrap().len();
+    assert_eq!(world.sleep.len() + world.zombies.len(), laid_out, "not the zombies TAB's generator laid out");
+    for house in &world.doom {
+        let share = match house.size.0 {
+            2 => 1,
+            3 => 2,
+            _ => 5,
+        };
+        assert_eq!(house.inside, difficulty.doom_zombies * share / 5, "a house of {:?}", house.size);
+    }
+    let brutal = World::generate(3, &MapSetup { round: mapgen::RoundSetup { difficulty: "Brutal".into(), ..setup.round.clone() }, ..setup.clone() });
+    let zombies = |w: &World| w.sleep.len() + w.zombies.len();
+    assert!(zombies(&brutal) > zombies(&world), "{} vs. {} zombies", zombies(&brutal), zombies(&world));
+    assert!(brutal.map.same_terrain(&world.map), "the difficulty changed the land");
+}
+
+/// The start area (DESIGN.md 9.1, `mapgen/start.rs`) on every map of ours in `data\game_maps.json` (TAB's generator
+/// keeps only TAB's promises – `mapgen/tab.rs`), ten seeds each – checked
 /// with the game's own rules (`worked_tiles`), zombies aside (the start units clear them):
 /// - a sawmill finds 20 forest tiles where the power reaches – in the command center's grid, or one tesla tower
 ///   further if the clearing is wider than the grid – and a hunter cottage 15 (`MIN_FOREST` in `start.rs`),
@@ -4130,7 +4165,7 @@ fn the_start_area_works_on_every_map() {
     // No roaming zombies: placing 65,000 of them only makes the test slow.
     let mut difficulty = data::get().difficulty("").clone();
     difficulty.roaming_zombies = 0.0;
-    for map in &data::get().maps.maps {
+    for map in data::get().maps.maps.iter().filter(|m| m.setup.generator != Generator::Tab) {
         let wood_reach = if map.setup.common.base_clear + 2.0 <= grid { grid } else { grid + relay };
         for seed in 1..=10 {
             let world = World::generate_with(seed, &map.setup, &difficulty);

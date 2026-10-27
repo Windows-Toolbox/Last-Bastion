@@ -50,7 +50,7 @@
 | `src\aggro.rs`, `hunt.rs`, `flow.rs` | Wegfindung der Zombies und Einheiten (Bedrohungs-, Jagdkarte, Flow Field mit Sichtlinie) |
 | `src\formation.rs`, `vision.rs`, `grid.rs` | Formationen / Sicht und Nebel / räumliches Raster |
 | `src\map.rs` | Die Karte: Gelände, Erz/Öl, Gebäude, Weltgrenze, Sichtlinie |
-| `src\mapgen\` | Kartengeneratoren (Wild, Regions, Rings, Canyons, Blank), Wege hinein, Erz und Öl, Dörfer und Beute (`villages.rs`), Werkzeuge (auch Erde) |
+| `src\mapgen\` | Kartengeneratoren (**TAB** – `tab.rs`, seine Rausch-Ebenen `layer.rs` –, Wild, Regions, Rings, Canyons, Blank), Wege hinein, Erz und Öl, Dörfer und Beute (`villages.rs`), Werkzeuge (auch Erde) |
 | `src\mapfile.rs` | Eine Runde = eine Datei (`%APPDATA%\Last Bastion\maps\`) |
 | `src\home.rs`, `menu.rs`, `widgets.rs`, `settings.rs` | Startbildschirm und Karten-Einstellung / Esc-Menü / Knöpfe und Regler / Einstellungen |
 | `src\keys.rs`, `keymap.rs` | Welche Taste was tut (Standard, gespeichert in `settings.json`) / die Seite „Key mapping“ |
@@ -59,7 +59,7 @@
 | `src\editor.rs`, `src\undo.rs` | Das Panel des Editors (egui) / Rückgängig und Wiederholen |
 | `src\draw.rs`, `sprites.rs` | Zeichnen (Bilder, sonst Platzhalter) / Sprite-Sheets laden, Richtung und Animation wählen |
 | `src\picture.rs`, `iso.rs` | Kartenbild für Minimap und Vorschau / isometrische Kamera |
-| `src\noise.rs`, `rng.rs` | Rauschen für die Generatoren / eigener Zufallsgenerator |
+| `src\noise.rs`, `rng.rs` | Rauschen für die Generatoren (auch TABs Simplex-Rauschen) / eigener Zufallsgenerator |
 
 ## Anbindung an die Windows-Toolbox
 
@@ -101,26 +101,39 @@
   - **Custom levels** (zweiter Reiter, wie TABs „Custom Levels“): jede **im Editor gespeicherte** Karte – nicht die
     Dateien, die jede neue Runde anlegt. Ihre Runde steht in der Datei (Tage, Schwierigkeit, Wellen, Start), also nur
     Vorschau, „Start game“ und „Edit in the editor“.
-  - **Karten** (`data\game_maps.json`): **Peaceful Lowlands** (Wild wie TABs Karte: trockene Ebenen, grüne Wiesen mit
-    Hainen, große glatte Seen), Green Valley (Wild), Broken Lands (Regions), Old Fortress (Rings), Red Canyons
-    (Canyons), Open Plains (Blank mit einzelnen Waldkacheln).
+  - **Karten** (`data\game_maps.json`, je zwei nebeneinander): zuerst **TABs sechs Landschaften** mit TABs Generator
+    (Standard: **BR – Moorland**; TM Lowlands, AL Highlands, DS Wasteland, FA Caustic, VO Volcanic – Score 90–180 %).
+    Dann unsere: **Peaceful Lowlands** (Wild wie TABs Karte: trockene Ebenen, grüne Wiesen mit Hainen, große glatte
+    Seen), Green Valley (Wild), Broken Lands (Regions), Old Fortress (Rings), Red Canyons (Canyons), Open Plains
+    (Blank mit einzelnen Waldkacheln).
   - **Schwierigkeit** (Easy / Normal / Hard / Brutal, `data\game_difficulties.json`): Startgold, -holz und -einheiten,
     Streuner, wie nah jede Art ans Kommandozentrum darf, Zombies pro Dorfhaus, Wächter der Beute, Stärke der Wellen
-    und des konstanten Spawns.
+    und des konstanten Spawns. Auf TABs Karten statt Streuner und Abständen TABs **Bevölkerung** (0,6 / 1 / 1,2 / 1,5).
   - **Dauer** (`data\game_durations.json`): 10–80 Tage, jede mit eigenem Wellen-Takt.
 - **Custom setup…** (im Editor: „New map“): Generator, Regler (Maus drauf = Erklärung), Schwierigkeit und Dauer.
   „Random values“ würfelt, „Defaults“ setzt zurück. Die letzten Werte merkt sich das Spiel.
 
 | Generator | Wie |
 |---|---|
+| **TAB** | TABs eigener Generator, aus dessen Code (`src\mapgen\tab.rs`) – macht alles selbst, siehe unten. Seine Landschaften sind nur andere Zahlen |
 | **Wild** | Rauschen wie Factorio: Seen (Regler „Shore detail“: glatt bis zerfranst), Bergrücken, Wälder („Forest size“: große Wälder oder viele Haine), Flüsse. Eine Feuchte entscheidet: nass = Wald, daneben grüne Wiese, trocken = Erde |
 | **Regions** | Wie TAB: Regionen mit Wänden und **Pässen** dazwischen |
 | **Rings** | Festungsringe mit versetzten Öffnungen |
 | **Canyons** | Fels mit gewundenen Schluchten |
 | **Blank** | Nur Gras – zum Selberbauen |
 
-- **Für alle Generatoren:** Größe (96–256), freier Platz um die Basis, Spawner pro Seite, Wege hinein, Villages of
-  Doom (wie viele, Häuser nahe der Basis / am Rand), Beute, Erde, Erzfelder, Ölgruppen.
+- **TABs Generator** (Rausch-Ebenen wie TAB, mit TABs Simplex-Rauschen): Land/Wasser, Berge in 2 × 2-Blöcken, Gras,
+  Wald auf Gras und auf Erde. Das **Kommandozentrum** steht auf dem freien Platz nächst der Mitte; weniger als 18 Wald
+  in 11 Kacheln, kein Stein (4) oder Eisen (10) in der Nähe oder eingesperrt (unter 30 % der Fläche erreichbar) →
+  neuer Seed. Was es nicht erreicht, bleibt leer. **Dörfer** mit einem Haus in der Mitte und Häusern in einer Spirale
+  (klein, mittel, groß); **Ruinen** nahe der Basis mit 2–4 Haufen Beute (Gold oder eine Ware, weiter draußen
+  wertvoller); **Stein, Eisen, Gold** (gelb – statt Kohle, noch keine Mine dafür) als Flecken auf freier Erde; **Öl**
+  eine Quelle pro Block. **Zombies** aus einem Rauschen: je höher, desto mehr auf einer Kachel (1–3), weiter draußen
+  stärkere Arten; **Riesen** ab 70 Kacheln. Die Zahlen jeder Landschaft sind geschätzt (TABs `ZXRules.dat` bleibt zu).
+  Nicht übernommen: alte Türme, Raben, Vorräte, Mutanten.
+- **Für unsere Generatoren:** Größe (96–256), freier Platz um die Basis, Spawner pro Seite, Wege hinein, Villages of
+  Doom (wie viele, Häuser nahe der Basis / am Rand), Beute, Erde, Erzfelder, Ölgruppen. TABs nimmt davon nur Größe
+  und Spawner, das Startgebiet und die Wege hinein gibt es dort nicht.
 - **Erde** (braun): begehbar und bebaubar wie Gras, aber **keine Farm** – in Flecken, 40 % des offenen Bodens (Regler
   „Dirt“, nicht auf Blank). Bei Wild dort, wo es am trockensten ist.
 - **Startgebiet** (wie Factorio, `src\mapgen\start.rs`): Auf jeder Karte findet ein Sägewerk im Netz des
@@ -149,6 +162,10 @@
 - **Konstanter Spawn** (`data\spawning.json`): ab Tag 2 kleine Gruppen Walker, immer öfter; ab Tag 10 Runner statt
   Walker; ab Tag 15 / 20 / 25 / 30 kommen Riots / Infested / Spitter / Fat mit (15 / 10 / 8 / 5 % jeder Gruppe). Jede
   Gruppe kommt **dicht beieinander an einem Punkt** eines Spawners, nicht über die ganze Seite verstreut.
+- **Auf TABs Karten** legt sie der Generator (oben): auf 256 und Normal ≈ 17.000–46.000 je nach Landschaft, nahe der
+  Basis keine (10 Kacheln), Runner und Riots ab ≈ 25, Fat, Harpyie und Spitter ab ≈ 65 (BR). In einem Dorfhaus schlafen klein
+  1/5, mittel 2/5, groß alle `doom_zombies` (TABs Dörfer haben viel mehr Häuser). Der Rest dieses Abschnitts gilt
+  für unsere Karten.
 - **Wie viele (wie TAB):** fast überall, in **Grüppchen von 1–3 auf einer Kachel – nie mehr als 3** (`pack` in
   `data\roaming.json`). `roaming_zombies` der Schwierigkeit: pro 1.000 Kacheln, auf denen sie stehen können (Easy 900,
   Normal 1.500, Brutal 2.000 = eine Gruppe auf fast jeder Kachel). Auf 256 und Normal ≈ 65.000, dazu die in Dörfern

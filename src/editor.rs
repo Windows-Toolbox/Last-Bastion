@@ -621,7 +621,7 @@ impl Editor {
         });
         section(ui, "Ore", "only on open ground - oil: one 2 x 2 node", |ui| {
             ui.horizontal_wrapped(|ui| {
-                for ore in [Some(Ore::Iron), Some(Ore::Coal), Some(Ore::Stone), Some(Ore::Oil), None] {
+                for ore in [Some(Ore::Iron), Some(Ore::Coal), Some(Ore::Stone), Some(Ore::Gold), Some(Ore::Oil), None] {
                     self.tool_button(ui, Tool::Ore(ore));
                 }
             });
