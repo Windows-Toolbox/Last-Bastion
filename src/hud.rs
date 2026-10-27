@@ -518,7 +518,7 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Gate => "Gate (3 x 1, 600 HP). Your units walk through the middle, zombies don't. Can go on walls (cheaper there, but walls + gate still cost more than the gate alone). R: turn.",
         BuildingKind::Tower => "Tower (1 x 1, 800 HP). Right click it with units: up to 4 go in, shoot and see 2 tiles further and can't be hit. Needs 1 free tile to the next tower. Drag: a line.",
         BuildingKind::Sawmill => "Sawmill (2 x 2). Wood from the forest around it - the frame shows how far. Two sawmills share the forest they both reach. Needs power.",
-        BuildingKind::Mine => "Mine (2 x 2). Iron ore, coal and stone - whatever lies under it and up to 2 tiles around it (6 x 6, the frame). Put it right on the ore. Needs power.",
+        BuildingKind::Mine => "Mine (2 x 2). Iron ore, coal, stone and gold (like TAB: 20 times as much, straight into your gold) - whatever lies under it and up to 2 tiles around it (6 x 6, the frame). Put it right on the ore. Needs power.",
         BuildingKind::HunterCottage => "Hunter cottage (1 x 1). Food from the game in the forest around it. Needs power.",
         BuildingKind::FishingHut => "Fishing hut (1 x 1). Food from the water around it. Needs power.",
         BuildingKind::Farm => "Farm (3 x 3). Plants fields on the grass around it - food, a lot of it on open grass. Nothing grows on dirt (brown) or ore, and the farm itself has to stand on grass. Needs power and a wood workshop.",
@@ -1158,6 +1158,10 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     let rate = world.gather_rate(building.kind, building.tile, b, power.share(world, b));
     for r in Resource::ALL.into_iter().filter(|r| rate[r.index()] > 0) {
         cells.push((r.name(), format!("+{}", per_hour(rate[r.index()] as i64))));
+    }
+    let gold = world.gold_rate(building.kind, building.tile, b, power.share(world, b));
+    if gold > 0 {
+        cells.push(("Gold", format!("+{}", per_hour(gold as i64))));
     }
     // A market: its houses, the colonists in them, what it may sell and what it sold at the last payout. A house: what
     // its market adds.

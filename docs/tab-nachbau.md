@@ -69,7 +69,6 @@ schlafend) und Beute (`LootSpot::haul`) vom Generator. Was er hinterlässt:
   `tab.rs`); mit Screenshots echter TAB-Karten nachstellen.
 - Unsere Ergänzung: unter 30 % der Spielfläche erreichbar → neuer Seed (`MIN_REACHED`) – sonst war bei FA etwa jede
   zehnte Karte fast leer. TAB prüft das nicht. Anzahlen (Dörfer, Ruinen, Riesen) wachsen mit der Fläche (`TAB_AREA`).
-- Gold liegt auf der Karte, aber keine Mine baut es ab (`Resource::from_ore`) – Schritt 8 (Kohle) klärt das mit.
 - Nicht übernommen: alte Türme (Schritt 7, „neutral → Kolonie“), Raben, Vorräte, Mutanten, Deko, TABs Start-Einheiten
   (unsere kommen von der Schwierigkeit), Kartengröße als Zweierpotenz.
 - `keep_out`, `roaming_zombies`, `villages_percent`, `giants_percent` gelten nur noch für unsere Generatoren. Ob die
@@ -365,5 +364,8 @@ Zuerst eine Leserunde durch TABs Editor und eine Liste „TAB hat – wir haben 
 
 ## Schritt 8 – Kohle wieder dazu
 
-Nach Schritt 6: Kohle fehlt (TABs Gold liegt an ihrer Stelle). Mit dem Nutzer klären, wo und wie viel – Köhlerei und
-Gießerei brauchen sie (DESIGN.md 5).
+**Fertig.** Entschieden: Kohle bekommt in TABs Generator eine eigene Schicht wie Eisen (`coal`, `coal_from` in
+`src/mapgen/tab.rs`), Gold bleibt wie TAB. Die Mine baut Gold ab wie TABs (`Mining`: Gold-Kacheln × 20 × Zellwert) –
+`gold_per_tile` 2 in `data\buildings.json`, direkt ins Gold (`World::gold_rate`). Kohle: mindestens 10 Kacheln in ±25
+um die Basis, nie auf Stein oder Eisen, kostet nie einen neuen Seed (sonst der beste von 100 Würfen) – TABs eigene
+Prüfungen bleiben, wie sie waren. Geschätzt: `coal` 0,11 (DS 0,13), `coal_from` 15, `gold_per_tile` 2.

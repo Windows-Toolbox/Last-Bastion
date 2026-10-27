@@ -3017,6 +3017,34 @@ fn a_mine_needs_no_workshop_and_gets_every_ore() {
     assert_eq!((got(Resource::IronOre), got(Resource::Coal), got(Resource::Stone)), (1, 1, 2));
 }
 
+/// A mine on gold (TAB's) digs gold – `gold_per_tile` per tile and payout, straight into the colony's gold, and the HUD
+/// counts it as income. Stone next to it goes into the stock as before.
+#[test]
+fn a_mine_digs_gold() {
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    let spot = (bx - 9, by - 9);
+    clear_ground(&mut world, spot, 6);
+    let gold: Vec<(i32, i32)> = (0..2).flat_map(|dy| (0..3).map(move |dx| (spot.0 + dx, spot.1 + dy))).collect();
+    world.apply_orders(&[
+        Order::PaintOre { ore: Some(Ore::Gold), tiles: gold },
+        // 10 tiles of stone left of it: one stone a payout.
+        Order::PaintOre { ore: Some(Ore::Stone), tiles: (0..10).map(|k| (spot.0 - 2 + k % 2, spot.1 - 2 + k / 2)).collect() },
+    ]);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Mine, tile: spot, turned: false, editor: false }]);
+    let b = world.buildings.iter().position(|b| b.kind == BuildingKind::Mine).expect("not built");
+    assert_eq!(world.gold_rate(BuildingKind::Mine, spot, b, 1000), (6.0 * BuildingKind::Mine.stats().gold_per_tile * 1000.0) as u64);
+    no_more_zombies(&mut world);
+    world.stock.set(Resource::Stone, 0);
+    one_payout(&mut world);
+    let (before, income) = (world.score.gold_earned, world.buildings[b].paid);
+    one_payout(&mut world);
+    let dug = (6.0 * BuildingKind::Mine.stats().gold_per_tile) as u32;
+    assert_eq!(world.buildings[b].paid, dug, "the mine's gold isn't its income");
+    assert!(income == dug && world.score.gold_earned - before >= dug, "no gold dug");
+    assert!(world.stock.get(Resource::Stone) > 0, "the stone next to it isn't mined any more");
+}
+
 /// Like TAB: a mine (2 × 2, `gather_range` 2) in the middle of a big ore patch works 6 × 6 tiles – a square, the
 /// corners too, and not one tile further.
 #[test]

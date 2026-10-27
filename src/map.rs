@@ -99,7 +99,7 @@ pub enum Ore {
     /// Not a patch but nodes of exactly 2 × 2 tiles, in groups (`mapgen/ores.rs`) – later an oil pump (2 × 2) goes
     /// on top of one. Two nodes never touch, so every node can be told apart.
     Oil,
-    /// TAB's gold – its map generator puts it where our coal would be (`mapgen/tab.rs`). No mine takes it yet.
+    /// TAB's gold (`mapgen/tab.rs`): a mine on it digs gold, straight into the colony's gold (`World::gold_rate`).
     Gold,
 }
 

@@ -14,8 +14,9 @@
 //!    playing field reachable: a new seed too (ours, `MIN_REACHED`).
 //! 5. **Villages of doom:** a circle cleared, a house in the middle, houses in a spiral around it.
 //! 6. **Ruins with loot** (TAB's treasures): 2–4 piles each – gold, or a good that is worth more further out.
-//! 7. **Stone, iron, gold:** a fine noise on the free dirt, not too close to the command center – at least 4 stone
-//!    and 10 iron close to it, else rolled again. Gold instead of our coal (coal comes back later, step 8).
+//! 7. **Stone, iron, coal, gold:** a fine noise on the free dirt, not too close to the command center – at least 4
+//!    stone and 10 iron close to it, else rolled again. Coal isn't TAB's (our charcoal burners and foundries need it):
+//!    a layer of its own made like iron, also at least 10 close by.
 //! 8. **Oil:** one 2 × 2 node per block of `oil_block` tiles, with room around it.
 //! 9. **Zombies:** a noise over the free land, outside `weak_from` – the higher, the more per tile; further out the
 //!    stronger kinds (`medium_from` …). **Giants** far out (at least 70 tiles), 40 apart.
@@ -47,9 +48,9 @@ const TAB_AREA: f32 = 31_800.0;
 const RESEEDS: u32 = 40;
 /// At least this share of the playing field must be reachable from the command center, else a new seed (ours).
 const MIN_REACHED: f32 = 0.3;
-/// Stone and iron: this many rolls for enough of it near the command center (TAB) before a new seed.
+/// Stone, iron (and our coal): this many rolls for enough of it near the command center (TAB) before a new seed.
 const ORE_TRIES: u32 = 100;
-/// Units of ore in every tile of stone, iron, gold – TAB's never run out, ours do (`ore_richness` of the map).
+/// Units of ore in every tile of stone, iron, coal, gold – TAB's never run out, ours do (`ore_richness` of the map).
 const ORE_AMOUNT: f32 = 1500.0;
 /// Units of oil in every tile of a node.
 const OIL_AMOUNT: f32 = 2000.0;
@@ -82,12 +83,14 @@ pub struct Params {
     /// Ruins with loot on a TAB map: from … to (`NumTreasures`).
     pub ruins_min: f32,
     pub ruins_max: f32,
-    /// Stone, iron, gold: how much (`StoneEarthFactor` …) and no closer to the command center than this
-    /// (`StoneFormationMinDistance` …, tiles).
+    /// Stone, iron, coal, gold: how much (`StoneEarthFactor` …) and no closer to the command center than this
+    /// (`StoneFormationMinDistance` …, tiles). Coal isn't TAB's – ours, made like iron.
     pub stone: f32,
     pub stone_from: f32,
     pub iron: f32,
     pub iron_from: f32,
+    pub coal: f32,
+    pub coal_from: f32,
     pub gold: f32,
     pub gold_from: f32,
     /// One oil node per block of this many tiles (`NCellsPerOilSource`).
@@ -132,6 +135,8 @@ impl Default for Params {
             stone_from: 6.0,
             iron: 0.11,
             iron_from: 15.0,
+            coal: 0.11,
+            coal_from: 15.0,
             gold: 0.075,
             gold_from: 30.0,
             oil_block: 48.0,
@@ -168,7 +173,8 @@ impl Params {
             count("Ruins to", &mut self.ruins_max, 40.0, "At most this many ruins on a TAB map."),
             share("Stone", &mut self.stone, "TAB's StoneEarthFactor: stone on the free dirt. At least 4 tiles close to the base."),
             share("Iron", &mut self.iron, "TAB's IronEarthFactor: iron on the free dirt. At least 10 tiles within 25 of the base."),
-            share("Gold", &mut self.gold, "TAB's GoldEarthFactor: gold on the free dirt (instead of our coal - coal comes back later)."),
+            share("Coal", &mut self.coal, "Ours, not TAB's: coal on the free dirt, made like iron. At least 10 tiles within 25 of the base."),
+            share("Gold", &mut self.gold, "TAB's GoldEarthFactor: gold on the free dirt - a mine on it digs gold, 20 times as much as stone."),
             share("Zombies", &mut self.infected, "TAB's InfectedFactor: how much of the land has zombies - times the difficulty's population."),
             Field { label: "Zombie patches", value: &mut self.infected_dispersion, min: 0.01, max: 0.3, step: 0.01, show: Show::Number, help: "TAB's InfectedDispersion: small = big patches of zombies, big = many small ones." },
             tiles("Medium from", &mut self.medium_from, 120.0, "Runners and riots only this far from the base and further (TAB's MinDistanceForMediumInfected)."),
@@ -456,7 +462,7 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
         }
     }
 
-    // 7. Stone, iron, gold – on free dirt, away from the ring, the grass, the ruins and the command center.
+    // 7. Stone, iron, coal, gold – on free dirt, away from the ring, the grass, the ruins and the command center.
     let mut mineral = |rng: &mut Rng, share: f32, from: f32, gold: bool| {
         let mut layer = Layer::new(n);
         let (ox, oy) = next_offsets(rng);
@@ -487,6 +493,26 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
     };
     let stone = enough(rng, p.stone, p.stone_from, 20, 4.0)?;
     let iron = enough(rng, p.iron, p.iron_from, 50, 10.0)?;
+    // Ours: coal like iron, so the charcoal burners' and foundries' mine finds some close by too – but it never costs a
+    // new seed (TAB's own checks stay as they are): the best of the rolls if none has 10 close by. Not on stone or iron:
+    // it would take their tiles.
+    let near = (base.0 - 25, base.1 - 25, 50, 50);
+    let mut roll_coal = |rng: &mut Rng| {
+        let mut layer = mineral(rng, p.coal, p.coal_from, false);
+        layer.subtract(&stone);
+        layer.subtract(&iron);
+        layer
+    };
+    let mut coal = roll_coal(rng);
+    for _ in 1..ORE_TRIES {
+        if coal.total(near) >= 10.0 {
+            break;
+        }
+        let other = roll_coal(rng);
+        if other.total(near) > coal.total(near) {
+            coal = other;
+        }
+    }
     let gold = mineral(rng, p.gold, p.gold_from, true);
 
     // 8. Oil: one node per block, 6 × 6 around it free of everything.
@@ -506,6 +532,7 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
                             && mountains.get(cx, cy) == 0.0
                             && stone.get(cx, cy) == 0.0
                             && iron.get(cx, cy) == 0.0
+                            && coal.get(cx, cy) == 0.0
                             && gold.get(cx, cy) == 0.0
                             && land.get(cx, cy) == 1.0
                             && ruins.get(cx, cy) != 1.0
@@ -596,7 +623,7 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
         .collect();
     let mut map = Map::from_terrain(size, BORDER, terrain);
     let amount = (ORE_AMOUNT * common.ore_richness).round().max(1.0) as u32;
-    for (layer, ore) in [(&stone, Ore::Stone), (&iron, Ore::Iron), (&gold, Ore::Gold)] {
+    for (layer, ore) in [(&stone, Ore::Stone), (&iron, Ore::Iron), (&coal, Ore::Coal), (&gold, Ore::Gold)] {
         for x in 0..n {
             for y in 0..n {
                 if layer.get(x, y) >= 0.5 && !map.is_solid(x, y) {
@@ -731,7 +758,10 @@ mod tests {
                 assert!(forest >= 18, "{name} {seed}: only {forest} forest around the command center");
                 let stone = ore_in(map, (bx - 10, by - 10, 20, 20), Ore::Stone);
                 let iron = ore_in(map, (bx - 25, by - 25, 50, 50), Ore::Iron);
-                assert!(stone >= 4 && iron >= 10, "{name} {seed}: {stone} stone, {iron} iron near the command center");
+                // Coal (ours) like iron – it never costs a new seed, so a few may fall short – and gold somewhere.
+                let coal = ore_in(map, (bx - 25, by - 25, 50, 50), Ore::Coal);
+                assert!(stone >= 4 && iron >= 10 && coal >= 4, "{name} {seed}: {stone} stone, {iron} iron, {coal} coal near the command center");
+                assert!(ore_in(map, (0, 0, map.size as i32, map.size as i32), Ore::Gold) > 0, "{name} {seed}: no gold");
                 assert!(!villages.is_empty() && !g.houses.is_empty(), "{name} {seed}: no village");
 
                 let mut houses = vec![false; map.size * map.size];

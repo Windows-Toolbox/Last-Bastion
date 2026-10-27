@@ -568,11 +568,15 @@ impl Ui {
             draw_diamond(camera, vec2(x as f32 + 0.3, y as f32 + 0.3), Vec2::splat(0.4), Color::new(1.0, 1.0, 0.6, 0.6));
         }
         let rate = world.gather_rate(kind, tile, world.buildings.len(), 1000);
-        let parts: Vec<String> = Resource::ALL
+        let mut parts: Vec<String> = Resource::ALL
             .into_iter()
             .filter(|r| rate[r.index()] > 0)
             .map(|r| format!("+{:.1} {}", rate[r.index()] as f32 / 1000.0, r.name().to_lowercase()))
             .collect();
+        let gold = world.gold_rate(kind, tile, world.buildings.len(), 1000);
+        if gold > 0 {
+            parts.push(format!("+{} gold", gold / 1000));
+        }
         let every = data::get().colony.economy_every_hours;
         let text = if parts.is_empty() { "Nothing to gather here".to_owned() } else { parts.join(", ") + &format!(" per payout ({every} h)") };
         draw_text(&text, mouse.x + 14.0, mouse.y + 14.0, 18.0, Color::new(1.0, 1.0, 0.7, 1.0));

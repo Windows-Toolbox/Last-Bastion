@@ -255,7 +255,7 @@ Costs and stats live in `data\buildings.json` (12.4).
 |---|---|---|
 | **Core** | Command center | Start building, small storage, losing it = losing the game. Builds everything, trains nothing |
 | **Housing** | Tent → stone house → apartment | Upgrade when the materials and the next tier's goods are there (5.3) |
-| **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – no quarry), oil pump, farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where ore lies in rock. A later stone mine can simply get a bigger range |
+| **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – no quarry – and TAB's gold: 20 times as much, straight into the gold), oil pump, farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where ore lies in rock. A later stone mine can simply get a bigger range |
 | **Production** | Foundry (smelter), wood workshop, stone workshop, lab | Take inputs from the colony stock (5.4). The workshops make nothing yet: like TAB's, they unlock buildings (wood → stone → munitions) |
 | **Logistics and trade** | Warehouse, market, bank, road | Warehouse = storage; market = houses around it pay more, sells the surplus (5.3); bank = gold storage + credit (Dispo, 7.2); road = **units and zombies** faster |
 | **Power** | Tesla tower (pole), charcoal burner (wood), windmill, oil burning generator, coal plant, solar, battery | Charcoal burner early, eats wood; windmill big but with upkeep; solar quieter but weaker |
@@ -596,8 +596,9 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   and on dirt. The command center on the free spot nearest the middle; a new seed if fewer than 18 forest tiles lie
   within 11, if there's too little stone (4 within ±10) or iron (10 within ±25), or – ours – if less than 30 % of the
   playing field can be reached. Villages of doom (a house in the middle, a spiral of small, medium and big ones
-  around), ruins near the base with 2–4 piles of loot, stone/iron/**gold** patches on free dirt (gold instead of our
-  coal – coal comes back later, no mine takes gold yet), one oil node per block. **The zombies are the map's:** a noise
+  around), ruins near the base with 2–4 piles of loot, stone/iron/**coal**/**gold** patches on free dirt (coal is ours,
+  made like iron – at least 10 near the base, never on stone or iron, never a new seed; a mine on gold digs it like
+  TAB's, 20 times a stone tile, straight into the gold), one oil node per block. **The zombies are the map's:** a noise
   over the reachable land, 1–3 per tile by how high it is, the kind by a roll and the distance (`medium_from` …), giants
   at least 70 tiles out, 40 apart. The difficulty is TAB's **population** (`population`: how many, half the villages
   below 0.5, the giants) – not `roaming_zombies`/`keep_out`. None of the shared steps (start area, ways in, safety

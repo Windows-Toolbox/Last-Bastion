@@ -337,6 +337,10 @@ pub struct BuildingStats {
     /// … and how much each fitting tile gives per payout (at full power).
     #[serde(default)]
     pub gather_per_tile: f32,
+    /// The mine: gold per payout for every tile of gold it works (at full power) – TAB's mine digs 20 times as much
+    /// gold from a tile as stone (`World::gold_rate`).
+    #[serde(default)]
+    pub gold_per_tile: f32,
     /// The market: its houses are the ones whose middle lies on its site or this many tiles around it (`trade_area`) …
     #[serde(default)]
     pub trade_range: i32,

@@ -31,7 +31,7 @@
       "score_percent": 140,
       "setup": {
         "generator": "tab",
-        "tab": { "land": 0.88, "mountains": 0.29, "grass": 0.22, "forest_on_grass": 0.4, "forest_on_dirt": 0.2, "stone": 0.16, "iron": 0.13, "gold": 0.09, "villages_min": 5, "villages_max": 7, "village_size_min": 8, "village_size_max": 16, "infected": 0.75, "medium_from": 20, "strong_from": 35, "powerful_from": 50, "giants": 4 }
+        "tab": { "land": 0.88, "mountains": 0.29, "grass": 0.22, "forest_on_grass": 0.4, "forest_on_dirt": 0.2, "stone": 0.16, "iron": 0.13, "coal": 0.13, "gold": 0.09, "villages_min": 5, "villages_max": 7, "village_size_min": 8, "village_size_max": 16, "infected": 0.75, "medium_from": 20, "strong_from": 35, "powerful_from": 50, "giants": 4 }
       }
     },
     {

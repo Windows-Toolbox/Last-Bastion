@@ -16,7 +16,7 @@ use macroquad::math::Vec2;
 use super::World;
 use crate::data;
 use crate::kinds::{in_area, Area, BuildingKind, Resource, Source, UnitKind};
-use crate::map::Terrain;
+use crate::map::{Ore, Terrain};
 
 /// What the colony has in store – wood, stone, iron ore, coal, food. Gold is `World::gold`.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -248,7 +248,7 @@ impl World {
                 let fits = match source {
                     Source::Forest => self.map.terrain(x, y) == Terrain::Forest,
                     Source::Water => self.map.terrain(x, y) == Terrain::Water,
-                    Source::Ore => self.map.deposit(x, y).is_some_and(|d| Resource::from_ore(d.ore).is_some()),
+                    Source::Ore => self.map.deposit(x, y).is_some_and(|d| Resource::from_ore(d.ore).is_some() || d.ore == Ore::Gold),
                     Source::Fertile => self.map.terrain(x, y).is_fertile() && self.map.deposit(x, y).is_none(),
                 };
                 if fits && (own || !earlier.iter().any(|&area| in_area(area, (x, y)))) {
@@ -275,6 +275,18 @@ impl World {
             }
         }
         rate
+    }
+
+    /// The gold a gathering building of `kind` at `tile` digs per payout, in thousandths – like TAB's mine: every tile of
+    /// gold it works brings `gold_per_tile`, as much of it as the power allows (`share`, thousandths). Straight into
+    /// the colony's gold, not the stock.
+    pub fn gold_rate(&self, kind: BuildingKind, tile: (i32, i32), before: usize, share: u32) -> u64 {
+        let per_tile = (kind.stats().gold_per_tile * 1000.0).round() as u64;
+        if per_tile == 0 {
+            return 0;
+        }
+        let gold = |&(x, y): &(i32, i32)| self.map.deposit(x, y).is_some_and(|d| d.ore == Ore::Gold);
+        self.worked_tiles(kind, tile, before).iter().filter(|t| gold(t)).count() as u64 * per_tile * share as u64 / 1000
     }
 
     /// What comes into the stock per payout and what goes out of it, in thousandths per resource: the gathering
@@ -382,14 +394,23 @@ impl World {
         let power = self.power();
         for b in 0..self.buildings.len() {
             let building = &self.buildings[b];
-            if !building.works() || building.kind.gathers().is_none() {
+            if building.kind.gathers().is_none() {
                 continue;
             }
-            let rate = self.gather_rate(building.kind, building.tile, b, power.share(self, b));
+            if !building.works() {
+                self.buildings[b].paid = 0;
+                continue;
+            }
+            let share = power.share(self, b);
+            let rate = self.gather_rate(building.kind, building.tile, b, share);
             for r in Resource::ALL {
                 let limit = self.storage(r);
                 self.stock.add_milli(r, rate[r.index()], limit);
             }
+            // The gold a mine dug – it "pays" it like a house (`Building::paid`, the HUD's income).
+            let dug = (self.gold_rate(building.kind, building.tile, b, share) / 1000) as u32;
+            self.buildings[b].paid = dug;
+            self.earn(dug);
         }
         // The foundries smelt what came in – before the markets could sell the ore.
         self.smelt(&power);
@@ -405,7 +426,10 @@ impl World {
             let share = power.share(self, b);
             let building = &self.buildings[b];
             if building.infected || !building.is_built() || building.stats().gold == 0 {
-                self.buildings[b].paid = 0;
+                // A gathering building keeps what it dug above.
+                if building.kind.gathers().is_none() {
+                    self.buildings[b].paid = 0;
+                }
                 continue;
             }
             let food = building.stats().food;
@@ -432,7 +456,10 @@ impl World {
     pub(super) fn expect_first_payout(&mut self) {
         let power = self.power();
         for b in 0..self.buildings.len() {
-            self.buildings[b].paid = if self.buildings[b].is_built() { self.gold_paid(b, power.share(self, b)) } else { 0 };
+            let building = &self.buildings[b];
+            let share = power.share(self, b);
+            let dug = (self.gold_rate(building.kind, building.tile, b, share) / 1000) as u32;
+            self.buildings[b].paid = if self.buildings[b].is_built() { self.gold_paid(b, share) + dug } else { 0 };
         }
     }
 }

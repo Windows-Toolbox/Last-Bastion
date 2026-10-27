@@ -129,8 +129,8 @@
   in 11 Kacheln, kein Stein (4) oder Eisen (10) in der Nähe oder eingesperrt (unter 30 % der Fläche erreichbar) →
   neuer Seed. Was es nicht erreicht, bleibt leer. **Dörfer** mit einem Haus in der Mitte und Häusern in einer Spirale
   (klein, mittel, groß); **Ruinen** nahe der Basis mit 2–4 Haufen Beute (Gold oder eine Ware, weiter draußen
-  wertvoller); **Stein, Eisen, Gold** (gelb – statt Kohle, noch keine Mine dafür) als Flecken auf freier Erde; **Öl**
-  eine Quelle pro Block. **Zombies** aus einem Rauschen: je höher, desto mehr auf einer Kachel (1–3), weiter draußen
+  wertvoller); **Stein, Eisen, Kohle, Gold** (gelb) als Flecken auf freier Erde – Kohle ist unsere (TAB hat keine),
+  wie Eisen gelegt, mindestens 10 Kacheln nahe der Basis, nie auf Stein oder Eisen; **Öl** eine Quelle pro Block. **Zombies** aus einem Rauschen: je höher, desto mehr auf einer Kachel (1–3), weiter draußen
   stärkere Arten; **Riesen** ab 70 Kacheln. Die Zahlen jeder Landschaft sind geschätzt (TABs `ZXRules.dat` bleibt zu).
   Nicht übernommen: alte Türme, Raben, Vorräte, Mutanten.
 - **Für unsere Generatoren:** Größe (96–256), freier Platz um die Basis, Spawner pro Seite, Wege hinein, Villages of
@@ -151,6 +151,8 @@
 - **Erz:** Eisenerz (rostbraun), Kohle (schwarz), Stein (hellgrau) als Felder; neben der Basis je ein kleines (Stein
   12–16 Kacheln weg, Eisen und Kohle 14–24 – ein, zwei Tesla-Türme), draußen größer und reicher. Abgebaut von der **Mine** –
   am besten mitten aufs Feld, sie baut auch das Erz unter sich ab.
+- **Gold** (gelb, nur auf TABs Karten): eine Mine darauf bringt wie in TAB das 20-Fache – 2 Gold pro Kachel und
+  Abrechnung, direkt ins Gold (zählt als Einnahme der Mine).
 - **Öl:** Quellen von genau **2 × 2 Kacheln** (lila mit schwarzer Lache), berühren sich nie. Neben der Basis eine
   einzelne, draußen Gruppen von 2 bis 6.
 
