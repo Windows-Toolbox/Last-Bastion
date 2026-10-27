@@ -896,10 +896,10 @@ Same seed + same orders → **the same state, bit for bit**. Rules for the simul
 Goal: far more settings per map. TAB's editor (Info, Painter, Entities, Events) is the model for the first steps,
 StarCraft 2's (regions, triggers, players and AI, data) for what follows.
 
-- **Waves today:** a new round turns `spawning.json` + duration + difficulty into a concrete list – `waves` in the map
-  file (tick, count, breed, from where, final, reveal; one entry per breed and moment) – and a copy of the constant
-  spawn (`constant_spawn`). From then on the file counts: the editor's "Waves" tab edits that list, `data\` only
-  changes new maps. Changing the days in the editor moves only the final wave.
+- **Events today:** a new round turns TAB's survival plan (`spawning.json`) + days + population into its `events` (map
+  format 5: hour, random offset, repeat, growth, notice, spread, final, reveal, victory, groups). From then on the file
+  counts: the editor's "Events" tab edits them, `data\` only changes new maps. Changing the days moves only the
+  victory.
 - **Steps:**
   1. **UI foundation:** fields to type numbers and text into, drop-downs, scrolling lists, a properties panel, dialogs –
      the column of +/- buttons doesn't carry many settings. **egui** – in the editor, and hidden in the game for the dev tools (12.6). **Undo/redo.**

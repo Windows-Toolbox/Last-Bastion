@@ -357,8 +357,33 @@ Roads, Fortress, Pipes, Belts), `ZXLevelEvent.cs` (Events = Schritt 5), `ZX.Edit
 freischalten, zufällige Häuser infizieren, Zufall, Ton an/aus, Zug schicken/ausladen, Meldung, Fenster),
 `ZXLevelCondition.cs`, `ZXMapCondition.cs`.
 
-**Bei uns heute:** `src/editor.rs`, `src/undo.rs`, `src/mapfile.rs` (Format 4), DESIGN.md 12.9 (Schritte 1–8).
+**Bei uns heute:** `src/editor.rs`, `src/undo.rs`, `src/mapfile.rs` (Format 5), DESIGN.md 12.9 (Schritte 1–8).
 Zuerst eine Leserunde durch TABs Editor und eine Liste „TAB hat – wir haben – fehlt" mit dem Nutzer abstimmen.
+
+### Leserunde: TAB hat – wir haben – fehlt
+
+TABs Editor (`FMain.cs`) hat diese Reiter. „Fehlt" ist, was Schritt 7 bauen könnte – ohne TABs freie Skriptsprache
+(ZXCode): wo TAB Code erwartet, wählen wir aus einer festen Liste (Sätze wie in DESIGN.md 12.9, Schritt 6).
+
+| TAB-Reiter | TAB hat | Wir haben | Fehlt |
+|---|---|---|---|
+| **Info** | Name, Autor, Beschreibung, Schwierigkeits-Etikett, Vorschaubild | Name (Reiter Map), Schwierigkeit und Tage der Runde | Autor, Beschreibung, Vorschaubild – auch in „Custom levels" zeigen |
+| **Map** | Karte leeren, Raster-/Bau-Grenze anzeigen, Mauskoordinaten, zufällige Generierung (Random/Manual, Landschaft, Bevölkerung) – eine Karte kann bei jedem Start neu erzeugt werden (`ForceRandomGeneration`) | New map mit Generator und Reglern, Spielfläche ziehen, Raster-Größe, Undo/Redo, Test-Modus | Karte leeren; Mauskoordinaten; **„bei jedem Start neu erzeugen"** (Events, Skripte, Ziele bleiben, die Karte ist jedes Mal neu) |
+| **Painter** | Ebenen Terrain (Erde, Wasser, Gras, Abgrund), Objekte (Berg, Baum, Gold, Stein, Eisen), Infizierte (je Art Stufe 1–3: Weak, Runner, Medium, Strong, Powerful, Ultra, Harpyie, Venom, Chubby), Straßen, Festung, Rohre, Förderbänder (Deko); Pinsel rund/eckig, Breite | Gelände, Erz, Öl, Pinselgröße, Zombie-Pinsel je Art 0–3, Riese einzeln | Pinselform rund/eckig; Straßen und die Deko-Ebenen (nur Bild – Grafik fehlt uns ohnehin) |
+| **Entities** | Vorlagen nach Kategorien (alle Gebäude, Einheiten, Ruinen, Beute, Vorräte, Dörfer, Deko, Spawner …); Liste aller gesetzten mit Filter, Bearbeiten, Klonen, Hinspringen, Löschen; **Eigenschaften je Objekt:** Name-ID (für Skripte), eigener Name/Text, **Team** (Kolonie, Zombie, neutral, neutral-beitretbar), Leben %, infiziert, Veteran, Symbol auf der Minimap, Schild-Text, Skript beim Beitreten, Spawner-Name | Einheiten, Gebäude, Zombies, Dorfhäuser, Beute, Spawner (Eigenschaften-Fenster); Radierer; Entf löscht Gebäude | Liste der gesetzten Objekte (Filter, Hinspringen, Klonen, Löschen); **Eigenschaften je Objekt** (Name-ID, Name/Text, Leben %, infiziert, Veteran, Minimap-Symbol, Schild-Text); **Besitzer** neutral / neutral-beitretbar (= DESIGN 12.9 Schritt 7 „Owner") |
+| **Events** | (Schritt 5) | Events wie TAB | Skript beim Start/Ende eines Events, Bedingung, freier Seiten-Ausdruck, Musik, `MaxTime`, eigenes Tempo, „stürmt nicht" |
+| **Game Narrative** | Skripte bei Spielstart, Sieg, Niederlage; **Ziele:** Sieg- und Niederlage-Bedingungen (mit Fortschritt in %), „mindestens N Kolonisten", „die letzte Welle überleben" | Sieg nach Zeit (Event „Wins"), Sieg wenn die Schlusswelle tot ist | Skripte bei Start/Sieg/Niederlage; Ziele aus einer festen Liste (Kolonisten ≥ N, Zeit, Event vorbei, Gebäude steht/fällt, Zombies getötet …) mit Fortschritt |
+| **Skript-Aktionen** | Block, Auswahl (Fenster mit Knöpfen), Schleife/Abbruch, Zufall (Gewichte), Einheiten erzeugen (aus Spawnern, stürmen?), Bonus-Objekte geben, Ressourcen geben/nehmen, Technik freischalten, zufällige Häuser infizieren, Ton an/aus, Meldung, Fenster, Zug schicken/ausladen, freier Code | – | alle außer freiem Code und Zug (haben wir nicht); Technik freischalten erst mit einem Forschungsbaum |
+| **Custom Commands** | ein eigener Knopf am Kommandozentrum, der ein Skript startet | – | der Knopf |
+| **Variables** | Symbole für Objekte (Name-ID), eigene Variablen, ZXCode-Referenz | – | eigene Zähler/Schalter für Bedingungen (ohne Code) |
+| **Steam Workshop** | Veröffentlichen | – | später (kein Steam) |
+
+Was wir **mehr** haben als TAB: Undo/Redo, Test-Modus im selben Fenster, Spielfläche frei ziehen, Raster-Größe,
+Events mit mehreren Gruppen, Spawner schräg/gerade.
+
+**Entschieden (Nutzer):** alle drei Teile bauen, in dieser Reihenfolge: (a) Info + Karte + Pinsel, (b) Objekte: Liste
+und Eigenschaften mit Besitzer neutral / neutral-beitretbar, (c) Skripte, Aktionen, Ziele, eigener Knopf am
+Kommandozentrum, eigene Zähler. Ohne Steam-Workshop und Deko-Ebenen.
 
 ---
 
