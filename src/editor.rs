@@ -236,6 +236,12 @@ pub struct Editor {
     map_name_edit: Option<String>,
     /// Name of the map – the file name when saving.
     pub map_name: String,
+    /// TAB's "Info" of the map, and whether the game makes it anew every start – kept here until it's saved (`game.rs`).
+    pub info: MapInfo,
+    /// The tile under the mouse – shown at the bottom of the panel (TAB's "X 50 Y 60").
+    mouse_tile: Option<(i32, i32)>,
+    /// The brush round (big ones a rough circle) or square, like TAB's pencil shape.
+    pub square_brush: bool,
     /// What map this is (generator, seed, days) – set by `game.rs`.
     pub map_info: String,
     /// What came of the last "Save" – set by `game.rs`.
@@ -284,6 +290,9 @@ impl Editor {
             name_edit: None,
             map_name_edit: None,
             map_name: "Untitled".to_owned(),
+            info: MapInfo::default(),
+            mouse_tile: None,
+            square_brush: false,
             map_info: String::new(),
             status: None,
             request: None,
@@ -304,9 +313,10 @@ impl Editor {
         }
     }
 
-    /// Every frame: the building `ui.rs` has on the mouse – its button is lit.
-    pub fn sync(&mut self, placing: Option<BuildingKind>) {
+    /// Every frame: the building `ui.rs` has on the mouse – its button is lit – and the tile under the mouse.
+    pub fn sync(&mut self, placing: Option<BuildingKind>, mouse_tile: (i32, i32)) {
         self.placing = placing;
+        self.mouse_tile = Some(mouse_tile);
     }
 
     /// The drop: `drop` zombies around `center`, in the radius of the brush – at least as big as the crowd needs.
@@ -392,14 +402,15 @@ impl Editor {
         }
     }
 
-    /// The tiles the brush covers around `center`: a square for small brushes, a rough circle for big ones.
+    /// The tiles the brush covers around `center`: a square for small brushes, a rough circle for big ones – or a
+    /// square always (`square_brush`).
     pub fn brush_tiles(&self, center: (i32, i32)) -> Vec<(i32, i32)> {
         let r = self.brush / 2;
         let mut tiles = Vec::new();
         for dy in -r..=r {
             for dx in -r..=r {
                 // r · r + r: a circle that still contains the corners of a 3 × 3 square.
-                if dx * dx + dy * dy <= r * r + r {
+                if self.square_brush || dx * dx + dy * dy <= r * r + r {
                     tiles.push((center.0 + dx, center.1 + dy));
                 }
             }
@@ -439,7 +450,11 @@ impl Editor {
                     Tab::Events => events_tab(ui, world, orders),
                 });
                 ui.separator();
-                ui.label(RichText::new(self.hint()).small().weak());
+                let hint = match self.mouse_tile {
+                    Some((x, y)) => format!("{}   (tile {x}, {y})", self.hint()),
+                    None => self.hint().to_owned(),
+                };
+                ui.label(RichText::new(hint).small().weak());
             });
         self.properties_window(ctx, world, enabled, orders);
         keep_focus_for_text(ctx);
@@ -525,6 +540,7 @@ impl Editor {
                 ui.label(RichText::new(status).weak());
             }
         });
+        self.info_section(ui, world, orders);
         section(ui, "Round", "", |ui| {
             // `Grid`: a table – the names in one column, the fields in the next, `end_row` starts a new line.
             egui::Grid::new("round").num_columns(2).show(ui, |ui| {
@@ -550,6 +566,35 @@ impl Editor {
         });
         self.play_section(ui, world, orders);
         self.grid_section(ui, world, orders);
+    }
+
+    /// TAB's "Info": author, description, a picture for the list of custom levels (a PNG next to the map file) – and
+    /// TAB's "random generation": the game makes the map anew every start. Not part of the world – no undo, saved with
+    /// the file. "Clear map": everything off the map, all grass – spawners, events and the round stay (undo brings it
+    /// back).
+    fn info_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        section(ui, "Info", "shown with the custom levels", |ui| {
+            egui::Grid::new("info").num_columns(2).show(ui, |ui| {
+                ui.label("Author");
+                ui.add(TextEdit::singleline(&mut self.info.author).char_limit(MAX_NAME).desired_width(f32::INFINITY));
+                ui.end_row();
+                ui.label("Picture");
+                ui.add(TextEdit::singleline(&mut self.info.picture).char_limit(64).hint_text("file.png next to the map").desired_width(f32::INFINITY));
+                ui.end_row();
+            });
+            ui.label("Description");
+            ui.add(TextEdit::multiline(&mut self.info.description).char_limit(600).desired_rows(3).desired_width(f32::INFINITY));
+            ui.checkbox(&mut self.info.regenerate, "New map every start")
+                .on_hover_text("Like TAB's random generation: the game makes the map anew from its setup at every start - the round and the events stay. Only for maps made by a generator.");
+            if ui.button("Clear map").on_hover_text("Everything off the map, all of it grass - spawners, events and the round stay").clicked() {
+                // The eraser, the grass and "no ore" over every tile – three orders, so undo takes them back as one step.
+                let n = world.map.size as i32;
+                let all: Vec<(i32, i32)> = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).collect();
+                orders.push(Order::RemoveAt { tiles: all.clone() });
+                orders.push(Order::PaintOre { ore: None, tiles: all.clone() });
+                orders.push(Order::PaintTerrain { terrain: Terrain::Grass, tiles: all });
+            }
+        });
     }
 
     /// "Playing field": the world border – where units may go, the camera and the minimap. Drag its edges on the map
@@ -781,6 +826,10 @@ impl Editor {
 
     fn brush_size(&mut self, ui: &mut Ui) {
         section(ui, "Brush size", "", |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.square_brush, false, "Round");
+                ui.selectable_value(&mut self.square_brush, true, "Square");
+            });
             ui.add(Slider::new(&mut self.brush, 1..=41).suffix(" tiles"));
             // Odd, so the brush has a middle tile – an even size would paint like the next smaller one
             // (`brush_tiles`). `|= 1`: sets the lowest bit, 4 becomes 5.
@@ -884,7 +933,7 @@ fn event_box(ui: &mut Ui, i: usize, event: &Event, world: &World, orders: &mut V
             ui.add(DragValue::new(&mut changed.random_hours).range(0..=24 * MAX_DAYS).prefix("+ up to ").suffix(" h"))
                 .on_hover_text("TAB's random offset: rolled when the round starts");
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add(DragValue::new(&mut changed.every_hours).range(0..=24 * MAX_DAYS).prefix("every ").suffix(" h"))
                 .on_hover_text("Again every this many hours - 0: once");
             if changed.every_hours > 0 {
@@ -1134,4 +1183,20 @@ fn keep_focus_for_text(ctx: &egui::Context) {
 /// egui's memory (`TextEdit::load_state`) – a button that has the focus doesn't.
 fn text_has_focus(ctx: &egui::Context) -> bool {
     ctx.memory(|memory| memory.focused()).is_some_and(|id| TextEdit::load_state(ctx, id).is_some())
+}
+
+/// TAB's "Info" of a map (and its random generation) as the editor shows it – out of the map file and back into it
+/// (`game.rs`).
+#[derive(Clone, Default, PartialEq)]
+pub struct MapInfo {
+    pub author: String,
+    pub description: String,
+    pub picture: String,
+    pub regenerate: bool,
+}
+
+impl MapInfo {
+    pub fn of(file: &crate::mapfile::MapFile) -> MapInfo {
+        MapInfo { author: file.author.clone(), description: file.description.clone(), picture: file.picture.clone(), regenerate: file.regenerate }
+    }
 }

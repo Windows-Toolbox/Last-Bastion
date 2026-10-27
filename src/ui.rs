@@ -691,7 +691,7 @@ impl Ui {
 
     pub fn handle_input(&mut self, world: &World, camera: &mut Camera, orders: &mut Vec<Order>, dt: f32) {
         self.forget_dead(world);
-        self.editor.sync(self.placing);
+        self.editor.sync(self.placing, tile_of(camera.screen_to_world(Vec2::from(mouse_position()))));
         // What the editor's panel did this frame (it ran before, `Game::frame`): a building button hangs the building
         // on the mouse; a tool taken in hand takes off whatever is on it – a building, a command waiting for its target.
         if let Some(place) = self.editor.place.take() {

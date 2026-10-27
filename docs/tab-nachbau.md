@@ -385,6 +385,11 @@ Events mit mehreren Gruppen, Spawner schräg/gerade.
 und Eigenschaften mit Besitzer neutral / neutral-beitretbar, (c) Skripte, Aktionen, Ziele, eigener Knopf am
 Kommandozentrum, eigene Zähler. Ohne Steam-Workshop und Deko-Ebenen.
 
+**(a) ist fertig:** `MapFile` hat `author`, `description`, `picture`, `regenerate` (`world_to_play`: neue Karte aus
+`setup`, Runde und Events aus der Datei); im Editor Abschnitt „Info" (`Editor::info_section`, `MapInfo`), „Clear map"
+(Radierer, kein Erz, Gras über alles – drei Befehle, ein Undo-Schritt), die Kachel unter der Maus unten im Panel,
+Pinsel rund/eckig (`square_brush`); der Startbildschirm zeigt Autor, Beschreibung und das Bild (`level_picture`).
+
 ---
 
 ## Schritt 8 – Kohle wieder dazu

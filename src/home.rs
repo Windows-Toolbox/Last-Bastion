@@ -83,6 +83,8 @@ pub struct Home {
     levels: Vec<Entry>,
     level_scroll: usize,
     level: Option<(PathBuf, MapFile)>,
+    /// The picked level's own picture (`MapFile::picture`, a PNG next to its file) – shown instead of the map.
+    level_picture: Option<Texture2D>,
     /// The edge of the map in the preview right now – the setup's, or the picked level's (`draw_preview`).
     preview_size: usize,
     /// The page "Key mapping" (`keymap.rs`) – the same as in the Esc menu.
@@ -129,6 +131,7 @@ impl Home {
             levels: Vec::new(),
             level_scroll: 0,
             level: None,
+            level_picture: None,
             preview_size: 0,
             keymap: KeyMap::new(),
         }
@@ -387,8 +390,12 @@ impl Home {
 
     /// Picks a custom level: its file is read (for the preview and what it says about its round).
     fn pick_level(&mut self, path: PathBuf) {
+        self.level_picture = None;
         match MapFile::load(&path) {
-            Ok(file) => self.level = Some((path, file)),
+            Ok(file) => {
+                self.level_picture = level_picture(&path, &file);
+                self.level = Some((path, file));
+            }
             Err(e) => {
                 self.level = None;
                 self.message = Some(format!("Couldn't load it: {e}"));
@@ -435,16 +442,27 @@ impl Home {
         // Right side: the preview, what the level is, the buttons.
         let h = screen_height();
         let right = Rect::new(left.right() + 16.0, 16.0, screen_width() - left.right() - 32.0, h - 32.0);
-        self.draw_preview(Rect::new(right.x, right.y, right.w, right.h - 130.0));
+        // Its own picture (TAB's preview image), else the map; a description takes room below it.
         let level = self.level.as_ref().map(|(_, file)| file);
+        let text_h = if level.is_some_and(|f| !f.description.is_empty()) { 210.0 } else { 130.0 };
+        let area = Rect::new(right.x, right.y, right.w, right.h - text_h);
+        match &self.level_picture {
+            Some(picture) => draw_fitted(picture, area),
+            None => self.draw_preview(area),
+        }
         if let Some(file) = level {
             let difficulty = &data::get().difficulty(&file.round.difficulty).name;
             let length = match file.round.days {
                 0 => "no set length".to_owned(),
                 days => format!("{days} days ({})", play_time(days)),
             };
-            draw_text(format!("{} - {difficulty} - {length}", file.name), right.x, right.bottom() - 98.0, 24.0, WHITE);
-            draw_text("Custom level - its round is in the file: days, difficulty, waves, the start.", right.x, right.bottom() - 70.0, 19.0, ACCENT);
+            let by = if file.author.is_empty() { String::new() } else { format!(" - by {}", file.author) };
+            draw_text(format!("{}{by} - {difficulty} - {length}", file.name), right.x, right.bottom() - 98.0, 24.0, WHITE);
+            let kind = if file.regenerate { "a new map every start, " } else { "" };
+            draw_text(format!("Custom level - {kind}its round is in the file: days, difficulty, waves, the start."), right.x, right.bottom() - 70.0, 19.0, ACCENT);
+            if !file.description.is_empty() {
+                crate::hud::draw_wrapped(&file.description, right.x, right.bottom() - text_h + 30.0, right.w, 18.0, 4, WHITE);
+            }
         } else if let Some(message) = &self.message {
             draw_text(message, right.x, right.bottom() - 70.0, 19.0, ACCENT);
         }
@@ -740,4 +758,23 @@ fn ago(age: Duration) -> String {
         3600..86400 => format!("{} h ago", s / 3600),
         _ => format!("{} days ago", s / 86400),
     }
+}
+
+/// A level's own picture (`MapFile::picture`): the PNG of that name next to its file – `None` if it has none, or the
+/// file isn't there or no PNG.
+fn level_picture(path: &std::path::Path, file: &MapFile) -> Option<Texture2D> {
+    if file.picture.is_empty() {
+        return None;
+    }
+    let bytes = fs::read(path.parent()?.join(&file.picture)).ok()?;
+    let image = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok()?;
+    Some(Texture2D::from_image(&image))
+}
+
+/// `texture` as big as fits into `area`, its shape kept, in the middle.
+fn draw_fitted(texture: &Texture2D, area: Rect) {
+    let scale = (area.w / texture.width()).min(area.h / texture.height());
+    let (w, h) = (texture.width() * scale, texture.height() * scale);
+    let params = DrawTextureParams { dest_size: Some(vec2(w, h)), ..Default::default() };
+    draw_texture_ex(texture, area.x + (area.w - w) / 2.0, area.y + (area.h - h) / 2.0, WHITE, params);
 }

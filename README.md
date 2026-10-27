@@ -102,7 +102,8 @@
   **Score-Faktor** (Karte × Schwierigkeit × Dauer; eine Punktzahl gibt es noch nicht).
   - **Custom levels** (zweiter Reiter, wie TABs „Custom Levels“): jede **im Editor gespeicherte** Karte – nicht die
     Dateien, die jede neue Runde anlegt. Ihre Runde steht in der Datei (Tage, Schwierigkeit, Wellen, Start), also nur
-    Vorschau, „Start game“ und „Edit in the editor“.
+    Vorschau (oder ihr eigenes Bild), Autor, Beschreibung, „Start game“ und „Edit in the editor“. Mit „New map every
+    start“ macht das Spiel die Karte bei jedem Start neu (wie TABs zufällige Generierung) – Runde und Events bleiben.
   - **Karten** (`data\game_maps.json`, je zwei nebeneinander): zuerst **TABs sechs Landschaften** mit TABs Generator
     (Standard: **BR – Moorland**; TM Lowlands, AL Highlands, DS Wasteland, FA Caustic, VO Volcanic – Score 90–180 %).
     Dann unsere: **Peaceful Lowlands** (Wild wie TABs Karte: trockene Ebenen, grüne Wiesen mit Hainen, große glatte
@@ -491,8 +492,8 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 
 | Tab | Was |
 |---|---|
-| **Map** | Name (= Dateiname), Save, Close, New map, Tage, Startgold, Startholz, **Playing field** (die Weltgrenze wie SC2s Map Bounds: „Drag the border“ – Kante greifen und ziehen, innen ganz verschieben – oder Breite/Höhe tippen; das Gelände bleibt, nur die Grenze wandert; „Like a new map“ setzt zurück), **Grid** (die ganze Karte darum, wie SC2s Map Size: Apply – wächst/schrumpft an allen Seiten, alles bleibt, wo es ist, neues Land ist Gras; Undo geht) |
-| **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinselgröße |
+| **Map** | Name (= Dateiname), Save, Close, New map, **Info** wie TAB (Autor, Bild – eine PNG neben der Kartendatei –, Beschreibung, **New map every start**, **Clear map**: alles runter, alles Gras – Spawner, Events, Runde bleiben), Tage, Startgold, Startholz, **Playing field** (die Weltgrenze wie SC2s Map Bounds: „Drag the border“ – Kante greifen und ziehen, innen ganz verschieben – oder Breite/Höhe tippen; das Gelände bleibt, nur die Grenze wandert; „Like a new map“ setzt zurück), **Grid** (die ganze Karte darum, wie SC2s Map Size: Apply – wächst/schrumpft an allen Seiten, alles bleibt, wo es ist, neues Land ist Gras; Undo geht) |
+| **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinsel **rund oder eckig** und seine Größe |
 | **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies: **Pinsel wie TAB** (pro Kachel ein Regler je Art, 0–3; nochmal drübermalen füllt nur auf), **Drop** (eine Menge einer Art), **Giant** (einer pro Klick) – schlafend/bummelnd oder stürmend, **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Periodic mit Sekunden und Anzahl / Off) |
 | **Events** | Sofort-Wellen und **TABs Events**: Name, Tag und Stunde **+ bis zu** Stunden Zufall, **alle** so viele Stunden, so oft, **Wachstum** pro Mal (mit Obergrenze), **Announce** (so viele Stunden vorher, Countdown, Minikarte – aus: still), **Spread** (Quadrat in Kacheln), **Final** (ruft alle Zombies), **Reveal** (deckt auf), **Wins** (Sieg, wenn es kommt), **Wins when dead** – und **Gruppen**: woher (1 zufälliger Spawner, 1–4 zufällige Seiten oder **ausgewählte Spawner** per Häkchen) und **mehrere Arten** mit Anzahl **von–bis** („+ breed“, „+ group“) |
 | **View** (immer) | All / Player / Zombies – durch wessen Augen man schaut |

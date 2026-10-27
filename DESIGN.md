@@ -909,6 +909,9 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      the simulation is deterministic (dice included); new orders need nothing extra for it.
   2. **Map settings (TAB's Info):** every value of the difficulty and duration per map (start, `keep_out`, zombies per
      house, wave plan – planned anew from rules or by hand), description; the constant spawn's specials.
+     *In the prototype:* TAB's Info (author, description, a picture next to the map file – shown with the custom
+     levels), "New map every start" (TAB's random generation: the round and the events stay), "Clear map", the tile
+     under the mouse, a round or square brush.
      *In the prototype:* the **playing field** (the world border) dragged anywhere and to any size, and the **grid**
      around it (grows or shrinks on every side through the map file, new ground is grass) – like SC2's map bounds and
      map size; waves with **groups** (several breeds, chosen spawners by name), stages of the constant spawn with

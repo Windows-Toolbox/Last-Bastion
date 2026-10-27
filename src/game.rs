@@ -11,7 +11,7 @@ use macroquad::prelude::*;
 use crate::app::Program;
 use crate::data;
 use crate::draw::{self, Fog};
-use crate::editor::{EditorRequest, Mode, Sight};
+use crate::editor::{EditorRequest, MapInfo, Mode, Sight};
 use crate::home;
 use crate::hud::{self, Button, Layout};
 use crate::iso::Camera;
@@ -103,9 +103,13 @@ impl Game {
 
     /// A map from its file – to play (game) or to edit (editor). `Err` if the file doesn't add up.
     pub fn open(file: MapFile, path: Option<PathBuf>, settings: Settings, program: Program) -> Result<Game, String> {
-        let world = file.to_world()?;
+        let world = match program {
+            Program::Game => file.world_to_play(crate::app::random_seed())?,
+            Program::Editor => file.to_world()?,
+        };
         let mut ui = Ui::new(settings, program == Program::Editor);
         ui.editor.map_name = file.name.clone();
+        ui.editor.info = MapInfo::of(&file);
         ui.editor.map_info = file.info();
         Ok(Game {
             program,
@@ -336,9 +340,14 @@ impl Game {
         if let Some(file) = self.path.as_ref().and_then(|path| MapFile::load(path).ok()) {
             self.file = file;
         }
-        match self.file.to_world() {
+        let world = match self.program {
+            Program::Game => self.file.world_to_play(crate::app::random_seed()),
+            Program::Editor => self.file.to_world(),
+        };
+        match world {
             Ok(world) => {
                 self.ui.editor.map_name = self.file.name.clone();
+                self.ui.editor.info = MapInfo::of(&self.file);
                 self.reset(world);
             }
             Err(e) => self.ui.alert(&format!("Couldn't load the map: {e}")),
@@ -394,7 +403,16 @@ impl Game {
     /// What the map's file would hold if it were saved now. `..`: all other fields from `from_world`. Whether it's a
     /// custom level stays as the file says until it's saved (`write_file`).
     fn current_file(&self) -> MapFile {
-        MapFile { setup: self.file.setup.clone(), custom: self.file.custom, ..MapFile::from_world(self.edited(), &self.ui.editor.map_name) }
+        let info = &self.ui.editor.info;
+        MapFile {
+            setup: self.file.setup.clone(),
+            custom: self.file.custom,
+            author: info.author.clone(),
+            description: info.description.clone(),
+            picture: info.picture.clone(),
+            regenerate: info.regenerate && self.file.setup.is_some(),
+            ..MapFile::from_world(self.edited(), &self.ui.editor.map_name)
+        }
     }
 
     /// Editor: Edit ↔ Test. The test plays the map as the game would – from its file as it would be saved now, on a

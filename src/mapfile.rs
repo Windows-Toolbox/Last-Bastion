@@ -41,6 +41,18 @@ pub struct MapFile {
     /// The file every new round writes for itself isn't one. `default`: files before format 4 aren't.
     #[serde(default)]
     pub custom: bool,
+    /// TAB's "Info": who made it, what it's about, and a picture for the list of custom levels – the name of a PNG file
+    /// next to the map file. Empty: none (and not written).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub picture: String,
+    /// TAB's `ForceRandomGeneration`: every time the game starts it (and at "Restart"), the map is made anew from `setup`
+    /// with a new seed – its round and its events stay the file's (`world_to_play`). The editor shows the saved one.
+    #[serde(default)]
+    pub regenerate: bool,
     pub seed: u64,
     pub size: usize,
     pub border: usize,
@@ -293,6 +305,10 @@ impl MapFile {
             version: VERSION,
             name: name.to_owned(),
             custom: false,
+            author: String::new(),
+            description: String::new(),
+            picture: String::new(),
+            regenerate: false,
             seed: world.seed,
             size: world.map.size,
             border: world.map.border,
@@ -363,6 +379,23 @@ impl MapFile {
         world.events = if self.version < 5 && self.events.is_empty() { old_events(&self.waves) } else { self.events.clone() };
         world.roll_events();
         world.settle();
+        Ok(world)
+    }
+
+    /// The world the game plays (not the editor): the file's – or, with `regenerate` and a known setup, a new map from
+    /// the setup and `seed` with the file's round and events on it (TAB's `ForceRandomGeneration`).
+    pub fn world_to_play(&self, seed: u64) -> Result<World, String> {
+        let Some(setup) = self.setup.as_ref().filter(|_| self.regenerate) else {
+            return self.to_world();
+        };
+        let mut setup = setup.clone();
+        setup.round.days = self.round.days as f32;
+        setup.round.difficulty = self.round.difficulty.clone();
+        let mut world = World::generate(seed, &setup);
+        world.gold = self.round.gold;
+        world.stock.set(Resource::Wood, self.round.wood);
+        world.events = self.events.clone();
+        world.roll_events();
         Ok(world)
     }
 
@@ -517,7 +550,7 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "seed", "size", "border", "play_area", "round", "events", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
+    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "events", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
     // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units
@@ -659,6 +692,7 @@ mod tests {
         ]);
         let mut file = MapFile::from_world(&world, "Test: map?");
         file.setup = Some(MapSetup::default());
+        (file.author, file.description, file.picture, file.regenerate) = ("Me".into(), "A test, \"quoted\".".into(), "pic.png".into(), true);
         assert!(file.deposits.len() > 20, "the generated ore isn't saved");
         assert!(file.deposits.iter().any(|d| d.tile == (c + 3, c + 9) && d.ore == Ore::Coal), "the painted ore isn't saved");
         assert_eq!(file.round, RoundData { days: 25, gold: world.gold, wood: 55, difficulty: world.difficulty.clone() });
@@ -677,9 +711,35 @@ mod tests {
         assert_eq!(loaded.zombies.len() + loaded.sleep.len(), world.zombies.len() + world.sleep.len());
         assert_eq!(loaded.events, world.events);
         assert_eq!((loaded.days, loaded.gold, loaded.stock.get(Resource::Wood)), (25, world.gold, 55));
-        let again = MapFile { setup: file.setup.clone(), ..MapFile::from_world(&loaded, "Test: map?") };
+        let again = MapFile {
+            setup: file.setup.clone(),
+            author: file.author.clone(),
+            description: file.description.clone(),
+            picture: file.picture.clone(),
+            regenerate: true,
+            ..MapFile::from_world(&loaded, "Test: map?")
+        };
         assert_eq!(again, file, "saving the loaded map gives the same file");
         assert_eq!(file_stem("Test: map?"), "Test_ map_");
+    }
+
+    /// TAB's random generation: with `regenerate` the game gets a new map from the file's setup for every seed – with the
+    /// file's round and events. Without it, the saved map.
+    #[test]
+    fn a_regenerated_level_keeps_its_round_and_events() {
+        let mut setup = MapSetup { generator: crate::mapgen::Generator::Wild, ..MapSetup::default() };
+        setup.common.size = 128.0;
+        let world = World::generate(4, &setup);
+        let mut file = MapFile::from_world(&world, "Random");
+        file.setup = Some(setup);
+        file.round.gold = 777;
+        file.events.truncate(2);
+        assert!(file.world_to_play(9).unwrap().map.same_terrain(&world.map), "without regenerate it isn't the saved map");
+        file.regenerate = true;
+        let (a, b) = (file.world_to_play(9).unwrap(), file.world_to_play(10).unwrap());
+        assert!(!a.map.same_terrain(&b.map), "the same map for two seeds");
+        assert_eq!((a.gold, a.days), (777, file.round.days));
+        assert_eq!(a.events, file.events);
     }
 
     /// The file is readable by hand: the round in its own line, one row of terrain per line – the map is in there like

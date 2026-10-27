@@ -1794,7 +1794,7 @@ fn draw_fitted_left(text: &str, x: f32, y: f32, max_w: f32, size: f32, color: Co
 
 /// Text broken into lines of at most `max_w`, the first baseline at y – at most `max_lines` lines, the last one
 /// ends with "..." if the text goes on.
-fn draw_wrapped(text: &str, x: f32, y: f32, max_w: f32, size: f32, max_lines: usize, color: Color) {
+pub fn draw_wrapped(text: &str, x: f32, y: f32, max_w: f32, size: f32, max_lines: usize, color: Color) {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
         match lines.last_mut() {
