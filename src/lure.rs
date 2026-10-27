@@ -1,5 +1,5 @@
-//! Lure field: the way on foot to a place zombies were lured to – a sound they heard, or where they last saw one of
-//! your units (`sim/sound.rs`, `sim/zombies.rs`). Computed like the hunt map (`hunt.rs`), only from this one place
+//! Lure field: the way on foot to a place zombies are heading for – a sound they heard, where they last saw one of
+//! your units, a building they're after (`sim/sound.rs`, `sim/zombies.rs`). Computed like the hunt map (`hunt.rs`), only from this one place
 //! outwards: around water and mountains, straight through your walls (a building tile costs a little extra – they
 //! tear it down on the way, like storming zombies).
 //!
@@ -13,7 +13,7 @@ use std::collections::BinaryHeap;
 use macroquad::math::{vec2, Vec2};
 
 use crate::flow::NEIGHBORS;
-use crate::hunt::{step_cost, Through};
+use crate::hunt::step_cost;
 use crate::map::Map;
 
 const UNSEEN: u16 = u16::MAX;
@@ -28,14 +28,15 @@ pub struct LureField {
     w: i32,
     /// Per tile of the window: steps to the cell, or `UNSEEN` (too far, no way).
     dist: Vec<u16>,
-    through: Through,
+    /// What a step onto a building tile costs (`hunt::step_cost`).
+    through: u16,
     /// The tick a zombie last needed it – unused for a while, it's thrown away.
     pub used: u64,
 }
 
 impl LureField {
     /// The way to `cell` (cells of `cell_size` tiles) from up to `reach` tiles around it.
-    pub fn new(map: &Map, cell: (i32, i32), cell_size: i32, reach: i32, through: Through, tick: u64) -> LureField {
+    pub fn new(map: &Map, cell: (i32, i32), cell_size: i32, reach: i32, through: u16, tick: u64) -> LureField {
         let (x0, y0) = (cell.0 * cell_size - reach, cell.1 * cell_size - reach);
         let w = cell_size + 2 * reach;
         let mut field = LureField { cell, x0, y0, w, dist: vec![UNSEEN; (w * w) as usize], through, used: tick };

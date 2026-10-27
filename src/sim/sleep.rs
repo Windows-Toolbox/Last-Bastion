@@ -9,23 +9,25 @@
 //!    middle of the cell it heard;
 //! 3. the scan shows their place, or a barrel goes off next to them;
 //! 4. the final wave calls everyone: then all of them, `WAKE_PER_TICK` a tick, the nearest to the base first – they're
-//!    the first to arrive anyway.
+//!    the first to arrive anyway;
+//! 5. a wave marches over it: enough wave zombies of its rank or higher on its tile, and it wakes and joins them
+//!    (`wake_joining`, TAB's contagion – in TAB nobody sleeps, so a wave takes along every crowd it walks through).
 //!
-//! The other way round: a stroller that has been calm for `SLEEP_AFTER` seconds and is far from all your eyes – another
+//! The other way round: an idle one that has been calm for `SLEEP_AFTER` seconds and is far from all your eyes – another
 //! `SLEEP_MARGIN` tiles further than they would wake it, so nobody wakes and falls asleep again and again at that edge –
 //! falls asleep where it stands (`fall_asleep`). It keeps its hit points. Not any more once the final wave has called.
 //!
-//! **Sleepers stroll too** (`stroll_sleepers`) – trip after trip by the same rule and dice as the strollers awake
-//! (`zombies.rs`): a random free spot up to `stroll` tiles from where it lies, never into the ring around the command
-//! center. Nobody sees it, so it arrives at once – and then waits as long as the walk would have taken, and stands its
-//! 1–5 s, before the next trip. Is something in the straight way (water, a mountain), it stays where it is, like a
-//! stroller stuck there. A trip that would end near your eyes wakes it where it starts, and it walks the rest awake – it
-//! comes into sight from outside, fading in. So a place you've emptied fills up again: the sleepers around drift in.
+//! **Sleepers idle too** (`stroll_sleepers`) – by the same rule and dice as the zombies awake (`zombies.rs`): TAB's
+//! stand / growl / roam, rolled ahead until it's roam (`idle_wait`), then a trip to a spot found like theirs
+//! (`roam_spot`). Nobody sees it, so it arrives at once – and then waits as long as the walk would have taken, and its
+//! standing and growling, before the next trip. Is something in the straight way (water, a mountain), it stays where it
+//! is, like one stuck there. A trip that would end near your eyes wakes it where it starts, and it walks the rest awake –
+//! it comes into sight from outside, fading in. So a place you've emptied fills up again: the sleepers around drift in.
 
 use macroquad::math::{vec2, Vec2};
 
-use super::zombies::{values, Breed, Lure, Wander};
-use super::{clear_line, keeps_out, World, TICKS_PER_SECOND};
+use super::zombies::{values, Breed, Idle, Lure};
+use super::{clear_line, World, DAY_TICKS, TICKS_PER_SECOND};
 use crate::data;
 
 /// Edge of a block (tiles).
@@ -149,33 +151,51 @@ impl Sleep {
 /// What a sleeper does once it's awake.
 #[derive(Clone, Copy)]
 enum Waking {
-    /// Strolls where it lay.
+    /// Idles where it lay.
     Calm,
     /// On a trip, to this spot – giving up after so many ticks.
     Strolling(Vec2, u32),
     /// Goes where it heard something.
     Lured(Lure),
+    /// Joins the wave walking over it – this swarm.
+    Joins(u32),
     /// Heads for the command center with the final wave.
     Final,
 }
 
 impl World {
     /// A new roamer, asleep from the start (`scatter_roamers`) – with its own pace, rolled now like a zombie's. It
-    /// stands its 1–5 s before its first trip, like a new stroller.
+    /// stands and growls before its first trip, like one awake (`idle_wait`).
     pub(super) fn lay_to_sleep(&mut self, pos: Vec2, breed: Breed) {
         let stats = breed.stats();
         let speed = stats.speed * (0.8 + 0.4 * self.rng.unit_f32());
-        let next = self.tick + self.standing();
+        let next = self.tick + self.idle_wait();
         self.sleep.push(Sleeper { pos, breed, hp: stats.hp, speed, next });
     }
 
-    /// How long a stroller stands around before its next trip – 1 to 5 s, like an awake one (`update_minds`).
-    fn standing(&mut self) -> u64 {
-        20 + self.rng.below(80) as u64
+    /// How long an idle zombie stands and growls before it roams next – TAB's dice of the zombies awake (`next_idle`),
+    /// rolled ahead for a sleeper: stand, growl, again and again until it comes up roam. No weight on roaming: a day.
+    fn idle_wait(&mut self) -> u64 {
+        let (z, w) = (values(), &values().idle);
+        if w.roam == 0 {
+            return DAY_TICKS;
+        }
+        let mut wait = 0;
+        loop {
+            let roll = self.rng.below(w.stand + w.growl + w.roam);
+            if roll < w.stand {
+                wait += z.stand as u64;
+            } else if roll < w.stand + w.growl {
+                wait += z.growl as u64;
+            } else {
+                return wait;
+            }
+        }
     }
 
     /// Every tick: the eyes wake what's around them (every `WAKE_EVERY` ticks), the sleepers whose trip is due make it
-    /// (every `STROLL_EVERY`), and after the final wave's call the next ones wake to join it.
+    /// (every `STROLL_EVERY`), after the final wave's call the next ones wake to join it, and the ones a wave walks over
+    /// join it (`wake_joining`).
     pub(super) fn wake_sleepers(&mut self) {
         if self.tick.is_multiple_of(WAKE_EVERY) {
             self.wake_near_eyes();
@@ -184,6 +204,51 @@ impl World {
             self.stroll_sleepers();
         }
         self.wake_called();
+        self.wake_joining();
+    }
+
+    /// TAB's contagion for the sleepers (`joins_wave` in `zombies.rs`): every `contagion_seconds`, block by block – each
+    /// block on the tick its number gives it – a sleeper with at least `contagion_count` wave zombies of its `level` or a
+    /// higher one on its tile wakes and joins them. Not the giant.
+    fn wake_joining(&mut self) {
+        if self.sleep.is_empty() {
+            return;
+        }
+        let (every, count) = (values().contagion.max(1) as u64, values().contagion_count);
+        let tick = self.tick;
+        let due: Vec<usize> = (0..self.sleep.blocks.len())
+            .filter(|&b| (tick + b as u64).is_multiple_of(every) && !self.sleep.blocks[b].is_empty())
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        // The wave zombies by tile – (tile row and column, rank, swarm), in order.
+        let tile = |p: Vec2| (p.y.floor() as i32, p.x.floor() as i32);
+        let mut waves: Vec<((i32, i32), u32, u32)> =
+            self.zombies.iter().filter(|z| z.siege && z.is_alive()).map(|z| (tile(z.pos), z.breed.stats().level, z.swarm)).collect();
+        if waves.is_empty() {
+            return;
+        }
+        waves.sort_unstable();
+        for b in due {
+            let mut stay = Vec::new();
+            let mut joining = Vec::new();
+            for sleeper in self.sleep.take(b) {
+                let (at, level) = (tile(sleeper.pos), sleeper.breed.stats().level);
+                let from = waves.partition_point(|w| w.0 < at);
+                let mut here = waves[from..].iter().take_while(|w| w.0 == at).filter(|w| w.1 >= level);
+                let swarm = here.next().map(|w| w.2);
+                match swarm.filter(|_| !sleeper.breed.roars() && 1 + here.count() >= count) {
+                    Some(swarm) => joining.push((sleeper, swarm)),
+                    None => stay.push(sleeper),
+                }
+            }
+            self.sleep.count += stay.len();
+            self.sleep.blocks[b] = stay;
+            for (sleeper, swarm) in joining {
+                self.wake(sleeper, Waking::Joins(swarm));
+            }
+        }
     }
 
     /// Per block: is it within `extra` tiles more than one of your eyes sees?
@@ -197,18 +262,17 @@ impl World {
         near
     }
 
-    /// The sleepers whose trip is due make it – by the same rule and dice as the strollers awake (`update_minds`): a
-    /// random free spot up to `stroll` tiles from where it lies, never into its breed's `keep_out` ring. It arrives at once
-    /// (nobody sees it) and its next trip comes after the walk would have taken and its 1–5 s of standing. Something
-    /// in the straight way (or no free spot found): it stays where it is. A trip ending where your eyes wake everyone
-    /// wakes it where it starts – it walks the rest awake, into sight from outside. After the final wave's call nobody
-    /// strolls: they all wake anyway.
+    /// The sleepers whose trip is due make it – to a spot found like the zombies awake find theirs (`roam_spot`). It
+    /// arrives at once (nobody sees it) and its next trip comes after the walk would have taken and its standing and
+    /// growling (`idle_wait`). Something in the straight way (or no free spot found): it stays where it is. A trip
+    /// ending where your eyes wake everyone wakes it where it starts – it walks the rest awake, into sight from outside.
+    /// After the final wave's call nobody roams: they all wake anyway.
     fn stroll_sleepers(&mut self) {
         if self.sleep.is_empty() || self.sleep.called {
             return;
         }
         let awake = self.near_eyes(WAKE_MARGIN);
-        let (keep_out, share, inside_step) = (self.keep_out, values().wander_pace, data::get().roaming.inside_step);
+        let share = values().wander_pace;
         let tick = self.tick;
         let mut moved = Vec::new();
         let mut waking = Vec::new();
@@ -222,24 +286,14 @@ impl World {
                     stay.push(sleeper);
                     continue;
                 }
-                let radius = sleeper.breed.stats().stroll;
-                let mut spot = None;
-                for _ in 0..5 {
-                    let offset = vec2(self.rng.unit_f32() * 2.0 - 1.0, self.rng.unit_f32() * 2.0 - 1.0) * radius;
-                    let to = sleeper.pos + offset;
-                    let free = !self.map.is_blocked(to.x.floor() as i32, to.y.floor() as i32);
-                    if free && keeps_out(sleeper.pos, to, self.base, keep_out.of(sleeper.breed), inside_step) {
-                        spot = Some(to);
-                        break;
-                    }
-                }
-                let standing = self.standing();
+                let spot = self.roam_spot(sleeper.pos, sleeper.breed);
+                let standing = self.idle_wait();
                 match spot.filter(|&to| clear_line(&self.map, sleeper.pos, to)) {
                     Some(to) => {
                         let pace = (sleeper.speed * share).max(0.05);
                         let walk = sleeper.pos.distance(to) / pace * TICKS_PER_SECOND;
                         if awake[self.sleep.block_of(to)] {
-                            // Like `update_minds`: the time it needs at its pace, half as much again for detours.
+                            // Like `next_idle`: the time it needs at its pace, half as much again for detours.
                             waking.push((sleeper, to, (walk * 1.5) as u32 + 40));
                         } else {
                             sleeper.pos = to;
@@ -362,20 +416,20 @@ impl World {
         zombie.speed = sleeper.speed;
         match waking {
             Waking::Calm => {}
-            Waking::Strolling(goal, timer) => zombie.wander = Some(Wander::towards(goal, timer)),
-            Waking::Lured(lure) => {
-                zombie.lure = Some(lure);
-                zombie.wander = None;
+            Waking::Strolling(goal, timer) => zombie.idle = Idle::roaming(goal, timer),
+            Waking::Lured(lure) => zombie.lure = Some(lure),
+            Waking::Joins(swarm) => {
+                zombie.siege = true;
+                zombie.swarm = swarm;
             }
             Waking::Final => {
                 zombie.siege = true;
                 zombie.final_wave = true;
-                zombie.wander = None;
             }
         }
     }
 
-    /// Every now and then, at the end of a tick: strollers that have been calm for `SLEEP_AFTER` and lie far from all
+    /// Every now and then, at the end of a tick: idle ones that have been calm for `SLEEP_AFTER` and lie far from all
     /// your eyes fall asleep where they stand – they leave the list (`remove_dead` calls this before sorting it).
     pub(super) fn fall_asleep(&mut self) {
         if self.sleep.called || self.zombies.is_empty() {
@@ -393,9 +447,9 @@ impl World {
             }
             !sleepy
         });
-        // Asleep it strolls on – first it stands its 1–5 s.
+        // Asleep it idles on – first it stands and growls (`idle_wait`).
         for mut sleeper in sleepers {
-            sleeper.next = self.tick + self.standing();
+            sleeper.next = self.tick + self.idle_wait();
             self.sleep.push(sleeper);
         }
     }

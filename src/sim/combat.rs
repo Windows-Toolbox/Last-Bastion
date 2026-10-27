@@ -13,7 +13,7 @@
 use macroquad::math::Vec2;
 
 use super::units::Intent;
-use super::zombies::Breed;
+use super::zombies::{self, Breed};
 use super::{slide, World, TICKS_PER_SECOND};
 
 /// The noise of one shot (`noise` in `data\units.json`), as a whole number for the sound grid.
@@ -106,10 +106,11 @@ impl World {
                         let push = stats.knockback * size.min(1.0);
                         zombie.pos = slide(zombie.pos, away * push, |x, y| self.map.is_blocked(x, y));
                     }
-                    // Whoever survives the shot comes for you – it and a few around it through the gap, if there
-                    // is one (`zombies.rs`). The ones around it noticed even if it fell.
+                    // It comes for the shooter – a unit in a tower: the tower – and so do the ones right around it
+                    // that aren't after anything yet (`zombies.rs`). They noticed even if it fell.
                     let from = unit.pos;
-                    self.start_seeking(z);
+                    let by = unit.inside.map_or(zombies::Aim::Unit(unit.id), zombies::Aim::Building);
+                    self.zombie_hit_by(z, by);
                     // And the shot makes noise where it was fired – it adds up (TAB's noise, `sound.rs`).
                     self.make_colony_sound(from, shot_noise(stats.noise));
                 }

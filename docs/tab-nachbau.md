@@ -31,17 +31,29 @@ setz ihn um."
   20 Ticks/s (`TICK` 50 ms). 1 TAB-Tag = 60 s Spielzeit.
 - **Namen der TAB-Zombies** (aus `ZXGame.dxprj`, Größe = Durchmesser in Kacheln): WeakA/B/C (schwach, 0,4),
   WorkerA/B und MediumA/B (mittel, 0,4), DressedA (stark, 0,4), StrongA = **Chubby** (0,7), Harpy (0,6), Venom (0,5),
-  Giant (1,6), Mutant (haben wir nicht). Vorschlag für unsere Arten – **in Schritt 2 mit dem Nutzer bestätigen**:
-  Weak → Walker, Worker/Medium → Runner, DressedA → Armored (Riot), StrongA → Fat, Venom → Spitter, Harpy → Harpy,
-  Giant → Giant. Infested (SC2) gibt es in TAB nicht.
+  Giant (1,6), Mutant (haben wir nicht). Unsere Arten (**bestätigt** in Schritt 2): Weak → Walker, Worker/Medium →
+  Runner, DressedA → Armored (Riot), StrongA → Fat, Venom → Spitter, Harpy → Harpy, Giant → Giant. Infested (SC2) gibt
+  es in TAB nicht. Ränge (`level`, geschätzt): Walker 1, Runner 2, Riot/Harpyie 3, Spitter/Infested 4, Fat 5, Riese 6.
 - **Determinismus** (DESIGN.md 12.8): Zufall nur aus `World::rng`, feste Reihenfolge, keine `HashMap` iterieren.
   Ändert sich die Simulation absichtlich, die Prüfsumme in `src/sim/tests.rs` (`SCRIPTED_GAME_CHECKSUM`) neu eintragen.
 - **Prüfen:** `cargo test --release`, `cargo clippy --release --all-targets` (keine neuen Warnungen in geänderten
-  Dateien), Balancing-Lauf `cargo test --release balance_mini_round -- --ignored --nocapture`, bei der Horde auch
-  `horde_tick_time` (ignoriert). Sichtprüfung im Spiel mit dem Skill `run-last-bastion`.
+  Dateien).
 - **Gedächtnis:** `tab-adoption-plan` (Reihenfolge, Status), `gap-search-removed`, `coal-later`, `tab-sources`.
 
-**Schritt 1 (Lärm nach TAB-Formel) ist fertig** – `src/sim/sound.rs`. Falls noch nicht committet: zuerst committen.
+**Schritt 1 (Lärm nach TAB-Formel) ist fertig** – `src/sim/sound.rs`.
+
+**Schritt 2 (Entscheidungsbaum) ist fertig** – `src/sim/zombies.rs` (`watch`, `wall_in_way`, `zombie_hit_by`,
+`update_minds`, `joins_wave`, `next_idle`, `roam_spot`, `zombie_intent`), Schlafende in `src/sim/sleep.rs`
+(`idle_wait`, `wake_joining`), Infektion in `src/sim/buildings.rs`. Falls noch nicht committet: zuerst committen.
+Was er für die nächsten Schritte hinterlässt:
+- Zombies gehen jetzt gezielt auf die Wand **zwischen sich und ihrem Ziel** – vor einer Mauer ballen sie sich dort
+  (Strom-Test: 105 von 200 an der Mauer statt ~130). Schritt 3 soll das Fließen darum herum bringen. Die Gedränge-Tests
+  hängen außerdem an Zufall und Nummern (Ausweichseite nach gerader/ungerader Nummer) – in Schritt 3 neu fassen.
+- `keep_out` der Schwierigkeit gilt nur noch beim Verteilen zu Beginn (`scatter_roamers`, `place_giants`) – für
+  Schritt 6. Der Riese hält beim Wandern 54 Kacheln (`roam_ring`).
+- Häuser des Untergangs schicken ihre Zombies weiter mit `Lure::seen`/`Lure::sent` (Schritt 4 baut das um).
+- Geschätzt, weil `ZXRules.dat` zu ist: `watch_seconds` 0,5, `stand_seconds`/`growl_seconds` 2, `stroll`-Minima,
+  `level`, `extra_infected` (Zelt 2, Steinhaus 8 – so bleibt es bei 4 bzw. 16 Infizierten).
 
 ---
 

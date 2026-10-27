@@ -3,11 +3,13 @@
 //! units it doesn't turn or aim: once reloaded it shoots at what's in range and in sight (not through forest).
 //!
 //! It shoots while it works (`Building::works` – finished, switched on, not infected). One that takes power reloads
-//! slower when its grid is short of it, like training in the barracks. A shot zombie storms like one hit by your units
-//! (`start_seeking`), and every shot makes noise – the machine gun tower a lot of it.
+//! slower when its grid is short of it, like training in the barracks. A shot zombie – and the ones right around it –
+//! goes for the tower like one hit by your units (`zombie_hit_by`), and every shot makes noise – the machine gun tower a
+//! lot of it.
 
 use macroquad::math::Vec2;
 
+use super::zombies::Aim;
 use super::World;
 
 impl World {
@@ -47,7 +49,8 @@ impl World {
             zombie.hp = zombie.hp.saturating_sub(damage);
             let to = zombie.pos;
             self.shots.push((from, to));
-            self.start_seeking(z);
+            let by = Aim::Building(self.buildings[b].id);
+            self.zombie_hit_by(z, by);
             self.make_colony_sound(from, weapon.noise);
             self.buildings[b].reload = weapon.reload * 1000;
         }

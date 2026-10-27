@@ -269,12 +269,15 @@ pub struct BuildingStats {
     #[serde(default)]
     pub armor: u32,
     /// Infection like in TAB (DESIGN.md 6): zombies first hit the shield. When it breaks, the building is infected –
-    /// its colonists come out as zombies – and only then do the hit points go down. Given in percent of `hp`
+    /// its people come out as zombies (`World::infect`) – and only then do the hit points go down. Given in percent of `hp`
     /// (`max_shield`). 0: no shield. Without colonists – and on the command center – a shield is just extra life:
     /// nobody can get infected.
     pub shield_percent: u32,
     /// How many colonists live in it. They pay `gold` – until the building is infected, then they come out as zombies.
     pub colonists: u32,
+    /// Infected, this many zombies come out on top of its people (TAB's `ExtraUnitsWhenInfected`, `World::infect`).
+    #[serde(default)]
+    pub extra_infected: u32,
     /// Workers it gives the colony, like in TAB – the houses and the command center (`World::workers`). Infected: none.
     pub workers: u32,
     /// Workers it takes from the colony for as long as it stands. Not enough free workers: it can't be built
@@ -438,6 +441,13 @@ impl BuildingKind {
     /// The towers – units go in (`tower_slots`).
     pub fn is_tower(self) -> bool {
         matches!(self, BuildingKind::Tower | BuildingKind::StoneTower)
+    }
+
+    /// Defence – walls, gates, towers and the ones that shoot by themselves (TAB's `DeffensiveStructure`): what a
+    /// zombie tears down when it stands in its way (`wall_in_way` in `sim/zombies.rs`). Not the traps: they walk over
+    /// them.
+    pub fn is_defence(self) -> bool {
+        self.is_wall() || self.is_tower() || self.stats().weapon.is_some()
     }
 
     /// A trap: everyone walks over it, zombies don't attack it – it hurts them (`trap_damage`).

@@ -57,7 +57,7 @@ use crate::aggro::AggroMap;
 use crate::data::{self, ConstantSpawn, Difficulty, KeepOut};
 use crate::flow::FlowField;
 use crate::grid::SpatialGrid;
-use crate::hunt::{HuntMap, Through};
+use crate::hunt::HuntMap;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::lure::LureField;
 use crate::map::Map;
@@ -167,7 +167,7 @@ pub struct World {
     /// zombies, the waves and the start is in the map already; only how close every breed may come is looked up
     /// (`set_difficulty`).
     pub difficulty: String,
-    /// Per breed: no zombie of it strolls closer to the command center than this (tiles).
+    /// Per breed: no zombie of it lies closer to the command center than this when the round is made (tiles).
     pub keep_out: KeepOut,
     /// The constant spawn of this map (`spawning.rs`). A new map gets it from `data\spawning.json` (as big as its
     /// difficulty says), then it's part of its map file.
@@ -207,11 +207,13 @@ pub struct World {
     unit_grid: SpatialGrid,
     /// For every tile the nearest unit (straight line) within hearing – new every tick.
     aggro: AggroMap,
-    /// For every tile the nearest building (straight line) – new when the buildings change.
-    building_aggro: AggroMap,
-    /// For every tile the nearest unit on foot, around obstacles – for the zombies looking for a gap.
-    hunt: HuntMap,
-    /// The same, but straight through buildings – the way of the storming zombies.
+    /// For every tile the nearest building with people in it (TAB's `HasPeople`) within sight of a zombie – by its
+    /// number (`id`), so it stays right when other buildings fall. Stamped anew only when they change (`mark_manned`).
+    manned: AggroMap,
+    /// Those buildings' numbers, as last stamped.
+    manned_ids: Vec<u32>,
+    /// For every tile the nearest unit on foot, around water and mountains but straight through buildings – the way
+    /// of the storming zombies.
     charge: HuntMap,
     /// Per tile: would a zombie standing here see one of your units? Seeing goes both ways, so it's computed
     /// from the few units looking out, not from the thousands of zombies. One per breed (`Breed::index`) – they see
@@ -328,9 +330,9 @@ impl World {
             grid: SpatialGrid::new(size),
             unit_grid: SpatialGrid::new(size),
             aggro: AggroMap::new(size),
-            building_aggro: AggroMap::new(size),
-            hunt: HuntMap::new(size, Through::Never),
-            charge: HuntMap::new(size, Through::Cost(CHARGE_THROUGH)),
+            manned: AggroMap::new(size),
+            manned_ids: Vec::new(),
+            charge: HuntMap::new(size, CHARGE_THROUGH),
             zombie_sight: Breed::ALL.iter().map(|_| Vision::new(size)).collect(),
             building_at: vec![NO_BUILDING; size * size],
             vision: Vision::new(size),
@@ -600,21 +602,6 @@ fn with_villages(setup: &MapSetup, difficulty: &Difficulty) -> MapSetup {
     setup.common.houses_near *= big;
     setup.common.houses_edge *= big;
     setup
-}
-
-/// May a stroller go from `from` straight to `to`? Outside its ring (`keep_out` tiles around the command center at
-/// `base`) the whole way has to stay outside – the goal alone isn't enough, a fat one strolls up to 30 tiles and would
-/// cut right through the ring. Inside it already (lured there – your bad luck), the way may go at most `inside_step`
-/// tiles deeper than where it starts: it strolls on at random, now and then a little closer, but never far – and as
-/// every trip further in is dropped, on the whole it drifts back out. Only from where it stands, nothing is kept.
-fn keeps_out(from: Vec2, to: Vec2, base: Vec2, keep_out: f32, inside_step: f32) -> bool {
-    let start = from.distance(base);
-    let limit = if start >= keep_out { keep_out } else { start - inside_step };
-    // The point of the way closest to the base: how far along it (0 = `from`, 1 = `to`), kept on the way. The goal is
-    // on the way too – if that point is far enough, so is the goal.
-    let way = to - from;
-    let along = ((base - from).dot(way) / way.length_squared().max(1e-6)).clamp(0.0, 1.0);
-    (from + way * along).distance(base) >= limit
 }
 
 /// Can you get from `from` to `to` in a straight line without touching a blocked tile? Tile by tile

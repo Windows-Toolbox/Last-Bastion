@@ -8,8 +8,8 @@ Wert fehlt), läuft das Spiel mit den alten Werten weiter und zeigt oben links e
   den Werten vom letzten `build.ps1`.
 - **Vor der Runde** wählt man wie in TAB **Karte, Schwierigkeit und Dauer** (`game_maps.json`,
   `game_difficulties.json`, `game_durations.json`). Was sie sagen, landet beim Start in der Kartendatei (Zombies,
-  Wellen, Startgold …) – „Restart“ ändert daran nichts mehr. Nur `keep_out` der Schwierigkeit wird beim Spielen
-  nachgeschaut, über ihren Namen in der Kartendatei.
+  Wellen, Startgold …) – „Restart“ ändert daran nichts mehr. Nur `keep_out` der Schwierigkeit wird über ihren Namen
+  in der Kartendatei nachgeschaut.
 - **Ausnahme `spawning.json`:** Der konstante Spawn und die Wellen gehören zur **Karte**. Eine neue Karte bekommt eine
   Kopie davon in ihre Kartendatei (eine Runde = eine Datei, siehe Haupt-README), danach zählt, was dort steht – im
   Editor änderbar. Eine Änderung hier gilt also erst für **neue** Spiele („New map“ oder „New game“), nicht für
@@ -82,8 +82,9 @@ Gießerei), `ballista` (die Balliste), `machine_gun_tower` (der MG-Turm).
 | `size` | `[Breite, Tiefe]` in Kacheln (das Tor lässt sich drehen) |
 | `hp` | Lebenspunkte |
 | `armor` | Wird von jedem Zombie-Treffer abgezogen (mindestens 1 kommt durch). Kommandozentrum 10 wie TAB, weglassen = 0 |
-| `shield_percent` | Schild in **Prozent der HP** (Zelt: 133 % von 150 = 199; Kommandozentrum 50 % von 5000 = TABs Barriere 2500). Zombies schlagen erst darauf. Bricht er, ist das Gebäude **infiziert** und seine Kolonisten kommen als Zombies heraus. Ohne Kolonisten – und beim Kommandozentrum – ist er nur zusätzliches Leben. 0 = kein Schild. Im Spiel ein Balken mit den HP: der Schild graublau dahinter |
-| `colonists` | Kolonisten darin: zahlen Gold und werden bei der Infektion zu Zombies (2–4 Runner, Rest Walker) |
+| `shield_percent` | Schild in **Prozent der HP** (Zelt: 133 % von 150 = 199; Kommandozentrum 50 % von 5000 = TABs Barriere 2500). Zombies schlagen erst darauf. Bricht er, ist das Gebäude **infiziert** und seine Leute kommen als Zombies heraus. Ohne Kolonisten – und beim Kommandozentrum – ist er nur zusätzliches Leben. 0 = kein Schild. Im Spiel ein Balken mit den HP: der Schild graublau dahinter |
+| `colonists` | Kolonisten darin: zahlen Gold und werden bei der Infektion zu Zombies. Wie viele herauskommen, wie TAB: `colonists` + `worker_cost` − `workers` + `extra_infected`, jeder zufällig aus `infected` (`zombies.json`), alle laufen zum Kommandozentrum |
+| `extra_infected` | So viele Zombies kommen bei der Infektion **zusätzlich** heraus (TABs `ExtraUnitsWhenInfected`; Zelt 2 → 4 insgesamt, Steinhaus 8 → 16). Weglassen = 0 |
 | `workers` | **Arbeiter**, die es gibt (Zelt, Kommandozentrum) – infiziert keine |
 | `worker_cost` | Arbeiter, die es braucht, solange es steht. Nicht genug frei: kann nicht gebaut werden (im Editor egal) |
 | `cost` | Preis in Gold, bezahlt beim Platzieren (im Editor kostenlos) |
@@ -144,8 +145,12 @@ etwas kleiner – wie viele: `giants` der Karte), je mit:
 | `hp` | Lebenspunkte |
 | `armor` | Wird von jedem Schuss abgezogen (mindestens 1 Schaden kommt immer durch) |
 | `damage` | Schaden pro Treffer – beim Spitter an jedem im Spritzer |
-| `sight` | So weit sieht er Einheiten (nicht durch Wald). TAB: Walker 5, Runner 6, Fat 5 |
-| `stroll` | Als **Wanderer** geht er pro Ausflug höchstens so weit (Kacheln, in x und y) – von da, wo er gerade steht, ohne festen Platz: mit der Zeit überall hin. Je seltener die Art, desto weiter: Walker 8, Runner 14, Riot 18, Infested 22, Spitter 24, Fat 30. Nie näher ans Kommandozentrum als `keep_out` seiner Art in der Schwierigkeit (`game_difficulties.json`) |
+| `sight` | So weit sieht er Einheiten und **Gebäude mit Leuten** darin (Kommandozentrum, Häuser, Gebäude mit Arbeitern, Türme mit Einheiten – nicht durch Wald). TAB: Walker 5, Runner 6, Fat 5 |
+| `watch_seconds` | So oft **schaut er sich um** (TABs `EntityWatchInterval`, geschätzt 0,5): nimmt das Nächste, das er sieht, als Ziel. Doppelt so lange, solange er schon ein Ziel hat; 3× so lange außerhalb deiner Sicht, 5× wo du nie warst |
+| `level` | **Rang** (TABs `Level`, geschätzt): Stehen auf seiner Kachel mindestens `contagion_count` Wellen-Zombies mit diesem Rang oder höher, schließt er sich der Welle an. Walker 1, Runner 2, Riot und Harpyie 3, Spitter und Infested 4, Fat 5, Riese 6 |
+| `stroll` | `[mindestens, höchstens]`: so weit geht er beim **Wandern** pro Ausflug – auf jeder Achse für sich, in beide Richtungen (ein Quadrat wie TAB), von da, wo er gerade steht, ohne festen Platz: mit der Zeit überall hin. Je seltener die Art, desto weiter: Walker 2–8 … Fat 4–30 |
+| `roam_ring` | Beim Wandern nie in diesen Kreis ums Kommandozentrum (Kacheln) – außer er steht schon drin. TABs Riese: 54. Weglassen = 0, kein Ring |
+| `roar_every_seconds` | So oft bleibt er stehen und **brüllt** `growl_seconds` lang, egal was er gerade tut (TABs Riese: 12). Wer brüllt, denkt wie TABs Riese: läuft nie dahin, wo er dich aus den Augen verloren hat, und lässt sich nie von einer Welle anstecken. Weglassen = brüllt nie |
 | `radius` | Wie groß er ist (Kacheln): so weit halten andere Zombies und Einheiten Abstand, und so viel weiter reicht er. So groß ist auch der Ring unter ihm (Maus, angeklickt) |
 | `range` | **Fernkampf**: so weit schießt er (Kacheln) – über Mauern, nicht durch Wald. Weglassen = 0: er muss dich berühren. Infested 4,5 = knapp unter dem Soldaten (5) |
 | `splash` | Sein Schuss trifft jeden so nah am Einschlag (Spitter): Einheiten und Gebäude, keine Zombies. Weglassen = nur das Ziel |
@@ -161,16 +166,14 @@ Dazu für alle:
 | Wert | Bedeutung |
 |---|---|
 | `hit_every_seconds` | Zeit zwischen zwei Treffern |
-| `hearing` | So nah bemerken sie eine Einheit auch ohne sie zu sehen |
-| `notice_buildings` | Ein Gebäude so nah wird angegriffen |
-| `alert_seconds` | So lange stürmt ein angeschossener Zombie los, auch ohne den Schützen zu sehen |
-| `charge_steps` | So weit (in Schritten) finden stürmende Zombies den Weg zu einer Einheit |
-| `seek_helpers` | Der angeschossene Zombie und so viele der nächsten um ihn herum suchen die **Lücke** in der Mauer … |
-| `seek_radius` | … wenn sie höchstens so weit von ihm stehen … |
-| `seek_seconds` | … so lange … |
-| `seek_steps` | … und höchstens so viele Schritte zu Fuß um Mauern herum |
-| `wander_pace` | Wanderer streifen mit diesem Anteil ihrer Geschwindigkeit herum (wie weit pro Ausflug: `stroll` der Art) |
-| `rise_min_seconds`, `rise_max_seconds` | Eine tote Einheit steht nach so vielen Sekunden als Walker auf (zufällig dazwischen) |
+| `charge_steps` | So weit (in Schritten) finden stürmende Zombies den Weg zu einer Einheit – um Wasser und Berge herum, durch Mauern hindurch |
+| `idle` | Was ein Zombie **ohne Ziel** als Nächstes tut, gewürfelt mit diesen Gewichten (TAB): `stand` 1300, `growl` 150, `roam` 150 – meistens steht er |
+| `stand_seconds`, `growl_seconds` | So lange steht er bzw. knurrt er (TAB: so lange wie seine Animation, geschätzt 2). Der Riese brüllt so lange |
+| `wander_pace` | Beim Wandern geht er mit diesem Anteil seiner Geschwindigkeit (wie weit pro Ausflug: `stroll` der Art) |
+| `contagion_seconds`, `contagion_count` | **Ansteckung** (TAB): so oft schaut jeder Zombie, der nicht zu einer Welle gehört, auf seine Kachel (TAB 238 Takte, knapp 4 s – knapp neben dem Hinhören, damit nicht beides auf denselben Tick fällt). Stehen dort mindestens so viele Wellen-Zombies mit seinem `level` oder höher, läuft er mit zum Kommandozentrum – Schlafende auch |
+| `infected` | Was aus einem **infizierten Gebäude** kommt und als was deine Toten aufstehen: je einer zufällig aus dieser Liste – TABs acht (WeakA/B/C → Walker, DressedA → Riot, WorkerA/B und MediumA/B → Runner) |
+| `cull_below`, `cull_every_seconds` | **Sicherung** (TAB): Sind weniger als so viele Zombies übrig (wach und schlafend), stirbt alle so viele Sekunden jeder, der keinen Weg zum Kommandozentrum hat – damit die Runde nicht am letzten Zombie auf einer Insel hängt |
+| `rise_min_seconds`, `rise_max_seconds` | Eine tote Einheit steht nach so vielen Sekunden als Zombie auf (zufällig dazwischen, Art aus `infected`) und läuft zum Kommandozentrum |
 
 ## `sound.json` – Lärm
 
@@ -179,9 +182,9 @@ Sekunde halbiert sich jede Zelle. Wie laut ein Schuss ist: `noise` in `units.jso
 
 **Wer kommt:** Jeder Zombie hört alle `listen_seconds` (jeder zu einem anderen Tick) und nimmt von den lauten Zellen in
 Hörweite die, die er am besten hört: **Lärm × `per_awareness` × `awareness` / Entfernung²** (Kacheln). So viel Prozent
-Chance hat er zu kommen – ab 100 sicher; doppelt so weit weg ein Viertel so sicher. Er geht zur Mitte der Zelle, solange
-es dort laut ist. Ist es dort still, wenn er das nächste Mal hört, vergisst er es und streift von da weiter. Wer gerade
-auf eine Einheit losgeht, zu ihrem letzten Platz läuft oder mit einer Welle kommt, hört nicht hin.
+Chance hat er zu kommen – ab 100 sicher; doppelt so weit weg ein Viertel so sicher. Er geht zur Mitte der Zelle und
+bleibt dort, solange es laut ist. Ist es dort still, wenn er das nächste Mal hört, vergisst er es. Wer gerade ein Ziel
+hat, dahin läuft, wo er es aus den Augen verloren hat, oder mit einer Welle kommt, hört nicht hin.
 
 | Wert | Bedeutung |
 |---|---|
@@ -198,14 +201,14 @@ auf eine Einheit losgeht, zu ihrem letzten Platz läuft oder mit einer Welle kom
 ## `roaming.json` – Streuner
 
 Die Zombies, die zu Beginn über die Karte streifen (wie viele: `roaming_zombies` der Schwierigkeit). Entfernungen als
-Anteil des Wegs von der Basis zum Rand (0 = Mitte, 1 = Rand). Wie weit sie pro Ausflug bummeln: `stroll` der Art in
-`zombies.json`, wie nah ans Kommandozentrum: `keep_out` der Schwierigkeit. Weit weg von deinen Augen schlafen sie, bis
-etwas sie weckt (DESIGN.md 8.5).
+Anteil des Wegs von der Basis zum Rand (0 = Mitte, 1 = Rand). Wie weit sie pro Ausflug wandern: `stroll` der Art in
+`zombies.json`, wie nah ans Kommandozentrum sie zu Beginn liegen: `keep_out` der Schwierigkeit (beim Wandern dürfen sie
+näher, wie in TAB – nur der Riese hält `roam_ring`). Weit weg von deinen Augen schlafen sie, bis etwas sie weckt
+(DESIGN.md 8.5).
 
 | Wert | Bedeutung |
 |---|---|
 | `edge_weight` | Wie viel mehr weiter draußen liegen: 0 = überall gleich viele, 1 = mit der Entfernung gleichmäßig mehr, 2 = fast alle am Rand (jetzt 0,5: fast überall, außen etwas mehr – wie TAB) |
-| `inside_step` | Wer **im Ring** seiner Art steht (`keep_out` der Schwierigkeit – angelockt, Pech gehabt), bummelt von dort zufällig weiter: pro Ausflug höchstens so viele Kacheln näher ans Kommandozentrum. Ausflüge weiter hinein fallen weg – im Ganzen bummelt er also wieder hinaus. Pro Zombie wird dafür nichts gespeichert |
 | `pack` | `[wenigste, meiste]`: sie liegen in Grüppchen auf je einer Kachel, eine Gruppe pro Kachel – also nie mehr als `meiste` auf einer Kachel (wie TAB: bis 3). `[3, 3]` = überall genau 3 (dann ≈ doppelt so viele möglich, Regler bis 2.000 reicht dann nicht mehr ganz) |
 | `ring_ramp` | Über so viele Kacheln hinter dem Ring ums Kommandozentrum (das kleinste `keep_out` der Schwierigkeit) dünnen sie nach innen aus: direkt am Ring kaum welche und nur einzeln, so weit draußen so viele wie überall und in vollen Grüppchen (`pack`). 0 = kein sanfter Rand (jetzt 6). Insgesamt bleiben es gleich viele – die fehlenden liegen weiter draußen |
 | `mix` | Welche Arten außer Walkern: je `breed` (Name wie in den Dateien), `from` (ab so weit draußen) und `share` (so ein Anteil der Zombies dort). Der Rest sind Walker. Gilt auch für die Villages of Doom und die Wächter der Beute. Näher am Kommandozentrum als `keep_out` ihrer Art (Schwierigkeit) wird eine Art zum Walker |
@@ -313,7 +316,7 @@ gewählt ist – und für eine Karte, deren Schwierigkeit es nicht (mehr) gibt. 
 | `start_gold`, `start_wood` | Gold und Holz zu Beginn (der übrige Vorrat startet leer). Im Editor pro Karte änderbar |
 | `start_soldiers`, `start_rangers`, `start_snipers` | Einheiten zu Beginn |
 | `roaming_zombies` | Streuner zu Beginn, pro 1.000 Kacheln, auf denen sie stehen können – in Grüppchen von `pack` (`roaming.json`), also füllen ≈ 2.000 fast jede Kachel |
-| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `harpy`, `giant`): so nah ans Kommandozentrum (Kacheln) kommt keiner – nicht zu Beginn, nicht beim Bummeln (auch nicht auf dem Weg zum Ziel). Wer angelockt oder mit einer Welle kommt, kümmert sich nicht darum – und bummelt danach wieder hinaus |
+| `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `harpy`, `giant`): so nah ans Kommandozentrum (Kacheln) liegt zu Beginn keiner. Beim Wandern dürfen sie näher, wie in TAB (nur der Riese hält seinen `roam_ring`). Kommt mit TABs Kartengenerator dorthin (Plan-Schritt 6) |
 | `villages_percent`, `village_houses_percent` | So viel Prozent so viele Villages of Doom, wie die Karte hat (`villages`), und so viel Prozent ihrer Häuser (`houses_near`, `houses_edge`) |
 | `doom_zombies` | So viele Zombies schlafen in **jedem** Haus der Villages of Doom – fest, egal wie weit draußen |
 | `giants_percent` | So viel Prozent so viele **Riesen**, wie die Karte hat (`giants`) |

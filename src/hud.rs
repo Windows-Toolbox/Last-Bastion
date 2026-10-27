@@ -1046,7 +1046,6 @@ fn draw_zombie(layout: &Layout, world: &World, zombie: &Zombie) {
     let y = draw_title(layout, &title, (zombie.hp(), stats.hp), (0, 0));
     draw_wrapped(world.zombie_doing(zombie), text.x, y, text.w, 15.0, 2, WHITE);
 
-    let zombies = &data::get().zombies;
     let mut cells = vec![
         ("HP", format!("{}/{}", zombie.hp(), stats.hp)),
         ("Damage", stats.damage.to_string()),
@@ -1062,7 +1061,8 @@ fn draw_zombie(layout: &Layout, world: &World, zombie: &Zombie) {
     cells.extend([
         ("Speed", format!("{:.2}", zombie.speed())),
         ("Sight", format!("{}", stats.sight)),
-        ("Hearing", format!("{}", zombies.hearing)),
+        ("Hears", format!("{}", zombie.breed.hearing_range())),
+        ("Rank", stats.level.to_string()),
     ]);
     draw_cells(layout, &cells);
 }

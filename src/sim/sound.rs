@@ -9,9 +9,9 @@
 //! - **Listening:** every `listen_seconds` each zombie listens (TAB: 4 s, each one on another tick). Of the loud cells
 //!   within `hearing` times its sight it takes the one it hears best – `noise × per_awareness × awareness / distance²`
 //!   (distance in tiles, `chance`) – and comes with that many percent: 100 and more for sure. Twice as far, a quarter
-//!   as sure. It goes to the middle of that cell (`Lure`, `Why::Sound`) and keeps going while it's loud there; quiet
-//!   there at its next listening and nothing new heard, it forgets it and strolls on from where it is.
-//! - Who doesn't listen: whoever storms one of your units or heads for where it last saw one, the waves, the final wave.
+//!   as sure. It goes to the middle of that cell (`Lure`, `Why::Sound`) and idles around it while it's loud there;
+//!   quiet there at its next listening and nothing new heard, it forgets it and idles on from where it is.
+//! - Who doesn't listen: whoever is after something or heads for where it lost sight of it, the waves, the final wave.
 //! - Sleepers listen the same way (`sleep.rs`); the houses of doom and the hidden guards of loot every
 //!   `places_listen_seconds`, with their own `awareness` (`doom.rs`).
 //! - **Machines** (Factorio's pollution as TAB's noise): every `work_every_seconds` every working building makes its
@@ -24,7 +24,7 @@
 
 use macroquad::math::{vec2, Vec2};
 
-use super::zombies::{Breed, Lure, Why, Wander, Zombie};
+use super::zombies::{Breed, Idle, Lure, Why, Zombie};
 use super::World;
 use crate::data;
 
@@ -219,20 +219,20 @@ impl World {
         self.listen_guards();
     }
 
-    /// Does this zombie listen at all? Not while it storms one of your units or heads for where it last saw one, not
+    /// Does this zombie listen at all? Not while it's after something or heads for where it lost sight of it, not
     /// with a wave, not in the air (TAB: those come first in its mind, `ZXBehaviour`).
     fn listens(&self, zombie: &Zombie) -> bool {
         zombie.is_alive()
             && !zombie.siege
             && !zombie.final_wave
             && zombie.leap.is_none()
+            && zombie.aim.is_none()
             && !zombie.lure.is_some_and(|lure| lure.why == Why::Seen)
-            && !self.notices(zombie)
     }
 
     /// The zombies whose turn it is (every `listen_seconds`, each on the tick its number gives it) listen: the cell they
     /// hear best, and the dice whether they come (`Sound::best`). Not coming, a zombie on its way to a sound that has
-    /// gone quiet forgets it and strolls on from where it is. First only reading, then the dice – in the order of the
+    /// gone quiet forgets it and idles on from where it is. First only reading, then the dice – in the order of the
     /// list, the same on every PC.
     fn listen_zombies(&mut self) {
         let every = data::get().sound.listen.max(1) as u64;
@@ -248,16 +248,13 @@ impl World {
             let comes = best.filter(|&(_, chance)| self.rng.below(100) < chance);
             let zombie = &mut self.zombies[i];
             match comes {
-                Some((c, _)) => {
-                    zombie.lure = Some(Lure::sound(c, self.sound.middle(c), tick));
-                    zombie.wander = None;
-                }
+                Some((c, _)) => zombie.lure = Some(Lure::sound(c, self.sound.middle(c), tick)),
                 None => {
-                    if let Some(Why::Sound(c)) = zombie.lure.map(|lure| lure.why) {
-                        if self.sound.level(c) == 0 {
-                            zombie.lure = None;
-                            zombie.wander = Some(Wander::new());
-                        }
+                    if let Some(Why::Sound(c)) = zombie.lure.map(|lure| lure.why)
+                        && self.sound.level(c) == 0
+                    {
+                        zombie.lure = None;
+                        zombie.idle = Idle::new();
                     }
                 }
             }
@@ -276,7 +273,6 @@ impl World {
             zombie.siege = true;
             zombie.final_wave = true;
             zombie.lure = None;
-            zombie.wander = None;
         }
         for house in &mut self.doom {
             house.final_call = true;

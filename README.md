@@ -155,11 +155,10 @@
   und um Beute.
 - **Die Balance machen die Arten, nicht die Menge:** nahe der Basis ≈ 1 pro Kachel, nur Walker; am Rand ≈ 1,6, davon
   über die Hälfte Runner, Riots, Infested, Spitter, Fat.
-- **Wie nah jede Art ans Kommandozentrum darf** (`keep_out` der Schwierigkeit, Normal: Walker und Runner 14, Riot und
-  Infested 25, Spitter 30, Fat 35 Kacheln; Brutal: alle 14) – beim Verteilen und beim Bummeln, auch nicht auf dem
-  Weg zum Ziel. Angelockte und Wellen dürfen näher – Angelockte bummeln von dort zufällig weiter, pro Ausflug
-  höchstens 3 Kacheln tiefer (`inside_step`), im Ganzen wieder hinaus. **Sanfter Rand:** direkt am Ring liegen sie
-  dünn und einzeln, erst 6 Kacheln weiter (`ring_ramp`) so viele wie überall, bis 3 pro Kachel.
+- **Wie nah jede Art zu Beginn ans Kommandozentrum liegt** (`keep_out` der Schwierigkeit, Normal: Walker und Runner
+  14, Riot und Infested 25, Spitter 30, Fat 35 Kacheln; Brutal: alle 14). Beim Wandern dürfen sie näher, wie in TAB –
+  nur der Riese bleibt 54 Kacheln weg. **Sanfter Rand:** direkt am Ring liegen sie dünn und einzeln, erst 6 Kacheln
+  weiter (`ring_ramp`) so viele wie überall, bis 3 pro Kachel.
 - **Arten:** **Walker** (langsam), **Runner** (schnell), **Fat** (groß, 600 HP), **Riot** (TABs gepanzerter Runner:
   schnell, Rüstung 3 – ein Pfeil macht nur 7), **Spitter** (TABs Venom: spuckt Säure 3,5 Kacheln weit, über Mauern;
   sie fliegt kurz und trifft alle im Umkreis von 1 Kachel – wer rechtzeitig weggeht, entkommt), **Infested** (SC2s
@@ -176,9 +175,10 @@
   sie, wenn eine Einheit oder ein Gebäude auf Sichtweite + 8 Kacheln herankommt (bevor du sie siehst), durch Lärm
   (genau wie die wachen – und gehen hin), durch Scan, Sprengfass und die Schlusswelle (alle, 2.000 pro Takt, die
   nächsten zuerst). Wer 20 s ruhig und weit weg von allen Augen ist, schläft wieder ein.
-- **Auch Schlafende bummeln** – Ausflug für Ausflug wie die wachen (nur kommen sie sofort an und warten dann, so lange
-  der Weg gedauert hätte). Ein Ausflug, der nahe deiner Augen endet, weckt sie unterwegs: Sie laufen wach von außen
-  herein. **Ein leergeräumter Ort füllt sich so wieder auf** – die Zombies gehen dir nicht aus.
+- **Auch Schlafende wandern** – nach denselben Würfeln wie die wachen (nur kommen sie sofort an und warten dann, so
+  lange der Weg gedauert hätte). Ein Ausflug, der nahe deiner Augen endet, weckt sie unterwegs: Sie laufen wach von
+  außen herein. **Ein leergeräumter Ort füllt sich so wieder auf** – die Zombies gehen dir nicht aus. Eine Welle, die
+  über Schlafende zieht, steckt sie an wie wache.
 - **Gedränge wie in TAB:** Zombies stehen ein Stück ineinander (bis zu einem Viertel), nie verschmolzen und nicht in
   Reihen. Wer blockiert ist, weicht seitlich aus – vor Mauern und Lücken fließen die hinteren um den Haufen herum.
   **Sie schieben sich:** wer in einen anderen läuft, schiebt ihn mit – auch herumstehende Bummler. Fat und Riese
@@ -187,9 +187,10 @@
   steht dabei ruhig, ohne zu zittern, und schlingert nicht durch Lücken.
 - **Einblenden:** Zombies kommen sanft ins Bild (0,6 s) und verschwinden sanft (0,8 s) – wie TAB, kein Aufploppen am
   Sichtrand. Im Editor („All“, „Zombies“) sieht man auch die Schlafenden, dunkler.
-- **Streuner bummeln ohne festen Platz:** jeder Ausflug bis zu Walker 8 Kacheln, Runner 14, Riot 18, Infested 22,
-  Spitter 24, Fat 30 von da, wo er gerade steht – mit der Zeit also überall hin, auch nahe der Basis (nie
-  näher, als seine Art darf).
+- **Leerlauf wie TAB:** ohne Ziel wird gewürfelt – meistens **stehen** (1300), selten **knurren** (150) oder
+  **wandern** (150). Ein Ausflug geht auf jeder Achse für sich Walker 2–8 Kacheln … Fat 4–30 weit (ein Quadrat, kein
+  Kreis), ohne festen Platz – mit der Zeit also überall hin, auch nahe an die Basis. Der **Riese brüllt** alle 12 s
+  und bleibt dafür stehen, egal was er tut.
 - **Villages of Doom** (wie TAB, weit weg von der Basis): dunkle Häuser mit rotem Dach. **Wie viele Dörfer und wie
   groß, sagt die Karte** (Green Valley ≈ 10 mit 3–6 Häusern, Open Plains ≈ 26 kleine mit 2–3, Broken Lands **2
   riesige** mit 15–25), die Schwierigkeit macht sie mehr oder weniger. In **jedem Haus gleich viele** schlafende
@@ -201,7 +202,19 @@
 - **Beute** (≈ 40 Haufen): Gold (500) oder 10 Holz/Stein/Eisenerz/Kohle – drauflaufen hebt sie auf. Um jeden Haufen
   liegen Zombies versteckt (Normal 8–50, mehr weiter draußen), die auf 5 Kacheln oder bei Lärm aus dem Boden kommen.
 - Häuser und Beute bleiben auf der Karte sichtbar, sobald man sie einmal gesehen hat, auch auf der Minimap (rot).
-- **Sehen** nur 5–6 Kacheln (nicht durch Wald), **hören** Einheiten 3 Kacheln weit, angeschossen stürmen sie 5 s los.
+- **Der Entscheidungsbaum wie TAB** (aus dessen Code, DESIGN.md 8.1): Ziel in Sicht → hin und zuschlagen; aus den
+  Augen verloren → zu dem Platz, stehen bleiben; Welle → zum Kommandozentrum; Lärm → hin; sonst Leerlauf.
+- **Ziele:** alle 0,5 s schaut sich jeder um (mit Ziel doppelt so selten, außerhalb deiner Sicht 3×, im Unerkundeten
+  5× so selten) – **Sehen** 5–8 Kacheln, nicht durch Wald. Ziele sind nur **deine Einheiten und Gebäude mit Leuten**
+  (Kommandozentrum, Häuser, Gebäude mit Arbeitern, Türme mit Einheiten) – **keine Mauern, leeren Türme, Strommasten**.
+- **Wand-Regel:** Steht eine Mauer, ein Tor oder Turm auf der geraden Linie zum Ziel, reißt er **die** ein. Niemand
+  sucht eine Lücke. Die Harpyie springt stattdessen.
+- **Angeschossen:** Er und alle ohne Ziel auf seiner Kachel und den vier daneben gehen auf den Schützen los (sitzt der
+  im Turm: auf den Turm) – auch außer Sicht, dann zu seinem Platz.
+- **Ansteckung:** Stehen auf der Kachel eines Zombies mindestens 3 Wellen-Zombies mit gleichem oder höherem Rang
+  (Walker 1, Runner 2, Riot/Harpyie 3, Spitter/Infested 4, Fat 5), läuft er mit – eine Welle wächst auf ihrem Weg.
+- **Sicherung:** Sind weniger als 100 Zombies übrig, stirbt alle 2 Minuten jeder, der keinen Weg zum Kommandozentrum
+  hat.
 - **Lärm genau wie in TAB** (aus dessen Code, `data\sound.json`): Er sammelt sich dort, wo etwas passiert (je 4 × 4
   Kacheln) – je Schuss Ranger 1, Soldat 3, Scharfschütze 10; jeder Zombie-Treffer 1, ein platziertes Gebäude 40, eine
   sterbende Einheit 50, ein zerstörtes Gebäude 100, ein **infiziertes** 100 + 50 je Zombie, der herauskommt. **Jede
@@ -219,14 +232,15 @@
   Wachsamkeit / Entfernung²** ist seine Chance in Prozent (Wachsamkeit Walker 2, Runner 3, Spitter 4, Harpyie 8) –
   doppelt so weit weg nur ein Viertel so sicher. Häuser und Beute-Wächter hören jede Sekunde hin. Mit F3 sieht man den
   lautesten Ort und wie sicher ein Walker in 10 Kacheln käme.
-- **Gedächtnis:** Ein Zombie geht zum Lärm, **solange es dort laut ist** – ist es still, wenn er das nächste Mal
-  hinhört, vergisst er es und bummelt von da weiter. Wo er zuletzt eine Einheit gesehen hat, geht er hin und bleibt
-  dort, wenn er nichts findet. Nur Wellen-Zombies laufen danach weiter zum Kommandozentrum. Angeklickt zeigt ein Zombie
-  mit einer roten Linie, wohin er will. Auf dem Weg laufen sie um Wasser und Berge, aber **durch Mauern** (einreißen);
-  ein paar Angeschossene suchen die Lücke.
-- Tote Einheiten stehen als Walker auf. Ein Zelt mit gebrochenem Schild ist **infiziert** und gehört den Zombies –
-  Zombies und Einheiten laufen hindurch. **Reparieren** heilt es. Fällt ein Gebäude mit Arbeitern (Jägerhütte,
-  Sägewerk …), kommen die Arbeiter als Zombies heraus – laut! Weit draußen gebaute Hütten also gut schützen.
+- **Gedächtnis:** Ein Zombie geht zum Lärm und bleibt dort, **solange es laut ist** – ist es still, wenn er das
+  nächste Mal hinhört, vergisst er es. Wo er eine Einheit aus den Augen verloren hat, geht er hin und bleibt dort, wenn
+  er nichts findet. Nur Wellen-Zombies laufen danach weiter zum Kommandozentrum. Angeklickt zeigt ein Zombie mit
+  einer roten Linie, wohin er will. Auf dem Weg laufen sie um Wasser und Berge, aber **durch Mauern** (einreißen).
+- Tote Einheiten stehen als TABs Infizierte auf (3/8 Walker, 4/8 Runner, 1/8 Riot) und laufen zum Kommandozentrum.
+  Ein Zelt mit gebrochenem Schild ist **infiziert** und gehört den Zombies – Zombies und Einheiten laufen hindurch;
+  heraus kommen 4 (Steinhaus 16) solcher Infizierten wie eine Welle. **Reparieren** heilt es. Fällt ein Gebäude mit
+  Arbeitern (Jägerhütte, Sägewerk …), kommen die Arbeiter als Zombies heraus – laut! Weit draußen gebaute Hütten also
+  gut schützen.
 
 ### Einheiten und Kampf
 
@@ -401,7 +415,8 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
   - **MG-Turm** (1 × 1, Gießerei, 600 Gold + 20 Stein + **20 Eisen**, Strom 6): 5 Schuss pro Sekunde, 9 Schaden,
     6,5 Kacheln, auf den **nächsten** – gegen Massen. Lärm 4 pro Schuss, also sehr laut. Wenig Strom: lädt langsamer.
     Ziehen = Reihe.
-  - Ein angeschossener Zombie stürmt los wie bei Einheiten. Aus (Y) schießen sie nicht.
+  - Ein angeschossener Zombie (und die um ihn ohne Ziel) geht auf den Turm los, wie bei Einheiten. Aus (Y) schießen
+    sie nicht.
 - **Abrechnung alle 8 Stunden** (wie TABs 8-Stunden-Takt, 60 s, `economy_every_hours` in `data\colony.json`):
   Zinsen des Dispo → Köhlereien nehmen Holz → Sammler und Kommandozentrum liefern → Gießereien schmelzen → Häuser essen
   und zahlen → Märkte verkaufen → **Unterhalt** wird bezahlt. Alle Werte „pro Abrechnung“.

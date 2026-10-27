@@ -2,11 +2,9 @@
 //! (`aggro.rs`) measures straight-line distance; there a unit across a lake is just as close as one in front of
 //! you. Not here: the way leads around the water.
 //!
-//! There are two of them, and they differ in what a building is (`Through`):
-//! - for the few zombies **looking for a gap** (shot, or next to one that was – DESIGN.md 8.1) buildings are walls –
-//!   whoever is walled in can only be reached through the gap,
-//! - for the **charge** of all the other zombies a building only costs a little extra: their way goes around
-//!   water and mountains, but straight through walls – so they storm the wall instead of looking for the gap.
+//! It's the way of the **storming** zombies, and a building on it only costs a little extra: their way goes around
+//! water and mountains, but straight through walls – they tear the wall down instead of looking for a gap, like TAB's
+//! (their way there goes through buildings, `Zombie.PathfindingMask`).
 //!
 //! It's computed like the flow field, just the other way round: Dijkstra starts at all units at once and stops
 //! at `max_cost`. That's cheap because there are only a few units and the radius is small.
@@ -22,31 +20,23 @@ use crate::map::Map;
 const UNSEEN: u16 = u16::MAX;
 
 /// What a step onto this tile costs a zombie – `None` if it can't go there at all (solid terrain, a house of doom, off
-/// the map, and with `Through::Never` also buildings). Also for the lure fields (`lure.rs`).
-pub fn step_cost(map: &Map, through: Through, x: i32, y: i32) -> Option<u16> {
+/// the map). A building – one of yours, not an infected one – costs `through` instead of 1: it tears it down on the
+/// way. Also for the lure fields (`lure.rs`).
+pub fn step_cost(map: &Map, through: u16, x: i32, y: i32) -> Option<u16> {
     if !map.is_blocked(x, y) {
-        return Some(1);
+        Some(1)
+    } else if map.can_tear_down(x, y) {
+        Some(through)
+    } else {
+        None
     }
-    match through {
-        // Blocked, but no solid terrain and on the map: a building – one of yours, not an infected one.
-        Through::Cost(cost) if map.can_tear_down(x, y) => Some(cost),
-        _ => None,
-    }
-}
-
-/// What a building tile is on the way to a unit.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Through {
-    /// A wall: no way through (looking for a gap).
-    Never,
-    /// Passable, a step onto it costs this much instead of 1 (charge: tear it down on the way).
-    Cost(u16),
 }
 
 #[derive(Clone)]
 pub struct HuntMap {
     size: usize,
-    through: Through,
+    /// What a step onto a building tile costs (`step_cost`).
+    through: u16,
     /// Per tile: cost to the nearest unit, or `UNSEEN` (too far / unreachable).
     dist: Vec<u16>,
     /// Per tile: which unit that is (index in the unit list).
@@ -56,7 +46,7 @@ pub struct HuntMap {
 }
 
 impl HuntMap {
-    pub fn new(size: usize, through: Through) -> HuntMap {
+    pub fn new(size: usize, through: u16) -> HuntMap {
         HuntMap { size, through, dist: vec![UNSEEN; size * size], unit: vec![0; size * size], heap: BinaryHeap::new() }
     }
 
@@ -67,7 +57,7 @@ impl HuntMap {
         for (i, pos) in positions.enumerate() {
             let (x, y) = (pos.x.floor() as i32, pos.y.floor() as i32);
             // Two units on one tile: the one entered first stays (DESIGN.md 12.8).
-            // A unit in a tower stands on a building: only the charge can get there.
+            // A unit in a tower stands on a building: the way leads into it.
             if self.cost(map, x, y).is_none() || self.dist[self.index(x, y)] == 0 {
                 continue;
             }
@@ -98,7 +88,7 @@ impl HuntMap {
 
     /// The unit that is closest on foot from here, and the direction of the next step towards it.
     /// Direction 0: already on the same tile. `None`: no unit within range (or no way).
-    /// For the charge the step can lead onto a building – that's the one to tear down.
+    /// The step can lead onto a building – that's the one to tear down.
     pub fn track(&self, map: &Map, pos: Vec2) -> Option<(usize, Vec2)> {
         let (x, y) = (pos.x.floor() as i32, pos.y.floor() as i32);
         if map.is_blocked(x, y) {

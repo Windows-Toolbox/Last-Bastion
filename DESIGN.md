@@ -264,8 +264,10 @@ Costs and stats live in `data\buildings.json` (12.4).
 | **Wonders** | ❓ (29) | Most expensive, very strong buffs |
 
 - **Building like TAB** (open question 5): placed, paid at once, builds itself. No worker units.
-- **Infection** (from TAB): HP + shield; shield down = **infected** – colonists come out as zombies, more depending on
-  the building. A breach should feel catastrophic. The infected building then belongs to the zombies: they stop
+- **Infection** (from TAB): HP + shield; shield down = **infected** – its people come out as zombies, like TAB:
+  colonists + workers it needs − workers it gives, plus its `extra_infected` (tent 2 + 2, stone house 8 + 8), each one
+  of TAB's infected at random (3/8 walker, 4/8 runner, 1/8 riot), all heading for the command center like a wave.
+  Still being built, it falls. Your fallen units rise the same way. A breach should feel catastrophic. The infected building then belongs to the zombies: they stop
   hitting it, and its walls are broken – zombies and units walk right through it (changed 2026-10-18, before: around
   it). **Repairing** it cures it. A building with **workers** that falls is infected too: its workers come out as
   zombies where it stood. Every infection is very loud (8.3) – an outlying hunter cottage overrun draws the horde.
@@ -416,15 +418,31 @@ unrest; leaps over walls and gates up to 3 tiles thick when its goal lies behind
 (`giants`, default 4 on 256 tiles), the difficulty scales it 50–225 %; not in the waves, but the final wave calls
 them)
 – values in `data\zombies.json`, the names too. The harder breeds lie further out (`mix` in `data\roaming.json`)
-and stroll further per trip (`stroll` per breed: walker 8 tiles … fat 30) – without a home they keep to (8.5).
+and roam further per trip (`stroll` per breed: walker 2–8 tiles … fat 4–30) – without a home they keep to (8.5).
+TAB's breeds are ours like this: WeakA/B/C → walker, WorkerA/B and MediumA/B → runner, DressedA → riot, Chubby → fat,
+Venom → spitter, Harpy, Giant; the infested is ours (StarCraft 2).
 
-- **Sight** like TAB, per breed: 5–6 tiles, not through forests. **Hearing** 3 tiles. **Shot** → storms for 5 s.
-- Having noticed a unit, it storms at it: around water and mountains, but **almost straight through walls** (tears
-  them down). A shot zombie and its 3 neighbours look for the gap for 10 s instead.
-- **Memory:** a zombie goes where it was lured – a noise it heard (8.3), or where it last saw one of your units – and
-  stays there if it finds nothing, strolling around. Only wave zombies head on for the command center.
-- Without anything else: the nearest building within 5 tiles; wave zombies the command center (buildings in the way
-  only avoided if the detour is short).
+**What a zombie has in mind – TAB's decision tree** (from its code, `src/sim/zombies.rs`), the first point that fits:
+1. **After something** – one of your units, a building with people in it, a wall in its way: there, and hit it.
+2. **Lost sight of it:** to where it was then, and stay there (not the giant).
+3. **With a wave:** to the command center, tearing down what's in the way.
+4. **Contagion** (every ~4 s): at least 3 wave zombies of its rank or higher on its tile – it joins the wave (not the
+   giant; ranks: walker 1, runner 2, riot and harpy 3, spitter and infested 4, fat 5, giant 6). A wave snowballs
+   through the roamers it walks over – sleepers too.
+5. **A sound** (8.3): there, and idle around it while it's loud.
+6. **Idle:** rolled with TAB's weights 1300 stand / 150 growl / 150 roam – mostly they stand.
+- The **giant** also stops every 12 s and roars, whatever it's doing.
+- **Looking around** (TAB's watch): every 0.5 s – twice as long while it's after something, 3× out of your sight, 5×
+  where you've never been. It picks the nearest of your units and **buildings with people in them** that it sees (sight
+  per breed 5–8 tiles, not through forests): the command center, houses, buildings with workers, towers with units
+  inside. **Not** walls, empty towers, power poles.
+- **Wall rule:** after something further than half a tile away, a wall, gate or tower on the straight line to it (in
+  the square of its size + 3 tiles) becomes its target – the nearest one. Seeing nothing, it stays on a wall it was
+  tearing down. Waves and lured ones check the line to their next step. Their way goes **straight through walls**:
+  no zombie ever looks for a gap. The harpy has no wall rule – it leaps.
+- **Shot:** if it isn't after anything, it and every zombie on its tile and the four next to it that isn't either go
+  for the shooter (a unit in a tower: the tower) – once more even out of sight, then to where it was.
+- **Safety:** fewer than 100 zombies left – every 2 minutes each one without a way to the command center dies.
 - Sight is computed from the few units outwards, not from thousands of zombies.
 - **A crowd stands a little inside itself, like in TAB:** a zombie walks into another only up to its core (three
   quarters of touching), the rest of its step slides along it and ¾ of what's blocked goes sideways – in front of
@@ -483,8 +501,8 @@ hunter cottage).
 - **Listening:** every 4 s each zombie (each on another tick, sleepers too) takes the loud cell within 4 × its sight
   (in x and y) it hears best – `noise × 20 × awareness / distance²` (tiles) – and comes with that many percent, 100 and
   more for sure (awareness: walker 2, runner/fat/riot/infested 3, spitter 4, harpy 8). It goes to the middle of the
-  cell while it's loud there; quiet there at its next listening, it forgets it and strolls on from where it is.
-- Who storms one of your units, heads for where it last saw one or comes with a wave doesn't listen.
+  cell and idles around it while it's loud there; quiet there at its next listening, it forgets it.
+- Who is after something, heads for where it lost sight of it or comes with a wave doesn't listen.
 - Houses of doom and loot guards listen every second, with their own awareness (2 and 1.5).
 - `src/sim/sound.rs`; the way to the noise: a small field per place, `src/lure.rs`.
 
@@ -511,20 +529,18 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
 - **At the start** the roamers lie almost everywhere, in packs of 1–3 on a tile – never more than 3 (`pack` in
   `data\roaming.json`). Near the base nearly only walkers, further out the harder breeds (TAB's balance: by breed, not
   by how many). How many: the difficulty (`roaming_zombies`).
-- **How close each breed may come** – the difficulty's `keep_out`, in tiles from the command center (Normal: walkers
-  and runners 14, riots and infested 25, spitters 30, fat ones 35; Brutal: all 14). Right at that ring they lie
-  thinly, one per tile – over `ring_ramp` (6) tiles they get as many as anywhere, in full packs. None lies closer at the start
-  (there it's a walker instead), none strolls closer – not even on the straight way to its goal. Lured ones and waves
-  may go closer. A lured one strolls on at random from where it is: every trip at most `inside_step` (3) tiles deeper,
-  trips further in are dropped – so it may come a little closer, but on the whole drifts back out. Nothing is kept
-  per zombie for it.
+- **How close each breed lies at the start** – the difficulty's `keep_out`, in tiles from the command center (Normal:
+  walkers and runners 14, riots and infested 25, spitters 30, fat ones 35; Brutal: all 14). Right at that ring they
+  lie thinly, one per tile – over `ring_ramp` (6) tiles they get as many as anywhere, in full packs. None lies closer
+  at the start (there it's a walker instead). **Roaming they may come closer, like in TAB** – only the giant never roams
+  within 54 tiles (`roam_ring`). (The distances per breed move into the map generator with TAB's, plan step 6.)
 - **Asleep:** whoever lies far from your eyes sleeps – only an entry per block of 8 × 8 tiles (`src/sim/sleep.rs`).
   A sleeper doesn't see and costs next to nothing. In the editor's views "All" and "Zombies" they are drawn darker; in
   the player's view you never see one.
-- **Sleepers stroll too:** trip after trip by the same rule and dice as an awake stroller (below) – a random free
-  spot up to `stroll` tiles away, never into its breed's ring around the command center. Nobody sees them, so they
-  arrive at once and then wait as long as the walk would have taken, plus the 1–5 s of standing. Something in the
-  straight way (water, a mountain): it stays. A trip that would end near your eyes wakes it where it starts, and it
+- **Sleepers idle too:** by the same rule and dice as an awake one (below) – TAB's stand / growl / roam rolled ahead
+  until it comes up roam, then a trip to a spot found the same way. Nobody sees them, so they arrive at once and then
+  wait as long as the walk would have taken, plus the standing and growling. Something in the straight way (water, a
+  mountain): it stays. A trip that would end near your eyes wakes it where it starts, and it
   walks the rest awake – into sight from outside, fading in. **So the zombies never run out where you are:** a place you
   emptied (a loud border lured everything around) fills up again as the sleepers around drift in – holding it stays
   work until the region around is thinned out.
@@ -536,19 +552,19 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
   3. **The scan** wakes its circle, **a barrel** going off wakes its radius (and then hits them).
   4. **The final wave** wakes everyone, at least 2,000 a tick, the nearest to the base first. The round isn't won before
      the last one is awake and dead.
+  5. **A wave walking over them:** the contagion (8.1) wakes a sleeper and takes it along.
 - **Seen:** in the picture a zombie fades in over 0.6 s when it comes into sight and fades out over 0.8 s when it
   leaves it – nobody pops up at the edge of sight (like TAB).
-- **Strolling, without a radius:** an awake roamer with nothing to do strolls – each trip to a random spot up to
-  `stroll` tiles from where it stands now (walker 8 … fat 30, `data\zombies.json`), never into its breed's ring around
-  the command center (above). **No home it keeps to:** trip after trip it can get anywhere outside that ring. How
-  close the special breeds come is up to the difficulty.
-- **Calm is cheap:** a stroller that notices nothing thinks only every 8th tick – calm crowds may overlap a little
+- **Idle, without a radius (TAB):** stand 2 s, growl 2 s or roam – rolled 1300 / 150 / 150. A roam goes on each axis
+  on its own `stroll` tiles away (walker 2–8 … fat 4–30, either way – a square, not a circle), 20 tries for free
+  ground on the playing field, at its walking pace. **No home it keeps to:** trip after trip it can get anywhere.
+- **Calm is cheap:** an idle one thinks only every 8th tick (it still looks around on its own beat) – calm crowds may overlap a little
   while they stroll. Only with a busy zombie on its tile or the tiles around does it move every tick: then it can be
   walked into and pushed (8.1).
-- **Falling asleep again:** a stroller that has been calm for **20 s** and is further than sight **+ 16 tiles** from
-  every eye falls asleep where it stands (its hit points kept) – and strolls on asleep. Never after the final wave's
+- **Falling asleep again:** an idle one that has been calm for **20 s** and is further than sight **+ 16 tiles** from
+  every eye falls asleep where it stands (its hit points kept) – and idles on asleep. Never after the final wave's
   call. Far away nothing costs anything, but the horde keeps moving.
-- **Lured** zombies go there and then stroll from there: to the place they last saw a unit always, to a sound only
+- **Lured** zombies go there and then idle there: to the place they lost sight of a unit always, to a sound only
   while it's loud there (8.3); **wave** zombies head for the command center. Neither falls asleep while busy.
 
 ---

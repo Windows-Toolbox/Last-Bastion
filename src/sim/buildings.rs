@@ -7,7 +7,7 @@ use macroquad::math::{vec2, Vec2};
 
 use super::commands::Command;
 use super::terrain::free_point_near;
-use super::zombies::Breed;
+
 use super::{payout_ticks, World, TICKS_PER_SECOND};
 use crate::data;
 use crate::kinds::{BuildingKind, BuildingStats, Resource, UnitKind};
@@ -226,6 +226,15 @@ impl Building {
             return std::mem::take(&mut self.infected);
         }
         false
+    }
+
+    /// Does it have people in it – what zombies go for when they see it (TAB's `HasPeople`)? The command center, a
+    /// house, a building with workers or one that gives them, a tower with units inside (`holds_units`) – not an
+    /// infected one.
+    pub fn has_people(&self, holds_units: bool) -> bool {
+        let s = self.stats();
+        let people = s.colonists > 0 || s.workers > 0 || s.worker_cost > 0;
+        !self.zombies_ignore() && (self.kind == BuildingKind::CommandCenter || people || holds_units)
     }
 
     /// Do the zombies leave it alone – infected (it's theirs) or a trap (they walk over it)? Then they don't notice
@@ -449,9 +458,10 @@ impl World {
         command_center_fell
     }
 
-    /// Building `b` has just been infected: its colonists come out as zombies right next to it (DESIGN.md 6). From now
-    /// on it belongs to the zombies: they don't hit it anymore, and its broken walls let everyone through
-    /// (`Map::set_taken`) – so the threat map and their way to the command center are computed anew.
+    /// Building `b` has just been infected: its people come out as zombies right next to it (DESIGN.md 6) – like TAB's,
+    /// as many as live and work in it beyond the workers it gives, plus its `extra_infected`. From now on it belongs to
+    /// the zombies: they don't hit it anymore, and its broken walls let everyone through (`Map::set_taken`) – so their
+    /// way to the command center is computed anew. Still being built, it falls (TAB).
     pub(super) fn infect(&mut self, b: usize) {
         let (tile, size) = (self.buildings[b].tile, self.buildings[b].footprint());
         self.buildings[b].repair_left = 0; // a repair underway is lost with it
@@ -470,14 +480,19 @@ impl World {
                 }
             }
         }
-        let (center, colonists) = (building.center(), building.stats().colonists);
-        self.infected_come_out(center, &ring, colonists);
+        let s = building.stats();
+        let people = (s.worker_cost + s.colonists).saturating_sub(s.workers) + s.extra_infected;
+        let (center, unfinished) = (building.center(), !building.is_built());
+        self.infected_come_out(center, &ring, people);
+        if unfinished {
+            self.buildings[b].hp = 0;
+        }
     }
 
     /// `count` infected people of a building at `center` come out as zombies, on random spots of these free `tiles` –
-    /// 2–4 runners, the rest walkers. Not wandering: they go for the next target right away. And it's loud, like in
-    /// TAB: `building_infected` plus `per_infected` for every one of them (`sound.rs`). No tile free (walled in all
-    /// around): they can't get out – but it's still heard.
+    /// each one of TAB's infected (`infected_breed`), and all of them head for the command center like a wave (TAB's
+    /// `AttackCommandCenter`). And it's loud, like in TAB: `building_infected` plus `per_infected` for every one of them
+    /// (`sound.rs`). No tile free (walled in all around): they can't get out – but it's still heard.
     fn infected_come_out(&mut self, center: Vec2, tiles: &[(i32, i32)], count: u32) {
         if count == 0 {
             return;
@@ -487,11 +502,10 @@ impl World {
         if tiles.is_empty() {
             return;
         }
-        let runners = count.min(2 + self.rng.below(3));
-        for i in 0..count {
+        for _ in 0..count {
             let (x, y) = tiles[self.rng.below(tiles.len() as u32) as usize];
             let pos = vec2(x as f32 + self.rng.unit_f32(), y as f32 + self.rng.unit_f32());
-            let breed = if i < runners { Breed::Runner } else { Breed::Walker };
+            let breed = self.infected_breed();
             self.spawn_zombie_as(pos, breed, false);
         }
     }

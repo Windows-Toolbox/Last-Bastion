@@ -188,31 +188,44 @@ pub struct Zombies {
     /// Time between two hits (read in seconds, kept in ticks) – for every breed without its own `attack_seconds`.
     #[serde(rename = "hit_every_seconds", deserialize_with = "seconds")]
     pub hit_cooldown: u32,
-    /// This close they notice a unit even without seeing it. (How far they see: per breed, `sight`.)
-    pub hearing: f32,
-    /// A building this close (straight line) is noticed and torn down.
-    pub notice_buildings: f32,
-    /// A shot zombie storms this long, even without seeing the shooter.
-    #[serde(rename = "alert_seconds", deserialize_with = "seconds")]
-    pub alert: u32,
     /// Storming zombies find a way to your units up to this many steps (a building tile counts double).
     pub charge_steps: u16,
-    /// The shot zombie and this many of the closest around it look for a gap …
-    pub seek_helpers: usize,
-    /// … if they stand this close to it (tiles) …
-    pub seek_radius: f32,
-    /// … for this long …
-    #[serde(rename = "seek_seconds", deserialize_with = "seconds")]
-    pub seek: u32,
-    /// … up to this many steps on foot around walls.
-    pub seek_steps: u16,
-    /// Wanderers stroll at this share of their speed (how far per trip: per breed, `stroll`).
+    /// What an idle zombie does next, rolled with these weights (TAB 1300 / 150 / 150, `sim/zombies.rs`) …
+    pub idle: IdleWeights,
+    /// … standing this long (TAB: as long as its standing animation) …
+    #[serde(rename = "stand_seconds", deserialize_with = "seconds")]
+    pub stand: u32,
+    /// … growling this long (its special animation) – a giant roars as long.
+    #[serde(rename = "growl_seconds", deserialize_with = "seconds")]
+    pub growl: u32,
+    /// Roaming, it walks at this share of its speed (how far per trip: per breed, `stroll`).
     pub wander_pace: f32,
-    /// A dead unit gets up as a walker after this many seconds – somewhere between min and max.
+    /// Every this long every zombie that isn't with a wave looks around its tile (TAB: 238 frames, a little under 4 s):
+    /// at least `contagion_count` wave zombies of its `level` or higher there – it joins them.
+    #[serde(rename = "contagion_seconds", deserialize_with = "seconds")]
+    pub contagion: u32,
+    pub contagion_count: usize,
+    /// What comes out of an infected building, and what your fallen units rise as: one of these at random each –
+    /// TAB's eight (WeakA/B/C, DressedA, WorkerA/B, MediumA/B).
+    pub infected: Vec<Breed>,
+    /// Fewer zombies than this left on the map (awake and asleep): every `cull_every_seconds` each one that has no way
+    /// to the command center dies (TAB) – so a round doesn't hang on the last zombie on an island.
+    pub cull_below: usize,
+    #[serde(rename = "cull_every_seconds", deserialize_with = "seconds")]
+    pub cull_every: u32,
+    /// A dead unit gets up as a zombie (one of `infected`) after this many seconds – somewhere between min and max.
     #[serde(rename = "rise_min_seconds", deserialize_with = "seconds")]
     pub rise_min: u32,
     #[serde(rename = "rise_max_seconds", deserialize_with = "seconds")]
     pub rise_max: u32,
+}
+
+/// The weights of what an idle zombie does next (`Zombies::idle`).
+#[derive(Deserialize)]
+pub struct IdleWeights {
+    pub stand: u32,
+    pub growl: u32,
+    pub roam: u32,
 }
 
 /// `data\roaming.json`: where the roaming zombies lie at the start and which breed they are. How many: the map setup
@@ -229,10 +242,6 @@ pub struct Roaming {
     /// Over this many tiles beyond the ring around the command center (the smallest `keep_out`) they thin out toward
     /// it: right at the ring hardly any, one per tile; this far out as many as anywhere, in full packs.
     pub ring_ramp: f32,
-    /// A zombie inside the ring its breed keeps out of (`keep_out` of the difficulty – lured in there, your bad luck)
-    /// strolls on at random from there: on every trip it may get at most this many tiles closer to the command center.
-    /// Trips further in are dropped, so on the whole it drifts back out – nothing is kept per zombie for it.
-    pub inside_step: f32,
     /// Which breeds besides walkers, from how far out and how many of them. Whatever is left over is walkers. The
     /// villages of doom and the guards of loot are mixed the same way. Closer than its `keep_out` (difficulty) a breed
     /// never lies – there it's a walker.
@@ -337,12 +346,27 @@ pub struct BreedStats {
     pub armor: u32,
     /// Per hit – a spitter: on everyone in its splash.
     pub damage: u32,
-    /// How far it sees your units (tiles) – not through forest.
+    /// How far it sees your units and the buildings with people in them (tiles) – not through forest.
     pub sight: f32,
-    /// A wanderer strolls at most this far per trip (tiles, in x and y), from wherever it stands – it has no home it
-    /// keeps to, so over time it may get anywhere but the ring around the command center its difficulty keeps it out
-    /// of (`keep_out`). The rarer the breed, the further.
-    pub stroll: f32,
+    /// It looks around for them every this long (TAB's `EntityWatchInterval`, read in seconds, kept in ticks) – twice
+    /// as long while it's after something, three times out of your sight, five times where you've never been.
+    #[serde(rename = "watch_seconds", deserialize_with = "seconds")]
+    pub watch: u32,
+    /// Its rank (TAB's `Level`): it joins a wave only if enough of its zombies stand on its tile with this rank or a
+    /// higher one (`contagion_seconds`).
+    pub level: u32,
+    /// Roaming, it goes `[at least, at most]` this far per trip (tiles, on each axis on its own – a square, like TAB),
+    /// from wherever it stands. No home it keeps to: over time it may get anywhere. The rarer the breed, the further.
+    pub stroll: [f32; 2],
+    /// Roaming, it never goes into this ring around the command center (tiles) – unless it's in it already. TAB's
+    /// giant: 54. Left out: 0 – no ring.
+    #[serde(default)]
+    pub roam_ring: f32,
+    /// Every this long it stops and roars for `growl_seconds`, whatever it's doing (TAB's giant, read in seconds, kept
+    /// in ticks). A breed that roars thinks like TAB's giant: it never goes to where it lost sight of you and never
+    /// joins a wave. Left out: it doesn't.
+    #[serde(default, rename = "roar_every_seconds", deserialize_with = "some_seconds")]
+    pub roar: Option<u32>,
     /// How big it is (tiles): zombies, units and buildings keep this far from its middle.
     pub radius: f32,
     /// A ranged zombie: it attacks from this far (tiles). Left out: 0 – it has to touch you.
@@ -463,8 +487,7 @@ pub struct Special {
 
 /// `data\game_difficulties.json`: the difficulties to pick before a round (like TAB's zombie population, but more):
 /// how many zombies, how close the hard breeds come, how strong the waves are, what the colony starts with. A new round
-/// takes them over into its map file (`World::generate`) – only `keep_out` is looked up while it runs, by the name the
-/// map file keeps.
+/// takes them over into its map file (`World::generate`) – only `keep_out` is looked up by the name the map file keeps.
 #[derive(Deserialize)]
 pub struct Difficulties {
     /// Picked when nothing else is – and for a map that names a difficulty that isn't in the list (any more).
@@ -489,7 +512,8 @@ pub struct Difficulty {
     /// Zombies roaming the map at the start, per 1,000 tiles they can stand on (`World::scatter_roamers`) – in packs
     /// of `pack` (`roaming.json`), so about 2,000 put a pack on nearly every tile.
     pub roaming_zombies: f32,
-    /// Per breed: none lies closer to the command center at the start, none strolls closer (tiles).
+    /// Per breed: none lies closer to the command center at the start (tiles). Roaming they may come closer, like in TAB
+    /// – only the giant keeps its `roam_ring`.
     pub keep_out: KeepOut,
     /// The villages of doom: this many percent as many as the map says, this many percent of its houses in each …
     pub villages_percent: u32,

@@ -353,10 +353,10 @@ pub struct Corpse {
 
 impl World {
     /// The start of a round, like TAB: zombies almost everywhere on the playing field, in small packs on one tile each
-    /// (`pack` in `data\roaming.json`: 1–3) – so never more than that on a tile. They wander around where they are until
-    /// they notice one of your units. `per_thousand`: how many per 1,000 tiles they can stand on (open ground in the
-    /// playing field, out of the ring around the command center no zombie comes into – the smallest `keep_out`) – at
-    /// most one pack per tile, so with packs of 1–3 about 2,000 fill the map.
+    /// (`pack` in `data\roaming.json`: 1–3) – so never more than that on a tile. They idle where they are until they see
+    /// one of your units or buildings with people. `per_thousand`: how many per 1,000 tiles they can stand on (open
+    /// ground in the playing field, out of the ring around the command center no zombie lies in at the start – the
+    /// smallest `keep_out`) – at most one pack per tile, so with packs of 1–3 about 2,000 fill the map.
     /// Where: a little more further out (`edge_weight`). The balance is in the breeds, not in how many (`roll_breed`):
     /// near the base nearly only walkers, further out runners, then the armored ones, the infested and the spitters,
     /// at the edge also fat ones – none closer than its `keep_out`.
@@ -479,8 +479,9 @@ impl World {
         }
     }
 
-    /// The dead count down, and whoever's time has come gets up as a walker – storming, not wandering. Something
-    /// built on the spot in the meantime: it gets up next to it.
+    /// The dead count down, and whoever's time has come gets up as one of TAB's infected (`infected_breed`) – heading
+    /// for the command center like a wave, not wandering. Something built on the spot in the meantime: it gets up next
+    /// to it.
     pub(super) fn raise_corpses(&mut self) {
         let mut rising = Vec::new();
         self.corpses.retain_mut(|corpse| {
@@ -492,7 +493,8 @@ impl World {
         });
         for pos in rising {
             if let Some(pos) = free_point_near(&self.map, pos) {
-                self.spawn_zombie_as(pos, Breed::Walker, false);
+                let breed = self.infected_breed();
+                self.spawn_zombie_as(pos, breed, false);
             }
         }
     }

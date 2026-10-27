@@ -4,7 +4,7 @@
 use macroquad::math::{vec2, Vec2};
 
 use super::buildings::NO_BUILDING;
-use super::zombies::{values, BUILDING_DETOUR};
+use super::zombies::BUILDING_DETOUR;
 use super::World;
 use crate::flow::{FlowField, Walker};
 use crate::kinds::BuildingKind;
@@ -16,23 +16,19 @@ const PUSH_SEARCH: i32 = 24;
 const PUSH_MARGIN: f32 = 0.3;
 
 impl World {
-    /// After changes to the map or the buildings: recompute the tile index, the buildings' threat map and
-    /// the zombies' paths. The zombies walk towards the command center; if there is none anymore, towards the
-    /// base tile. To them buildings in the way are only a detour price, not a wall – except infected ones and traps:
-    /// those are theirs or under their feet, not a target (left out of the threat map) and not something to tear down (`Map::can_tear_down`).
+    /// After changes to the map or the buildings: recompute the tile index and the zombies' paths. The zombies walk
+    /// towards the command center; if there is none anymore, towards the base tile. To them buildings in the way are
+    /// only a detour price, not a wall – except infected ones and traps: those are theirs or under their feet, not
+    /// something to tear down (`Map::can_tear_down`).
     pub(super) fn refresh_map(&mut self) {
         self.map_changed = false;
         // The ways to the lure places went around what stood before – made anew when needed (`zombies.rs`).
         self.lures.clear();
         self.building_at.fill(NO_BUILDING);
-        self.building_aggro.clear();
         let size = self.map.size as i32;
         for (b, building) in self.buildings.iter().enumerate() {
             for (x, y) in building.tiles() {
                 self.building_at[(y * size + x) as usize] = b as u32;
-            }
-            if !building.zombies_ignore() {
-                self.building_aggro.stamp(b, building.corner(), building.far_corner(), values().notice_buildings);
             }
         }
         let goals = match self.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter) {
@@ -66,7 +62,7 @@ impl World {
 
 /// The nearest tile to `p` that isn't `blocked` (its own tile if that is free), searched ring by ring up to
 /// `max_r` tiles away. `blocked` decides who is asking: units also count the world border, zombies don't.
-fn nearest_free_tile(p: Vec2, max_r: i32, blocked: impl Fn(i32, i32) -> bool) -> Option<(i32, i32)> {
+pub(super) fn nearest_free_tile(p: Vec2, max_r: i32, blocked: impl Fn(i32, i32) -> bool) -> Option<(i32, i32)> {
     let (px, py) = (p.x.floor() as i32, p.y.floor() as i32);
     if !blocked(px, py) {
         return Some((px, py));
