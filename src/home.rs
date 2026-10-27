@@ -497,8 +497,7 @@ impl Home {
         }
         if notes {
             let d = data.duration(round.days.round() as u32);
-            let waves = format!("first wave on day {}, then every {} days", d.first_wave_day, d.wave_every_days);
-            col.wrap(&format!("{} at speed x1 - {waves} - score {} %", play_time(d.days), d.score_percent));
+            col.wrap(&format!("{} at speed x1 - TAB's waves stretched to the days, the final wave at 92 % - score {} %", play_time(d.days), d.score_percent));
         }
     }
 

@@ -10,13 +10,13 @@ Wert fehlt), läuft das Spiel mit den alten Werten weiter und zeigt oben links e
   `game_difficulties.json`, `game_durations.json`). Was sie sagen, landet beim Start in der Kartendatei (Zombies,
   Wellen, Startgold …) – „Restart“ ändert daran nichts mehr. Nur `keep_out` der Schwierigkeit wird über ihren Namen
   in der Kartendatei nachgeschaut.
-- **Ausnahme `spawning.json`:** Der konstante Spawn und die Wellen gehören zur **Karte**. Eine neue Karte bekommt eine
-  Kopie davon in ihre Kartendatei (eine Runde = eine Datei, siehe Haupt-README), danach zählt, was dort steht – im
+- **Ausnahme `spawning.json`:** Die Events (Wellen, Streuner, Schlusswelle, Sieg) gehören zur **Karte**. Eine neue
+  Karte bekommt eine Kopie davon in ihre Kartendatei (eine Runde = eine Datei, siehe Haupt-README), danach zählt, was dort steht – im
   Editor änderbar. Eine Änderung hier gilt also erst für **neue** Spiele („New map“ oder „New game“), nicht für
   „Restart“ einer Karte, die es schon gibt.
 - JSON kennt keine Kommentare – deshalb steht hier, was jeder Wert heißt.
 - **Zeiten stehen in Sekunden** (`…_seconds`), das Spiel rechnet in Takten (20 pro Sekunde) und rundet.
-- **1 Tag = 3 Minuten, 1 Stunde = 7,5 Sekunden** (steht noch im Code, `DAY_TICKS` in `src\sim\mod.rs`).
+- **1 Tag = 60 Sekunden, 1 Stunde = 2,5 Sekunden** wie in TAB (steht im Code, `DAY_TICKS` in `src\sim\mod.rs`).
 - **„Pro Abrechnung“:** Die Wirtschaft rechnet alle `economy_every_hours` Stunden ab (`colony.json`, 8 wie TAB =
   60 s): Gold, Nahrung, Holz, Unterhalt – alle Werte dazu gelten pro Abrechnung.
 - Entfernungen in **Kacheln**, Geschwindigkeiten in **Kacheln pro Sekunde**.
@@ -197,7 +197,7 @@ hat, dahin läuft, wo er es aus den Augen verloren hat, oder mit einer Welle kom
 | `zombie_hit`, `unit_dies`, `building_placed`, `building_destroyed` | So laut: jeder Treffer eines Zombies, eine sterbende Einheit, ein platziertes Gebäude, ein zerstörtes Gebäude |
 | `building_infected`, `per_infected` | Ein infiziertes Gebäude – plus so viel für jeden, der herauskommt. Ein Gebäude mit Arbeitern, das fällt, ist infiziert: die Arbeiter kommen als Zombies heraus (TAB: eine überrannte Jägerhütte weit draußen lockt die Horde) |
 | `work_every_seconds` | So oft macht jedes arbeitende Gebäude seinen Lärm (`noise` in `buildings.json`) – alle im selben Moment, Nachbarn zählen zusammen |
-| `unrest_per_zombie` | **Unruhe:** aller Lärm der Kolonie (Schüsse, Maschinen, Explosionen, Bauen) zählt zusammen und sinkt nie – je so viel davon bringt jede Gruppe des konstanten Spawns für immer einen Zombie mehr |
+| `unrest_per_zombie` | **Unruhe:** aller Lärm der Kolonie (Schüsse, Maschinen, Explosionen, Bauen) zählt zusammen und sinkt nie – je so viel davon bringt jede Seite eines stillen Events (TABs Streuner) für immer einen Zombie mehr |
 
 ## `roaming.json` – Streuner
 
@@ -259,57 +259,49 @@ Womit die Kolonie startet (Gold, Holz, Einheiten), sagt die Schwierigkeit (`game
 | `desert_debt_payouts`, `desert_every_seconds` | Mehr als so viele Abrechnungen: alle so viele Sekunden **desertiert** eine Einheit – weg für immer, je mehr Unterhalt sie kostet, desto eher. Söldner schon ab `deep_debt_payouts`, und solange es welche gibt, nur sie |
 | `credit_interest_percent` | Schulden im Dispo der Banken bringen keine Strafen (gezählt wird nur, was darüber liegt) – sie kosten so viel Prozent davon an Zinsen pro Abrechnung |
 
-## `spawning.json` – konstanter Spawn und Wellen einer neuen Runde
+## `spawning.json` – TABs Survival-Plan
 
-Beides bekommt eine **neue Karte** als Kopie in ihre Kartendatei – danach ändert man es im **Editor** (Tab „Waves“)
-oder direkt in der Kartendatei. Hier steht also nur, womit neue Karten anfangen.
-
-### Konstanter Spawn (`stages`, `extra_per_day`, `specials`)
-
-Nachschub aus den Spawnern, die auf „Constant“ stehen (neue Karten: alle). Getötete Zombies kommen **nie** wieder –
-was du freiräumst, bleibt frei, bis neue nachkommen.
-
-`stages` ist eine Liste von Abschnitten, **nach Zeit sortiert**. Jeder gilt ab seinem Zeitpunkt bis zum nächsten
-(`spawners` gibt es nur in der Kartendatei, siehe unten):
+Die **Events** einer neuen Runde – TABs eigener Plan (aus dessen Code), für **100 Tage und Bevölkerung 1**. Eine neue
+Karte bekommt sie als Kopie in ihre Kartendatei, danach ändert man sie im **Editor** (Tab „Events“) oder in der
+Datei. Beim Anlegen: **Stunden × Tage / 100** (aufgerundet – nicht der Zufallsversatz, nicht die Vorwarnung),
+**Anzahlen × `population`** der Schwierigkeit (gerundet, mindestens 1; Riesen nicht).
 
 | Wert | Bedeutung |
 |---|---|
-| `day`, `hour` | Ab wann (Tag ab 1, Stunde 0–23). `"day": 2, "hour": 0` = Ende von Tag 1 |
-| `breed` | `"Walker"`, `"Runner"`, `"Fat"`, `"Armored"`, `"Spitter"` oder `"Infested"` |
-| `every_seconds` | Alle so viele Sekunden kommt eine Gruppe … |
-| `group` | … aus `[min, max]` Zombies (zufällig dazwischen), alle aus einem zufälligen Spawner – **dicht beieinander an einem Punkt** darin |
+| `stream_every_seconds`, `stream_speed` | Wie TABs Spawner: alle so viele Sekunden lässt jede Seite einen Schub heraus – je Art ein Anteil an `stream_speed` (die erste Art füllt auf), mindestens 1 jede. Ein großer Schwarm kommt so als lange Kolonne |
+| `events` | Die Events, jedes wie in der Kartendatei (Felder unten), dazu `low_population` |
 
-- Hat der **nächste** Abschnitt **dieselbe Art**, gehen die Werte **gleitend** dorthin über (so werden die Walker
-  von Tag 2 bis Tag 3 nach und nach mehr).
-- Wechselt die Art, bleiben die Werte bis zum Wechsel gleich.
-- Nach dem **letzten** Abschnitt wird jede Gruppe pro Tag um `extra_per_day` Zombies größer.
-- `specials`: je `day` (ab diesem Tag), `breed` und `share` – so ein Anteil jeder Gruppe ist ab dann diese Art statt der
-  des Abschnitts (per Zufall, nach der Reihe der Liste) – so hat der konstante Spawn mehrere Arten.
-- In der Kartendatei kann ein Abschnitt `"spawners": [3, 7]` haben (Editor: „From chosen spawners“): dann kommen seine
-  Gruppen nur aus diesen Spawnern (ihre Nummern `id`), egal worauf die stehen.
-- Die Schwierigkeit macht jede Gruppe `constant_spawn_percent` so groß (auch `extra_per_day`) – beim Anlegen der Karte.
-- Dazu kommt die **Unruhe** (`unrest_per_zombie` in `sound.json`): jede Gruppe für immer so viele Zombies mehr.
-- Was gerade kommt, zeigt die Entwickler-Anzeige (**F3**): „Spawn: 4-5 Runners every 60.0 s“.
+Ein **Event** (TABs `ZXLevelEvent`, die TAB-Namen in Klammern):
 
-### Wellen einer neuen Runde (`waves`)
-
-Aus der Dauer (`game_durations.json`: wie viele Tage, ab wann und wie oft) wird die **Zeitleiste** geplant (DESIGN.md
-8.2). Die Zahlen gelten **pro Seite**, aus der die Welle kommt; die Schwierigkeit nimmt alle mal `waves_percent`.
-
-| Wert | Bedeutung |
+| Feld | Bedeutung |
 |---|---|
-| `hour` | Jede Welle kommt zu dieser Stunde |
-| `first`, `last` | Die erste Welle hat so viele Runner, die letzte vor der Schlusswelle so viele – dazwischen gleichmäßig mehr. Die erste Hälfte der Wellen kommt von 1 Seite, die zweite von 2 |
-| `specials` | Arten, die mitkommen: je `breed`, `from` (ab diesem Anteil der Wellen: 0 = erste, 1 = letzte vor der Schlusswelle) und `share` (so viele pro Runner bei der letzten Welle – beim ersten Auftauchen ein Viertel davon). Die ersten Wellen sind also nur Runner. Sie sind mit den Runnern **eine Gruppe** der Welle – kommen also aus denselben Spawnern |
-| `final_hour` | Die **Schlusswelle** kommt am letzten Tag zu dieser Stunde, von **allen 4 Seiten** … |
-| `final_runners` | … mit so vielen Runnern pro Seite und allen `specials` in vollem Anteil. Sie **ruft alle Zombies der Karte** (auch die in Häusern und um Beute) – die gehören dann zur Schlusswelle – und **deckt die Karte auf** |
+| `name` | Name (im Editor, in der F3-Anzeige) |
+| `hour`, `random_hours` | Kommt zu dieser Stunde ab Rundenbeginn (Tag 1, 0:00 = 0; `GameTime`) plus zufällig bis zu so vielen Stunden (`GameTimeRandomOffset`, beim Start gewürfelt) |
+| `every_hours`, `times` | Wieder alle so viele Stunden (0: einmal; `RepeatTime`), höchstens so oft (0: unbegrenzt; `MaxRepetitions`) |
+| `growth`, `growth_max` | Das n-te Mal bringt 1 + `growth` × (n − 1) so viele, das Plus höchstens `growth_max` (0: unbegrenzt) |
+| `notify_hours` | So viele Stunden vorher **angekündigt** (oben auf dem Bildschirm, Countdown an der Uhr, Schwarm auf der Minimap); fehlt es, kommt es **still** |
+| `dispersion` | Jede Seite lässt ihre Zombies aus einem Quadrat dieser Größe (Kacheln) an einer zufälligen Stelle heraus (`MaxCellDispersionGeneration`); 0 = über die ganze Seite |
+| `final_wave`, `reveal` | Schlusswelle: ruft alle Zombies der Karte (auch Häuser und Beute-Wächter) – sie gehören dann dazu; deckt die Karte auf |
+| `won`, `won_when_dead` | Die Runde ist gewonnen, wenn es kommt (TABs Sieg am Ende des letzten Tags) – bzw. wenn es jedes Mal kam und von der Schlusswelle keiner mehr lebt (alte Karten) |
+| `groups` | Seine Zombies: je Gruppe `from` (`{"Sides": 1}` eine zufällige Seite = TABs `N \| S \| E \| W`, `{"Sides": 4}` jede Seite die volle Zahl = `N & S & E & W`, `"OneSpawner"`, `{"Spawners": [3, 7]}`) und `breeds` – je `count` (bis `up_to`, zufällig dazwischen – TABs „4-6“) und `breed` |
+| `low_population` | Nur hier: unter Bevölkerung 0,5 gelten diese `hour`, `every_hours`, `times` (TABs Streuner kommen dann später und seltener) |
 
-Mit 10 Tagen (die Mini-Runde, Schwierigkeit Normal): Welle am Tag 4 (200 Runner, 1 Seite) und Tag 7 (600 Runner + 72
-Riots, 48 Infested, 36 Spitter, 24 Fat × 2 Seiten), Schlusswelle am Tag 10 um 6:00 (1.000 Runner + 120 Riots, 80
-Infested, 60 Spitter, 40 Fat × 4 Seiten = 5.200 Zombies – dazu alle, die noch auf der Karte sind). Mit 40 Tagen (ab
-Tag 5 alle 4): 9 Wellen, dann die Schlusswelle.
-**Gewonnen** ist die Runde, wenn alle Zombies der Schlusswelle tot sind; **verloren**, wenn das letzte
-Kommandozentrum fällt.
+Der Plan (bei 100 Tagen, Normal):
+
+| Event | ab | wie oft | von wo | Zombies je Seite | Wachstum | Streuung |
+|---|---|---|---|---|---|---|
+| Stragglers weak | Tag 3 (Stunde 48) | alle 2 Tage, 10× | alle 4 Seiten, still | 3–6 Walker | +10 % | ganze Seite |
+| Swarm easy | Tag 14 (+ bis 1 Tag) | alle 10 Tage, 4× | 1 zufällige Seite, 8 h vorher | 16–24 Runner | +300 % | 8 Kacheln |
+| Stragglers medium | Tag 26 (+ bis 1 Tag) | alle 6 Tage, 10× | alle 4 Seiten, still | 4–8 Runner, 1–2 Riots | +50 % | ganze Seite |
+| Swarm hard | Tag 51 (+ bis 1 Tag) | alle 7 Tage, 5× | 1 zufällige Seite, 8 h vorher | 100–160 Runner, 25–40 Riots, 3–5 Fat | +350 % | 20 Kacheln |
+| Final swarm | Tag 93 | 1× | alle 4 Seiten, 24 h vorher | 2.200 Runner, 550 Riots, je 50 Fat, Harpyien, Spitter | – | ganze Seite |
+| Victory | Ende Tag 100 | | | | | |
+
+- Arten wie in „Für jeden Schritt“ von `docs\tab-nachbau.md` (WeakA/B/C → Walker, Medium/Worker → Runner, DressedA →
+  Riot, StrongA → Fat, Venom → Spitter); TABs Bereiche gleicher Arten zusammengezählt.
+- Getötete Zombies kommen **nie** wieder – was du freiräumst, bleibt frei, bis neue nachkommen.
+- **Gewonnen**, wenn „Victory“ kommt (Ende des letzten Tags) und das Kommandozentrum noch steht; **verloren**, wenn
+  das letzte Kommandozentrum fällt.
 
 ## `game_difficulties.json` – Schwierigkeiten
 
@@ -323,24 +315,21 @@ gewählt ist – und für eine Karte, deren Schwierigkeit es nicht (mehr) gibt. 
 | `start_gold`, `start_wood` | Gold und Holz zu Beginn (der übrige Vorrat startet leer). Im Editor pro Karte änderbar |
 | `start_soldiers`, `start_rangers`, `start_snipers` | Einheiten zu Beginn |
 | `roaming_zombies` | Streuner zu Beginn, pro 1.000 Kacheln, auf denen sie stehen können – in Grüppchen von `pack` (`roaming.json`), also füllen ≈ 2.000 fast jede Kachel. Nur auf unseren Karten – auf TABs zählt `population` |
-| `population` | TABs Zombie-Bevölkerung (`FactorZombiePopulation`) für Karten von TABs Generator: so viel mal das `infected` der Karte liegen Zombies; unter 0,5 nur halb so viele Dörfer und keine Riesen, ab 1 / 1,2 / 1,4 einmal / zweimal / dreimal ihre `giants` (darunter die Hälfte). Auf allen Karten: so viel mal `max_units` lässt ein Haus der Villages of Doom heraus, und so groß sind seine Schübe (`doom.json`) |
+| `population` | TABs Zombie-Bevölkerung (`FactorZombiePopulation`): so viel mal die Anzahlen der Events (`spawning.json`). Für Karten von TABs Generator: so viel mal das `infected` der Karte liegen Zombies; unter 0,5 nur halb so viele Dörfer und keine Riesen, ab 1 / 1,2 / 1,4 einmal / zweimal / dreimal ihre `giants` (darunter die Hälfte). Auf allen Karten: so viel mal `max_units` lässt ein Haus der Villages of Doom heraus, und so groß sind seine Schübe (`doom.json`) |
 | `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `harpy`, `giant`): so nah ans Kommandozentrum (Kacheln) liegt zu Beginn keiner. Beim Wandern dürfen sie näher, wie in TAB (nur der Riese hält seinen `roam_ring`). Nur auf unseren Karten – auf TABs sagt die Karte, ab wo welche Art liegt (`weak_from` …) |
 | `villages_percent`, `village_houses_percent` | So viel Prozent so viele Villages of Doom, wie die Karte hat (`villages`), und so viel Prozent ihrer Häuser (`houses_near`, `houses_edge`) – nur auf unseren Karten |
 | `giants_percent` | So viel Prozent so viele **Riesen**, wie die Karte hat (`giants`) – nur auf unseren Karten |
 | `loot_guards` | `[nahe der Basis, am Rand]`: so viele Zombies liegen um einen Haufen Beute versteckt |
-| `waves_percent` | Jede Welle (auch die Schlusswelle) so viel Prozent der Zahlen in `spawning.json` |
-| `constant_spawn_percent` | Jede Gruppe des konstanten Spawns so viel Prozent so groß |
 
 ## `game_durations.json` – Spieldauer
 
-Wie lang eine Runde dauert (wie TABs 80 / 100 / 120 / 150 Tage) – 1 Tag = 3 Minuten. `default_days`: die Dauer beim
-allerersten Start. In `durations` eine pro Block:
+Wie lang eine Runde dauert – wie TABs 80 / 100 / 120 / 150 Tage, dazu eine kurze (20) zum Ausprobieren. 1 Tag = 60
+Sekunden. `default_days`: die Dauer beim allerersten Start. In `durations` eine pro Block:
 
 | Wert | Bedeutung |
 |---|---|
-| `days` | So viele Tage – die Schlusswelle kommt am letzten |
-| `score_percent` | Wie bei der Schwierigkeit: weniger Tage sind schwerer und zählen mehr |
-| `first_wave_day`, `wave_every_days` | Die erste Welle kommt an diesem Tag, dann alle so viele Tage eine, bis vor dem letzten Tag. Eine Karte mit anderen Tagen (im Editor geändert) nimmt die Dauer mit den nächstliegenden Tagen |
+| `days` | So viele Tage – TABs Plan (`spawning.json`) wird darauf gestreckt: Sieg am Ende des letzten, Schlusswelle bei 92 % |
+| `score_percent` | Wie bei der Schwierigkeit: weniger Tage sind schwerer und zählen mehr (geschätzt) |
 
 ## `game_maps.json` – Karten
 

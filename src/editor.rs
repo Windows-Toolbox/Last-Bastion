@@ -8,9 +8,9 @@
 //!   "Info") – and where the playing field lies in the whole map (SC2's map bounds and map size).
 //! - **Terrain** – paint mountains, forest, water, erase, ore (TAB's painter).
 //! - **Entities** – units, buildings (without the rules of the game), zombies, spawners, the eraser.
-//! - **Waves** – send waves now, the **timeline** (waves that come by themselves on a given day and hour, like TAB's
-//!   events "32d 12h", the final wave among them – each with groups of several breeds, from sides or from chosen
-//!   spawners) and the **constant spawn**.
+//! - **Events** – send waves now, and the map's **events** like TAB's: each comes by itself at its day and hour (plus a
+//!   random offset), maybe again and again growing each time, announced or silent, with groups of several breeds from
+//!   sides or chosen spawners – the stragglers, the swarms, the final wave and the victory are all events.
 //!
 //! A right click on a spawner opens its properties in a small window of their own (`properties_window`).
 //!
@@ -27,14 +27,12 @@ use egui_macroquad::egui::{
 };
 use macroquad::math::Vec2;
 
-use crate::data::{ConstantSpecial, Stage};
 use crate::hud::Layout;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Ore, Terrain};
 use crate::map::BORDER;
 use crate::sim::{
-    day_and_hour, Axes, Breed, BreedCount, Order, SpawnMode, Spawner, TimedWave, WaveFrom, WaveGroup, World, DAY_TICKS,
-    HOUR_TICKS, MAP_SIZES, MOST_PER_TILE,
+    Axes, Breed, BreedCount, Event, Order, SpawnMode, Spawner, WaveFrom, WaveGroup, World, MAP_SIZES, MOST_PER_TILE,
 };
 
 /// Width of the panel. egui counts in points – here the same as macroquad's pixels.
@@ -49,7 +47,7 @@ const MAX_NAME: usize = 24;
 const MAX_DAYS: u32 = 200;
 /// The most a number field takes (gold, wood, zombies) – far more than a map needs, only so nothing overflows.
 const MAX_AMOUNT: u32 = 10_000_000;
-/// The final wave stands out on the timeline – and so does a group with no spawner ticked.
+/// The final wave stands out among the events – and so does a group with no spawner ticked.
 const FINAL: Color32 = Color32::from_rgb(242, 115, 89);
 /// Where a group of a wave can come from at random (besides chosen spawners).
 const WAVE_FROM: [WaveFrom; 5] = [WaveFrom::OneSpawner, WaveFrom::Sides(1), WaveFrom::Sides(2), WaveFrom::Sides(3), WaveFrom::Sides(4)];
@@ -103,7 +101,7 @@ pub enum Tab {
     Map,
     Terrain,
     Entities,
-    Waves,
+    Events,
 }
 
 /// Whose eyes the editor looks through. In the game it's always the player's.
@@ -438,7 +436,7 @@ impl Editor {
                     Tab::Map => self.map_tab(ui, world, orders),
                     Tab::Terrain => self.terrain_tab(ui),
                     Tab::Entities => self.entities_tab(ui, world, orders),
-                    Tab::Waves => waves_tab(ui, world, orders),
+                    Tab::Events => events_tab(ui, world, orders),
                 });
                 ui.separator();
                 ui.label(RichText::new(self.hint()).small().weak());
@@ -477,7 +475,7 @@ impl Editor {
             }
         });
         ui.horizontal(|ui| {
-            for (tab, text) in [(Tab::Map, "Map"), (Tab::Terrain, "Terrain"), (Tab::Entities, "Entities"), (Tab::Waves, "Waves")] {
+            for (tab, text) in [(Tab::Map, "Map"), (Tab::Terrain, "Terrain"), (Tab::Entities, "Entities"), (Tab::Events, "Events")] {
                 ui.selectable_value(&mut self.tab, tab, text);
             }
         });
@@ -496,7 +494,7 @@ impl Editor {
         } else {
             match self.tab {
                 _ if self.tool == Some(Tool::PlayArea) => "Grab an edge of the border - inside: move it",
-                Tab::Map | Tab::Waves => "Numbers: drag them, or click and type",
+                Tab::Map | Tab::Events => "Numbers: drag them, or click and type",
                 _ => "Right click or Esc: put the tool away",
             }
         }
@@ -755,9 +753,6 @@ impl Editor {
             let mut new = mode;
             ui.horizontal(|ui| {
                 let periodic = matches!(mode, SpawnMode::Periodic { .. });
-                if ui.selectable_label(mode == SpawnMode::Constant, "Constant").clicked() {
-                    new = SpawnMode::Constant;
-                }
                 if ui.selectable_label(periodic, "Periodic").clicked() && !periodic {
                     new = SpawnMode::PERIODIC;
                 }
@@ -817,9 +812,9 @@ impl Editor {
     }
 }
 
-/// The "Waves" tab: send waves now, the timeline, the constant spawn. Only reads the world – a free function, not a
-/// method, because it needs nothing of the editor.
-fn waves_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+/// The "Events" tab: send waves now, the map's events. Only reads the world – a free function, not a method, because it
+/// needs nothing of the editor.
+fn events_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
     section(ui, "Send now", "from the spawners", |ui| {
         // `horizontal_wrapped`: side by side, and on to the next line where the panel ends.
         ui.horizontal_wrapped(|ui| {
@@ -836,86 +831,87 @@ fn waves_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
             }
         });
     });
-    section(ui, "Timeline", "comes by itself", |ui| {
+    section(ui, "Events", "come by themselves, like TAB's - hours from the start", |ui| {
         let (day, hour) = world.clock();
         ui.label(format!("Now: day {day}, {hour:02}:00"));
-        for (i, wave) in world.waves.iter().enumerate() {
-            timed_wave(ui, i, wave, world, orders);
+        for (i, event) in world.events.iter().enumerate() {
+            event_box(ui, i, event, world, orders);
         }
-        if ui.button("+ Add wave").clicked() {
-            // A day after the last wave (or after now), on the full hour – but before a final wave.
-            let last = world.waves.iter().filter(|w| !w.final_wave).map(|w| w.at).max().unwrap_or(0).max(world.tick);
-            let at = (last + DAY_TICKS) / HOUR_TICKS * HOUR_TICKS;
-            orders.push(Order::AddTimedWave(TimedWave::new(at, WaveFrom::Sides(1), Breed::Runner, 200)));
-        }
-    });
-    section(ui, "Constant spawn", "groups out of the spawners set to Constant - or the stage's own", |ui| {
-        let constant = &world.constant;
-        for (i, stage) in constant.stages.iter().enumerate() {
-            stage_row(ui, i, stage, &world.spawners, orders);
-        }
-        if ui.button("+ Add stage").clicked() {
-            // A day after the last one, with its values – or single walkers on day 2 if there is none yet. `clone`:
-            // a stage has a list (its spawners), so it's no longer copied by itself like a number.
-            let stage = match constant.stages.last() {
-                Some(last) => Stage { day: last.day + 1, ..last.clone() },
-                None => Stage { day: 2, hour: 0, breed: Breed::Walker, every_seconds: 30.0, group: [1, 1], spawners: None },
-            };
-            orders.push(Order::AddStage(stage));
-        }
-        ui.horizontal(|ui| {
-            ui.label("After the last stage");
-            let mut extra = constant.extra_per_day;
-            if ui.add(DragValue::new(&mut extra).range(0.0..=100.0).speed(0.1).suffix(" more per day")).changed() {
-                orders.push(Order::SetExtraPerDay { extra });
-            }
-        });
-        ui.add_space(4.0);
-        ui.label("Specials - a share of every group, from their day on:");
-        for i in 0..constant.specials.len() {
-            special_row(ui, i, &constant.specials, orders);
-        }
-        if ui.button("+ Add special").clicked() {
-            // A day after the last one, with its values – or a few fat ones from day 10.
-            let special = match constant.specials.last() {
-                Some(&last) => ConstantSpecial { day: last.day + 1, ..last },
-                None => ConstantSpecial { day: 10, breed: Breed::Fat, share: 0.1 },
-            };
-            let mut specials = constant.specials.clone();
-            specials.push(special);
-            orders.push(Order::SetSpecials { specials });
+        if ui.button("+ Add event").clicked() {
+            // A day after the last one that isn't the final wave or the victory (or after now), announced like a swarm.
+            let now = (world.tick / crate::sim::HOUR_TICKS) as u32;
+            let last = world.events.iter().filter(|e| !e.final_wave && !e.won).map(|e| e.hour).max().unwrap_or(0).max(now);
+            let name = format!("Event {}", world.events.len() + 1);
+            let event = Event { notify_hours: Some(8), ..Event::new(&name, last + 24, WaveFrom::Sides(1), Breed::Runner, 200) };
+            orders.push(Order::AddEvent(event));
         }
     });
 }
 
-/// One wave of the timeline, in a box: when (day, hour), final, reveal, remove – then its groups (`wave_group`) and
-/// "+ group". All fields work on a copy (`changed`); if it differs at the end, one order sets it.
-fn timed_wave(ui: &mut Ui, i: usize, wave: &TimedWave, world: &World, orders: &mut Vec<Order>) {
-    let mut changed = wave.clone();
+/// One event, in a box: its name, when (day, hour, random offset), how often, how it grows, announced or silent, what
+/// it does besides (final wave, reveal, victory) – then its groups (`wave_group`) and "+ group". All fields work on a
+/// copy (`changed`); if it differs at the end, one order sets it.
+fn event_box(ui: &mut Ui, i: usize, event: &Event, world: &World, orders: &mut Vec<Order>) {
+    let mut changed = event.clone();
     let mut removed = false;
     Frame::group(ui.style()).show(ui, |ui| {
         // Every box as wide as the panel, whatever is in it.
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            // A wave whose time has passed won't come any more – greyed out. The final wave in its colour.
-            let color = if wave.at < world.tick {
+            // One that won't come any more is greyed out, the final wave in its colour.
+            let color = if event.next_hour().is_none() {
                 ui.visuals().weak_text_color()
-            } else if wave.final_wave {
+            } else if event.final_wave {
                 FINAL
             } else {
                 ui.visuals().text_color()
             };
-            ui.label(RichText::new("Day").color(color));
-            let (mut day, mut hour) = day_and_hour(wave.at);
-            let a = ui.add(DragValue::new(&mut day).range(1..=MAX_DAYS as u64));
+            ui.label(RichText::new(format!("{}.", i + 1)).color(color));
+            if let Some(name) = settled_name(ui, &event.name) {
+                changed.name = name;
+            }
+            removed = ui.small_button("x").on_hover_text("Remove the event").clicked();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Day");
+            let (mut day, mut hour) = (event.hour / 24 + 1, event.hour % 24);
+            let a = ui.add(DragValue::new(&mut day).range(1..=MAX_DAYS));
             let b = ui.add(DragValue::new(&mut hour).range(0..=23).suffix(":00"));
             // `|`, not `||`: both sides are worked out – here only booleans, no difference, but no skipping either.
             if a.changed() | b.changed() {
-                changed.at = (day - 1) * DAY_TICKS + hour * HOUR_TICKS;
+                changed.hour = (day - 1) * 24 + hour;
             }
+            ui.add(DragValue::new(&mut changed.random_hours).range(0..=24 * MAX_DAYS).prefix("+ up to ").suffix(" h"))
+                .on_hover_text("TAB's random offset: rolled when the round starts");
+        });
+        ui.horizontal(|ui| {
+            ui.add(DragValue::new(&mut changed.every_hours).range(0..=24 * MAX_DAYS).prefix("every ").suffix(" h"))
+                .on_hover_text("Again every this many hours - 0: once");
+            if changed.every_hours > 0 {
+                ui.add(DragValue::new(&mut changed.times).range(0..=1000).suffix(" times"))
+                    .on_hover_text("At most this many times - 0: as long as the round lasts");
+                ui.add(DragValue::new(&mut changed.growth).range(0.0..=100.0).speed(0.05).prefix("+").suffix(" each"))
+                    .on_hover_text("The n-th time brings 1 + this x (n - 1) times as many");
+                ui.add(DragValue::new(&mut changed.growth_max).range(0.0..=1000.0).speed(0.1).prefix("max +"))
+                    .on_hover_text("The growth stops here - 0: never");
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            let mut announced = changed.notify_hours.is_some();
+            if ui.toggle_value(&mut announced, "Announce").on_hover_text("Countdown on the clock, its swarms on the minimap - off: it comes silently").changed() {
+                changed.notify_hours = announced.then_some(8);
+            }
+            if let Some(hours) = changed.notify_hours.as_mut() {
+                ui.add(DragValue::new(hours).range(0..=240).suffix(" h before"));
+            }
+            ui.add(DragValue::new(&mut changed.dispersion).range(0..=200).prefix("spread ").suffix(" tiles"))
+                .on_hover_text("Every side's zombies come out of a square this big at a random spot - 0: the whole side");
+        });
+        ui.horizontal_wrapped(|ui| {
             ui.toggle_value(&mut changed.final_wave, "Final").on_hover_text("Calls every zombie on the map");
             ui.toggle_value(&mut changed.reveal, "Reveal").on_hover_text("Shows the whole map when it comes");
-            removed = ui.small_button("x").on_hover_text("Remove the wave").clicked();
+            ui.toggle_value(&mut changed.won, "Wins").on_hover_text("The round is won when it comes (TAB's victory at the end of the last day)");
+            ui.toggle_value(&mut changed.won_when_dead, "Wins when dead").on_hover_text("The round is won once it came every time and none of the final wave is left");
         });
         // The group the "x" of was clicked – taken out after the loop, a list can't change while it's gone through.
         let mut gone = None;
@@ -929,20 +925,20 @@ fn timed_wave(ui: &mut Ui, i: usize, wave: &TimedWave, world: &World, orders: &m
             changed.groups.remove(g);
         }
         if ui.small_button("+ group").on_hover_text("More zombies at the same time - from somewhere else").clicked() {
-            let zombies = vec![BreedCount { count: 100, breed: Breed::Runner }];
+            let zombies = vec![BreedCount::new(100, Breed::Runner)];
             changed.groups.push(WaveGroup { from: WaveFrom::Sides(1), breeds: zombies });
         }
     });
     if removed {
-        orders.push(Order::RemoveTimedWave { index: i });
-    } else if changed != *wave {
-        orders.push(Order::SetTimedWave { index: i, wave: changed });
+        orders.push(Order::RemoveEvent { index: i });
+    } else if changed != *event {
+        orders.push(Order::SetEvent { index: i, event: changed });
     }
 }
 
-/// One group of a wave, in a box of its own: from where (a random side, … or chosen spawners – then a tick box per
-/// spawner), and a line per breed: how many, which one. `id`: (wave, group) – egui tells the lists apart by it.
-/// Returns whether its "x" was clicked.
+/// One group of an event, in a box of its own: from where (a random side, … or chosen spawners – then a tick box per
+/// spawner), and a line per breed: how many (from … to, TAB's "4-6"), which one. `id`: (event, group) – egui tells the
+/// lists apart by it. Returns whether its "x" was clicked.
 fn wave_group(ui: &mut Ui, id: (usize, usize), group: &mut WaveGroup, spawners: &[Spawner]) -> bool {
     let mut removed = false;
     Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
@@ -959,7 +955,12 @@ fn wave_group(ui: &mut Ui, id: (usize, usize), group: &mut WaveGroup, spawners: 
         let mut gone = None;
         for (k, z) in group.breeds.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                ui.add(DragValue::new(&mut z.count).range(0..=MAX_AMOUNT).speed(5).suffix(" zombies"));
+                ui.add(DragValue::new(&mut z.count).range(0..=MAX_AMOUNT).speed(5));
+                // "to" never below "from": the field starts at it; 0 or the same: just `count`.
+                let mut to = z.up_to.max(z.count);
+                if ui.add(DragValue::new(&mut to).range(z.count..=MAX_AMOUNT).speed(5).prefix("to ")).changed() {
+                    z.up_to = if to > z.count { to } else { 0 };
+                }
                 // A triple as the list's name – one per breed of every group of every wave.
                 breed_box(ui, ("wave breed", id, k), &mut z.breed);
                 if many && ui.small_button("x").on_hover_text("Remove this breed").clicked() {
@@ -973,7 +974,7 @@ fn wave_group(ui: &mut Ui, id: (usize, usize), group: &mut WaveGroup, spawners: 
         if ui.small_button("+ breed").on_hover_text("Another breed out of the same spawners").clicked() {
             // The first breed that isn't in the group yet.
             let breed = Breed::ALL.into_iter().find(|b| group.breeds.iter().all(|z| z.breed != *b)).unwrap_or(Breed::Runner);
-            group.breeds.push(BreedCount { count: 50, breed });
+            group.breeds.push(BreedCount::new(50, breed));
         }
     });
     removed
@@ -1011,92 +1012,6 @@ fn spawner_checks(ui: &mut Ui, ids: &mut Vec<u32>, spawners: &[Spawner]) {
     }
 }
 
-/// One stage of the constant spawn, in a box: from when, which breed, remove – every how many seconds, how big a group
-/// – out of which spawners: those set to "Constant", or its own (a tick box per spawner).
-fn stage_row(ui: &mut Ui, i: usize, stage: &Stage, spawners: &[Spawner], orders: &mut Vec<Order>) {
-    let mut changed = stage.clone();
-    let mut removed = false;
-    Frame::group(ui.style()).show(ui, |ui| {
-        // Every box as wide as the panel, whatever is in it.
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label("Day");
-            // `settled`: the stages stay in order of time – see there.
-            if let Some(day) = settled(ui, stage.day, |v| DragValue::new(v).range(1..=MAX_DAYS as u64)) {
-                changed.day = day;
-            }
-            if let Some(hour) = settled(ui, stage.hour, |v| DragValue::new(v).range(0..=23).suffix(":00")) {
-                changed.hour = hour;
-            }
-            breed_box(ui, ("stage breed", i), &mut changed.breed);
-            removed = ui.small_button("x").on_hover_text("Remove").clicked();
-        });
-        ui.horizontal(|ui| {
-            ui.label("every");
-            ui.add(DragValue::new(&mut changed.every_seconds).range(0.1..=3600.0).speed(0.1).suffix(" s"));
-            // "From" never above "to": each one's range ends at the other.
-            let [from, to] = &mut changed.group;
-            let to_now = *to;
-            ui.add(DragValue::new(from).range(1..=to_now));
-            ui.label("to");
-            ui.add(DragValue::new(to).range(*from..=MAX_AMOUNT));
-            ui.label("zombies");
-        });
-        ui.horizontal(|ui| {
-            ui.label("From");
-            let chosen = changed.spawners.is_some();
-            let shown = if chosen { "chosen spawners" } else { "those set to Constant" };
-            ComboBox::from_id_salt(("stage from", i)).width(160.0).selected_text(shown).show_ui(ui, |ui| {
-                if ui.selectable_label(!chosen, "those set to Constant").clicked() {
-                    changed.spawners = None;
-                }
-                if ui.selectable_label(chosen, "chosen spawners").clicked() && !chosen {
-                    // Starting with those set to "Constant" – nothing changes until one is ticked or unticked.
-                    changed.spawners = Some(spawners.iter().filter(|s| s.mode == SpawnMode::Constant).map(|s| s.id).collect());
-                }
-            });
-        });
-        // `as_mut`: the list inside the `Option`, lent to change it.
-        if let Some(ids) = changed.spawners.as_mut() {
-            spawner_checks(ui, ids, spawners);
-        }
-    });
-    if removed {
-        orders.push(Order::RemoveStage { index: i });
-    } else if changed != *stage {
-        orders.push(Order::SetStage { index: i, stage: changed });
-    }
-}
-
-/// One special of the constant spawn: from which day, which breed, what share of every group. The order sets the
-/// whole list anew.
-fn special_row(ui: &mut Ui, i: usize, specials: &[ConstantSpecial], orders: &mut Vec<Order>) {
-    let special = specials[i];
-    let mut changed = special;
-    let mut removed = false;
-    ui.horizontal(|ui| {
-        ui.label("From day");
-        ui.add(DragValue::new(&mut changed.day).range(1..=MAX_DAYS as u64));
-        breed_box(ui, ("special breed", i), &mut changed.breed);
-        // In the file a share (0.15), here in percent (15 %).
-        let mut percent = special.share * 100.0;
-        if ui.add(DragValue::new(&mut percent).range(0.0..=100.0).speed(0.5).max_decimals(1).suffix(" %")).changed() {
-            changed.share = percent / 100.0;
-        }
-        removed = ui.small_button("x").on_hover_text("Remove").clicked();
-    });
-    // `to_vec`: a copy of the list that can be changed – the world's own list only changes through the order.
-    let mut list = specials.to_vec();
-    if removed {
-        list.remove(i);
-    } else if changed != special {
-        list[i] = changed;
-    } else {
-        return;
-    }
-    orders.push(Order::SetSpecials { specials: list });
-}
-
 /// A section with a heading that folds shut with a click (egui remembers it by the heading) and a grey hint under it.
 /// `add`: what's in it – a *closure*, like a `lambda` in Python, only that it may have many lines. `impl FnOnce(&mut
 /// Ui)`: any closure that takes the section's `Ui` and is called once.
@@ -1126,16 +1041,15 @@ fn name_field(ui: &mut Ui, edit: &mut Option<String>, name: &str) -> Option<Stri
 }
 
 /// A number field whose new value only counts once it's settled: let go after dragging, Enter or a click elsewhere
-/// after typing. Until then it shows its own copy, kept in egui's memory. For the time of a stage of the constant
-/// spawn: the simulation keeps the stages in order of time, so a stage dragged past another would swap rows under the
-/// mouse – and the drag would go on with the wrong one.
+/// after typing. Until then it shows its own copy, kept in egui's memory. For the size of the playing field: every
+/// change of it moves the map, so dragging shouldn't send an order for every step.
 ///
 /// `field` makes the field for a value: `impl FnOnce(&mut T) -> DragValue<'_>` – a closure that gets the value
 /// lent (`&mut`) and gives back a field that borrows it (`'_`: as long as the value is lent).
 ///
 /// `<T>`: a *generic* function – it works for any type `T` that fulfils what stands after `where`: a number egui can
-/// drag (`Numeric`), and one egui's memory may keep (`Send + Sync`: safe across threads). Here the days of a stage
-/// (`u64`) and the size of the playing field (`i32`) – the compiler makes one copy of the function for each.
+/// drag (`Numeric`), and one egui's memory may keep (`Send + Sync`: safe across threads) – the compiler makes one
+/// copy of the function for every type it's used with.
 fn settled<T>(ui: &mut Ui, value: T, field: impl FnOnce(&mut T) -> DragValue<'_>) -> Option<T>
 where
     T: egui::emath::Numeric + Send + Sync,
@@ -1150,6 +1064,21 @@ where
     }
     ui.data_mut(|data| data.remove::<T>(id));
     (shown != value).then_some(shown)
+}
+
+/// A name field like `settled`: while it has the keyboard the text so far stays in egui's memory, the new name counts
+/// when typing ends (Enter or a click elsewhere) – one order, not one per letter. Empty or unchanged: none.
+fn settled_name(ui: &mut Ui, name: &str) -> Option<String> {
+    let id = ui.next_auto_id().with("settled name");
+    let mut text = ui.data(|data| data.get_temp::<String>(id)).unwrap_or_else(|| name.to_owned());
+    let field = ui.add(TextEdit::singleline(&mut text).char_limit(MAX_NAME).desired_width(170.0));
+    if field.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, text));
+        return None;
+    }
+    ui.data_mut(|data| data.remove::<String>(id));
+    let text = text.trim();
+    (!text.is_empty() && text != name).then(|| text.to_owned())
 }
 
 /// A drop-down list of the zombie breeds. `id`: egui tells the lists apart by it.

@@ -83,24 +83,25 @@ The skeleton every system has to fit into. If a phase has nothing interesting ha
 
 ### 4.1 Round length: days, like TAB
 
-- Before the round the player picks how many **days** it lasts (round setup, 10.1), like TAB's survival mode. The
-  final wave comes on the last day.
-- A day is a fixed span of game time: **≈ 3 minutes** ❓ (open question 18). That's **longer than TAB's days**, so a
-  round has fewer of them – each day counts for more. That gives:
+- Before the round the player picks how many **days** it lasts (round setup, 10.1), like TAB's survival mode. Like
+  TAB's, the round is won at the end of the last day; the final wave comes at 92 % of it.
+- A day is a fixed span of game time: **60 seconds, like TAB's** (open question 18). TAB's own
+  durations:
 
 | Days | Time at 1× speed (without pauses) |
 |---|---|
-| 40 | ≈ 2:00 h |
-| 50 | ≈ 2:30 h |
-| 60 | ≈ 3:00 h |
-| 80 | ≈ 4:00 h |
+| 80 | ≈ 1:20 h |
+| 100 | ≈ 1:40 h |
+| 120 | ≈ 2:00 h |
+| 150 | ≈ 2:30 h |
 
 - **Fewer days = harder** (less time to build up before the final wave) = higher score multiplier, like TAB.
 - Phases and waves are planned as a **share of the round**, not in fixed minutes, so they stretch with the number of
   days. A longer round gives more time to build, but also brings more waves in between.
 - "Day" is only a unit of time here. A real day/night cycle is still in the [parking lot](#15-idea-parking-lot).
-- **In the prototype:** picked on "New game" like TAB – 10 / 20 / 40 / 60 / 80 days (`data\game_durations.json`), each
-  with its own wave rhythm and score %.
+- **In the prototype:** picked on "New game" like TAB – 80 / 100 / 120 / 150 days and a short 20 to try things
+  (`data\game_durations.json`); TAB's event plan is stretched to them. Won by the clock like TAB: at the end of the last
+  day, if the command center stands.
 
 ### 4.2 Phases
 
@@ -471,20 +472,19 @@ Venom → spitter, Harpy, Giant; the infested is ours (StarCraft 2).
 - **Noise waves:** your noise attracts groups (8.3).
 - **Scripted waves:** on fixed days, growing, from an *announced* direction. Planned as a share of the round (4.1).
   The first ones only runners, then more and more specials.
-- **Final wave:** on the last day, everything incl. giants – and like TAB it **calls every zombie on the map**
+- **Final wave:** at 92 % of the round (TAB), everything – and like TAB it **calls every zombie on the map**
   (villages and loot guards too); they all belong to it. It also **reveals the map**. Countdown visible, direction
   announced ≈ 2 days ahead.
-- **In the prototype:** waves planned from the duration (on which days, `data\game_durations.json`) and the difficulty
-  (how strong, `waves_percent`) – the rest in `data\spawning.json`: runners, from a share of the round on
-  riots, infested, spitters and fat ones along (one group of the wave, so out of the same spawners); the final wave
-  from all sides with every breed. In the editor every wave has two switches: **Final** (calls everyone, counts for the
-  win) and **Reveal** – and **groups**: each from its own place (a random spawner, 1–4 random sides, or **chosen
-  spawners** – the count spread over them) with several breeds, e.g. 5,000 runners out of C, D, F, G and 200 spitters
-  out of B in one wave. Killed zombies never come back.
-- **Constant spawn:** walkers from day 2, runners instead from day 10, specials along from day 15 on (a
-  share of every group, `specials` in `data\spawning.json`). Each group comes crowded on one spot of a spawner, not
-  spread along a whole side. Bigger for good with the colony's unrest (8.3). In the editor a stage can have spawners
-  of its own instead of those set to "Constant".
+- **In the prototype: TAB's events** (from its code, `sim/events.rs`): everything that comes by the clock is an
+  event – its hour plus a random offset, repeating every so many hours a number of times, growing each time (up to a
+  cap), announced hours before or silent, out of one random side or every side (TAB's `N | S | E | W` / `N & S & E & W`),
+  from a square of a spawner or the whole side, final (calls everyone), reveal, victory. A new round gets TAB's
+  survival plan (`data\spawning.json`, for 100 days – stretched to the days, counts × the population): stragglers from
+  every side (silent, from day 3 and day 26), easy swarms from day 14 and hard ones from day 51 (one side, announced
+  8 hours before, growing up to 15×), the final swarm on day 93 (all sides, every breed), victory at the end. An
+  event's zombies come out as a column, a few every 0.15 s per side, like TAB's spawners. The colony's unrest adds to
+  every side of the silent ones (8.3). The editor edits all of it ("Events" tab); there's no constant spawn any more.
+  Killed zombies never come back.
 
 ### 8.3 Noise (TAB's noise)
 
@@ -969,7 +969,6 @@ before step 6.
 |---|---|---|
 | 14 | Does the economy work over 40–80 days? | Check by a small calculation over `data\` – still to do |
 | 17 | Library? | macroquad in use and fast enough; the feel of the controls still to judge |
-| 18 | How long is a day? | First guess 3 min, decide by playtesting |
 | 21 | Which era / technology? | Open – decides the look, towers, air units |
 | 22 | Where do the pictures come from? | Open – Blender / packs / artist / AI |
 | 27 | Two tesla towers (power pole vs. weapon)? | Open – one needs another name |
@@ -981,8 +980,8 @@ before step 6.
   market radius, no belts · **5** TAB-style building, no workers · **6** ammo free for now (see 26) · **7** active
   pause, singleplayer only · **8** hero parked · **9** saving like Factorio · **10** research tree like TAB ·
   **11** name *Last Bastion* · **12** debt in stages, then desertion · **13** the TAB side is the heart ·
-  **15** own repo · **16** settings in `%APPDATA%\Last Bastion` · **19** one shared colony · **20** direct IP /
-  Tailscale, Steam if released · **23** first power: command center + charcoal burners (wood) · **24** colonists are a
+  **15** own repo · **16** settings in `%APPDATA%\Last Bastion` · **18** a day is 60 s like TAB's · **19** one shared colony ·
+  **20** direct IP / Tailscale, Steam if released · **23** first power: command center + charcoal burners (wood) · **24** colonists are a
   resource · **25** a unit is free again when idle and in no control group · **26** no ammo item: the munitions factory only unlocks firearms, after the stone workshop
   (2026-10-20) · **28** one mine for every ore patch
   (iron, coal, stone), no quarry (2026-10-20) · **30** the final wave calls every zombie on the map, villages and loot

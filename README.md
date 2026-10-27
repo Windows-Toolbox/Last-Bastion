@@ -4,7 +4,7 @@
   Billions (TAB)**, Produktionsketten und Strom wie in **Factorio**.
 - **Runden von 2–4 Stunden** – wie in TAB wählt man die Anzahl der Tage. Isometrisch wie TAB.
 - **Kern:** die TAB-Seite – die Horde gegen eine Basis im Raster.
-- **Stand:** spielbare Mini-Runde + Karten-Editor – was alles drin ist: [Prototyp ausprobieren](#prototyp-ausprobieren).
+- **Stand:** spielbare Runde + Karten-Editor – was alles drin ist: [Prototyp ausprobieren](#prototyp-ausprobieren).
   Das ganze Design steht in [DESIGN.md](DESIGN.md) (Englisch).
 
 ---
@@ -81,15 +81,17 @@
 
 ## Prototyp ausprobieren
 
-### Die Mini-Runde (`dist\LastBastion.exe`)
+### Die Runde (`dist\LastBastion.exe`)
 
 - **Start:** 4 Ranger, 1 Soldat, ein Kommandozentrum, 100 Gold, 20 Holz – sonst nichts (Schwierigkeit Normal, jede
   anders: `data\game_difficulties.json`).
-- **Länge:** 10 / 20 / 40 / 60 / 80 Tage wählbar (1 Tag = 3 Minuten, 10 Tage ≈ 30 Minuten, `data\game_durations.json`).
+- **Länge wie TAB:** 80 / 100 / 120 / 150 Tage, dazu 20 zum Ausprobieren (1 Tag = 60 Sekunden, 100 Tage ≈ 1 h 40 min,
+  `data\game_durations.json`). Abgerechnet wird alle 8 Stunden (20 s).
 - **Ziel:** Wirtschaft aufbauen (Holz, Nahrung, Strom, Stein), Zelte (Gold und Arbeiter), Kaserne (nur sie bildet aus),
   Einheiten, Mauern, Türme.
-- **Gewonnen**, wenn die **Schlusswelle** am letzten Tag tot ist; **verloren**, wenn das Kommandozentrum fällt →
-  Endbildschirm (Restart, „Look at the map“, Main menu).
+- **Gewonnen wie TAB nach Zeit:** am Ende des letzten Tags, wenn das Kommandozentrum noch steht (die Schlusswelle
+  kommt bei 92 %); **verloren**, wenn das Kommandozentrum fällt → Endbildschirm (Restart, „Look at the map“, Main
+  menu).
 - **Eine Runde = eine Datei** (wie TAB) unter `%APPDATA%\Last Bastion\maps\`. **Restart** liest sie neu (Änderungen aus
   dem Editor gelten sofort). Speichern mitten in der Runde kommt später (DESIGN.md 11.5).
 
@@ -107,10 +109,9 @@
     Seen), Green Valley (Wild), Broken Lands (Regions), Old Fortress (Rings), Red Canyons (Canyons), Open Plains
     (Blank mit einzelnen Waldkacheln).
   - **Schwierigkeit** (Easy / Normal / Hard / Brutal, `data\game_difficulties.json`): Startgold, -holz und -einheiten,
-    Streuner, wie nah jede Art ans Kommandozentrum darf, Wächter der Beute, Stärke der Wellen und des konstanten
-    Spawns – und TABs **Bevölkerung** (0,6 / 1 / 1,2 / 1,5): auf TABs Karten statt Streuner und Abständen, auf allen,
-    wie viele Zombies ein Dorfhaus hat.
-  - **Dauer** (`data\game_durations.json`): 10–80 Tage, jede mit eigenem Wellen-Takt.
+    Streuner, wie nah jede Art ans Kommandozentrum darf, Wächter der Beute – und TABs **Bevölkerung** (0,6 / 1 / 1,2 /
+    1,5): so stark die Wellen, so viele Zombies ein Dorfhaus hat, auf TABs Karten statt Streuner und Abständen.
+  - **Dauer** (`data\game_durations.json`): 20–150 Tage – TABs Wellenplan wird darauf gestreckt.
 - **Custom setup…** (im Editor: „New map“): Generator, Regler (Maus drauf = Erklärung), Schwierigkeit und Dauer.
   „Random values“ würfelt, „Defaults“ setzt zurück. Die letzten Werte merkt sich das Spiel.
 
@@ -155,14 +156,18 @@
 
 ### Zombies und Wellen
 
-- **Wellen** (`data\spawning.json`, der Takt aus der Dauer): bei 10 Tagen ab Tag 4 alle 3 Tage (auf Normal 200 → 600
-  Runner pro Seite). Die ersten nur Runner, danach
-  immer mehr Riots, Infested, Spitter und Fat – aus denselben Spawnern wie die Runner. Am letzten Tag 6:00 die
-  **Schlusswelle** von allen 4 Seiten mit allen Arten: Sie **ruft alle Zombies der Karte** (auch die in Dörfern und um
-  Beute – sie gehören dann dazu) und **deckt die Karte auf**. Getötete Zombies kommen nie wieder.
-- **Konstanter Spawn** (`data\spawning.json`): ab Tag 2 kleine Gruppen Walker, immer öfter; ab Tag 10 Runner statt
-  Walker; ab Tag 15 / 20 / 25 / 30 kommen Riots / Infested / Spitter / Fat mit (15 / 10 / 8 / 5 % jeder Gruppe). Jede
-  Gruppe kommt **dicht beieinander an einem Punkt** eines Spawners, nicht über die ganze Seite verstreut.
+- **Wellen = TABs Events** (aus dessen Code, `src\sim\events.rs`, Plan in `data\spawning.json`, für 100 Tage – bei
+  anderen Tagen gestreckt, Anzahlen × Bevölkerung):
+  - **Streuner:** ab Tag 3 alle 2 Tage ein paar Walker von **jeder** Seite (10×, jedes Mal +10 %), ab Tag 26 alle 6
+    Tage Runner und Riots – still, ohne Ankündigung.
+  - **Schwärme:** ab Tag 14 alle 10 Tage von **einer** zufälligen Seite (16–24 Runner, jedes Mal +300 %: 20, 80, 140,
+    200), ab Tag 51 alle 7 Tage die harten (Runner, Riots, Fat – bis zum 15-fachen). **8 Stunden vorher angekündigt**
+    („A horde of infected is coming from the north“), Countdown an der Uhr, aus einem Quadrat von 8 bzw. 20 Kacheln.
+  - **Schlusswelle** an Tag 93, einen Tag vorher angekündigt: von allen 4 Seiten je 2.200 Runner, 550 Riots und je
+    50 Fat, Harpyien, Spitter. Sie **ruft alle Zombies der Karte** (auch Dörfer und Beute – sie gehören dann dazu)
+    und **deckt die Karte auf**.
+  - Die Zombies kommen **nicht auf einmal**, sondern wie bei TAB als **Kolonne** – jede Seite ein paar alle 0,15 s.
+  - Getötete Zombies kommen nie wieder.
 - **Auf TABs Karten** legt sie der Generator (oben): auf 256 und Normal ≈ 17.000–46.000 je nach Landschaft, nahe der
   Basis keine (10 Kacheln), Runner und Riots ab ≈ 25, Fat, Harpyie und Spitter ab ≈ 65 (BR). Der Rest dieses
   Abschnitts gilt für unsere Karten.
@@ -247,7 +252,7 @@
   infiziert, Köhlerei ohne Holz: still). Ein kurzer Stoß, der sich in Sekunden weghalbiert: weit weg lockt er selten
   jemanden, nah dran schon – Nachbarn im selben 4 × 4-Feld zählen zusammen.
 - **Unruhe:** aller Lärm der Kolonie (Schüsse, Maschinen, Explosionen, Bauen – nicht der der Zombies) zählt zusammen
-  und **sinkt nie**: je 50.000 bringt jede Gruppe des konstanten Spawns **für immer** einen Zombie mehr. Die Fabrik
+  und **sinkt nie**: je 50.000 bringt jede Seite der Streuner **für immer** einen Zombie mehr. Die Fabrik
   vor der Schlusswelle abzureißen, nimmt das nicht zurück. F3 zeigt sie.
 - **Wer kommt:** Jeder Zombie hört alle 4 s hin (jeder zu einem anderen Zeitpunkt, Schlafende auch) – 4 × seine
   Sichtweite weit (Walker 20 Kacheln). Von den lauten Stellen nimmt er die, die er am besten hört: **Lärm × 20 ×
@@ -295,7 +300,7 @@
 - **Minimap** (klicken/ziehen = Kamera, Rechtsklick = hinlaufen). Immer sichtbar, auch im Nebel: jeder **Riese**
   (oranger Punkt, wach oder schlafend) und jeder **Schwarm einer Welle** (rotes Warndreieck in seiner Mitte, größer
   je mehr er hat – eine Welle von zwei Seiten sind zwei Schwärme; noch im Spawn-Ring: am Rand der Minimap).
-- **Uhr:** Tag, Stunde, **Pause-Knopf**, Tempo, nächste Welle (Schlusswelle rot).
+- **Uhr:** Tag, Stunde, **Pause-Knopf**, Tempo, Countdown einer angekündigten Welle (Schlusswelle rot).
 - **Kontrollgruppen** 1–0 untereinander.
 - **Auswahl:** eine Sache = Bild, Name, Lebensbalken (HP + Schild in einem), Text, Werte in Kästchen; mehrere = Symbole.
 - **Befehlskarte** 5 × 3 mit Tooltips, Preis rot, wenn das Gold nicht reicht.
@@ -486,15 +491,15 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 |---|---|
 | **Map** | Name (= Dateiname), Save, Close, New map, Tage, Startgold, Startholz, **Playing field** (die Weltgrenze wie SC2s Map Bounds: „Drag the border“ – Kante greifen und ziehen, innen ganz verschieben – oder Breite/Höhe tippen; das Gelände bleibt, nur die Grenze wandert; „Like a new map“ setzt zurück), **Grid** (die ganze Karte darum, wie SC2s Map Size: Apply – wächst/schrumpft an allen Seiten, alles bleibt, wo es ist, neues Land ist Gras; Undo geht) |
 | **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinselgröße |
-| **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies: **Pinsel wie TAB** (pro Kachel ein Regler je Art, 0–3; nochmal drübermalen füllt nur auf), **Drop** (eine Menge einer Art), **Giant** (einer pro Klick) – schlafend/bummelnd oder stürmend, **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Constant / Periodic mit Sekunden und Anzahl / Off) |
-| **Waves** | Sofort-Wellen, Zeitleiste der Wellen (Tag und Stunde, **Final** = ruft alle Zombies der Karte, **Reveal** = deckt die Karte auf) – jede Welle hat **Gruppen**: woher (1 zufälliger Spawner, 1–4 zufällige Seiten oder **ausgewählte Spawner** per Häkchen bei ihren Namen – die Zahl verteilt sich auf sie) und **mehrere Arten** mit Anzahl („+ breed“, „+ group“). Und der konstante Spawn (Stufen: ab wann, Art, alle wie viele Sekunden, Gruppengröße, **woher**: die auf Constant oder eigene Spawner – Zuwachs pro Tag danach – **Specials**: Anteil einer Art an jeder Gruppe ab einem Tag) |
+| **Entities** | Einheiten, alle Gebäude, **Radierer**, Zombies: **Pinsel wie TAB** (pro Kachel ein Regler je Art, 0–3; nochmal drübermalen füllt nur auf), **Drop** (eine Menge einer Art), **Giant** (einer pro Klick) – schlafend/bummelnd oder stürmend, **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Periodic mit Sekunden und Anzahl / Off) |
+| **Events** | Sofort-Wellen und **TABs Events**: Name, Tag und Stunde **+ bis zu** Stunden Zufall, **alle** so viele Stunden, so oft, **Wachstum** pro Mal (mit Obergrenze), **Announce** (so viele Stunden vorher, Countdown, Minikarte – aus: still), **Spread** (Quadrat in Kacheln), **Final** (ruft alle Zombies), **Reveal** (deckt auf), **Wins** (Sieg, wenn es kommt), **Wins when dead** – und **Gruppen**: woher (1 zufälliger Spawner, 1–4 zufällige Seiten oder **ausgewählte Spawner** per Häkchen) und **mehrere Arten** mit Anzahl **von–bis** („+ breed“, „+ group“) |
 | **View** (immer) | All / Player / Zombies – durch wessen Augen man schaut |
 
 ### Für Entwickler
 
 - **Gleiche Karte:** „Custom maps“ → Play, oder `LastBastion.exe --seed 12345` (ohne eigene Datei).
 - **Determinismus:** mit festem Seed ist „Checksum tick 600“ (F3) bei jedem Start gleich; `cargo test` prüft das.
-- **Balancing:** `cargo test --release balance_mini_round -- --ignored --nocapture` spielt die Mini-Runde zweimal
+- **Balancing:** `cargo test --release balance_mini_round -- --ignored --nocapture` spielt die Runde (100 Tage) zweimal
   automatisch durch (untätig / einfacher Spieler: Sägewerk, Jäger, Köhlerei, Zelte, Holzwerkstatt, Tesla + Mine,
   Kaserne, Soldaten). `$env:ROAMERS = "0"` vorher: ohne herumstreifende Zombies – nur die Wirtschaft.
 - **Kartenbilder:** `cargo test --release dump_previews -- --ignored` mit `DUMP_DIR` (und `DUMP_SEEDS`, sonst 2) schreibt

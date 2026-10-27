@@ -380,7 +380,8 @@ impl BlankParams {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RoundSetup {
-    /// The final wave comes on the last day. 1 day = 3 minutes. (A float: setups and map files have always kept it so.)
+    /// How many days the round lasts – won at the end of the last one, the final wave at 92 % (TAB's plan, stretched).
+    /// 1 day = 60 seconds. (A float: setups and map files have always kept it so.)
     pub days: f32,
     /// `""`: the default one.
     pub difficulty: String,
@@ -388,8 +389,8 @@ pub struct RoundSetup {
 
 impl Default for RoundSetup {
     fn default() -> RoundSetup {
-        // The mini round of DESIGN.md 13, step 4: 10 days ≈ 30 minutes, two waves and the final wave.
-        RoundSetup { days: 10.0, difficulty: String::new() }
+        // TAB's default: 100 days (≈ 1 h 40 min at speed x1).
+        RoundSetup { days: 100.0, difficulty: String::new() }
     }
 }
 

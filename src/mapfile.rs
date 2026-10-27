@@ -3,8 +3,8 @@
 //! and the map editor (`LastBastionEditor.exe`) opens it, changes it and saves it again. Maps made in the editor land
 //! in the same folder. JSON like the settings (DESIGN.md 12.4, question 14): readable, and you can change it by hand.
 //!
-//! What's in it: the round (how many days, the gold at the start, the difficulty), the constant spawn and the timeline
-//! of waves (with the final wave), the spawners, buildings, units, the zombies on the map, the houses of the villages
+//! What's in it: the round (how many days, the gold at the start, the difficulty), the events (TAB's: the waves, the
+//! stragglers, the final wave, the victory), the spawners, buildings, units, the zombies on the map, the houses of the villages
 //! of doom and the loot, the ore deposits and the terrain (one letter per tile, one line of text per row – you can
 //! almost see the map in the file). Not in it: what happens during a round (hit points, commands, the clock) – the file is the round as it starts. Saving a round half-way through
 //! (DESIGN.md 11.5) comes later; then it goes into the same file.
@@ -16,19 +16,20 @@ use std::time::{Duration, SystemTime};
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::data::{self, ConstantSpawn};
+use crate::data;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
-use crate::sim::{merge_old_waves, Axes, Breed, LootKind, SpawnMode, TimedWave, World};
+use crate::sim::{Axes, Breed, Event, LootKind, SpawnMode, WaveFrom, WaveGroup, World};
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
 /// 2 (2026-10-17): the round, the constant spawn, the setup, and waves with breed and final wave.
 /// 3 (2026-10-20): dirt (`D`), the villages of doom, the loot – an older game can't read that, so it refuses the file.
 /// 4: waves with groups (several breeds, chosen spawners), spawners with their number and axes, custom levels, the
 /// playing field anywhere on the map.
-const VERSION: u32 = 4;
+/// 5: TAB's events instead of the timeline of waves and the constant spawn; days of 60 seconds.
+const VERSION: u32 = 5;
 
 /// The fields in the order they are in the file: the short ones on top, the terrain at the end.
 /// `#[serde(default …)]`: a field a file from version 1 doesn't have yet gets this value instead of an error.
@@ -48,10 +49,13 @@ pub struct MapFile {
     pub play_area: Option<PlayArea>,
     #[serde(default)]
     pub round: RoundData,
-    /// The constant spawn of this map (`sim/spawning.rs`) – older files: what `data\spawning.json` says now.
-    #[serde(default = "default_constant")]
-    pub constant_spawn: ConstantSpawn,
-    pub waves: Vec<TimedWave>,
+    /// The events of this map (`sim/events.rs`).
+    #[serde(default)]
+    pub events: Vec<Event>,
+    /// Files before format 5: the timeline of waves – read, turned into events (`old_events`), never written. (Their
+    /// constant spawn is left out: TAB's stragglers are events now.)
+    #[serde(default, skip_serializing)]
+    pub waves: Vec<OldWave>,
     /// How the map was generated – for the info line and "New map" (same setup, new seed). `None`: not known (files
     /// from before 2026-10-17).
     #[serde(default)]
@@ -76,7 +80,7 @@ pub struct MapFile {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(default)]
 pub struct RoundData {
-    /// How many days the round lasts – the final wave comes on the last one. 0: no set length.
+    /// How many days the round lasts – its events are planned for them. 0: no set length.
     pub days: u32,
     /// The colony's gold at the start …
     pub gold: u32,
@@ -107,9 +111,73 @@ fn zombie_data(world: &World) -> Vec<ZombieData> {
     zombies
 }
 
-/// For `#[serde(default = "default_constant")]` – it wants a function, not a value.
-fn default_constant() -> ConstantSpawn {
-    data::get().spawning.constant.clone()
+/// A wave as files before format 5 have it. `untagged`: the file doesn't say which of the two it is – serde tries them
+/// in order, and the first one whose fields fit is it.
+#[derive(Deserialize, Debug, PartialEq, Clone)]
+#[serde(untagged)]
+pub enum OldWave {
+    /// Format 4: with groups. `at` is a tick of the old days of 3 minutes.
+    Groups {
+        at: u64,
+        #[serde(default)]
+        final_wave: bool,
+        #[serde(default)]
+        reveal: bool,
+        groups: Vec<WaveGroup>,
+    },
+    /// Before: one breed per wave – several of them at the same time came out of the same random sides together, so
+    /// they become one event. Files from before 2026-10-17 have no breed (their waves were runners).
+    Single {
+        at: u64,
+        count: u32,
+        from: WaveFrom,
+        #[serde(default = "runner")]
+        breed: Breed,
+        #[serde(default)]
+        final_wave: bool,
+        #[serde(default)]
+        reveal: bool,
+    },
+}
+
+/// What an old wave without a breed sent – for `#[serde(default = "runner")]`, which wants a function.
+fn runner() -> Breed {
+    Breed::Runner
+}
+
+/// An hour of the old days of 3 minutes, in ticks – the old waves' `at` counts in them.
+const OLD_HOUR_TICKS: u64 = 150;
+
+/// The old waves as events: each at its day and hour (the days are shorter now, the day stays), announced 8 hours
+/// before like TAB's swarms. A final wave wins the round once it's dead, as before. Waves at the same time (and both
+/// final or not) are one event, a group per kind of place – they came out of the same random spawners.
+fn old_events(waves: &[OldWave]) -> Vec<Event> {
+    let mut events: Vec<Event> = Vec::new();
+    for wave in waves {
+        let (at, final_wave, reveal, groups) = match wave.clone() {
+            OldWave::Groups { at, final_wave, reveal, groups } => (at, final_wave, reveal, groups),
+            OldWave::Single { at, count, from, breed, final_wave, reveal } => {
+                (at, final_wave, reveal, vec![WaveGroup { from, breeds: vec![crate::sim::BreedCount::new(count, breed)] }])
+            }
+        };
+        let hour = (at / OLD_HOUR_TICKS) as u32;
+        let Some(into) = events.iter_mut().find(|e| e.hour == hour && e.final_wave == final_wave) else {
+            let name = if final_wave { "Final wave".to_owned() } else { format!("Wave {}", events.len() + 1) };
+            let mut event = Event::new(&name, hour, WaveFrom::OneSpawner, Breed::Runner, 0);
+            (event.groups, event.final_wave, event.reveal, event.won_when_dead, event.notify_hours) =
+                (groups, final_wave, reveal, final_wave, Some(8));
+            events.push(event);
+            continue;
+        };
+        into.reveal |= reveal;
+        for group in groups {
+            match into.groups.iter_mut().find(|g| g.from == group.from) {
+                Some(same) => same.breeds.extend(group.breeds),
+                None => into.groups.push(group),
+            }
+        }
+    }
+    events
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -233,8 +301,8 @@ impl MapFile {
                 PlayArea { min, size }
             }),
             round: RoundData { days: world.days, gold: world.gold, wood: world.stock.get(Resource::Wood), difficulty: world.difficulty.clone() },
-            constant_spawn: world.constant.clone(),
-            waves: world.waves.clone(),
+            events: world.events.clone(),
+            waves: Vec::new(),
             setup: None,
             spawners: world
                 .spawners
@@ -262,7 +330,6 @@ impl MapFile {
         world.days = self.round.days;
         world.gold = self.round.gold;
         world.stock.set(Resource::Wood, self.round.wood);
-        world.constant = self.constant_spawn.clone();
         for s in &self.spawners {
             world.add_spawner(s.id, s.name.clone(), s.min, s.size, s.axes, s.mode);
         }
@@ -293,7 +360,8 @@ impl MapFile {
         for l in &self.loot {
             world.add_loot(vec2(l.pos.0, l.pos.1), l.loot, l.amount, l.guards);
         }
-        world.waves = if self.version < 4 { merge_old_waves(self.waves.clone()) } else { self.waves.clone() };
+        world.events = if self.version < 5 && self.events.is_empty() { old_events(&self.waves) } else { self.events.clone() };
+        world.roll_events();
         world.settle();
         Ok(world)
     }
@@ -330,14 +398,16 @@ impl MapFile {
         self.spawners.iter().flat_map(|s| crate::sim::spawner_tiles(s.axes, s.min, s.size)).collect()
     }
 
-    /// A file of an older format as it would be written now (format 4): its waves of one breed each become waves with
-    /// groups (`merge_old_waves`), its spawners get their numbers – the same ones `World::add_spawner` gives them. So
-    /// an old map opened in the editor doesn't count as changed right away.
+    /// A file of an older format as it would be written now (format 5): its waves become events (`old_events`), its
+    /// spawners get their numbers – the same ones `World::add_spawner` gives them. So an old map opened in the editor
+    /// doesn't count as changed right away.
     fn upgrade(&mut self) {
-        if self.version >= 4 {
+        if self.version >= VERSION {
             return;
         }
-        self.waves = merge_old_waves(std::mem::take(&mut self.waves));
+        if self.events.is_empty() {
+            self.events = old_events(&std::mem::take(&mut self.waves));
+        }
         let mut last = 0;
         let mut taken = Vec::new();
         for s in &mut self.spawners {
@@ -447,12 +517,12 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "seed", "size", "border", "play_area", "round", "constant_spawn", "waves", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
+    for key in ["name", "custom", "seed", "size", "border", "play_area", "round", "events", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
-    // One entry per line: waves start with "at", their groups with "from", stages with "day", spawners with "name",
-    // buildings and units with "kind", houses of doom with "house", piles of loot with "loot".
-    for first in ["at", "from", "day", "name", "kind", "house", "loot"] {
+    // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units
+    // with "kind", houses of doom with "house", piles of loot with "loot".
+    for first in ["name", "from", "kind", "house", "loot"] {
         text = text.replace(&format!("{{\"{first}\":"), &format!("\n  {{\"{first}\":"));
     }
     // The terrain: rows only have the letters `. D M F T W`, so between two rows there's always `","`.
@@ -564,30 +634,28 @@ pub fn file_stem(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::map::Ore;
-    use crate::sim::{BreedCount, Order, WaveFrom, WaveGroup};
+    use crate::sim::{BreedCount, Order};
 
     /// Saved and loaded again, everything is still there: terrain, ore, spawners (a slanted one too), buildings, units,
-    /// zombies, waves (groups out of chosen spawners too) – and the round with its constant spawn.
+    /// zombies, events (groups out of chosen spawners too) – and the round.
     #[test]
     fn a_map_comes_back_the_same() {
         let mut world = World::new(4);
         let c = world.map.size as i32 / 2;
         let (first, last) = (world.spawners[0].id, world.spawners[11].id);
-        let mut wave = TimedWave { final_wave: true, reveal: true, ..TimedWave::new(1234, WaveFrom::Sides(2), Breed::Fat, 300) };
-        let zombies = vec![BreedCount { count: 50, breed: Breed::Harpy }, BreedCount { count: 7, breed: Breed::Giant }];
-        wave.groups.push(WaveGroup { from: WaveFrom::Spawners(vec![first, last]), breeds: zombies });
+        let mut event = Event { final_wave: true, reveal: true, every_hours: 30, times: 3, growth: 1.5, notify_hours: Some(4), ..Event::new("Big", 123, WaveFrom::Sides(2), Breed::Fat, 300) };
+        let zombies = vec![BreedCount { count: 50, up_to: 60, breed: Breed::Harpy }, BreedCount::new(7, Breed::Giant)];
+        event.groups.push(WaveGroup { from: WaveFrom::Spawners(vec![first, last]), breeds: zombies });
         world.step(&[
             Order::PaintTerrain { terrain: Terrain::Water, tiles: vec![(c + 20, c + 20), (c + 21, c + 20)] },
             Order::PlaceBuilding { kind: BuildingKind::Wall, tile: (c + 6, c), turned: false, editor: true },
-            Order::AddTimedWave(wave),
+            Order::AddEvent(event),
             Order::RemoveSpawner { spawner: world.spawners[3].id },
             Order::SetSpawnerAxes { spawner: last, axes: Axes::Tiles },
             Order::PaintOre { ore: Some(Ore::Coal), tiles: vec![(c + 3, c + 9)] },
             Order::SetDays { days: 25 },
             Order::SetGold { gold: 777 },
             Order::SetWood { wood: 55 },
-            Order::SetExtraPerDay { extra: 2.5 },
-            Order::SetSpecials { specials: vec![crate::data::ConstantSpecial { day: 7, breed: Breed::Spitter, share: 0.2 }] },
         ]);
         let mut file = MapFile::from_world(&world, "Test: map?");
         file.setup = Some(MapSetup::default());
@@ -607,9 +675,8 @@ mod tests {
         assert_eq!(loaded.buildings.len(), world.buildings.len());
         assert_eq!(loaded.units.len(), world.units.len());
         assert_eq!(loaded.zombies.len() + loaded.sleep.len(), world.zombies.len() + world.sleep.len());
-        assert_eq!(loaded.waves, world.waves);
+        assert_eq!(loaded.events, world.events);
         assert_eq!((loaded.days, loaded.gold, loaded.stock.get(Resource::Wood)), (25, world.gold, 55));
-        assert_eq!(loaded.constant, world.constant);
         let again = MapFile { setup: file.setup.clone(), ..MapFile::from_world(&loaded, "Test: map?") };
         assert_eq!(again, file, "saving the loaded map gives the same file");
         assert_eq!(file_stem("Test: map?"), "Test_ map_");
@@ -623,9 +690,9 @@ mod tests {
         let file = MapFile::from_world(&world, "Rows \"quoted\", too");
         let text = pretty(&serde_json::to_string(&file).unwrap());
         let lines: Vec<&str> = text.lines().collect();
-        assert!(lines.iter().any(|l| l.starts_with("\"round\":{\"days\":10")), "no line for the round");
-        // Every field of the map in a line of its own – also those whose names are used further up (in the waves).
-        for key in ["waves", "spawners", "units", "zombies", "doom", "terrain"] {
+        assert!(lines.iter().any(|l| l.starts_with("\"round\":{\"days\":")), "no line for the round");
+        // Every field of the map in a line of its own – also those whose names are used further up (in the events).
+        for key in ["events", "spawners", "units", "zombies", "doom", "terrain"] {
             assert!(lines.iter().any(|l| l.starts_with(&format!("\"{key}\":"))), "no line for {key}");
         }
         let rows = lines.iter().filter(|l| l.len() >= world.map.size && l.trim_matches(|c| c == '"' || c == ',' || c == ']' || c == '}').len() == world.map.size).count();
@@ -635,7 +702,7 @@ mod tests {
     }
 
     /// A file of version 1 (before 2026-10-17: no round, no constant spawn, waves without breed) still loads: no set
-    /// length, the start gold and wood of the default difficulty, the constant spawn of `data\`, runners in its waves.
+    /// length, the start gold and wood of the default difficulty, runners in its waves – an event now.
     #[test]
     fn old_files_still_load() {
         let old = r#"{"version":1,"name":"Old","seed":7,"size":2,"border":0,"terrain":[".M",".."],
@@ -643,16 +710,17 @@ mod tests {
         let file: MapFile = serde_json::from_str(old).unwrap();
         let normal = data::get().difficulty("");
         assert_eq!(file.round, RoundData { days: 0, gold: normal.start_gold, wood: normal.start_wood, difficulty: String::new() });
-        assert_eq!(file.constant_spawn, data::get().spawning.constant);
-        assert_eq!(file.waves[0], TimedWave::new(100, WaveFrom::OneSpawner, Breed::Runner, 20));
         let world = file.to_world().unwrap();
+        assert_eq!(world.events.len(), 1);
+        assert_eq!(world.events[0].groups[0], WaveGroup { from: WaveFrom::OneSpawner, breeds: vec![BreedCount::new(20, Breed::Runner)] });
         assert_eq!(world.map.terrain(1, 0), Terrain::Mountain);
         assert_eq!(world.keep_out, normal.keep_out, "an old file doesn't get the default difficulty");
     }
 
     /// A file of format 3 had one breed per wave; those at the same time and from the same kind of place came out of the
-    /// same random spawners. Now they're one wave with one group per kind of place – and the spawners get their
-    /// numbers in order – the same as when it's loaded, so an old map opened in the editor doesn't count as changed.
+    /// same random spawners. Now they're one event with one group per kind of place, at the same day and hour – and the
+    /// spawners get their numbers in order – the same as when it's loaded, so an old map opened in the editor doesn't
+    /// count as changed. A spawner of the old constant spawn sends nothing by itself now.
     #[test]
     fn old_waves_become_groups() {
         let old = r#"{"version":3,"name":"Old","seed":7,"size":2,"border":0,"terrain":["..",".."],
@@ -666,13 +734,16 @@ mod tests {
         let world = file.to_world().unwrap();
         file.upgrade();
         assert_eq!(file.version, VERSION);
-        assert_eq!(file.waves, world.waves, "loaded and upgraded give other waves");
-        assert_eq!(file.waves.len(), 2);
-        let first = &file.waves[0];
+        assert_eq!(file.events, world.events, "loaded and upgraded give other events");
+        assert_eq!(file.events.len(), 2);
+        let first = &file.events[0];
+        assert_eq!(first.hour, 0, "tick 100 of the old days is hour 0");
         assert_eq!(first.groups.len(), 2, "the runners and riots aren't one group");
-        assert_eq!(first.groups[0].breeds, vec![BreedCount { count: 20, breed: Breed::Runner }, BreedCount { count: 5, breed: Breed::Armored }]);
+        assert_eq!(first.groups[0].breeds, vec![BreedCount::new(20, Breed::Runner), BreedCount::new(5, Breed::Armored)]);
         assert_eq!(first.groups[1].from, WaveFrom::OneSpawner);
-        assert!(file.waves[1].final_wave && file.waves[1].reveal);
+        let last = &file.events[1];
+        assert!(last.final_wave && last.reveal && last.won_when_dead && last.hour == 6);
+        assert_eq!(world.spawners[0].mode, SpawnMode::Off);
         assert_eq!(file.spawners.iter().map(|s| s.id).collect::<Vec<_>>(), world.spawners.iter().map(|s| s.id).collect::<Vec<_>>());
     }
 

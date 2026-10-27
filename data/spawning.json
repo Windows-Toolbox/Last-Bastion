@@ -1,29 +1,45 @@
 {
-  "stages": [
-    { "day": 2, "hour": 0, "breed": "Walker", "every_seconds": 30.0, "group": [2, 3] },
-    { "day": 9, "hour": 23, "breed": "Walker", "every_seconds": 20.0, "group": [4, 6] },
-    { "day": 10, "hour": 0, "breed": "Runner", "every_seconds": 45.0, "group": [4, 6] },
-    { "day": 20, "hour": 0, "breed": "Runner", "every_seconds": 40.0, "group": [8, 10] }
-  ],
-  "extra_per_day": 1.0,
-  "specials": [
-    { "day": 15, "breed": "Armored", "share": 0.15 },
-    { "day": 20, "breed": "Infested", "share": 0.1 },
-    { "day": 25, "breed": "Spitter", "share": 0.08 },
-    { "day": 30, "breed": "Fat", "share": 0.05 }
-  ],
-  "waves": {
-    "hour": 12,
-    "first": 200,
-    "last": 600,
-    "specials": [
-      { "breed": "Armored", "from": 0.2, "share": 0.12 },
-      { "breed": "Infested", "from": 0.4, "share": 0.08 },
-      { "breed": "Spitter", "from": 0.55, "share": 0.06 },
-      { "breed": "Fat", "from": 0.7, "share": 0.04 },
-      { "breed": "Harpy", "from": 0.3, "share": 0.01 }
-    ],
-    "final_hour": 6,
-    "final_runners": 1000
-  }
+  "stream_every_seconds": 0.133,
+  "stream_speed": 6,
+  "events": [
+    { "name": "Victory", "hour": 2400, "won": true },
+    {
+      "name": "Final swarm", "hour": 2208, "notify_hours": 24, "final_wave": true, "reveal": true,
+      "groups": [{ "from": { "Sides": 4 }, "breeds": [
+        { "count": 2200, "breed": "Runner" },
+        { "count": 550, "breed": "Armored" },
+        { "count": 50, "breed": "Fat" },
+        { "count": 50, "breed": "Harpy" },
+        { "count": 50, "breed": "Spitter" }
+      ] }]
+    },
+    {
+      "name": "Swarm easy", "hour": 312, "random_hours": 24, "every_hours": 240, "times": 4,
+      "growth": 3.0, "growth_max": 200.0, "notify_hours": 8, "dispersion": 8,
+      "groups": [{ "from": { "Sides": 1 }, "breeds": [{ "count": 16, "up_to": 24, "breed": "Runner" }] }]
+    },
+    {
+      "name": "Swarm hard", "hour": 1200, "random_hours": 24, "every_hours": 168, "times": 5,
+      "growth": 3.5, "growth_max": 200.0, "notify_hours": 8, "dispersion": 20,
+      "groups": [{ "from": { "Sides": 1 }, "breeds": [
+        { "count": 100, "up_to": 160, "breed": "Runner" },
+        { "count": 25, "up_to": 40, "breed": "Armored" },
+        { "count": 3, "up_to": 5, "breed": "Fat" }
+      ] }]
+    },
+    {
+      "name": "Stragglers weak", "hour": 48, "every_hours": 48, "times": 10, "growth": 0.1, "growth_max": 20.0,
+      "low_population": { "hour": 240, "every_hours": 120, "times": 5 },
+      "groups": [{ "from": { "Sides": 4 }, "breeds": [{ "count": 3, "up_to": 6, "breed": "Walker" }] }]
+    },
+    {
+      "name": "Stragglers medium", "hour": 600, "random_hours": 24, "every_hours": 144, "times": 10,
+      "growth": 0.5, "growth_max": 20.0,
+      "low_population": { "hour": 960, "every_hours": 240, "times": 5 },
+      "groups": [{ "from": { "Sides": 4 }, "breeds": [
+        { "count": 4, "up_to": 8, "breed": "Runner" },
+        { "count": 1, "up_to": 2, "breed": "Armored" }
+      ] }]
+    }
+  ]
 }

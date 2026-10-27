@@ -1,5 +1,5 @@
-//! Where zombies come from: walkers scattered over the map at the start, the constant spawn of the map (a new map
-//! gets it from `data\spawning.json`), spawners (placed in the editor), waves (now or on the timeline), and your dead
+//! Where zombies come from: walkers scattered over the map at the start, spawners (placed in the editor) – the
+//! events of the map send their zombies out of them (`events.rs`), the editor sends waves at once – and your dead
 //! units rising again. A killed zombie stays dead – a cleared part of the map stays clear.
 
 use macroquad::math::{vec2, Vec2};
@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::terrain::free_point_near;
 use super::zombies::{values, Breed};
-use super::{World, DAY_TICKS, HOUR_TICKS, TICKS_PER_SECOND};
-use crate::data::{self, ConstantSpawn, Stage};
+use super::{World, TICKS_PER_SECOND};
+use crate::data;
 use crate::kinds::UnitKind;
 use crate::map::{from_frame, to_frame, Map, Region};
 
@@ -30,7 +30,7 @@ pub struct Spawner {
     /// Width and height.
     pub size: (i32, i32),
     pub axes: Axes,
-    /// What it sends all by itself (waves come on top).
+    /// What it sends all by itself (the events come on top).
     pub mode: SpawnMode,
     /// Periodic: ticks since it last sent zombies.
     pub(super) timer: u32,
@@ -89,12 +89,11 @@ pub fn tiles(axes: Axes, min: (i32, i32), size: (i32, i32)) -> Vec<(i32, i32)> {
 /// How a spawner sends zombies by itself (set in the editor).
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum SpawnMode {
-    /// Takes part in the constant spawn of the round (`data\spawning.json`): each group comes out of one of the
-    /// spawners set to this, picked at random.
-    Constant,
     /// Every `every` seconds `count` new zombies.
     Periodic { every: u32, count: u32 },
-    /// Nothing by itself – only waves.
+    /// Nothing by itself – only the events. `alias`: map files from before TAB's events have spawners set to the
+    /// constant spawn, which is gone – TAB's stragglers are events now.
+    #[serde(alias = "Constant")]
     Off,
 }
 
@@ -154,26 +153,8 @@ pub enum WaveFrom {
     Spawners(Vec<u32>),
 }
 
-/// A wave on the timeline of the map (editor, "Waves" tab – like TAB's events "on day 12, 6:00 a wave from the
-/// north"). It comes all by itself when the clock gets there. A new round plans its waves itself (`plan_waves`).
-/// `from = "WaveInFile"`: a file is read through that type – it also knows the waves of older files.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-#[serde(from = "WaveInFile")]
-pub struct TimedWave {
-    /// At this tick (`DAY_TICKS`, `HOUR_TICKS`).
-    pub at: u64,
-    /// Part of the final wave: when every final wave has come and none of its zombies is left, the round is won
-    /// (`round.rs`). It also calls every zombie on the map – they all belong to it then (`World::call_everyone`).
-    pub final_wave: bool,
-    /// When it comes, the whole map is shown from then on (`World::revealed`).
-    pub reveal: bool,
-    /// Its groups: each from its own place, with its own breeds – "5000 runners out of C, D, F, G and 200 spitters out
-    /// of B" is one wave of two groups.
-    pub groups: Vec<WaveGroup>,
-}
-
-/// One group of a wave: where it comes out – picked once, all its breeds come out there together – and how many of
-/// each breed. (`breeds`, not `zombies`: in the map file the waves come before the map's own field `zombies`, and
+/// One group of an event: where it comes out – picked once, all its breeds come out there together – and how many of
+/// each breed. (`breeds`, not `zombies`: in the map file the events come before the map's own field `zombies`, and
 /// `mapfile::pretty` finds that one by where it first appears.)
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct WaveGroup {
@@ -181,164 +162,25 @@ pub struct WaveGroup {
     pub breeds: Vec<BreedCount>,
 }
 
-/// So many zombies of one breed – from every side the group comes from (`WaveFrom::Sides`), or in total.
+/// So many zombies of one breed – from every side the group comes from (`WaveFrom::Sides`), or in total: `count`, or
+/// a random number from `count` to `up_to` (TAB's "4-6") – `up_to` 0: just `count`.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct BreedCount {
     pub count: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub up_to: u32,
     pub breed: Breed,
 }
 
-impl TimedWave {
-    /// A wave of one group with one breed.
-    pub fn new(at: u64, from: WaveFrom, breed: Breed, count: u32) -> TimedWave {
-        TimedWave { at, final_wave: false, reveal: false, groups: vec![WaveGroup { from, breeds: vec![BreedCount { count, breed }] }] }
-    }
-
-    /// How many zombies it brings in all – a group from several sides brings its count from each of them (as long as
-    /// there are spawners on that many sides).
-    pub fn zombies(&self) -> u32 {
-        let times = |from: &WaveFrom| match from {
-            WaveFrom::Sides(n) => (*n).min(4),
-            _ => 1,
-        };
-        self.groups.iter().map(|g| g.breeds.iter().map(|z| z.count).sum::<u32>() * times(&g.from)).sum()
+impl BreedCount {
+    pub fn new(count: u32, breed: Breed) -> BreedCount {
+        BreedCount { count, up_to: 0, breed }
     }
 }
 
-/// A wave as a map file has it. `untagged`: the file doesn't say which of the two it is – serde tries them in order,
-/// and the first one whose fields fit is it.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum WaveInFile {
-    /// Since map format 4: with groups.
-    Groups {
-        at: u64,
-        #[serde(default)]
-        final_wave: bool,
-        #[serde(default)]
-        reveal: bool,
-        groups: Vec<WaveGroup>,
-    },
-    /// Before: one breed per wave – several of them at the same time came out of the same random sides together
-    /// (`merge_old_waves` makes one wave of them). Files from before 2026-10-17 have no breed (their waves were
-    /// runners) and no final wave.
-    Single {
-        at: u64,
-        count: u32,
-        from: WaveFrom,
-        #[serde(default = "runner")]
-        breed: Breed,
-        #[serde(default)]
-        final_wave: bool,
-        #[serde(default)]
-        reveal: bool,
-    },
-}
-
-/// What a wave without a breed in its file sends – for `#[serde(default = "runner")]` above, which wants a function.
-fn runner() -> Breed {
-    Breed::Runner
-}
-
-/// `impl From`: how serde makes a `TimedWave` out of what it read (`#[serde(from = …)]`).
-impl From<WaveInFile> for TimedWave {
-    fn from(wave: WaveInFile) -> TimedWave {
-        match wave {
-            WaveInFile::Groups { at, final_wave, reveal, groups } => TimedWave { at, final_wave, reveal, groups },
-            WaveInFile::Single { at, count, from, breed, final_wave, reveal } => {
-                TimedWave { final_wave, reveal, ..TimedWave::new(at, from, breed, count) }
-            }
-        }
-    }
-}
-
-/// The waves of a map file before format 4 had one breed each; at the same time and from the same kind of place they
-/// came out of the same random spawners. Now that's one wave with one group per kind of place – it comes the same.
-/// In the order of the list: the first wave at a time takes in the later ones.
-pub fn merge_old_waves(waves: Vec<TimedWave>) -> Vec<TimedWave> {
-    let mut merged: Vec<TimedWave> = Vec::new();
-    for wave in waves {
-        let Some(into) = merged.iter_mut().find(|w| w.at == wave.at && w.final_wave == wave.final_wave) else {
-            merged.push(wave);
-            continue;
-        };
-        into.reveal |= wave.reveal;
-        for group in wave.groups {
-            match into.groups.iter_mut().find(|g| g.from == group.from) {
-                Some(same) => same.breeds.extend(group.breeds),
-                None => into.groups.push(group),
-            }
-        }
-    }
-    merged
-}
-
-/// What the constant spawn sends right now: a group of `min` to `max` zombies of this breed every `every` ticks –
-/// `specials` of them other breeds (breed, share), `unrest` of them more because of the colony's noise. Out of these
-/// spawners (`id`s) – `None`: out of those set to "Constant".
-#[derive(Debug, PartialEq)]
-pub struct Group {
-    pub breed: Breed,
-    pub every: u64,
-    pub min: u32,
-    pub max: u32,
-    pub specials: Vec<(Breed, f32)>,
-    pub unrest: u32,
-    pub spawners: Option<Vec<u32>>,
-}
-
-/// The constant spawn `spawning` with every group `percent` as big (`constant_spawn_percent` of the difficulty) – the
-/// group sizes rounded, at least 1 where there was one before, and the growth after the last stage too.
-pub fn scaled_groups(spawning: &ConstantSpawn, percent: u32) -> ConstantSpawn {
-    let scale = |count: u32| if count == 0 { 0 } else { ((count * percent + 50) / 100).max(1) };
-    let mut scaled = spawning.clone();
-    for stage in &mut scaled.stages {
-        stage.group = stage.group.map(scale);
-    }
-    scaled.extra_per_day = spawning.extra_per_day * percent as f32 / 100.0;
-    scaled
-}
-
-/// The tick a stage of the constant spawn starts at (day 1, hour 0 = tick 0).
-pub fn stage_start(stage: &Stage) -> u64 {
-    stage.day.saturating_sub(1) * DAY_TICKS + stage.hour * HOUR_TICKS
-}
-
-/// What the constant spawn `spawning` sends at this tick – `None` before the first stage. Within a stage the values
-/// go over smoothly to those of the next one, as long as that one has the same breed (walkers: more and more often,
-/// bigger groups). Next stage another breed: the values stay until it starts. After the last stage the groups keep
-/// growing by `extra_per_day`.
-pub(super) fn group_at(spawning: &ConstantSpawn, tick: u64) -> Option<Group> {
-    let i = spawning.stages.iter().rposition(|s| stage_start(s) <= tick)?;
-    let stage = &spawning.stages[i];
-    let (mut every, mut min, mut max) = (stage.every_seconds, stage.group[0] as f32, stage.group[1] as f32);
-    let since = (tick - stage_start(stage)) as f32;
-    match spawning.stages.get(i + 1) {
-        Some(next) if next.breed == stage.breed && stage_start(next) > stage_start(stage) => {
-            let share = since / (stage_start(next) - stage_start(stage)) as f32;
-            every += (next.every_seconds - every) * share;
-            min += (next.group[0] as f32 - min) * share;
-            max += (next.group[1] as f32 - max) * share;
-        }
-        Some(_) => {}
-        None => {
-            let days = since / DAY_TICKS as f32;
-            min += spawning.extra_per_day * days;
-            max += spawning.extra_per_day * days;
-        }
-    }
-    // Rounded – `floor` instead of `round`, the list of allowed float operations stays short (`sim/mod.rs`).
-    let round = |x: f32| (x + 0.5).floor().max(0.0) as u32;
-    let every = (round(every * TICKS_PER_SECOND) as u64).max(1);
-    let min = round(min);
-    // The specials whose day has come.
-    let specials = spawning
-        .specials
-        .iter()
-        .filter(|s| s.day.saturating_sub(1) * DAY_TICKS <= tick)
-        .map(|s| (s.breed, s.share))
-        .collect();
-    Some(Group { breed: stage.breed, every, min, max: round(max).max(min), specials, unrest: 0, spawners: stage.spawners.clone() })
+/// For `skip_serializing_if`: no range isn't written.
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// One of your units has fallen: it lies there and rises as a walker when `rise_in` runs out.
@@ -508,15 +350,12 @@ impl World {
         self.keep_spawner_on_map(self.spawners.len() - 1);
     }
 
-    /// Spawner `id` is gone: the waves and stages that named it don't any more.
+    /// Spawner `id` is gone: the events that named it don't any more.
     pub(super) fn forget_spawner(&mut self, id: u32) {
-        for group in self.waves.iter_mut().flat_map(|w| w.groups.iter_mut()) {
+        for group in self.events.iter_mut().flat_map(|e| e.groups.iter_mut()) {
             if let WaveFrom::Spawners(ids) = &mut group.from {
                 ids.retain(|&s| s != id);
             }
-        }
-        for ids in self.constant.stages.iter_mut().filter_map(|s| s.spawners.as_mut()) {
-            ids.retain(|&s| s != id);
         }
     }
 
@@ -564,55 +403,38 @@ impl World {
         }
     }
 
-    /// A group of a wave (or "send now" in the editor): where it comes out is picked once (`wave_spawners`) – every
-    /// breed of it comes out there, one after the other.
+    /// A group of a wave sent at once ("send now" in the editor): where it comes out is picked once (`wave_sides`) –
+    /// every breed of it comes out there, one after the other, all of a side one swarm.
     pub(super) fn send_group(&mut self, group: &WaveGroup, final_wave: bool) {
-        for spawners in self.wave_spawners(&group.from) {
+        for side in self.wave_sides(&group.from) {
+            let swarm = self.new_swarm();
+            let spawners: Vec<(usize, u32)> = side.into_iter().map(|s| (s, swarm)).collect();
             for z in &group.breeds {
                 self.spawn_from(&spawners, z.count as usize, z.breed, final_wave);
             }
         }
     }
 
-    /// Where a group of a wave comes out (`WaveFrom`), the sides picked at random: a list of spawners (indices, each
-    /// with its swarm) per side – each list gets the group's full count. A single random spawner is one list too. The
-    /// chosen spawners are one list – the count spread over them – with one swarm per side they lie on.
-    fn wave_spawners(&mut self, from: &WaveFrom) -> Vec<Vec<(usize, u32)>> {
+    /// Where a group comes out (`WaveFrom`), the sides picked at random: a list of spawners (indices) per side – each
+    /// list gets the group's full count (TAB's `N & S`). One random side (TAB's `N | S | E | W`) is `Sides(1)`. A
+    /// single random spawner is one list too, the chosen spawners are one list – the count spread over them.
+    pub(super) fn wave_sides(&mut self, from: &WaveFrom) -> Vec<Vec<usize>> {
         match from {
             WaveFrom::OneSpawner if self.spawners.is_empty() => Vec::new(),
-            WaveFrom::OneSpawner => {
-                let s = self.rng.below(self.spawners.len() as u32) as usize;
-                vec![vec![(s, self.new_swarm())]]
-            }
+            WaveFrom::OneSpawner => vec![vec![self.rng.below(self.spawners.len() as u32) as usize]],
             WaveFrom::Sides(sides) => {
                 let map = &self.map;
                 let mut left: Vec<u32> = (0..4).filter(|&side| self.spawners.iter().any(|s| s.side(map) == side)).collect();
-                let mut groups = Vec::new();
+                let mut lists = Vec::new();
                 for _ in 0..(*sides).min(left.len() as u32) {
                     let side = left.remove(self.rng.below(left.len() as u32) as usize);
-                    let swarm = self.new_swarm();
-                    groups.push((0..self.spawners.len()).filter(|&s| self.spawners[s].side(&self.map) == side).map(|s| (s, swarm)).collect());
+                    lists.push((0..self.spawners.len()).filter(|&s| self.spawners[s].side(&self.map) == side).collect());
                 }
-                groups
+                lists
             }
             WaveFrom::Spawners(ids) => {
-                // (side, swarm) of every side so far.
-                let mut swarms: Vec<(u32, u32)> = Vec::new();
-                let mut list = Vec::new();
                 let found: Vec<usize> = ids.iter().filter_map(|&id| self.find_spawner(id)).collect();
-                for s in found {
-                    let side = self.spawners[s].side(&self.map);
-                    let swarm = match swarms.iter().find(|(other, _)| *other == side) {
-                        Some(&(_, swarm)) => swarm,
-                        None => {
-                            let swarm = self.new_swarm();
-                            swarms.push((side, swarm));
-                            swarm
-                        }
-                    };
-                    list.push((s, swarm));
-                }
-                if list.is_empty() { Vec::new() } else { vec![list] }
+                if found.is_empty() { Vec::new() } else { vec![found] }
             }
         }
     }
@@ -620,7 +442,7 @@ impl World {
     /// A random free point in a random one of these spawners (indices), from which the base can be reached – and
     /// which one of the list it is. `None` if there are no spawners, or nothing was found after `SPAWN_TRIES` tries
     /// (base cut off, spawners painted over).
-    fn spawn_point(&mut self, spawners: &[usize]) -> Option<(Vec2, usize)> {
+    pub(super) fn spawn_point(&mut self, spawners: &[usize]) -> Option<(Vec2, usize)> {
         if spawners.is_empty() {
             return None;
         }
@@ -637,28 +459,8 @@ impl World {
         None
     }
 
-    /// The waves of the timeline whose time has come, group by group (`send_group`). A final wave first calls every
-    /// zombie on the map (`call_everyone`); a wave that shows the map shows it from now on. In the order of the list –
-    /// the same on every PC.
-    pub(super) fn fire_timed_waves(&mut self) {
-        let due: Vec<TimedWave> = self.waves.iter().filter(|w| w.at == self.tick).cloned().collect();
-        if due.iter().any(|w| w.final_wave) {
-            self.call_everyone();
-        }
-        if due.iter().any(|w| w.reveal) {
-            self.revealed = true;
-        }
-        for wave in &due {
-            for group in &wave.groups {
-                self.send_group(group, wave.final_wave);
-            }
-        }
-    }
-
-    /// The constant spawn of the round, then the periodic spawners (editor): count the ticks, and when the time is up
-    /// send their zombies (runners).
+    /// The periodic spawners (editor): count the ticks, and when the time is up send their zombies (runners).
     pub(super) fn update_spawners(&mut self) {
-        self.constant_spawn();
         for s in 0..self.spawners.len() {
             let SpawnMode::Periodic { every, count } = self.spawners[s].mode else {
                 continue;
@@ -670,89 +472,6 @@ impl World {
                 self.spawn_from(&[(s, swarm)], count as usize, Breed::Runner, false);
             }
         }
-    }
-
-    /// What the constant spawn sends right now (`group_at`) – with the zombies the colony's unrest adds to every group
-    /// (`sound.rs`). Also for the developer overlay (F3).
-    pub fn spawn_group(&self) -> Option<Group> {
-        let mut group = group_at(&self.constant, self.tick)?;
-        group.unrest = self.unrest_zombies();
-        group.min += group.unrest;
-        group.max += group.unrest;
-        Some(group)
-    }
-
-    /// The constant spawn (`spawn_group`): when its time has come, one group out of one random spawner of its stage –
-    /// those it names, otherwise one set to "constant" – all of them crowded on one random spot in it
-    /// (`spawn_crowd`). Then the next group is due `every` ticks later – how often is read anew each time, so it gets
-    /// more frequent over the round.
-    fn constant_spawn(&mut self) {
-        if self.tick < self.next_group {
-            return;
-        }
-        let Some(group) = self.spawn_group() else {
-            // Before the first stage: nothing until it starts (no stages at all: never).
-            let first = self.constant.stages.iter().map(stage_start).min();
-            self.next_group = first.filter(|&t| t > self.tick).unwrap_or(u64::MAX);
-            return;
-        };
-        self.next_group = self.tick + group.every;
-        let from: Vec<usize> = match &group.spawners {
-            Some(ids) => ids.iter().filter_map(|&id| self.find_spawner(id)).collect(),
-            None => (0..self.spawners.len()).filter(|&s| self.spawners[s].mode == SpawnMode::Constant).collect(),
-        };
-        if from.is_empty() {
-            return;
-        }
-        let s = from[self.rng.below(from.len() as u32) as usize];
-        let count = group.min + self.rng.below(group.max - group.min + 1);
-        self.spawn_crowd(s, count, &group);
-    }
-
-    /// A group of the constant spawn: one random spot in spawner `s` that leads to the base, and `count` zombies
-    /// crowded around it – the more, the bigger the crowd – not spread over the whole spawner. Each one is the group's
-    /// breed, or one of its specials by their shares (`roll_special`).
-    fn spawn_crowd(&mut self, s: usize, count: u32, group: &Group) {
-        let Some((center, _)) = self.spawn_point(&[s]) else {
-            return; // nothing in this spawner leads to the base
-        };
-        let radius = 0.5 + (count as f32).sqrt() * 0.4;
-        for _ in 0..count {
-            let breed = self.roll_special(group);
-            // A few tries for a free spot around the middle – otherwise right on it (they push each other apart).
-            let mut pos = center;
-            for _ in 0..10 {
-                let offset = vec2(self.rng.unit_f32() * 2.0 - 1.0, self.rng.unit_f32() * 2.0 - 1.0) * radius;
-                let (x, y) = ((center.x + offset.x).floor() as i32, (center.y + offset.y).floor() as i32);
-                if !self.map.is_blocked(x, y) && self.to_base.reachable(x, y) {
-                    pos = center + offset;
-                    break;
-                }
-            }
-            self.spawn_zombie_as(pos, breed, false);
-        }
-    }
-
-    /// One random number decides: each special of the group gets its share of the numbers, in the order of the list;
-    /// the rest are the group's own breed.
-    fn roll_special(&mut self, group: &Group) -> Breed {
-        let roll = self.rng.unit_f32();
-        let mut sum = 0.0;
-        for &(breed, share) in &group.specials {
-            sum += share;
-            if roll < sum {
-                return breed;
-            }
-        }
-        group.breed
-    }
-
-    /// The constant spawn was changed (editor): keep its stages in order of time – `group_at` relies on that – and
-    /// look again at the next tick what comes when, instead of waiting for a group planned with the old values.
-    /// `sort_by_key` is stable: two stages at the same time keep their order, the same on every PC.
-    pub(super) fn constant_spawn_changed(&mut self) {
-        self.constant.stages.sort_by_key(stage_start);
-        self.next_group = self.tick;
     }
 
     /// A spawner always lies completely on the map and is at least 1 × 1 step: straight on screen inside

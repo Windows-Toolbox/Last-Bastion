@@ -17,8 +17,9 @@
 //! - **Machines** (Factorio's pollution as TAB's noise): every `work_every_seconds` every working building makes its
 //!   `noise` (`data\buildings.json`) – all at the same moment, so buildings close together add up.
 //! - **Unrest:** everything your colony makes – shots, machines, blasts, building – also adds up in `World::unrest`,
-//!   which never goes down. For every `unrest_per_zombie` of it, every group of the constant spawn brings one zombie
-//!   more, for good (`spawning.rs`): growing loud has a price that tearing down the factory later doesn't undo.
+//!   which never goes down. For every `unrest_per_zombie` of it, every side of a silent event (TAB's stragglers)
+//!   brings one zombie more, for good (`events.rs`): growing loud has a price that tearing down the factory later
+//!   doesn't undo.
 //!
 //! Only whole numbers – the same on every PC (DESIGN.md 12.8).
 
@@ -174,7 +175,7 @@ impl World {
         self.unrest += amount as u64;
     }
 
-    /// How many zombies more every group of the constant spawn brings because of the unrest.
+    /// How many zombies more every side of a silent event brings because of the unrest.
     pub fn unrest_zombies(&self) -> u32 {
         (self.unrest / data::get().sound.unrest_per_zombie.max(1)).min(u32::MAX as u64) as u32
     }

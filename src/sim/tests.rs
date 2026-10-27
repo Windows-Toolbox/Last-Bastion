@@ -58,7 +58,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0xd60a_050a_002b_d46d;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0xad58_5794_0bbf_c97f;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -78,23 +78,36 @@ fn different_seed_gives_different_result() {
     assert_ne!(a.checksum(), b.checksum());
 }
 
-/// How many of `breed` a wave brings – per side, all its groups together.
-fn breed_count(wave: &TimedWave, breed: Breed) -> u32 {
-    wave.groups.iter().flat_map(|g| &g.breeds).filter(|z| z.breed == breed).map(|z| z.count).sum()
+/// How many of `breed` an event brings – per side, all its groups together (the low end of every range).
+fn breed_count(event: &Event, breed: Breed) -> u32 {
+    event.groups.iter().flat_map(|g| &g.breeds).filter(|z| z.breed == breed).map(|z| z.count).sum()
 }
 
-/// A wave of one group: these breeds (how many of each) out of `from`.
-fn one_group(at: u64, from: WaveFrom, zombies: &[(Breed, u32)]) -> TimedWave {
-    let zombies = zombies.iter().map(|&(breed, count)| BreedCount { count, breed }).collect();
-    TimedWave { at, final_wave: false, reveal: false, groups: vec![WaveGroup { from, breeds: zombies }] }
+/// An event of one group that comes once at hour `hour`: these breeds (how many of each) out of `from`.
+fn one_group(hour: u32, from: WaveFrom, zombies: &[(Breed, u32)]) -> Event {
+    let breeds = zombies.iter().map(|&(breed, count)| BreedCount::new(count, breed)).collect();
+    Event { groups: vec![WaveGroup { from: from.clone(), breeds }], ..Event::new("Test", hour, from, Breed::Runner, 0) }
 }
 
-/// The step in which the wave due at `at` comes – afterwards `prev` of its zombies is where they appeared.
-fn step_until_it_comes(world: &mut World, at: u64) {
-    while world.tick < at {
+/// The next full hour from now – an event at it comes a little later.
+fn next_hour(world: &World) -> u32 {
+    (world.tick / HOUR_TICKS) as u32 + 1
+}
+
+/// Steps until the event due at `hour` has come and every one of its zombies is out of the spawners (a few at a time,
+/// like TAB's, `events.rs`). Returns where each appeared – its breed and `prev` in the tick it came out (in that tick
+/// it already took its first step) – in the order they came.
+fn step_until_it_comes(world: &mut World, hour: u32) -> Vec<(Breed, Vec2)> {
+    let at = hour as u64 * HOUR_TICKS;
+    let mut appeared = Vec::new();
+    loop {
+        let last = world.next_zombie_id;
         world.step(&[]);
+        appeared.extend(world.zombies.iter().filter(|z| z.id > last).map(|z| (z.breed, z.prev)));
+        if world.tick > at && world.requests.is_empty() {
+            return appeared;
+        }
     }
-    world.step(&[]);
 }
 
 /// The unit at the bottom right of the start formation, in a world without zombies – none roaming, and none waiting in
@@ -134,22 +147,28 @@ fn barracks(world: &mut World) -> u32 {
     id
 }
 
-/// A wave on the timeline comes exactly at its tick, out of the spawners in the ring – not a tick earlier.
-/// And the clock counts days of 24 hours from day 1.
+/// An event comes at its hour, out of the spawners in the ring – not a tick earlier. Its zombies come out a few at a
+/// time, like TAB's: the first burst `stream_speed` of them. And the clock counts days of 24 hours from day 1.
 #[test]
-fn timed_wave_comes_on_time() {
+fn an_event_comes_on_time() {
     let (mut world, _) = quiet_world();
-    let at = world.tick + 30;
-    world.step(&[Order::AddTimedWave(TimedWave::new(at, WaveFrom::Sides(1), Breed::Runner, 50))]);
-    while world.tick < at {
+    world.events.clear();
+    let hour = next_hour(&world) + 1;
+    world.step(&[Order::AddEvent(Event::new("Test", hour, WaveFrom::Sides(1), Breed::Runner, 50))]);
+    while world.tick < hour as u64 * HOUR_TICKS {
         assert!(world.zombies.is_empty(), "too early, tick {}", world.tick);
         world.step(&[]);
     }
-    world.step(&[]);
+    while world.zombies.is_empty() {
+        world.step(&[]);
+    }
+    assert_eq!(world.zombies.len() as u32, data::get().spawning.stream_speed, "not a burst");
+    let appeared = step_until_it_comes(&mut world, hour);
     assert_eq!(world.zombies.len(), 50);
-    assert!(world.zombies.iter().all(|z| !world.map.in_play(z.pos.x as i32, z.pos.y as i32)));
+    assert!(appeared.iter().all(|&(_, p)| !world.map.in_play(p.x as i32, p.y as i32)));
     assert_eq!(day_and_hour(0), (1, 0));
     assert_eq!(day_and_hour(DAY_TICKS + 3 * HOUR_TICKS + 5), (2, 3));
+    assert_eq!(DAY_TICKS, 60 * 20, "a day isn't TAB's 60 seconds");
 }
 
 /// Commands added with Shift are carried out in order.
@@ -824,66 +843,60 @@ fn spawners_can_be_placed_resized_and_renamed() {
     assert_eq!(s.name, "Graveyard");
 }
 
-/// A wave of two groups (editor): 30 runners spread over two chosen spawners, 10 spitters out of a third – at the same
-/// moment, each group out of its own spawners, whatever they're set to. One swarm per side they come from.
+/// An event of two groups (editor): 30 runners spread over two chosen spawners, 10 spitters out of a third – at the
+/// same time, each group out of its own spawners, whatever they're set to. Announced: one swarm per group.
 #[test]
-fn a_wave_has_groups_out_of_chosen_spawners() {
+fn an_event_has_groups_out_of_chosen_spawners() {
     let (mut world, _) = quiet_world();
-    world.waves.clear();
+    world.events.clear();
     let ids: Vec<u32> = world.spawners.iter().map(|s| s.id).collect();
     // `N 1` and `N 2` lie on the same side, `S 3` across.
     assert_eq!((world.spawners[0].side(&world.map), world.spawners[1].side(&world.map), world.spawners[5].side(&world.map)), (0, 0, 1));
-    let at = world.tick + 2;
-    let mut wave = one_group(at, WaveFrom::Spawners(vec![ids[0], ids[1]]), &[(Breed::Runner, 30)]);
-    wave.groups.push(WaveGroup { from: WaveFrom::Spawners(vec![ids[5]]), breeds: vec![BreedCount { count: 10, breed: Breed::Spitter }] });
-    assert_eq!(wave.zombies(), 40);
+    let hour = next_hour(&world);
+    let mut event = one_group(hour, WaveFrom::Spawners(vec![ids[0], ids[1]]), &[(Breed::Runner, 30)]);
+    event.groups.push(WaveGroup { from: WaveFrom::Spawners(vec![ids[5]]), breeds: vec![BreedCount::new(10, Breed::Spitter)] });
+    event.notify_hours = Some(0);
     let off: Vec<Order> = ids.iter().map(|&spawner| Order::SetSpawnMode { spawner, mode: SpawnMode::Off }).collect();
     world.step(&off);
-    world.step(&[Order::AddTimedWave(wave)]);
-    step_until_it_comes(&mut world, at);
+    world.step(&[Order::AddEvent(event)]);
+    let appeared = step_until_it_comes(&mut world, hour);
     assert_eq!(world.zombies.len(), 40);
     let from = |breed: Breed| -> Vec<usize> {
-        let mut found: Vec<usize> = world.zombies.iter().filter(|z| z.breed == breed).filter_map(|z| spawner_of(&world, z.prev)).collect();
+        let mut found: Vec<usize> = appeared.iter().filter(|a| a.0 == breed).filter_map(|a| spawner_of(&world, a.1)).collect();
         found.sort();
         found.dedup();
         found
     };
     assert_eq!(from(Breed::Runner), vec![0, 1], "the runners don't come out of both chosen spawners");
     assert_eq!(from(Breed::Spitter), vec![5]);
-    assert_eq!(world.swarms().iter().map(|&(_, n)| n).collect::<Vec<_>>(), vec![30, 10], "not one swarm per side");
+    assert_eq!(world.swarms().iter().map(|&(_, n)| n).collect::<Vec<_>>(), vec![30, 10], "not one swarm per group");
 }
 
-/// A spawner that is removed is taken out of every wave and stage that named it – the others stay.
+/// A spawner that is removed is taken out of every event that named it – the others stay.
 #[test]
-fn a_removed_spawner_leaves_the_waves() {
+fn a_removed_spawner_leaves_the_events() {
     let (mut world, _) = quiet_world();
     let ids: Vec<u32> = world.spawners.iter().map(|s| s.id).collect();
-    let stage = data::Stage { day: 3, hour: 0, breed: Breed::Runner, every_seconds: 5.0, group: [2, 2], spawners: Some(vec![ids[0], ids[2]]) };
-    world.step(&[Order::AddTimedWave(one_group(5000, WaveFrom::Spawners(vec![ids[0], ids[1]]), &[(Breed::Fat, 5)])), Order::AddStage(stage)]);
+    world.step(&[Order::AddEvent(one_group(500, WaveFrom::Spawners(vec![ids[0], ids[1]]), &[(Breed::Fat, 5)]))]);
     world.step(&[Order::RemoveSpawner { spawner: ids[0] }]);
-    assert_eq!(world.waves.last().unwrap().groups[0].from, WaveFrom::Spawners(vec![ids[1]]));
-    assert!(world.constant.stages.iter().any(|s| s.spawners == Some(vec![ids[2]])), "still in the stage");
+    assert_eq!(world.events.last().unwrap().groups[0].from, WaveFrom::Spawners(vec![ids[1]]));
 }
 
-/// A stage of the constant spawn with spawners of its own: its groups come out of those – here one that is switched
-/// off, while none is set to "Constant".
+/// An event with a spread (TAB's `MaxCellDispersionGeneration`): every side's zombies come out of one square that big,
+/// not along the whole side – and all its breeds out of the same square.
 #[test]
-fn a_stage_sends_out_of_its_own_spawners() {
+fn a_spread_event_comes_out_of_a_square() {
     let (mut world, _) = quiet_world();
     world.units.clear();
-    let ids: Vec<u32> = world.spawners.iter().map(|s| s.id).collect();
-    let mut orders: Vec<Order> = ids.iter().map(|&spawner| Order::SetSpawnMode { spawner, mode: SpawnMode::Off }).collect();
-    let stage = data::Stage { day: 1, hour: 0, breed: Breed::Runner, every_seconds: 1.0, group: [3, 3], spawners: Some(vec![ids[7]]) };
-    orders.push(Order::AddStage(stage));
-    world.step(&orders);
-    for _ in 0..100 {
-        if !world.zombies.is_empty() {
-            break;
-        }
-        world.step(&[]);
-    }
-    assert_eq!(world.zombies.len(), 3, "no group came");
-    assert!(world.zombies.iter().all(|z| spawner_of(&world, z.prev) == Some(7)), "not out of the stage's spawner");
+    world.events.clear();
+    let hour = next_hour(&world);
+    let event = Event { dispersion: 6, ..one_group(hour, WaveFrom::Sides(1), &[(Breed::Runner, 40), (Breed::Fat, 5)]) };
+    world.step(&[Order::AddEvent(event)]);
+    let appeared = step_until_it_comes(&mut world, hour);
+    assert_eq!(appeared.len(), 45);
+    let spread = appeared.iter().flat_map(|a| appeared.iter().map(move |b| a.1.distance(b.1))).fold(0.0, f32::max);
+    // A square of 6 tiles: at most its diagonal apart (and the spawner may be thinner).
+    assert!(spread <= 6.0 * std::f32::consts::SQRT_2 + 0.5, "spread over {spread} tiles");
 }
 
 /// Right click, "slanted": a spawner can lie along the tiles instead of straight on screen – around the same middle,
@@ -902,12 +915,12 @@ fn a_spawner_can_lie_slanted() {
     assert!((after - before).abs() * 10 < before, "{before} tiles before, {after} slanted");
     assert!(s.contains(s.center()) && !s.contains(s.center() + vec2(0.0, s.size.1 as f32)));
 
-    world.waves.clear();
-    let at = world.tick + 2;
-    world.step(&[Order::AddTimedWave(one_group(at, WaveFrom::Spawners(vec![id]), &[(Breed::Runner, 40)]))]);
-    step_until_it_comes(&mut world, at);
+    world.events.clear();
+    let hour = next_hour(&world);
+    world.step(&[Order::AddEvent(one_group(hour, WaveFrom::Spawners(vec![id]), &[(Breed::Runner, 40)]))]);
+    let appeared = step_until_it_comes(&mut world, hour);
     assert_eq!(world.zombies.len(), 40);
-    assert!(world.zombies.iter().all(|z| s.contains(z.prev)), "a zombie came out outside the slanted spawner");
+    assert!(appeared.iter().all(|a| s.contains(a.1)), "a zombie came out outside the slanted spawner");
 
     world.step(&[Order::SetSpawnerAxes { spawner: id, axes: Axes::Screen }]);
     let back = &world.spawners[1];
@@ -1279,8 +1292,8 @@ fn spawners_send_periodically_or_not_and_the_dead_stay_dead() {
     }
     assert_eq!(world.zombies.len(), 14, "after 4 s: two batches");
 
-    // Killed: they stay dead – even with spawners set to "constant".
-    world.step(&[Order::SetSpawnMode { spawner: ids[0], mode: SpawnMode::Off }, Order::SetSpawnMode { spawner: ids[3], mode: SpawnMode::Constant }]);
+    // Killed: they stay dead.
+    world.step(&[Order::SetSpawnMode { spawner: ids[0], mode: SpawnMode::Off }]);
     for z in &mut world.zombies {
         z.hp = 0;
     }
@@ -1288,56 +1301,42 @@ fn spawners_send_periodically_or_not_and_the_dead_stay_dead() {
     assert!(world.zombies.is_empty());
 }
 
-/// The constant spawn as in `data\spawning.json`: nothing on day 1, from day 2 small groups of walkers that come more
-/// and more often, from day 10 runners instead, from day 15 the first specials along, and after the last stage the
-/// groups keep growing.
+/// TAB's stragglers (`data\spawning.json`): nothing until hour 48 (at 100 days), then a few walkers from every side,
+/// silently – no swarm on the minimap, no notice. The colony's unrest brings one more per side for every
+/// `unrest_per_zombie`. An announced swarm is told hours before it comes.
 #[test]
-fn constant_spawn_follows_the_stages() {
-    let at = |day: u64, hour: u64| (day - 1) * DAY_TICKS + hour * HOUR_TICKS;
-    let spawning = &data::get().spawning.constant;
-    let group_at = |tick| spawning::group_at(spawning, tick);
-    assert_eq!(group_at(at(1, 23)), None, "something on day 1");
-    let early = group_at(at(2, 0)).unwrap();
-    assert_eq!((early.breed, early.min, early.max), (Breed::Walker, 2, 3));
-    let later = group_at(at(6, 0)).unwrap();
-    assert_eq!(later.breed, Breed::Walker);
-    assert!(later.every < early.every, "walkers don't come more often: {} vs {} ticks", later.every, early.every);
-    let runners = group_at(at(10, 0)).unwrap();
-    assert_eq!((runners.breed, runners.min, runners.max), (Breed::Runner, 4, 6));
-    assert!(runners.specials.is_empty(), "specials before their day");
-    assert_eq!(group_at(at(15, 0)).unwrap().specials, vec![(Breed::Armored, 0.15)]);
-    let last = spawning.stages.last().unwrap();
-    let grown = group_at(at(last.day + 5, last.hour)).unwrap();
-    assert!(grown.min > last.group[0], "groups don't grow after the last stage");
-
-    // In the world: the first walkers come out of a "constant" spawner right at the start of day 2 – together.
+fn the_stragglers_come_from_every_side() {
     let (mut world, _) = quiet_world();
     world.units.clear();
-    world.tick = at(2, 0) - 1;
-    world.step(&[]);
-    assert!(world.zombies.is_empty(), "too early");
-    world.step(&[]);
-    assert!((2..=3).contains(&world.zombies.len()), "{} walkers", world.zombies.len());
-    assert!(world.zombies.iter().all(|z| z.breed == Breed::Walker));
-    assert!(world.spawners.iter().any(|s| s.mode == SpawnMode::Constant && s.contains(world.zombies[0].prev)));
-}
-
-/// A group of the constant spawn comes crowded on one spot – not spread over its spawner, which is nearly a whole side
-/// of the map. Its specials take their share of it (here all of it), and the colony's unrest makes every group bigger.
-#[test]
-fn a_constant_group_comes_crowded_with_specials_and_unrest() {
-    let (mut world, _) = quiet_world();
-    world.units.clear();
-    let stage = data::Stage { day: 1, hour: 0, breed: Breed::Runner, every_seconds: 60.0, group: [6, 6], spawners: None };
-    let fat = data::ConstantSpecial { day: 1, breed: Breed::Fat, share: 1.0 };
-    world.constant = data::ConstantSpawn { stages: vec![stage], extra_per_day: 0.0, specials: vec![fat] };
+    world.events = plan_events(100, 1.0);
+    world.roll_events();
     world.unrest = 2 * data::get().sound.unrest_per_zombie;
-    world.next_group = world.tick;
+    let weak = world.events.iter().find(|e| e.name == "Stragglers weak").unwrap().hour;
+    assert_eq!(weak, 48);
+    while world.tick < weak as u64 * HOUR_TICKS {
+        world.step(&[]);
+    }
+    assert!(world.zombies.is_empty(), "too early");
+    let appeared = step_until_it_comes(&mut world, weak);
+    // 3 to 6 walkers and 2 for the unrest, from each of the 4 sides.
+    assert!((4 * 5..=4 * 8).contains(&appeared.len()), "{} stragglers", appeared.len());
+    assert!(appeared.iter().all(|a| a.0 == Breed::Walker));
+    let mut sides: Vec<u32> = appeared.iter().filter_map(|a| spawner_of(&world, a.1)).map(|s| world.spawners[s].side(&world.map)).collect();
+    sides.sort();
+    sides.dedup();
+    assert_eq!(sides, vec![0, 1, 2, 3], "not from every side");
+    assert!(world.swarms().is_empty(), "stragglers are marked on the minimap");
+    assert!(world.notices.is_empty(), "stragglers are announced");
+
+    // The first swarm: announced 8 hours before it comes.
+    let swarm = world.events.iter().position(|e| e.name == "Swarm easy").unwrap();
+    let comes = world.events[swarm].next_hour().unwrap();
+    world.tick = (comes - 8) as u64 * HOUR_TICKS - 1;
+    world.events.retain(|e| e.name == "Swarm easy");
     world.step(&[]);
-    assert_eq!(world.zombies.len(), 8, "6 and 2 for the unrest");
-    assert!(world.zombies.iter().all(|z| z.breed == Breed::Fat), "the special didn't take its share");
-    let spread = world.zombies.iter().flat_map(|a| world.zombies.iter().map(move |b| a.prev.distance(b.prev))).fold(0.0, f32::max);
-    assert!(spread < 5.0, "the group is spread over {spread} tiles");
+    world.step(&[]);
+    assert!(matches!(world.notices.last(), Some(Notice::Coming { at, .. }) if *at == comes as u64 * HOUR_TICKS), "{:?}", world.notices);
+    assert_eq!(world.next_announced(), Some((comes as u64 * HOUR_TICKS, false)));
 }
 
 /// Machines make noise every work beat – a mine 150, a sawmill 100, as much as their power lets them – and it adds to
@@ -1368,10 +1367,9 @@ fn machines_make_noise_and_the_unrest_grows() {
     let id = world.buildings.iter().find(|b| b.kind == BuildingKind::Mine).unwrap().id;
     world.step(&[Order::SwitchOff { buildings: vec![id], off: true }]);
     assert_eq!(work_beat(&mut world), sawmill, "the mine is loud while switched off");
-    // The unrest makes every group of the constant spawn bigger – for good.
-    let base = world.spawn_group().map_or(0, |g| g.min);
+    // The unrest makes every side of the stragglers bigger – for good.
     world.unrest = 3 * data::get().sound.unrest_per_zombie;
-    assert_eq!(world.spawn_group().map_or(0, |g| g.min), base + 3 * world.spawn_group().is_some() as u32);
+    assert_eq!(world.unrest_zombies(), 3);
 }
 
 /// Whatever water and mountains the map generation makes: every spawner has a way to the base.
@@ -1727,12 +1725,10 @@ fn the_final_wave_calls_everyone_and_reveals_the_map() {
     let roamers = world.zombies.len();
     let guards: u32 = world.loot.iter().map(|l| l.guards).sum();
     let inside: u32 = world.doom.iter().map(|d| d.inside).sum();
-    world.waves.clear();
-    let at = world.tick + 2;
-    world.step(&[Order::AddTimedWave(TimedWave { final_wave: true, reveal: true, ..TimedWave::new(at, WaveFrom::Sides(1), Breed::Runner, 1) })]);
-    while world.tick <= at {
-        world.step(&[]);
-    }
+    world.events.clear();
+    // At hour 0: it comes in this very tick – before any of your units falls and rises (those don't belong to it).
+    world.step(&[Order::AddEvent(Event { final_wave: true, reveal: true, ..Event::new("Final", 0, WaveFrom::Sides(1), Breed::Runner, 1) })]);
+    world.step(&[]);
     assert!(world.revealed, "the map isn't shown");
     let n = world.map.size as i32;
     assert!((0..n).all(|k| world.vision.is_visible(k, n / 2)), "not all of the map is visible");
@@ -1784,21 +1780,20 @@ fn a_fallen_hunter_cottage_brings_zombies_and_noise() {
     assert_eq!(world.loudest_sound().map(|(_, level)| level), Some(loud));
 }
 
-/// A group of a wave comes out of the same spawners: the runners and the riots that come along.
+
+/// A group of an event comes out of the same side: the runners and the riots that come along.
 #[test]
-fn a_wave_and_its_specials_come_from_the_same_side() {
+fn an_event_and_its_specials_come_from_the_same_side() {
     let (mut world, _) = quiet_world();
-    world.waves.clear();
-    let at = world.tick + 2;
-    world.step(&[Order::AddTimedWave(one_group(at, WaveFrom::Sides(1), &[(Breed::Runner, 30), (Breed::Armored, 10)]))]);
-    while world.tick <= at {
-        world.step(&[]);
-    }
-    assert_eq!(world.zombies.len(), 40);
-    // The side of the map they're closest to – a tick after coming out, some already stepped out of their spawner.
+    world.events.clear();
+    let hour = next_hour(&world);
+    world.step(&[Order::AddEvent(one_group(hour, WaveFrom::Sides(1), &[(Breed::Runner, 30), (Breed::Armored, 10)]))]);
+    let appeared = step_until_it_comes(&mut world, hour);
+    assert_eq!(appeared.len(), 40);
     let side = |p: Vec2| world.map.full_area().nearest_side(p);
-    let first = side(world.zombies[0].pos);
-    assert!(world.zombies.iter().all(|z| side(z.pos) == first), "they came from different sides");
+    let first = side(appeared[0].1);
+    assert!(appeared.iter().all(|a| side(a.1) == first), "not all from the same side");
+    assert!(appeared.iter().any(|a| a.0 == Breed::Armored) && appeared.iter().any(|a| a.0 == Breed::Runner));
 }
 
 /// A diamond of walls touching only at the corners (dragged diagonally) is closed: no zombie gets through a
@@ -2619,18 +2614,19 @@ fn losing_the_last_command_center_loses_the_round() {
     assert_eq!(world.outcome, None);
 }
 
-/// Won: once the final wave has come and its last zombie is dead. The final wave calls every zombie on the map – they
-/// belong to it then, and have to die too. Zombies coming later (the constant spawn) don't matter.
+/// Won when the final wave is dead (an event that `won_when_dead`, like the final waves of old maps): once it has come
+/// and its last zombie is dead. The final wave calls every zombie on the map – they belong to it then, and have to die
+/// too. Zombies coming later don't matter.
 #[test]
 fn killing_the_final_wave_wins_the_round() {
     let (mut world, _) = quiet_world();
-    world.waves.clear();
-    let at = world.tick + 5;
+    world.events.clear();
+    let hour = next_hour(&world);
     world.step(&[
-        Order::AddTimedWave(TimedWave { final_wave: true, ..TimedWave::new(at, WaveFrom::Sides(1), Breed::Runner, 3) }),
+        Order::AddEvent(Event { final_wave: true, won_when_dead: true, ..Event::new("Final", hour, WaveFrom::Sides(1), Breed::Runner, 3) }),
         Order::SpawnWave { count: 10, from: WaveFrom::Sides(1) },
     ]);
-    while world.tick <= at {
+    while world.tick <= hour as u64 * HOUR_TICKS || !world.requests.is_empty() {
         assert_eq!(world.outcome, None, "won before the final wave came");
         world.step(&[]);
     }
@@ -2646,61 +2642,57 @@ fn killing_the_final_wave_wins_the_round() {
     assert_eq!(world.score.zombies_killed, 13);
 }
 
-/// A new round plans its waves from its days and how often its duration says they come (`data\game_durations.json`):
-/// the mini round (10 days, from day 4 every 3) gets two waves (day 4 and 7) and the final wave on day 10 from all
-/// sides, with every breed but the giants (they lie on the map, the final wave calls them) – it's final and shows the
-/// map. 40 days (from day 5 every 4) get nine, growing: the first only runners, then more and more riots, infested,
-/// spitters, fat ones. A difficulty with 200 % waves doubles every count.
+/// Won by the clock, like TAB: the victory event comes at the end of the last day – whoever is still alive.
 #[test]
-fn waves_are_planned_from_the_days() {
-    let (ten, forty) = (data::get().duration(10), data::get().duration(40));
-    assert_eq!((ten.first_wave_day, ten.wave_every_days, forty.first_wave_day, forty.wave_every_days), (4, 3, 5, 4), "game_durations.json changed – change this test too");
-    let mini = plan_waves(10, ten, 1.0);
-    assert!(mini.iter().all(|w| w.groups.len() == 1), "a planned wave is one group: all its breeds out of the same sides");
-    let days: Vec<u64> = mini.iter().filter(|w| !w.final_wave).map(|w| day_and_hour(w.at).0).collect();
-    assert_eq!(days, vec![4, 7]);
-    assert!(mini.iter().filter(|w| w.final_wave).all(|w| day_and_hour(w.at).0 == 10 && w.groups[0].from == WaveFrom::Sides(4) && w.reveal));
-    assert!(mini.iter().all(|w| w.final_wave == w.reveal), "a wave that isn't final shows the map");
-    for breed in Breed::ALL.into_iter().filter(|&b| b != Breed::Walker && b != Breed::Giant) {
-        assert!(mini.iter().any(|w| w.final_wave && breed_count(w, breed) > 0), "no {breed:?} in the final wave");
+fn the_round_is_won_by_the_clock() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let hour = next_hour(&world);
+    world.step(&[Order::AddEvent(Event { won: true, ..Event::new("Victory", hour, WaveFrom::Sides(1), Breed::Runner, 0) }), Order::SpawnWave { count: 10, from: WaveFrom::Sides(1) }]);
+    while world.tick < hour as u64 * HOUR_TICKS {
+        world.step(&[]);
+        assert_eq!(world.outcome, None, "won too early");
     }
-
-    let long = plan_waves(40, forty, 1.0);
-    let normal: Vec<&TimedWave> = long.iter().filter(|w| !w.final_wave).collect();
-    assert_eq!(normal.iter().map(|w| day_and_hour(w.at).0).collect::<Vec<_>>(), vec![5, 9, 13, 17, 21, 25, 29, 33, 37]);
-    let runners = |w: &TimedWave| breed_count(w, Breed::Runner);
-    assert!(normal.windows(2).all(|pair| pair[0].at < pair[1].at && runners(pair[0]) <= runners(pair[1])), "not growing");
-    // The first wave only runners, the last before the final wave every special breed.
-    let (first, last) = (normal[0], normal[normal.len() - 1]);
-    assert!(first.groups[0].breeds.iter().all(|z| z.breed == Breed::Runner), "specials in the first wave");
-    for special in &data::get().spawning.waves.specials {
-        assert!(breed_count(last, special.breed) > 0, "no {:?} in the last wave", special.breed);
-    }
-    let riots: Vec<u32> = normal.iter().map(|w| breed_count(w, Breed::Armored)).filter(|&n| n > 0).collect();
-    assert!(riots.len() > 3 && riots.windows(2).all(|pair| pair[0] <= pair[1]) && riots[0] < riots[riots.len() - 1], "riots don't grow: {riots:?}");
-    assert!(plan_waves(0, ten, 1.0).is_empty());
-    assert_eq!(runners(&plan_waves(10, ten, 2.0)[0]), runners(&mini[0]) * 2);
-
-    let world = World::new(3);
-    assert_eq!(world.days, 10);
-    assert_eq!(world.waves, mini, "a new round doesn't get the planned waves");
+    world.step(&[]);
+    assert!(matches!(world.outcome, Some(Outcome::Won { .. })), "{:?}", world.outcome);
+    assert_eq!(world.zombies.len(), 10);
 }
 
-/// Changing the days (editor) moves the final wave along to the new last day, at the same hour – the other waves stay.
+/// A new round gets TAB's survival plan (`plan_events`), stretched to its days and as big as its population: the
+/// victory at the end of the last day, the final wave from all four sides with every breed but the giants, showing
+/// the map, announced a day before.
 #[test]
-fn changing_the_days_moves_the_final_wave() {
+fn a_new_round_gets_tabs_plan() {
+    let world = World::new(3);
+    assert_eq!(world.days, 100);
+    assert_eq!(world.events, plan_events(100, data::get().difficulty("").population), "a new round doesn't get the planned events");
+    let won = world.events.iter().find(|e| e.won).expect("no victory");
+    assert_eq!(won.hour, 100 * 24);
+    let last = world.events.iter().find(|e| e.final_wave).expect("no final wave");
+    assert_eq!((last.hour, last.notify_hours), (92 * 24, Some(24)));
+    assert!(last.reveal && last.groups[0].from == WaveFrom::Sides(4));
+    for breed in [Breed::Runner, Breed::Armored, Breed::Fat, Breed::Harpy, Breed::Spitter] {
+        assert!(breed_count(last, breed) > 0, "no {breed:?} in the final wave");
+    }
+    // The swarms grow every time they come.
+    let swarm = world.events.iter().find(|e| e.name == "Swarm hard").unwrap();
+    assert!(swarm.growth > 0.0 && swarm.every_hours > 0 && swarm.times == 5);
+}
+
+/// Changing the days (editor) moves the victory to the end of the new last day – the other events stay.
+#[test]
+fn changing_the_days_moves_the_victory() {
     let (mut world, _) = quiet_world();
-    let before = world.waves.clone();
+    let before = world.events.clone();
     world.step(&[Order::SetDays { days: 20 }]);
     assert_eq!(world.days, 20);
-    for (old, new) in before.iter().zip(&world.waves) {
-        if old.final_wave {
-            assert_eq!(day_and_hour(new.at), (20, day_and_hour(old.at).1));
+    for (old, new) in before.iter().zip(&world.events) {
+        if old.won {
+            assert_eq!(new.hour, 20 * 24);
         } else {
             assert_eq!(old, new);
         }
     }
-    assert!(world.waves.iter().any(|w| w.final_wave), "the final wave is gone");
 }
 
 /// The editor's eraser takes everything off its tiles: units, zombies – and a building even if it only stands on one
@@ -2729,23 +2721,23 @@ fn the_eraser_takes_everything_off_its_tiles() {
     assert_eq!(world.units.len(), 3);
 }
 
-/// The constant spawn belongs to the map: the editor's orders change it, and its stages stay in order of time.
+/// The events belong to the map: the editor's orders add, change and remove them. A changed one starts anew – one
+/// whose hour has passed comes at once.
 #[test]
-fn the_constant_spawn_can_be_edited() {
+fn the_events_can_be_edited() {
     let (mut world, _) = quiet_world();
-    let stage = data::Stage { day: 1, hour: 2, breed: Breed::Fat, every_seconds: 5.0, group: [2, 2], spawners: None };
-    world.apply_orders(&[Order::AddStage(stage.clone())]);
-    assert_eq!(world.constant.stages[0], stage, "not sorted to the front");
-    assert_eq!(world.spawn_group(), None, "before 2:00 of day 1 nothing should come");
-    world.tick = round::tick_of(1, 2);
-    assert_eq!(world.spawn_group().map(|g| g.breed), Some(Breed::Fat));
-    // The specials go as a whole list – from their day on they come along in every group.
-    let harpies = data::ConstantSpecial { day: 1, breed: Breed::Harpy, share: 0.25 };
-    world.apply_orders(&[Order::SetSpecials { specials: vec![harpies] }]);
-    assert_eq!(world.spawn_group().map(|g| g.specials), Some(vec![(Breed::Harpy, 0.25)]));
-    world.apply_orders(&[Order::RemoveStage { index: 0 }, Order::SetExtraPerDay { extra: 3.0 }]);
-    assert_eq!(world.constant.extra_per_day, 3.0);
-    assert_eq!(world.constant.stages, data::get().spawning.constant.stages);
+    world.units.clear();
+    world.events.clear();
+    world.apply_orders(&[Order::AddEvent(one_group(500, WaveFrom::Sides(1), &[(Breed::Fat, 2)]))]);
+    assert_eq!(world.events[0].next_hour(), Some(500));
+    let mut changed = world.events[0].clone();
+    changed.hour = 0;
+    world.apply_orders(&[Order::SetEvent { index: 0, event: changed }]);
+    let appeared = step_until_it_comes(&mut world, 0);
+    assert_eq!(appeared.len(), 2, "the changed event didn't come at once");
+    assert_eq!(world.events[0].next_hour(), None, "it comes again");
+    world.apply_orders(&[Order::RemoveEvent { index: 0 }]);
+    assert!(world.events.is_empty());
 }
 
 /// Overkill prevention: two snipers side by side, two walkers in front of them. One shot kills a walker – so the second
@@ -2797,7 +2789,7 @@ fn a_new_round_starts_with_the_difficulty_values() {
     }
 }
 
-/// A harder difficulty: more zombies roaming, fuller houses, stronger waves, a bigger constant spawn – and the
+/// A harder difficulty: more zombies roaming, fuller houses, stronger events (TAB's population) – and the
 /// special breeds closer to the base. The same map either way. On a map of ours – on TAB's the difficulty is its
 /// zombie population (`a_tab_map_round`).
 #[test]
@@ -2815,10 +2807,8 @@ fn a_harder_difficulty_brings_more() {
     assert!(zombies(&brutal) > zombies(&easy) * 3 / 2, "{} vs. {} roaming", zombies(&brutal), zombies(&easy));
     let inside = |w: &World| w.doom.iter().map(|d| d.inside).sum::<u32>();
     assert!(inside(&brutal) > inside(&easy) * 2, "the houses aren't fuller");
-    let wave = |w: &World| w.waves.iter().map(|t| t.zombies()).sum::<u32>();
-    assert!(wave(&brutal) > wave(&easy) * 2, "the waves aren't stronger");
-    let group = |w: &World| w.constant.stages.iter().map(|s| s.group[1]).sum::<u32>();
-    assert!(group(&brutal) > group(&easy), "the constant spawn isn't bigger");
+    let events = |w: &World| w.events.iter().flat_map(|e| &e.groups).flat_map(|g| &g.breeds).map(|b| b.count).sum::<u32>();
+    assert!(events(&brutal) > events(&easy) * 2, "the events aren't stronger");
     // The closest fat one: much closer on Brutal (10 tiles may) than on Easy (60).
     let closest = |w: &World, breed: Breed| w.sleep.iter().filter(|s| s.breed == breed).map(|s| s.pos.distance(w.base)).fold(f32::INFINITY, f32::min);
     assert!(closest(&easy, Breed::Fat) >= easy.keep_out.fat, "a fat one too close on Easy");
@@ -2951,10 +2941,10 @@ fn a_zombie_on_an_island_dies_when_few_are_left() {
     assert!(world.zombies.iter().any(|z| z.id == free), "a zombie with a way died");
 }
 
-/// No zombies coming anymore – no waves, no constant spawn: tests that wait for many payouts wait for days
-/// (`payout_ticks`), long enough for the first waves.
+/// No zombies coming anymore – no events: tests that wait for many payouts wait for days (`payout_ticks`), long enough
+/// for the first stragglers.
 fn no_more_zombies(world: &mut World) {
-    world.waves.clear();
+    world.events.clear();
     for spawner in &mut world.spawners {
         spawner.mode = SpawnMode::Off;
     }
@@ -3627,16 +3617,15 @@ fn a_harpy_leaps_over_a_thin_wall_but_not_a_thick_one() {
     assert!(damaged > 0, "at a thick wall it should hit");
 }
 
-/// Every side a wave comes out of is one swarm – the minimap marks its middle. Gone once all of it is dead.
+/// Every side an announced event comes out of is one swarm – the minimap marks its middle. Gone once all of it is dead.
 #[test]
-fn every_side_of_a_wave_is_one_swarm() {
+fn every_side_of_an_event_is_one_swarm() {
     let (mut world, _) = quiet_world();
-    world.waves.clear();
-    let at = world.tick + 2;
-    world.step(&[Order::AddTimedWave(one_group(at, WaveFrom::Sides(2), &[(Breed::Runner, 20), (Breed::Armored, 5)]))]);
-    while world.tick <= at {
-        world.step(&[]);
-    }
+    world.events.clear();
+    let hour = next_hour(&world);
+    let event = Event { notify_hours: Some(0), ..one_group(hour, WaveFrom::Sides(2), &[(Breed::Runner, 20), (Breed::Armored, 5)]) };
+    world.step(&[Order::AddEvent(event)]);
+    step_until_it_comes(&mut world, hour);
     let swarms = world.swarms();
     assert_eq!(swarms.iter().map(|&(_, n)| n).collect::<Vec<_>>(), vec![25, 25], "the runners and riots of a side are one swarm");
     let side = |p: Vec2| world.map.full_area().nearest_side(p);
@@ -3853,8 +3842,7 @@ fn a_house_of_doom_keeps_its_guards() {
 fn a_house_of_doom_raids_the_base_from_day_20() {
     let (mut world, _) = quiet_world();
     world.units.clear();
-    world.waves.clear();
-    world.constant.stages.clear();
+    world.events.clear();
     let d = doom_house(&mut world);
     let (id, inside) = (world.doom[d].id as u64, world.doom[d].inside);
     let doom = &data::get().doom;
@@ -4239,15 +4227,16 @@ fn the_start_area_works_on_every_map() {
     }
 }
 
-/// The default difficulty. With `$env:WAVES = "3"` first, the waves are that strong (3 = 300 %). With
-/// `$env:ROAMERS = "0"` no zombies roam the map at the start – to look at the economy alone.
+/// The default difficulty. With `$env:POPULATION = "1.5"` first, TAB's zombie population is that (more zombies, bigger
+/// waves). With `$env:ROAMERS = "0"` no zombies roam the map at the start – to look at the economy alone (only on our
+/// generators – TAB's lays out its own).
 #[test]
 #[ignore]
 fn balance_mini_round() {
     let setup = MapSetup::default();
     let mut difficulty = data::get().difficulty("").clone();
-    if let Some(waves) = std::env::var("WAVES").ok().and_then(|w| w.parse::<f32>().ok()) {
-        difficulty.waves_percent = (waves * 100.0) as u32;
+    if let Some(population) = std::env::var("POPULATION").ok().and_then(|w| w.parse::<f32>().ok()) {
+        difficulty.population = population;
     }
     if let Some(roamers) = std::env::var("ROAMERS").ok().and_then(|r| r.parse().ok()) {
         difficulty.roaming_zombies = roamers;
@@ -4255,7 +4244,7 @@ fn balance_mini_round() {
     for simple_player in [false, true] {
         let mut world = World::generate_with(1, &setup, &difficulty);
         println!("--- {} ---", if simple_player { "simple player" } else { "player does nothing" });
-        let end = round::tick_of(world.days + 3, 0);
+        let end = (world.days as u64 + 3) * DAY_TICKS;
         while world.tick < end && world.outcome.is_none() {
             let orders = if simple_player && world.tick % HOUR_TICKS == 0 { simple_orders(&world) } else { Vec::new() };
             world.step(&orders);
@@ -4780,3 +4769,4 @@ fn strolling_sleepers_fill_up_an_empty_place() {
     let near = world.zombies.iter().filter(|z| z.pos.distance(q) < sight + 8.0).count();
     assert!(near > 0, "nobody strolled in");
 }
+

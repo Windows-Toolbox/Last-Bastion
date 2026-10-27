@@ -16,9 +16,7 @@
       "villages_percent": 80,
       "village_houses_percent": 80,
       "giants_percent": 50,
-      "loot_guards": [5, 30],
-      "waves_percent": 60,
-      "constant_spawn_percent": 60
+      "loot_guards": [5, 30]
     },
     {
       "name": "Normal",
@@ -35,9 +33,7 @@
       "villages_percent": 100,
       "village_houses_percent": 100,
       "giants_percent": 100,
-      "loot_guards": [8, 50],
-      "waves_percent": 100,
-      "constant_spawn_percent": 100
+      "loot_guards": [8, 50]
     },
     {
       "name": "Hard",
@@ -54,9 +50,7 @@
       "villages_percent": 120,
       "village_houses_percent": 120,
       "giants_percent": 150,
-      "loot_guards": [12, 70],
-      "waves_percent": 140,
-      "constant_spawn_percent": 130
+      "loot_guards": [12, 70]
     },
     {
       "name": "Brutal",
@@ -73,9 +67,7 @@
       "villages_percent": 150,
       "village_houses_percent": 130,
       "giants_percent": 225,
-      "loot_guards": [15, 100],
-      "waves_percent": 200,
-      "constant_spawn_percent": 170
+      "loot_guards": [15, 100]
     }
   ]
 }

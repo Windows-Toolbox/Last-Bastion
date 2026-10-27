@@ -28,7 +28,7 @@ setz ihn um."
     den Balancing-Lauf einstellen.
 - **TABs Takt umrechnen:** TAB-Logik läuft mit 30 Ticks/s, Physik mit 12 Schritten/s. `IsIAFrameModule(n)` (in
   `DXEntity.cs`) heißt „alle n/2 Ticks" = **alle n/60 Sekunden** (z. B. 240 → 4 s, 60 → 1 s, 720 → 12 s). Bei uns:
-  20 Ticks/s (`TICK` 50 ms). 1 TAB-Tag = 60 s Spielzeit.
+  20 Ticks/s (`TICK` 50 ms). 1 Tag = 60 s Spielzeit, bei uns wie in TAB (`DAY_TICKS`).
 - **Namen der TAB-Zombies** (aus `ZXGame.dxprj`, Größe = Durchmesser in Kacheln): WeakA/B/C (schwach, 0,4),
   WorkerA/B und MediumA/B (mittel, 0,4), DressedA (stark, 0,4), StrongA = **Chubby** (0,7), Harpy (0,6), Venom (0,5),
   Giant (1,6), Mutant (haben wir nicht). Unsere Arten (**bestätigt** in Schritt 2): Weak → Walker, Worker/Medium →
@@ -74,6 +74,21 @@ schlafend) und Beute (`LootSpot::haul`) vom Generator. Was er hinterlässt:
   (unsere kommen von der Schwierigkeit), Kartengröße als Zweierpotenz.
 - `keep_out`, `roaming_zombies`, `villages_percent`, `giants_percent` gelten nur noch für unsere Generatoren. Ob die
   alten (Wild, Regions …) bleiben, entscheidet der Nutzer.
+
+**Schritt 5 (Wellen = TABs Events) ist fertig** – `src/sim/events.rs` (`Event`, `plan_events`, `update_events`,
+`announce`, `fire_event`, `stream`), TABs Survival-Plan in `data\spawning.json`, Sieg in `src/sim/round.rs`, Reiter
+„Events" im Editor. **Entschieden:** 1 Tag = 60 s, Dauer 80/100/120/150 (+ 20 zum Ausprobieren), Sieg nach Zeit wie
+TAB. Der konstante Spawn ist weg (TABs Streuner sind Events), die Unruhe wirkt auf die stillen Events. Kartenformat 5:
+`events` statt `waves`/`constant_spawn`, alte Wellen werden Events (Tag und Stunde bleiben, `won_when_dead`). Was er
+hinterlässt:
+- Nicht übernommen: TABs freier Seiten-Ausdruck (`A & B | C`) – bei uns `Sides(n)`, ein Spawner, gewählte Spawner;
+  `MaxTime`, Musik, Skripte beim Start/Ende, Bedingungen (`Condition_ZXCode`), `AttackCommandCenter` aus (alle
+  stürmen), eigenes Tempo je Event (`GenerationSpeed`, bei uns `stream_speed` für alle) – für Schritt 7.
+- Unsere Spawner liegen anders als TABs (3 pro Seite über die ganze Seite statt einer mit 70 %); mit Streuung kommt
+  eine Seite aus einem zufälligen ihrer Spawner.
+- Geschätzt: `score_percent` der Dauern; TABs „Stärke ≤ 100" beim Skalieren mit der Bevölkerung (bei uns alle außer
+  dem Riesen).
+- Die Wirtschaft rechnet weiter alle 8 Stunden ab – jetzt alle 20 s statt 60 s; ihre Werte sind nicht nachgestellt.
 
 **Schritt 4 (Dörfer des Untergangs) ist fertig** – `src/sim/doom.rs` (`DoomHouse`, `Nest`, `batch`, `update_doom`,
 `listen_houses`, `hit_house`, `around_house`), Werte in `data\doom.json`, `nests` der Landschaft (`InfectionNestsFactor`)

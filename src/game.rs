@@ -21,7 +21,7 @@ use crate::menu::{Menu, MenuAction};
 use crate::overlay::{self, Action, Overlay, Switch};
 use crate::picture::{Extras, MapPicture};
 use crate::settings::Settings;
-use crate::sim::{day_and_hour, Breed, Order, Outcome, TimedWave, World, TICK};
+use crate::sim::{day_and_hour, Breed, Notice, Order, Outcome, World, TICK};
 use crate::sprites::Sprites;
 use crate::ui::Ui;
 use crate::undo::History;
@@ -249,7 +249,6 @@ impl Game {
         // The editor's Edit mode: time stands still, every change shows at once.
         let editing = self.ui.editor.editing() && !self.ui.editor.testing();
         let runs = !editing && !self.ui.paused && !self.menu.open && !modal && self.world.outcome.is_none();
-        let first_tick = self.world.tick;
         let sim_start = Instant::now();
         let mut ticks = 0;
         if runs {
@@ -288,7 +287,7 @@ impl Game {
             self.avg_tick_ms = smooth(self.avg_tick_ms, tick_ms);
         }
         self.follow_size();
-        self.announce_waves(first_tick);
+        self.announce_events();
     }
 
     /// The map got another size (editor: "Map size", or undo / redo of it): what is as big as the map starts anew –
@@ -304,19 +303,29 @@ impl Game {
         self.ui.forget_selection();
     }
 
-    /// A wave of the timeline came in the ticks since `from`: say so at the top of the screen.
-    fn announce_waves(&mut self, from: u64) {
-        let came: Vec<&TimedWave> = self.world.waves.iter().filter(|w| w.at >= from && w.at < self.world.tick).collect();
-        if came.is_empty() {
-            return;
+    /// What the events had to say in the last ticks (`World::notices`): at the top of the screen, like TAB's – how many
+    /// (dozens, a horde, a swarm, billions) and from where, when it's announced; that it's here, when it comes.
+    fn announce_events(&mut self) {
+        for notice in std::mem::take(&mut self.world.notices) {
+            let text = match notice {
+                Notice::Coming { at, zombies, sides, final_wave, .. } => {
+                    let (day, hour) = day_and_hour(at);
+                    let what = if final_wave {
+                        "BILLIONS OF INFECTED are coming - every zombie on the map with them"
+                    } else if zombies < 150 {
+                        "Dozens of infected are coming"
+                    } else if zombies < 1500 {
+                        "A horde of infected is coming"
+                    } else {
+                        "A swarm of infected is coming"
+                    };
+                    format!("{what}{} - day {day}, {hour:02}:00.", from_sides(&sides))
+                }
+                Notice::Came { zombies, final_wave: true, .. } => format!("THE FINAL WAVE is here - {zombies} zombies!"),
+                Notice::Came { zombies, .. } => format!("The swarm is here - {zombies} zombies!"),
+            };
+            self.ui.alert(&text);
         }
-        let zombies: u32 = came.iter().map(|w| w.zombies()).sum();
-        let text = if came.iter().any(|w| w.final_wave) {
-            format!("THE FINAL WAVE is coming - {zombies} zombies, and every zombie on the map comes with it!")
-        } else {
-            format!("A wave is coming - {zombies} zombies!")
-        };
-        self.ui.alert(&text);
     }
 
     /// The game: the same map again from the start – read anew from its file, so a change made in the editor counts
@@ -658,15 +667,12 @@ impl Game {
             .button(format!("Seed {}   map {} x {}   (click: copy)", world.seed, world.map.size, world.map.size), Action::CopySeed)
             .text(format!("Checksum now  {:016x}", world.checksum()))
             .text(format!("Checksum tick {CHECK_TICK}  {check}"))
-            .text(match world.spawn_group() {
-                Some(g) => {
-                    let specials: String = g.specials.iter().map(|(b, s)| format!(", {:.0} % {:?}", s * 100.0, b)).collect();
-                    format!("Spawn: {}-{} {:?}s every {:.1} s{specials}", g.min, g.max, g.breed, g.every as f32 * TICK)
-                }
-                None => "Spawn: nothing yet (the constant spawn of the map)".to_owned(),
+            .text(match world.events.iter().filter_map(|e| e.next_hour().map(|h| (h, e))).min_by_key(|&(h, _)| h) {
+                Some((h, e)) => format!("Next event: {} on day {}, {:02}:00 ({} times so far)", e.name, h / 24 + 1, h % 24, e.fired()),
+                None => "Next event: none".to_owned(),
             })
             .text(format!(
-                "Unrest {} - every spawn group +{} (one more per {})",
+                "Unrest {} - every side of the stragglers +{} (one more per {})",
                 world.unrest,
                 world.unrest_zombies(),
                 data::get().sound.unrest_per_zombie
@@ -780,4 +786,19 @@ fn wrap_list(head: String, items: &[String]) -> Vec<String> {
 /// Mixes a new measurement into the average at 5 % – outliers hardly count.
 fn smooth(average: f64, value: f64) -> f64 {
     average * 0.95 + value * 0.05
+}
+
+/// " from the north" / " from the north and the east" – for an announcement, like TAB's (only for one or two sides).
+fn from_sides(sides: &[u32]) -> String {
+    let name = |side: &u32| match side {
+        0 => "the north",
+        1 => "the south",
+        2 => "the west",
+        _ => "the east",
+    };
+    match sides {
+        [one] => format!(" from {}", name(one)),
+        [a, b] => format!(" from {} and {}", name(a), name(b)),
+        _ => String::new(),
+    }
 }

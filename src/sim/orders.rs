@@ -5,10 +5,11 @@ use macroquad::math::{vec2, Vec2};
 
 use super::buildings::{Product, Rally, MAX_PRODUCTION};
 use super::commands::Command;
-use super::spawning::{Axes, BreedCount, SpawnMode, TimedWave, WaveFrom, WaveGroup, NEW_SPAWNER_SIZE};
+use super::events::Event;
+use super::spawning::{Axes, BreedCount, SpawnMode, WaveFrom, WaveGroup, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
-use crate::data::{self, ConstantSpecial, Stage};
+use crate::data;
 use crate::formation::Formation;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Ore, Terrain};
@@ -53,10 +54,11 @@ pub enum Order {
     PaintZombies { tiles: Vec<(i32, i32)>, per_tile: Vec<(Breed, u32)>, wander: bool },
     /// A wave of `count` runners from the spawners.
     SpawnWave { count: usize, from: WaveFrom },
-    /// A wave onto the timeline, change one (`index` in `World::waves`), take one off.
-    AddTimedWave(TimedWave),
-    SetTimedWave { index: usize, wave: TimedWave },
-    RemoveTimedWave { index: usize },
+    /// An event onto the map's list, change one (`index` in `World::events`), take one off. An added or changed one
+    /// starts anew (its random offset rolled again) – if its hour has passed, it comes at once.
+    AddEvent(Event),
+    SetEvent { index: usize, event: Event },
+    RemoveEvent { index: usize },
     /// All zombies gone.
     ClearZombies,
     /// A new unit at a point (only inside the world border).
@@ -102,14 +104,6 @@ pub enum Order {
     SetGold { gold: u32 },
     /// The wood in the stock right now – in the editor the wood the map starts with.
     SetWood { wood: u32 },
-    /// The constant spawn: a stage onto it, change one (`index` in `World::constant.stages`), take one off – the
-    /// stages stay in order of time. And how much bigger every group gets per day after the last stage.
-    AddStage(Stage),
-    SetStage { index: usize, stage: Stage },
-    RemoveStage { index: usize },
-    SetExtraPerDay { extra: f32 },
-    /// The constant spawn's specials (breeds that come along in every group from their day on) – the whole list anew.
-    SetSpecials { specials: Vec<ConstantSpecial> },
 
     // --- Buildings ---
     /// Build a building, `tile` = top left tile, `turned` by 90° (gate). Invalid spots are ignored (`can_place`),
@@ -205,18 +199,22 @@ impl World {
                 }
             }
             Order::SpawnWave { count, from } => {
-                let group = WaveGroup { from: from.clone(), breeds: vec![BreedCount { count: *count as u32, breed: Breed::Runner }] };
+                let group = WaveGroup { from: from.clone(), breeds: vec![BreedCount::new(*count as u32, Breed::Runner)] };
                 self.send_group(&group, false);
             }
-            Order::AddTimedWave(wave) => self.waves.push(wave.clone()),
-            Order::SetTimedWave { index, wave } => {
-                if let Some(w) = self.waves.get_mut(*index) {
-                    *w = wave.clone();
+            Order::AddEvent(event) => {
+                self.events.push(event.clone());
+                self.event_changed(self.events.len() - 1);
+            }
+            Order::SetEvent { index, event } => {
+                if *index < self.events.len() {
+                    self.events[*index] = event.clone();
+                    self.event_changed(*index);
                 }
             }
-            Order::RemoveTimedWave { index } => {
-                if *index < self.waves.len() {
-                    self.waves.remove(*index);
+            Order::RemoveEvent { index } => {
+                if *index < self.events.len() {
+                    self.events.remove(*index);
                 }
             }
             Order::ClearZombies => {
@@ -247,7 +245,7 @@ impl World {
                 let half = NEW_SPAWNER_SIZE / 2;
                 let name = format!("Spawner {}", self.next_spawner_id + 1);
                 let (min, size) = ((center.0 - half, center.1 - half), (NEW_SPAWNER_SIZE, NEW_SPAWNER_SIZE));
-                self.add_spawner(0, name, min, size, Axes::Screen, SpawnMode::Constant);
+                self.add_spawner(0, name, min, size, Axes::Screen, SpawnMode::Off);
             }
             Order::ResizeSpawner { spawner, min, size } => {
                 if let Some(s) = self.find_spawner(*spawner) {
@@ -312,24 +310,6 @@ impl World {
                 self.debt = 0;
             }
             Order::SetWood { wood } => self.stock.set(Resource::Wood, *wood),
-            Order::AddStage(stage) => {
-                self.constant.stages.push(stage.clone());
-                self.constant_spawn_changed();
-            }
-            Order::SetStage { index, stage } => {
-                if let Some(s) = self.constant.stages.get_mut(*index) {
-                    *s = stage.clone();
-                    self.constant_spawn_changed();
-                }
-            }
-            Order::RemoveStage { index } => {
-                if *index < self.constant.stages.len() {
-                    self.constant.stages.remove(*index);
-                    self.constant_spawn_changed();
-                }
-            }
-            Order::SetExtraPerDay { extra } => self.constant.extra_per_day = extra.max(0.0),
-            Order::SetSpecials { specials } => self.constant.specials = specials.clone(),
             Order::PlaceBuilding { kind, tile, turned, editor: false } => {
                 // The price is worked out before building: built over walls, the gate gets part of theirs back.
                 let cost = self.build_cost(*kind, *tile, *turned);

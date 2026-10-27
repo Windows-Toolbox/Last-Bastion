@@ -317,6 +317,12 @@ impl World {
             if self.doom[d].inside == 0 {
                 continue;
             }
+            // Called by the final wave: from now on only that – everything goes to the command center.
+            if self.doom[d].final_call {
+                let count = self.batch(d, doom.final_batch);
+                self.let_out(d, count, Bound::Final);
+                continue;
+            }
             // Each house at its own hour, on its own day: its number shifts them.
             let id = self.doom[d].id as u64;
             if hours > self.doom[d].guard_hour && (hours + id).is_multiple_of(doom.guard_every_hours.max(1)) {
@@ -330,10 +336,6 @@ impl World {
                 self.doom[d].raid_day = day;
                 let count = self.batch(d, doom.raid_batch);
                 self.let_out(d, count, Bound::Raid);
-            }
-            if self.doom[d].final_call {
-                let count = self.batch(d, doom.final_batch);
-                self.let_out(d, count, Bound::Final);
             }
         }
 

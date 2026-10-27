@@ -8,7 +8,8 @@
 //!
 //! One file per part of the game – each one is an `impl World` block, like `placement.rs`:
 //! - `orders.rs`: the players' orders – the first part of every tick.
-//! - `spawning.rs`: walkers at the start, the constant spawn, spawners, waves, dead units rising.
+//! - `spawning.rs`: walkers at the start, spawners, waves sent at once, dead units rising.
+//! - `events.rs`: the events of the map, like TAB's – stragglers, swarms, the final wave, the victory, by the clock.
 //! - `zombies.rs`: what a zombie notices, where it walks, whom it hits.
 //! - `crowd.rs`: how the crowd pushes and flows – smooth circles pushed out of each other, like TAB's physics.
 //! - `sleep.rs`: the zombies far from everything – asleep as plain entries until something wakes them.
@@ -25,7 +26,7 @@
 //! - `blast.rs`: explosive barrels – making them, carrying them, and what happens when one goes off.
 //! - `scan.rs`: the command center's scan – a circle of the map shown for a while.
 //! - `terrain.rs`: when the map changes – recompute what depends on it, push everyone off new terrain.
-//! - `round.rs`: the round as a whole – its days and waves, how it ends (won, lost), what happened in it.
+//! - `round.rs`: the round as a whole – how it ends (won, lost), what happened in it.
 //!
 //! This file: the `World` itself, the order of a tick (`step`) and small helpers that all of them use.
 
@@ -37,6 +38,7 @@ mod crowd;
 mod debt;
 mod doom;
 mod economy;
+mod events;
 mod market;
 mod orders;
 mod ranged;
@@ -56,7 +58,7 @@ mod tests;
 use macroquad::math::{vec2, Vec2};
 
 use crate::aggro::AggroMap;
-use crate::data::{self, ConstantSpawn, Difficulty, KeepOut};
+use crate::data::{self, Difficulty, KeepOut};
 use crate::flow::FlowField;
 use crate::grid::SpatialGrid;
 use crate::hunt::HuntMap;
@@ -74,12 +76,13 @@ pub use commands::{Command, Mark};
 pub use debt::DebtStage;
 pub use doom::{DoomHouse, Loot, LootKind};
 pub use economy::{Power, Stock};
+pub use events::{plan_events, Event, Notice};
 pub use ranged::Spit;
 pub use orders::{Order, MAP_SIZES, MOST_PER_TILE};
-pub use round::{plan_waves, Outcome, Score};
+pub use round::{Outcome, Score};
 pub use scan::Scanned;
 pub use sleep::Sleep;
-pub use spawning::{corners as spawner_corners, tiles as spawner_tiles, merge_old_waves, scaled_groups, Axes, BreedCount, Corpse, SpawnMode, Spawner, TimedWave, WaveFrom, WaveGroup};
+pub use spawning::{corners as spawner_corners, tiles as spawner_tiles, Axes, BreedCount, Corpse, SpawnMode, Spawner, WaveFrom, WaveGroup};
 pub use units::Unit;
 pub use zombies::{Breed, Zombie};
 
@@ -89,8 +92,8 @@ use zombies::CHARGE_THROUGH;
 
 pub const TICKS_PER_SECOND: f32 = 20.0;
 pub const TICK: f32 = 1.0 / TICKS_PER_SECOND;
-/// One day of the round in ticks: 3 minutes (DESIGN.md 4.1 – fewer but longer days than TAB; open question 18).
-pub const DAY_TICKS: u64 = 3 * 60 * 20;
+/// One day of the round in ticks: 60 seconds, like TAB's (`ColonyDays`, DESIGN.md 4.1).
+pub const DAY_TICKS: u64 = 60 * 20;
 /// One hour of such a day (a day has 24, like in TAB's "32d 12h").
 pub const HOUR_TICKS: u64 = DAY_TICKS / 24;
 
@@ -162,8 +165,7 @@ pub struct World {
     /// Tests: buildings stand at once, without their build time – the tests about building time switch it off.
     #[cfg(test)]
     pub instant_build: bool,
-    /// How many days the round lasts – the final wave comes on the last one (DESIGN.md 4.1). 0: no set length (old map
-    /// files).
+    /// How many days the round lasts – its events are planned for them (DESIGN.md 4.1). 0: no set length (old map files).
     pub days: u32,
     /// The round's difficulty (`data\game_difficulties.json`), by name – kept in the map file. What it says about the
     /// zombies, the waves and the start is in the map already; only how close every breed may come is looked up
@@ -171,9 +173,6 @@ pub struct World {
     pub difficulty: String,
     /// Per breed: no zombie of it lies closer to the command center than this when the round is made (tiles).
     pub keep_out: KeepOut,
-    /// The constant spawn of this map (`spawning.rs`). A new map gets it from `data\spawning.json` (as big as its
-    /// difficulty says), then it's part of its map file.
-    pub constant: ConstantSpawn,
     /// How the round ended (`round.rs`) – `None` while it's still going.
     pub outcome: Option<Outcome>,
     /// What happened in the round so far – for the end screen.
@@ -183,11 +182,11 @@ pub struct World {
     /// How loud it is where (`sound.rs`).
     sound: Sound,
     /// The colony's unrest: all the noise your units and buildings ever made – shots, machines, blasts, building. It
-    /// only grows: the constant spawn brings more for good (`sound.rs`).
+    /// only grows: the silent events (TAB's stragglers) bring more for good (`sound.rs`, `events.rs`).
     pub unrest: u64,
     /// The ways to the places lured zombies are heading for, one per cell, in order of the cell (`zombies.rs`).
     lures: Vec<LureField>,
-    /// A wave that shows the whole map has come: from now on everything is visible (`TimedWave::reveal`).
+    /// An event that shows the whole map has come: from now on everything is visible (`Event::reveal`).
     pub revealed: bool,
     /// What your units and buildings see right now, and what they have ever seen (fog of war).
     pub vision: Vision,
@@ -199,10 +198,12 @@ pub struct World {
     pub zombie_shots: Vec<(Vec2, Vec2)>,
     pub tick: u64,
     pub seed: u64,
-    /// The tick the constant spawn sends its next group (`spawning.rs`).
-    next_group: u64,
-    /// The timeline of waves (editor) – each comes by itself when the clock reaches it.
-    pub waves: Vec<TimedWave>,
+    /// The events of the map, like TAB's (`events.rs`) – each comes by itself when the clock reaches it.
+    pub events: Vec<Event>,
+    /// Zombies the events still have to let out of their spawners, a few at a time (`events.rs`).
+    requests: Vec<events::Request>,
+    /// What the screen should say about the events – the game takes them (`std::mem::take`).
+    pub notices: Vec<Notice>,
     rng: Rng,
     to_base: FlowField,
     grid: SpatialGrid,
@@ -239,7 +240,7 @@ pub struct World {
 impl World {
     /// A new round: the map from `setup` (same seed + same values = same map, `mapgen`), its spawners, the
     /// command center on the base, the start units, the zombies roaming the map, and the round – its days and the
-    /// waves planned for them (`round.rs`). How many zombies, how strong the waves, what the colony starts with: its
+    /// events planned for them (`events.rs`). How many zombies, how strong the waves, what the colony starts with: its
     /// difficulty (`data\game_difficulties.json`).
     pub fn generate(seed: u64, setup: &MapSetup) -> World {
         World::generate_with(seed, setup, data::get().difficulty(&setup.round.difficulty))
@@ -255,12 +256,11 @@ impl World {
         world.days = setup.round.days.round() as u32;
         world.gold = difficulty.start_gold;
         world.stock.set(Resource::Wood, difficulty.start_wood);
-        // On which days the waves come: the duration with these days (or the closest one).
-        let duration = data::get().duration(world.days);
-        world.waves = plan_waves(world.days, duration, difficulty.waves_percent as f32 / 100.0);
-        world.constant = scaled_groups(&data::get().spawning.constant, difficulty.constant_spawn_percent);
+        // TAB's survival plan, stretched to the days and as big as the zombie population.
+        world.events = plan_events(world.days, difficulty.population);
+        world.roll_events();
         for spot in generated.spawners {
-            world.add_spawner(0, spot.name, spot.min, spot.size, Axes::Screen, SpawnMode::Constant);
+            world.add_spawner(0, spot.name, spot.min, spot.size, Axes::Screen, SpawnMode::Off);
         }
         // The villages of doom and the loot where the generator put them (`doom.rs`) – every house lets out as many as
         // its size and the difficulty's population say, in batches as big as the population and the landscape's
@@ -397,7 +397,6 @@ impl World {
             days: 0,
             difficulty: difficulty.name.clone(),
             keep_out: difficulty.keep_out,
-            constant: data::get().spawning.constant.clone(),
             outcome: None,
             score: Score::default(),
             spawners: Vec::new(),
@@ -410,8 +409,9 @@ impl World {
             zombie_shots: Vec::new(),
             tick: 0,
             seed,
-            next_group: 0,
-            waves: Vec::new(),
+            events: Vec::new(),
+            requests: Vec::new(),
+            notices: Vec::new(),
             // Not `Rng::new(seed)`: the map generator already uses that one – this way the two don't repeat each other.
             rng: Rng::new(seed ^ 0x5157_4F52_4C44),
             map_changed: false,
@@ -491,7 +491,7 @@ impl World {
         self.beams.clear();
         self.zombie_shots.clear();
         self.apply_orders(orders); // orders.rs
-        self.fire_timed_waves(); // spawning.rs
+        self.update_events(); // events.rs
         self.update_spawners(); // spawning.rs
         self.wake_sleepers(); // sleep.rs – near your eyes, and after the final wave's call
         self.raise_corpses(); // spawning.rs

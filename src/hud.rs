@@ -878,9 +878,9 @@ fn draw_clock(layout: &Layout, world: &World, ui: &Ui) {
     let speed = if ui.paused { "PAUSED".to_owned() } else { format!("Speed x{}", ui.speed) };
     draw_centered(&speed, c.x, pause.bottom() + 18.0, 15.0, if ui.paused { GLOW } else { DIM });
 
-    if let Some(next) = world.waves.iter().filter(|w| w.at > world.tick).min_by_key(|w| w.at) {
-        let seconds = (next.at - world.tick) / TICKS_PER_SECOND as u64;
-        let final_wave = world.waves.iter().any(|w| w.at == next.at && w.final_wave);
+    // The countdown of an announced event, like TAB's – the silent ones (stragglers) give none.
+    if let Some((at, final_wave)) = world.next_announced() {
+        let seconds = at.saturating_sub(world.tick) / TICKS_PER_SECOND as u64;
         let (what, color) = if final_wave { ("FINAL WAVE", FINAL) } else { ("next wave", DIM) };
         draw_centered(what, c.x, r.bottom() - 26.0, 14.0, color);
         draw_centered(&format!("{}:{:02}", seconds / 60, seconds % 60), c.x, r.bottom() - 9.0, 18.0, if final_wave { FINAL } else { WHITE });

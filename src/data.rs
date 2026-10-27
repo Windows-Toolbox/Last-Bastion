@@ -1,5 +1,5 @@
 //! All values of the game in one place: the JSON files in `data\` (DESIGN.md 12.4) – units, buildings, zombies, sound,
-//! the roaming zombies, the villages of doom, loot, the colony, the constant spawn and the waves of a new round, and
+//! the roaming zombies, the villages of doom, loot, the colony, the events of a new round (TAB's survival plan), and
 //! what you pick before a round (like TAB): the difficulties, the durations and the maps. What each value means is in
 //! `data\README.md`.
 //!
@@ -8,9 +8,9 @@
 //! every new round, so a changed value counts after "Restart" without building anew. A broken file never crashes the
 //! game: the old values stay and `problem` says what's wrong.
 //!
-//! The constant spawn and the waves are an exception: a new map gets a copy of them, and from then on they belong to
-//! its map file (one game = one file, `mapfile.rs`) – the editor can change them there. `data\spawning.json` only
-//! decides what new maps start with.
+//! The events are an exception: a new map gets a copy of them, and from then on they belong to its map file (one
+//! game = one file, `mapfile.rs`) – the editor can change them there. `data\spawning.json` only decides what new
+//! maps start with.
 //!
 //! Co-op (DESIGN.md 12.8): both PCs need the same values, or they compute different games. Checking that comes with
 //! the network code.
@@ -18,11 +18,11 @@
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, RwLock};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
 
 use crate::kinds::{BuildingKind, BuildingStats, Stats, UnitKind};
 use crate::mapgen::MapSetup;
-use crate::sim::{Breed, TICKS_PER_SECOND};
+use crate::sim::{Breed, Event, TICKS_PER_SECOND};
 
 /// Everything from the files (`FILES`).
 pub struct GameData {
@@ -280,7 +280,7 @@ pub struct SoundValues {
     #[serde(rename = "work_every_seconds", deserialize_with = "seconds")]
     pub work_every: u32,
     /// The colony's unrest (`World::unrest`, everything your units and buildings make): for every this much of it, every
-    /// group of the constant spawn brings one zombie more – for good.
+    /// side of a silent event (TAB's stragglers) brings one zombie more – for good.
     pub unrest_per_zombie: u64,
 }
 
@@ -459,65 +459,34 @@ pub struct Colony {
     pub credit_interest_percent: u32,
 }
 
-/// `data\spawning.json`: what a new map starts with – its constant spawn, and how the waves of its round are planned
-/// (`sim/spawning.rs`, `sim/round.rs`).
+/// `data\spawning.json`: TAB's survival plan – the events a new round gets (`sim::plan_events`, DESIGN.md 8.2), at
+/// TAB's 100 days and population 1 – and how fast a side lets out an event's zombies.
 #[derive(Deserialize)]
 pub struct Spawning {
-    /// `flatten`: `stages`, `extra_per_day` and `specials` stand directly in the file, not inside an extra `{ }` – the
-    /// file stays as it was, only the program keeps them together (they go into every map file together).
+    /// Every this long each side lets out a burst of an event's zombies (TAB's spawners: every 8/60 s) …
+    #[serde(rename = "stream_every_seconds", deserialize_with = "seconds")]
+    pub stream_every: u32,
+    /// … about this many (TAB's `GenerationSpeed`).
+    pub stream_speed: u32,
+    pub events: Vec<EventPlan>,
+}
+
+/// An event of the plan: the event as a map file has it (`flatten`: its fields stand right in the entry) – and its
+/// timing below population 0.5 (TAB's stragglers come later and less often there).
+#[derive(Deserialize)]
+pub struct EventPlan {
     #[serde(flatten)]
-    pub constant: ConstantSpawn,
-    pub waves: WavePlan,
-}
-
-/// The constant spawn of a map: groups of zombies out of the spawners set to "Constant", all round long – each group
-/// crowded on one spot. A copy of it is in every map file (`Serialize`: it can be written, not only read).
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct ConstantSpawn {
-    /// In order of time. Between two stages of the same breed the values go over smoothly.
-    pub stages: Vec<Stage>,
-    /// After the last stage every group gets this many zombies more per day.
-    pub extra_per_day: f32,
-    /// The special breeds that come along in every group from their day on. `default`: map files from before
-    /// 2026-10-22 have none.
+    pub event: Event,
     #[serde(default)]
-    pub specials: Vec<ConstantSpecial>,
+    pub low_population: Option<Timing>,
 }
 
-/// From this day on, `share` of every group of the constant spawn are this breed instead of the stage's – like a
-/// wave's specials, only by day.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
-pub struct ConstantSpecial {
-    pub day: u64,
-    pub breed: Breed,
-    pub share: f32,
-}
-
-/// How the waves of a new round are planned from its number of days (`sim::plan_waves`, DESIGN.md 8.2). The counts
-/// are per side the wave comes from – times `waves_percent` of the difficulty. On which days they come is up to the
-/// duration (`GameDuration`).
-#[derive(Deserialize)]
-pub struct WavePlan {
-    /// Every wave comes at this hour.
+/// When an event comes: its hour, every how many hours again, how often.
+#[derive(Deserialize, Clone, Copy, Debug)]
+pub struct Timing {
     pub hour: u32,
-    /// The first wave has this many runners, the last one before the final wave this many – in between they grow evenly.
-    pub first: u32,
-    pub last: u32,
-    /// The other breeds that come along – the first waves only runners, later more and more of these.
-    pub specials: Vec<Special>,
-    /// The final wave on the last day, at this hour, from all four sides: this many runners per side, the specials in
-    /// full. It also calls every zombie on the map and shows the whole map.
-    pub final_hour: u32,
-    pub final_runners: u32,
-}
-
-/// A breed that comes along with the waves: from `from` of the waves on (0 = the first, 1 = the last before the final
-/// wave) – a quarter of `share` per runner there, growing to the whole `share` by the last one.
-#[derive(Deserialize)]
-pub struct Special {
-    pub breed: Breed,
-    pub from: f32,
-    pub share: f32,
+    pub every_hours: u32,
+    pub times: u32,
 }
 
 /// `data\game_difficulties.json`: the difficulties to pick before a round (like TAB's zombie population, but more):
@@ -563,10 +532,6 @@ pub struct Difficulty {
     pub giants_percent: u32,
     /// Zombies hidden around a pile of loot: `[near the base, at the edge]` – in between it grows with the distance.
     pub loot_guards: [u32; 2],
-    /// Every wave this many percent of the counts in `spawning.json` …
-    pub waves_percent: u32,
-    /// … every group of the constant spawn this many percent as big.
-    pub constant_spawn_percent: u32,
 }
 
 /// One number of tiles per breed – named like the blocks in `zombies.json`.
@@ -602,8 +567,8 @@ impl KeepOut {
     }
 }
 
-/// `data\game_durations.json`: how long a round can last (like TAB's 80 / 100 / 120 / 150 days) – and how often its
-/// waves come.
+/// `data\game_durations.json`: how long a round can last (TAB's 80 / 100 / 120 / 150 days, and a short one to try
+/// things) – its events are stretched to it (`sim::plan_events`).
 #[derive(Deserialize)]
 pub struct Durations {
     /// Picked when nothing else is.
@@ -614,13 +579,10 @@ pub struct Durations {
 /// One duration.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct GameDuration {
-    /// The final wave comes on the last day. 1 day = 3 minutes.
+    /// Won at the end of the last day, the final wave at 92 % (TAB). 1 day = 60 seconds.
     pub days: u32,
     /// Like the difficulty's: fewer days are harder, so they count more.
     pub score_percent: u32,
-    /// The first wave comes on this day, then one every `wave_every_days` until the day before the last.
-    pub first_wave_day: u32,
-    pub wave_every_days: u32,
 }
 
 /// `data\game_maps.json`: the maps to pick before a round, like TAB's. For now a map is one of the generators with
@@ -640,21 +602,6 @@ pub struct GameMap {
     /// How it's generated: everything the setup page has (`mapgen::MapSetup` – generator, map size, ways in, ore …).
     /// What's left out keeps its default; the round (difficulty, days) is picked apart.
     pub setup: MapSetup,
-}
-
-/// From this time on: every `every_seconds` a group of `group[0]` to `group[1]` zombies of this breed.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct Stage {
-    /// Day of the round (from 1) and hour (0–23).
-    pub day: u64,
-    pub hour: u64,
-    pub breed: Breed,
-    pub every_seconds: f32,
-    pub group: [u32; 2],
-    /// Out of these spawners (their `id` in the map, editor) – not there (`None`): out of those set to "Constant".
-    /// `skip_serializing_if`: then it isn't written either, `data\spawning.json` doesn't need it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawners: Option<Vec<u32>>,
 }
 
 impl GameData {
@@ -711,8 +658,7 @@ impl GameData {
         list.iter().find(|d| d.name == name).or_else(|| list.iter().find(|d| d.name == self.difficulties.default)).unwrap_or(&list[0])
     }
 
-    /// The duration with this many days – or the closest one (a map with another number of days): its waves come as
-    /// often.
+    /// The duration with this many days – or the closest one (a map with another number of days).
     pub fn duration(&self, days: u32) -> &GameDuration {
         let list = &self.durations.durations;
         list.iter().min_by_key(|d| d.days.abs_diff(days)).unwrap_or(&list[0])
@@ -883,9 +829,8 @@ mod tests {
     fn built_in_data_parses() {
         let data = GameData::built_in();
         assert_eq!(data.units.soldier.cooldown, 8, "0.4 s should be 8 ticks");
-        let stages = &data.spawning.constant.stages;
-        assert!(stages.windows(2).all(|w| (w[0].day, w[0].hour) <= (w[1].day, w[1].hour)), "stages out of order");
-        assert_eq!(data.spawning.waves.hour, 12, "the waves aren't read");
+        assert!(data.spawning.events.iter().any(|e| e.event.won), "no victory in the plan");
+        assert!(data.spawning.events.iter().any(|e| e.event.final_wave), "no final wave in the plan");
         // Every map's setup is read – a typo in a generator's name would be an error, a missing one the default.
         assert!(data.maps.maps.iter().any(|m| m.setup.generator != MapSetup::default().generator), "the maps' setups aren't read");
         assert!(data.difficulties.difficulties.iter().any(|d| d.name == data.difficulties.default), "the default difficulty isn't in the list");
