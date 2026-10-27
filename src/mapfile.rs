@@ -168,12 +168,20 @@ pub struct ZombieData {
     pub wander: bool,
 }
 
-/// A house of a village of doom: its top left tile, width and depth, and how many zombies sleep in it.
+/// A house of a village of doom: its top left tile, width and depth, how many zombies it may still let out, and how
+/// big its batches are besides its size (`DoomHouse::factor` – files from before TAB's houses have none: 1).
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct DoomData {
     pub house: (i32, i32),
     pub size: (i32, i32),
     pub zombies: u32,
+    #[serde(default = "one")]
+    pub factor: f32,
+}
+
+/// 1 – for `factor`, when a file has none.
+fn one() -> f32 {
+    1.0
 }
 
 /// A pile of loot: what, where, how much, and how many zombies lie hidden around it.
@@ -236,7 +244,7 @@ impl MapFile {
             buildings: world.buildings.iter().map(|b| BuildingData { kind: b.kind, tile: b.tile, turned: b.turned }).collect(),
             units: world.units.iter().map(|u| UnitData { kind: u.kind, pos: (u.pos.x, u.pos.y) }).collect(),
             zombies: zombie_data(world),
-            doom: world.doom.iter().map(|d| DoomData { house: d.tile, size: d.size, zombies: d.inside }).collect(),
+            doom: world.doom.iter().map(|d| DoomData { house: d.tile, size: d.size, zombies: d.inside, factor: d.factor }).collect(),
             loot: world
                 .loot
                 .iter()
@@ -280,7 +288,7 @@ impl MapFile {
             }
         }
         for d in &self.doom {
-            world.add_doom(d.house, d.size, d.zombies);
+            world.add_doom(d.house, d.size, d.zombies, d.factor);
         }
         for l in &self.loot {
             world.add_loot(vec2(l.pos.0, l.pos.1), l.loot, l.amount, l.guards);

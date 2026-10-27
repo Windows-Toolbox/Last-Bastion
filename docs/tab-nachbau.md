@@ -47,7 +47,6 @@ setz ihn um."
 (`idle_wait`, `wake_joining`), Infektion in `src/sim/buildings.rs`. Was er für die nächsten Schritte hinterlässt:
 - `keep_out` der Schwierigkeit gilt nur noch beim Verteilen zu Beginn (`scatter_roamers`, `place_giants`) – für
   Schritt 6. Der Riese hält beim Wandern 54 Kacheln (`roam_ring`).
-- Häuser des Untergangs schicken ihre Zombies weiter mit `Lure::seen`/`Lure::sent` (Schritt 4 baut das um).
 - Geschätzt, weil `ZXRules.dat` zu ist: `watch_seconds` 0,5, `stand_seconds`/`growl_seconds` 2, `stroll`-Minima,
   `level`, `extra_infected` (Zelt 2, Steinhaus 8 – so bleibt es bei 4 bzw. 16 Infizierten).
 
@@ -70,13 +69,20 @@ schlafend) und Beute (`LootSpot::haul`) vom Generator. Was er hinterlässt:
   `tab.rs`); mit Screenshots echter TAB-Karten nachstellen.
 - Unsere Ergänzung: unter 30 % der Spielfläche erreichbar → neuer Seed (`MIN_REACHED`) – sonst war bei FA etwa jede
   zehnte Karte fast leer. TAB prüft das nicht. Anzahlen (Dörfer, Ruinen, Riesen) wachsen mit der Fläche (`TAB_AREA`).
-- Für Schritt 4: ein Dorfhaus bekommt vorerst klein 1/5, mittel 2/5, groß alle `doom_zombies` (`World::generate_with`)
-  – TABs Dörfer haben viel mehr Häuser als unsere. Die Häuser liegen wie in TAB; Schübe, Überfälle usw. fehlen.
 - Gold liegt auf der Karte, aber keine Mine baut es ab (`Resource::from_ore`) – Schritt 8 (Kohle) klärt das mit.
 - Nicht übernommen: alte Türme (Schritt 7, „neutral → Kolonie“), Raben, Vorräte, Mutanten, Deko, TABs Start-Einheiten
   (unsere kommen von der Schwierigkeit), Kartengröße als Zweierpotenz.
 - `keep_out`, `roaming_zombies`, `villages_percent`, `giants_percent` gelten nur noch für unsere Generatoren. Ob die
   alten (Wild, Regions …) bleiben, entscheidet der Nutzer.
+
+**Schritt 4 (Dörfer des Untergangs) ist fertig** – `src/sim/doom.rs` (`DoomHouse`, `Nest`, `batch`, `update_doom`,
+`listen_houses`, `hit_house`, `around_house`), Werte in `data\doom.json`, `nests` der Landschaft (`InfectionNestsFactor`)
+in `src/mapgen/tab.rs`. `doom_zombies` der Schwierigkeit ist weg – auf allen Karten zählt `population`. Was er hinterlässt:
+- Geschätzt, weil `ZXRules.dat` zu ist: `max_units` (klein 50, mittel 100, groß 250 – TABs `InfectionNestMaxUnits`)
+  und `nests` 1 für alle Landschaften.
+- Nicht wie TAB: Zombies erscheinen auf freien Kacheln rund ums Haus (TAB: bis 1 Kachel um die Mitte, die Physik
+  schiebt sie heraus), ohne TABs 0,2 s Einblenden (unser eigenes gilt). Ein Schub geht nie über das, was das Haus noch hat.
+- Unsere Häuser auf den alten Karten (2 × 2, 3 × 3) sind klein bzw. mittel – dort gibt es keine großen.
 
 ---
 

@@ -58,7 +58,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0x5c16_1da9_30bd_b337;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0xd60a_050a_002b_d46d;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -1746,7 +1746,8 @@ fn the_final_wave_calls_everyone_and_reveals_the_map() {
     }
     assert!(world.zombies.len() as u32 > roamers as u32 + guards / 2, "nobody came out of the houses");
     assert!(world.zombies.iter().all(|z| z.final_wave), "a zombie of a house isn't part of the final wave");
-    for _ in 0..(inside as f32 / data::get().doom.release_per_second * 20.0) as u32 + 40 {
+    // At least one a batch, one batch a second.
+    for _ in 0..inside.min(20) * data::get().doom.batch_every + 40 {
         world.step(&[]);
     }
     assert!(world.doom.iter().all(|d| d.inside == 0), "a house didn't empty");
@@ -2775,8 +2776,7 @@ fn a_crowd_spreads_its_fire() {
 /// In the fast build, it takes a minute or two:
 /// `cargo test --release balance_mini_round -- --ignored --nocapture`
 /// A new round starts with what its difficulty says (`data\game_difficulties.json`) – units, gold and wood, nothing
-/// else in store. Every difficulty, every house of a village of doom exactly as full as it says (on a map of ours –
-/// on TAB's the houses hold their share by size).
+/// else in store. Every difficulty, every house of a village of doom as full as its population and size say.
 #[test]
 fn a_new_round_starts_with_the_difficulty_values() {
     for difficulty in &data::get().difficulties.difficulties {
@@ -2792,7 +2792,8 @@ fn a_new_round_starts_with_the_difficulty_values() {
         assert_eq!((world.gold, world.stock.get(Resource::Wood)), (difficulty.start_gold, difficulty.start_wood), "{name}");
         assert_eq!(world.stock.get(Resource::Food), 0);
         assert_eq!((&world.difficulty, world.keep_out), (name, difficulty.keep_out));
-        assert!(!world.doom.is_empty() && world.doom.iter().all(|d| d.inside == difficulty.doom_zombies), "{name}: houses not as full as it says");
+        let full = |d: &DoomHouse| d.inside == World::doom_zombies(d.size, difficulty.population) && d.factor == difficulty.population;
+        assert!(!world.doom.is_empty() && world.doom.iter().all(full), "{name}: houses not as full as it says");
     }
 }
 
@@ -3817,39 +3818,69 @@ fn doom_house(world: &mut World) -> usize {
     0
 }
 
-/// A house of doom sleeps while your units are far away. One of them comes within `wake_radius`: only a few come out
-/// (`near_zombies`), going for it – and again after `near_every_seconds` while it stays.
+/// A house of doom does nothing while nothing happens – one of your units right next to it doesn't wake it (TAB's
+/// houses only hear and feel). Every `guard_every_hours`, each at its own hour, it tops up its guards: fewer than
+/// `guards_per_size` × its size around it (itself counted, like TAB) – a batch comes out and idles there.
 #[test]
-fn a_unit_close_to_a_village_lets_only_a_few_out() {
+fn a_house_of_doom_keeps_its_guards() {
     let (mut world, _) = quiet_world();
+    world.units.clear();
     let d = doom_house(&mut world);
     let inside = world.doom[d].inside;
     assert!(inside > 10, "only {inside} zombies inside");
+    let center = world.doom[d].center();
+    bait(&mut world, UnitKind::Soldier, center + vec2(-2.5, 0.0));
     for _ in 0..40 {
         world.step(&[]);
     }
-    assert!(world.zombies.is_empty(), "zombies came out with nobody near");
+    assert!(world.zombies.is_empty(), "a unit close by let zombies out");
+    world.units.clear();
 
+    // Within the next 12 hours its hour comes – a medium house (2) with nobody around: a batch of 1 to 3.
     let doom = &data::get().doom;
-    let center = world.doom[d].center();
-    let spot = center + vec2(-1.5 - doom.wake_radius + 1.0, 0.0);
-    bait(&mut world, UnitKind::Soldier, spot);
-    world.units.last_mut().unwrap().hp = 1_000_000; // it has to live through the crowd
-    for _ in 0..20 {
+    for _ in 0..doom.guard_every_hours * HOUR_TICKS + 1 {
         world.step(&[]);
     }
-    assert_eq!(world.zombies.len() as u32, doom.near_zombies, "not just a few came out");
-    assert_eq!(world.doom[d].inside, inside - doom.near_zombies);
-    assert!(world.zombies.iter().all(|z| z.lure.is_some_and(|l| l.to.distance(spot) < 1.0)), "they don't go for the unit");
-    for _ in 0..doom.near_every {
-        world.step(&[]);
-    }
-    assert_eq!(world.doom[d].inside, inside - 2 * doom.near_zombies, "the unit stayed, but no more came");
+    let guards = (inside - world.doom[d].inside) as usize;
+    assert!((1..=3).contains(&guards), "{guards} guards came out");
+    assert_eq!(world.zombies.len() + world.sleep.len(), guards);
+    assert!(world.zombies.iter().all(|z| z.lure.is_none() && !z.siege), "the guards went somewhere");
 }
 
-/// What really rouses a village is noise (`sound.rs`): a house listens every `places_listen_seconds` like a zombie
-/// with its `awareness` – heard, its zombies pour out (`release_per_second`) and go to the middle of the cell it heard.
-/// A sound so quiet that the chance is 0 % does nothing. The guards of loot the same.
+/// From day `raids_from_day` on, every `raid_every_days` days – each house on its own day – a batch marches on the
+/// command center, like a wave. Not before.
+#[test]
+fn a_house_of_doom_raids_the_base_from_day_20() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.waves.clear();
+    world.constant.stages.clear();
+    let d = doom_house(&mut world);
+    let (id, inside) = (world.doom[d].id as u64, world.doom[d].inside);
+    let doom = &data::get().doom;
+    // Its day before day 20: nothing.
+    let early = (0..doom.raids_from_day).rev().find(|day| (day + id).is_multiple_of(doom.raid_every_days)).unwrap();
+    world.tick = early * DAY_TICKS;
+    world.step(&[]);
+    assert_eq!(world.doom[d].inside, inside, "it raided before day {}", doom.raids_from_day);
+    // Its first day from 20 on: a batch of 1 to 3 (a medium house) heads for the command center.
+    let raid = (doom.raids_from_day..).find(|day| (day + id).is_multiple_of(doom.raid_every_days)).unwrap();
+    world.tick = raid * DAY_TICKS;
+    world.step(&[]);
+    let out = (inside - world.doom[d].inside) as usize;
+    assert!((1..=3).contains(&out), "{out} came out for the raid");
+    assert_eq!(world.zombies.len(), out);
+    assert!(world.zombies.iter().all(|z| z.siege && !z.final_wave), "the raid doesn't head for the command center");
+    // The same day again: no second raid.
+    for _ in 0..doom.batch_every * 3 {
+        world.step(&[]);
+    }
+    assert_eq!(world.zombies.len(), out, "it raided twice on one day");
+}
+
+/// What rouses a village is noise (`sound.rs`): a house listens every `places_listen_seconds` like a zombie with its
+/// `awareness` – heard, a batch × `heard_batch` comes out and goes to the middle of the cell it heard. A sound so quiet
+/// that the chance is 0 % does nothing. The guards of loot the same.
 #[test]
 fn noise_rouses_a_village_and_its_zombies_go_there() {
     let (mut world, _) = quiet_world();
@@ -3871,22 +3902,22 @@ fn noise_rouses_a_village_and_its_zombies_go_there() {
         world.step(&[]);
     }
     assert_eq!(world.loot[0].guards, 0, "the loud sound didn't raise the guards");
-    let out = world.zombies.len() as f32 - 5.0;
-    assert!(out >= data::get().doom.release_per_second * 0.5, "only {out} came out of the house");
+    // A batch × 0.5 of a medium house is 1 or 2 – two listenings, at most 4.
+    let out = world.zombies.len() - 5;
+    assert!((1..=4).contains(&out), "{out} came out of the house");
     assert!(world.zombies.iter().all(|z| z.lure.is_some_and(|l| l.to == middle)), "they don't go to the sound");
 }
 
-/// Your units shoot a house of doom when no zombie is in range – a sniper even from outside its wake radius. Every hit
-/// lets `hit_zombies` more out, on top of the ones inside. Shot down, it lets out everyone still inside at once – they
-/// go for the shooter – drops loot where it stood, and its tiles are open again.
+/// Your units shoot a house of doom when no zombie is in range. A hit lets a batch × `hit_batch` out – they go for the
+/// closest of your units within `hit_reach` tiles. Shot down, it drops loot where it stood, its tiles are open again –
+/// and whatever it hadn't let out yet never comes (TAB's).
 #[test]
 fn a_shot_down_house_drops_loot() {
     let (mut world, _) = quiet_world();
     let d = doom_house(&mut world);
     let (inside, center, tile) = (world.doom[d].inside, world.doom[d].center(), world.doom[d].tile);
-    let doom = &data::get().doom;
-    // Its wall 7.5 tiles away: out of the wake radius, in the sniper's range.
-    let sniper = center + vec2(-1.5 - (doom.wake_radius + 0.5), 0.0);
+    // Its wall 7.5 tiles away, 9 from its middle: in the sniper's range and within `hit_reach`.
+    let sniper = center + vec2(-9.0, 0.0);
     world.spawn_unit(UnitKind::Sniper, sniper);
     world.doom[d].hp = 1;
     let mut fell = false;
@@ -3898,13 +3929,45 @@ fn a_shot_down_house_drops_loot() {
         }
     }
     assert!(fell, "the sniper didn't shoot the house down");
-    assert_eq!(world.zombies.len() as u32, inside + doom.hit_zombies, "not all came out at once, or no extra for the hit");
+    // A medium house (2) × 3: 3 to 9.
+    let out = world.zombies.len() as u32;
+    assert!((3..=9).contains(&out) && out < inside, "{out} came out of {inside}");
     assert!(world.zombies.iter().all(|z| z.lure.is_some_and(|l| l.to.distance(sniper) < 0.5)), "they don't go for the shooter");
     assert_eq!(world.loot.len(), 1);
     assert_eq!(world.loot[0].pos, center);
     assert_eq!(world.loot[0].guards, 0);
     assert!(!world.map.is_doom(tile.0, tile.1) && !world.map.is_blocked(tile.0 + 1, tile.1 + 1), "its tiles are still taken");
     assert_eq!(world.score.doom_razed, 1);
+}
+
+/// A hit house calls its neighbours (TAB's `OnMessage`): every house whose tiles touch the area around it – 3 times its
+/// size, 4 tiles more on every side – sends a batch to the same spot. One further away doesn't. Hit again at once:
+/// nothing – one batch a second.
+#[test]
+fn a_hit_house_calls_its_neighbours() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let d = doom_house(&mut world);
+    let (tile, center) = (world.doom[d].tile, world.doom[d].center());
+    clear_ground(&mut world, (tile.0 + 1, tile.1 + 1), 25);
+    // A neighbour 5 tiles right of it (in the area: 3 + 3 + 4 tiles to the right), one 20 tiles left (not).
+    world.step(&[
+        Order::PlaceDoom { tile: (tile.0 + 8, tile.1), size: (3, 3) },
+        Order::PlaceDoom { tile: (tile.0 - 20, tile.1), size: (3, 3) },
+    ]);
+    assert_eq!(world.doom.len(), 3);
+    let soldier = center + vec2(0.0, 5.0);
+    bait(&mut world, UnitKind::Soldier, soldier);
+    world.units.last_mut().unwrap().hp = 1_000_000;
+    let before: Vec<u32> = world.doom.iter().map(|h| h.inside).collect();
+    world.hit_house(d, 10);
+    let after: Vec<u32> = world.doom.iter().map(|h| h.inside).collect();
+    assert!(after[0] < before[0], "the hit house let nobody out");
+    assert!(after[1] < before[1], "the neighbour didn't send anyone");
+    assert_eq!(after[2], before[2], "the far house sent some too");
+    assert!(world.zombies.iter().all(|z| z.lure.is_some_and(|l| l.to == soldier)), "they don't all go for the soldier");
+    world.hit_house(d, 10);
+    assert_eq!(world.doom[0].inside, after[0], "a second batch in the same second");
 }
 
 /// Loot: its hidden guards come out when a unit comes within `wake_radius`, and whoever walks onto it picks it up –
@@ -4103,8 +4166,8 @@ fn a_new_round_has_villages_loot_and_dirt() {
 
 /// A round on a map of TAB's generator (the default now): the command center stands where it put the base, its
 /// zombies lie there asleep (the ones near your eyes awake) – as many as it laid out, none scattered on top – and a
-/// house holds its share of the difficulty's zombies by TAB's sizes (small 1, medium 2, big 5 of 5). The difficulty
-/// is its zombie population: more zombies, the same land.
+/// house lets out as many as its size and the population say (`max_units`). The difficulty is its zombie population:
+/// more zombies, the same land.
 #[test]
 fn a_tab_map_round() {
     let mut setup = MapSetup::default();
@@ -4119,12 +4182,8 @@ fn a_tab_map_round() {
     let laid_out = generated.zombies.as_ref().unwrap().len();
     assert_eq!(world.sleep.len() + world.zombies.len(), laid_out, "not the zombies TAB's generator laid out");
     for house in &world.doom {
-        let share = match house.size.0 {
-            2 => 1,
-            3 => 2,
-            _ => 5,
-        };
-        assert_eq!(house.inside, difficulty.doom_zombies * share / 5, "a house of {:?}", house.size);
+        assert_eq!(house.inside, World::doom_zombies(house.size, difficulty.population), "a house of {:?}", house.size);
+        assert_eq!(house.factor, difficulty.population * setup.tab.nests);
     }
     let brutal = World::generate(3, &MapSetup { round: mapgen::RoundSetup { difficulty: "Brutal".into(), ..setup.round.clone() }, ..setup.clone() });
     let zombies = |w: &World| w.sleep.len() + w.zombies.len();

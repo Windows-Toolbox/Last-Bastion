@@ -282,9 +282,9 @@ impl World {
                 let free = (tile.1..tile.1 + size.1)
                     .all(|y| (tile.0..tile.0 + size.0).all(|x| self.map.in_play(x, y) && !self.map.is_solid(x, y) && !self.map.is_built(x, y)));
                 if free {
-                    // As full as every house of the map's difficulty.
-                    let zombies = data::get().difficulty(&self.difficulty).doom_zombies;
-                    self.add_doom(*tile, *size, zombies);
+                    // As full as the generator makes it at the map's difficulty.
+                    let population = data::get().difficulty(&self.difficulty).population;
+                    self.add_doom(*tile, *size, World::doom_zombies(*size, population), population);
                 }
             }
             Order::PlaceLoot { point } => {

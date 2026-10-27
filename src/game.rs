@@ -639,7 +639,7 @@ impl Game {
                 world.buildings.len()
             ))
             .text(format!(
-                "Asleep {} in {} houses of doom, {} around {} loot",
+                "{} more can come out of {} houses of doom, {} asleep around {} loot",
                 world.doom.iter().map(|d| d.inside).sum::<u32>(),
                 world.doom.len(),
                 world.loot.iter().map(|l| l.guards).sum::<u32>(),

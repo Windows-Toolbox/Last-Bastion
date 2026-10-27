@@ -463,9 +463,11 @@ Venom → spitter, Harpy, Giant; the infested is ours (StarCraft 2).
 ### 8.2 Waves
 
 - **Ambient:** zombies roam from the start (more and tougher further out) – as many as in TAB.
-- **Villages of doom and loot** (like TAB): houses full of sleeping zombies, and loot with zombies hidden around it.
-  A unit coming close lets a few out; **noise** rouses a house – its zombies pour out and go to the noise; every hit
-  lets one more out. A house shot down drops loot (9.1).
+- **Villages of doom and loot** (like TAB): houses whose zombies come into being in **batches** when something
+  happens – a sound it hears (half a batch goes there), every 12 hours to top up its guards, from day 20 every 5 days a
+  **raid** on the command center, a hit (three batches at the closest unit, every house nearby sends one along), the
+  final wave. A batch ≈ the house's size (small 1, medium 2, big 5) × the population. A house shot down drops loot,
+  the rest never come (9.1). Loot has zombies hidden around it.
 - **Noise waves:** your noise attracts groups (8.3).
 - **Scripted waves:** on fixed days, growing, from an *announced* direction. Planned as a share of the round (4.1).
   The first ones only runners, then more and more specials.
@@ -598,8 +600,7 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   coal – coal comes back later, no mine takes gold yet), one oil node per block. **The zombies are the map's:** a noise
   over the reachable land, 1–3 per tile by how high it is, the kind by a roll and the distance (`medium_from` …), giants
   at least 70 tiles out, 40 apart. The difficulty is TAB's **population** (`population`: how many, half the villages
-  below 0.5, the giants) – not `roaming_zombies`/`keep_out`. A house holds its share of `doom_zombies` by size (small
-  1/5, medium 2/5, big all) until step 4 rebuilds the houses. None of the shared steps (start area, ways in, safety
+  below 0.5, the giants) – not `roaming_zombies`/`keep_out`. None of the shared steps (start area, ways in, safety
   net): what the base can't reach stays empty. Not taken over: old towers, ravens, supplies, mutants, decorations.
 - **Wild like Factorio (2026-10-24):** one moisture noise decides – wet = forest ("Forest size": big forests or many
   groves), next to it green meadow, the driest open ground dirt. Lakes from a height noise ("Shore detail": smooth to
@@ -627,8 +628,8 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   where it's driest.
 - **Villages of doom** (points of interest, step 6): far from the base. **How many and how big is the map's** (its
   setup: villages per 10,000 tiles, houses near the base and at the edge – Open Plains many small ones, Broken Lands two
-  huge ones); the difficulty makes both more or fewer, and **every house as full as it says** (`doom_zombies`, Normal
-  250). A big village spreads wider and keeps further apart. A house keeps a ring of open ground, so it never cuts off
+  huge ones); the difficulty makes both more or fewer. A house lets out as many as its size and the population say
+  (small 50, medium 100, big 250 at population 1), in batches like TAB's (8.2). A big village spreads wider and keeps further apart. A house keeps a ring of open ground, so it never cuts off
   a way – more houses only take open ground, the terrain stays.
 - **Loot:** ≈ 6 piles per 10,000 tiles – 500 gold or 10 wood/stone/iron ore/coal, zombies hidden around each (Normal
   8–50, more further out).
@@ -656,8 +657,8 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   Every setting changes the **score multiplier** (TAB's %); fewer days = harder.
 - Buttons: *New round*, *Continue*, *Regions*, *Research*, *Records*, *Settings*.
 - **In the prototype:** "New game" like TAB – a **map** (`data\game_maps.json`, for now one generator with its values
-  each), a **difficulty** (`game_difficulties.json`: start, how many zombies, how close each breed comes, zombies per
-  house of doom, loot guards, waves, constant spawn) and a **duration** (`game_durations.json`). The score factor is the
+  each), a **difficulty** (`game_difficulties.json`: start, how many zombies, how close each breed comes, TAB's
+  population, loot guards, waves, constant spawn) and a **duration** (`game_durations.json`). The score factor is the
   three multiplied – shown, no score yet. "Custom setup" shows every value of the generator. Like TAB's "Custom
   Levels", a second list: every map saved in the editor (`custom` in its file) – its round is in the file, so there's
   nothing to pick and no score factor.

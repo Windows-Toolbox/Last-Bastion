@@ -1080,10 +1080,13 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
             let doom = &data::get().doom;
             draw_portrait(layout, DOOM_MINIMAP, "!", RED);
             let y = draw_title(layout, "Village of doom", (house.hp, doom.hp), (0, 0));
-            let about = if house.is_stirring() {
-                "STIRRING - a sound roused it, its zombies pour out and go there. Shoot it down and the rest come out at once - then it drops loot.".to_owned()
+            let about = if house.is_stirring(world.tick) {
+                "STIRRING - its zombies are coming out.".to_owned()
             } else if house.inside > 0 {
-                format!("Asleep. Within {} tiles a few come out; noise nearby (shots, fights) and they pour out. Every hit lets one more out. Shoot it down for loot.", doom.wake_radius)
+                format!(
+                    "Its zombies come out when it hears noise, when it's hit (and its neighbours with it) and from day {} on every {} days to raid your base. Shoot it down: it drops loot, the rest never come.",
+                    doom.raids_from_day, doom.raid_every_days
+                )
             } else {
                 "Empty - shoot it down for its loot.".to_owned()
             };
@@ -1093,9 +1096,9 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
                 layout,
                 &[
                     ("HP", format!("{}/{}", house.hp, doom.hp)),
-                    ("Inside", house.inside.to_string()),
+                    ("Left", house.inside.to_string()),
                     ("Armor", doom.armor.to_string()),
-                    ("Wakes", format!("{}", doom.wake_radius)),
+                    ("House", house.nest().name().to_owned()),
                     ("Size", format!("{w} x {h}")),
                 ],
             );

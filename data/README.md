@@ -217,18 +217,24 @@ näher, wie in TAB – nur der Riese hält `roam_ring`). Weit weg von deinen Aug
 
 ## `doom.json` – Villages of Doom
 
-Die Häuser der **Villages of Doom** (wie TAB) – wie viele Dörfer und wie viele Häuser darin: die Karte („Villages of
-doom“, „Houses near base“, „Houses at edge“), mal `villages_percent` / `village_houses_percent` der Schwierigkeit. Wie
-viele Zombies in einem Haus schlafen: `doom_zombies` der Schwierigkeit – in jedem Haus genau gleich viele.
+Die Häuser der **Villages of Doom** wie TABs (`CInfectionNest`): Ihre Zombies liegen nicht drin, sie **entstehen in
+Schüben**, wenn etwas passiert. Ein Schub = aufgerundet (zufällig 0,5 … 1,5) × **Hausgröße** (klein 1, mittel 2, groß
+5 – nach den Kacheln: 2 × 2, 3 × 3, größer) × `factor` des Hauses (`population` der Schwierigkeit × `nests` der
+Landschaft) × der Faktor des Anlasses. Wie viele Dörfer und Häuser: auf TABs Karten der Generator, auf unseren die
+Karte („Villages of doom“, „Houses near base“, „Houses at edge“) mal `villages_percent` / `village_houses_percent`.
 
 | Wert | Bedeutung |
 |---|---|
 | `hp`, `armor` | Lebenspunkte eines Hauses, Rüstung gegen jeden Schuss |
-| `wake_radius`, `near_zombies`, `near_every_seconds` | Steht eine Einheit so nah (Kacheln ab der Wand), kommen nur **ein paar** heraus (so viele) – wieder nach so vielen Sekunden, solange sie bleibt. Sie gehen auf die Einheit los |
-| `hearing`, `awareness` | Hört das Haus **Lärm** so nah – so sicher wie ein Zombie mit dieser `awareness` (Formel bei `sound.json`) –, … |
-| `release_per_second` | … strömen so viele pro Sekunde heraus, bis es das nächste Mal hinhört – und gehen zur Mitte der gehörten Zelle. Abgeschossen: der Rest kommt auf einmal und geht auf den Schützen los |
-| `hit_zombies` | Jeder Treffer lässt so viele **zusätzlich** heraus (nicht von den drinnen abgezogen), solange es nicht leer ist |
-| `loot_gold`, `loot_goods` | Ein abgeschossenes Haus lässt Beute fallen: so viel Gold – oder so viel Holz, Stein, Eisenerz oder Kohle |
+| `max_units` | So viele lässt ein Haus insgesamt heraus, je Größe (`small`, `medium`, `big`), mal `population` (TABs `InfectionNestMaxUnits`, geschätzt) |
+| `batch_every_seconds` | Höchstens ein Schub so oft pro Haus |
+| `hearing`, `awareness`, `heard_batch` | Hört das Haus **Lärm** so nah – so sicher wie ein Zombie mit dieser `awareness` (Formel bei `sound.json`) –, geht ein Schub × `heard_batch` zur Mitte der gehörten Zelle |
+| `guard_every_hours`, `guards_per_size`, `guard_batch` | So oft (jedes Haus zu seiner Stunde): stehen weniger als `guards_per_size` × Hausgröße Zombies ums Haus (es selbst zählt mit), bleibt ein Schub × `guard_batch` dort – die **Wachen** füllen sich auf |
+| `raids_from_day`, `raid_every_days`, `raid_batch` | Ab diesem Tag alle so viele Tage (jedes Haus an seinem Tag): ein Schub × `raid_batch` **marschiert zum Kommandozentrum** wie eine Welle |
+| `hit_batch`, `hit_reach`, `neighbour_batch` | **Getroffen:** ein Schub × `hit_batch` geht auf die nächste Einheit in so vielen Kacheln (keine da: bleibt am Haus); jedes Nachbarhaus (Fläche × 3 um die Mitte + 4 Kacheln) schickt einen Schub × `neighbour_batch` mit |
+| `final_batch` | Ruft die Schlusswelle: ein Schub × so viel, sooft es darf, bis es leer ist – mit der Schlusswelle |
+| `breeds` | Welche Arten aus einem Haus je Größe kommen und wie wahrscheinlich (`breed`, `weight` – TABs Gewichte: klein Walker, mittel Runner, groß Runner 400 / Riot 100 / Fat 15) |
+| `loot_gold`, `loot_goods` | Ein abgeschossenes Haus lässt Beute fallen: so viel Gold – oder so viel Holz, Stein, Eisenerz oder Kohle. Was es noch nicht herausgelassen hat, kommt nie |
 
 ## `loot.json` – Beute
 
@@ -317,10 +323,9 @@ gewählt ist – und für eine Karte, deren Schwierigkeit es nicht (mehr) gibt. 
 | `start_gold`, `start_wood` | Gold und Holz zu Beginn (der übrige Vorrat startet leer). Im Editor pro Karte änderbar |
 | `start_soldiers`, `start_rangers`, `start_snipers` | Einheiten zu Beginn |
 | `roaming_zombies` | Streuner zu Beginn, pro 1.000 Kacheln, auf denen sie stehen können – in Grüppchen von `pack` (`roaming.json`), also füllen ≈ 2.000 fast jede Kachel. Nur auf unseren Karten – auf TABs zählt `population` |
-| `population` | TABs Zombie-Bevölkerung (`FactorZombiePopulation`) für Karten von TABs Generator: so viel mal das `infected` der Karte liegen Zombies; unter 0,5 nur halb so viele Dörfer und keine Riesen, ab 1 / 1,2 / 1,4 einmal / zweimal / dreimal ihre `giants` (darunter die Hälfte) |
+| `population` | TABs Zombie-Bevölkerung (`FactorZombiePopulation`) für Karten von TABs Generator: so viel mal das `infected` der Karte liegen Zombies; unter 0,5 nur halb so viele Dörfer und keine Riesen, ab 1 / 1,2 / 1,4 einmal / zweimal / dreimal ihre `giants` (darunter die Hälfte). Auf allen Karten: so viel mal `max_units` lässt ein Haus der Villages of Doom heraus, und so groß sind seine Schübe (`doom.json`) |
 | `keep_out` | Pro Art (`walker`, `runner`, `fat`, `armored`, `spitter`, `infested`, `harpy`, `giant`): so nah ans Kommandozentrum (Kacheln) liegt zu Beginn keiner. Beim Wandern dürfen sie näher, wie in TAB (nur der Riese hält seinen `roam_ring`). Nur auf unseren Karten – auf TABs sagt die Karte, ab wo welche Art liegt (`weak_from` …) |
 | `villages_percent`, `village_houses_percent` | So viel Prozent so viele Villages of Doom, wie die Karte hat (`villages`), und so viel Prozent ihrer Häuser (`houses_near`, `houses_edge`) – nur auf unseren Karten |
-| `doom_zombies` | So viele Zombies schlafen in **jedem** Haus der Villages of Doom – fest, egal wie weit draußen. Auf TABs Karten nach Hausgröße: klein 1/5, mittel 2/5, groß alle |
 | `giants_percent` | So viel Prozent so viele **Riesen**, wie die Karte hat (`giants`) – nur auf unseren Karten |
 | `loot_guards` | `[nahe der Basis, am Rand]`: so viele Zombies liegen um einen Haufen Beute versteckt |
 | `waves_percent` | Jede Welle (auch die Schlusswelle) so viel Prozent der Zahlen in `spawning.json` |
@@ -364,3 +369,4 @@ mit der Fläche.
 | `infected`, `infected_dispersion` | Wie viel des Landes Zombies hat, mal `population` der Schwierigkeit (`InfectedFactor`); wie fein die Flecken (`InfectedDispersion`) |
 | `weak_from`, `medium_from`, `strong_from`, `powerful_from` | Ab so weit draußen: Walker / Runner und Riots / Riots allein / Fat, Harpyie, Spitter (`MinDistanceFor…Infected`) |
 | `giants` | Riesen bei Bevölkerung 1 (`NumInfectedGiants`) – mindestens 70 Kacheln draußen, 40 auseinander |
+| `nests` | Wie groß die Schübe der Häuser der Villages of Doom sind (`InfectionNestsFactor`, `doom.json`) – geschätzt 1 |

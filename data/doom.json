@@ -1,13 +1,30 @@
 {
   "hp": 1500,
   "armor": 2,
-  "wake_radius": 7.0,
-  "near_zombies": 3,
-  "near_every_seconds": 10.0,
+  "max_units": { "small": 50, "medium": 100, "big": 250 },
+  "batch_every_seconds": 1.0,
   "hearing": 24.0,
   "awareness": 2.0,
-  "release_per_second": 15.0,
-  "hit_zombies": 1,
+  "heard_batch": 0.5,
+  "guard_every_hours": 12,
+  "guards_per_size": 2,
+  "guard_batch": 1.0,
+  "raids_from_day": 20,
+  "raid_every_days": 5,
+  "raid_batch": 1.0,
+  "hit_batch": 3.0,
+  "hit_reach": 10.0,
+  "neighbour_batch": 1.0,
+  "final_batch": 0.8,
+  "breeds": {
+    "small": [{ "breed": "Walker", "weight": 300 }],
+    "medium": [{ "breed": "Runner", "weight": 200 }],
+    "big": [
+      { "breed": "Runner", "weight": 400 },
+      { "breed": "Armored", "weight": 100 },
+      { "breed": "Fat", "weight": 15 }
+    ]
+  },
   "loot_gold": 1000,
   "loot_goods": 20
 }

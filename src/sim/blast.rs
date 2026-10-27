@@ -135,7 +135,7 @@ impl World {
             .filter(|&d| self.doom[d].hp > 0 && self.doom[d].closest_point(at).distance(at) <= radius)
             .collect();
         for d in houses {
-            self.hit_house(d, damage, at);
+            self.hit_house(d, damage);
         }
         self.make_colony_sound(at, blast.noise);
         self.blasts.push(Blast { at, left: SHOWN });

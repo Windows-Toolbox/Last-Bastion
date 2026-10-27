@@ -1,23 +1,31 @@
 //! The zombies' own places on the map, like in TAB (DESIGN.md 9.1, "points of interest"):
-//! - **Villages of doom**: ruined houses full of sleeping zombies. One of your units coming close (`wake_radius`)
-//!   lets only a few out (`near_zombies`). What really rouses a house is **noise** (`sound.rs`): while it hears a
-//!   sound loud enough, its zombies pour out (`release_per_second`) and go where the sound was. Every hit lets one more
-//!   out (`hit_zombies` – on top of the ones inside, as long as it isn't empty). Shot down, it lets out at once all that
-//!   are still inside and drops loot. The final wave empties every house (`call_everyone`).
+//! - **Villages of doom**: ruined houses, like TAB's (`CInfectionNest`). Their zombies aren't inside – they come into
+//!   being in **batches** when something happens, up to `max_units` per house (times the difficulty's population). A
+//!   batch is 0.5 … 1.5 × the house's size (small 1, medium 2, big 5) × its `factor`, times what happened, rounded
+//!   up – at most one batch a second per house:
+//!   - it **hears** a sound (every second, `sound.rs`): × 0.5, they go there;
+//!   - every **12 hours** (each house at its own hour): fewer than 2 × its size of zombies around it – × 1 stays as
+//!     its guards;
+//!   - from **day 20 every 5 days** (each house on its own day): × 1 **marches on the command center**;
+//!   - **hit**: × 3 go for the closest of your units within 10 tiles, and every house nearby sends × 1 along;
+//!   - the **final wave** called: × 0.8 every second, with the final wave, until it's empty.
+//!
+//!   Shot down, it drops loot; whatever it hadn't let out yet is gone.
 //! - **Loot**: piles of gold or goods lying around. A unit walking onto one picks it up. Zombies lie hidden in the
 //!   ground around it – they all come out at once when one of your units comes close or a sound is loud enough there.
 //!
-//! The numbers are in `data\doom.json` and `data\loot.json`, the breeds of the zombies come from `mix` in
+//! The numbers are in `data\doom.json` and `data\loot.json`; the breeds of the loot's guards come from `mix` in
 //! `data\roaming.json`.
-//! Where the villages and the loot lie, the map generator decides (`mapgen/villages.rs`); a map file keeps them.
+//! Where the villages and the loot lie, the map generator decides (`mapgen/villages.rs`, `mapgen/tab.rs`); a map file
+//! keeps them.
 
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use super::zombies::{Breed, Lure};
-use super::{World, TICKS_PER_SECOND};
+use super::{World, DAY_TICKS, HOUR_TICKS};
 use crate::data;
-use crate::kinds::Resource;
+use crate::kinds::{BuildingKind, Resource};
 
 /// A unit picks up loot when its middle is this close to the pile's middle (tiles).
 const LOOT_REACH: f32 = 0.6;
@@ -35,19 +43,64 @@ pub struct DoomHouse {
     pub tile: (i32, i32),
     pub size: (i32, i32),
     pub hp: u32,
-    /// Zombies still inside.
+    /// How many it may still let out – they aren't inside, they come into being with each batch (TAB's
+    /// `InfectionNestMaxUnits` × population, minus the ones out already).
     pub inside: u32,
-    /// Ticks left in which it lets its zombies out – a sound it hears rouses it (`listen_houses`), and it stays roused
-    /// as long as the sound goes on.
-    pub roused: u32,
-    /// Where they go: the sound that roused it, or the last unit that shot it.
-    call: Vec2,
-    /// The final wave called everyone: it empties, and its zombies belong to the final wave.
+    /// How big its batches are besides its size: TAB's `InfectedFactor` (the population) × the landscape's
+    /// `InfectionNestsFactor`.
+    pub factor: f32,
+    /// The tick of its last batch – the next one comes `batch_every_seconds` later at the earliest.
+    last_batch: Option<u64>,
+    /// The hour it last looked for its guards, the day it last raided (`update_doom`).
+    guard_hour: u64,
+    raid_day: u64,
+    /// The final wave called everyone: it lets everything out, with the final wave.
     pub(super) final_call: bool,
-    /// Ticks until one of your units close by lets a few out again.
-    near_wait: u32,
-    /// Thousandths of a zombie towards the next one out – `release_per_second` isn't a whole number per tick.
-    release: u32,
+}
+
+/// How big a house of doom is, like TAB's `ZXInfectionNestSize`: it decides how big its batches are, how many it
+/// lets out in all and which breeds. By its tiles: 2 × 2 small, 3 × 3 medium, bigger big.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Nest {
+    Small,
+    Medium,
+    Big,
+}
+
+impl Nest {
+    pub fn of(size: (i32, i32)) -> Nest {
+        match size.0.max(size.1) {
+            ..=2 => Nest::Small,
+            3 => Nest::Medium,
+            _ => Nest::Big,
+        }
+    }
+
+    /// TAB's number for it: small 1, medium 2, big 5 – a batch is this big at factor 1.
+    pub fn weight(self) -> u32 {
+        match self {
+            Nest::Small => 1,
+            Nest::Medium => 2,
+            Nest::Big => 5,
+        }
+    }
+
+    /// Its value out of `data\doom.json`.
+    pub fn pick<T>(self, values: &data::PerNest<T>) -> &T {
+        match self {
+            Nest::Small => &values.small,
+            Nest::Medium => &values.medium,
+            Nest::Big => &values.big,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Nest::Small => "Small",
+            Nest::Medium => "Medium",
+            Nest::Big => "Big",
+        }
+    }
 }
 
 /// Where the zombies coming out of a house or the ground go.
@@ -55,11 +108,20 @@ pub struct DoomHouse {
 pub(super) enum Bound {
     /// Lured there – they stay unless they find something.
     To(Lure),
+    /// Nowhere: they idle where they came out (a house's guards).
+    Stay,
+    /// A raid: to the command center, like a wave.
+    Raid,
     /// With the final wave, to the command center.
     Final,
 }
 
 impl DoomHouse {
+    /// How big it is (`Nest::of` its tiles).
+    pub fn nest(&self) -> Nest {
+        Nest::of(self.size)
+    }
+
     /// The top left corner in world coordinates.
     pub fn corner(&self) -> Vec2 {
         vec2(self.tile.0 as f32, self.tile.1 as f32)
@@ -79,9 +141,9 @@ impl DoomHouse {
         (self.corner() - p).max(p - self.far_corner()).max(Vec2::ZERO).length()
     }
 
-    /// Is it letting its zombies out right now – roused by a sound, or called by the final wave?
-    pub fn is_stirring(&self) -> bool {
-        self.inside > 0 && (self.roused > 0 || self.final_call)
+    /// Is it letting its zombies out right now – a batch in the last two seconds, or called by the final wave?
+    pub fn is_stirring(&self, tick: u64) -> bool {
+        self.inside > 0 && (self.final_call || self.last_batch.is_some_and(|t| tick < t + 2 * super::TICKS_PER_SECOND as u64))
     }
 
     /// The spot of its walls closest to `p` – where a shot at it lands.
@@ -102,6 +164,21 @@ impl DoomHouse {
         }
         ring
     }
+
+    /// Its tiles as (left, top, right, bottom), the right and bottom ones not included.
+    fn rect(&self) -> (i32, i32, i32, i32) {
+        (self.tile.0, self.tile.1, self.tile.0 + self.size.0, self.tile.1 + self.size.1)
+    }
+}
+
+/// Do two rectangles of tiles (`DoomHouse::rect`) overlap?
+fn overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// A rectangle of tiles grown by `by` tiles on every side.
+fn grown(r: (i32, i32, i32, i32), by: i32) -> (i32, i32, i32, i32) {
+    (r.0 - by, r.1 - by, r.2 + by, r.3 + by)
 }
 
 /// What lies in a pile of loot: gold, or one of the goods of the stock.
@@ -149,26 +226,33 @@ pub struct Loot {
 }
 
 impl World {
-    /// A house of a village of doom with `zombies` inside, asleep. Its tiles are blocked from now on – recomputed after
-    /// the orders of the tick (`map_changed`), or by `refresh_map` / `settle` when a map is made.
-    pub fn add_doom(&mut self, tile: (i32, i32), size: (i32, i32), zombies: u32) {
+    /// A house of a village of doom that may let out `zombies` in all, in batches as big as `factor` says (`DoomHouse`).
+    /// Its tiles are blocked from now on – recomputed after the orders of the tick (`map_changed`), or by `refresh_map`
+    /// / `settle` when a map is made.
+    pub fn add_doom(&mut self, tile: (i32, i32), size: (i32, i32), zombies: u32, factor: f32) {
         self.next_doom_id += 1;
         let hp = data::get().doom.hp;
-        let call = vec2(tile.0 as f32, tile.1 as f32) + vec2(size.0 as f32, size.1 as f32) / 2.0;
         self.doom.push(DoomHouse {
             id: self.next_doom_id,
             tile,
             size,
             hp,
             inside: zombies,
-            roused: 0,
-            call,
+            factor,
+            last_batch: None,
+            guard_hour: 0,
+            raid_day: 0,
             final_call: false,
-            near_wait: 0,
-            release: 0,
         });
         self.map.set_doom(tile.0, tile.1, size, true);
         self.map_changed = true;
+    }
+
+    /// How many a new house of `size` lets out in all at this zombie population (`max_units` × population, TAB's
+    /// `InfectionNestMaxUnits × InfectedFactor`).
+    pub fn doom_zombies(size: (i32, i32), population: f32) -> u32 {
+        let max = *Nest::of(size).pick(&data::get().doom.max_units);
+        (max as f32 * population + 0.5).floor() as u32
     }
 
     /// A pile of loot, with `guards` zombies hidden around it.
@@ -219,35 +303,38 @@ impl World {
         self.doom.iter().position(|d| d.distance_to(p) == 0.0)
     }
 
-    /// Every tick: one of your units close to a house lets a few out (again every `near_every_seconds` while it stays),
-    /// a roused house – or one the final wave called – lets out `release_per_second`; hidden guards come out when a
-    /// unit comes close to their loot; loot a unit stands on is picked up. All in the order of the lists – the same on
-    /// every PC.
+    /// Every tick, like TAB's houses (`CInfectionNest`, its own clock): each house looks for its guards every
+    /// `guard_every_hours`, raids from day `raids_from_day` on, and lets out its batches once the final wave called.
+    /// Hidden guards come out when a unit comes close to their loot; loot a unit stands on is picked up. All in the
+    /// order of the lists – the same on every PC.
     pub(super) fn update_doom(&mut self) {
         let doom = &data::get().doom;
         let tick = self.tick;
-        // Per tick, in thousandths of a zombie.
-        let per_tick = (doom.release_per_second * 1000.0 / TICKS_PER_SECOND + 0.5).floor() as u32;
+        // TAB counts whole hours and days since the start (`ColonyHours`, `ColonyDays`) – day 20 is after 20 days.
+        let (hours, day) = (tick / HOUR_TICKS, tick / DAY_TICKS);
+        let has_command_center = self.buildings.iter().any(|b| b.kind == BuildingKind::CommandCenter);
         for d in 0..self.doom.len() {
-            let house = &self.doom[d];
-            let near = self.units.iter().find(|u| house.distance_to(u.pos) <= doom.wake_radius).map(|u| u.pos);
-            let house = &mut self.doom[d];
-            house.near_wait = house.near_wait.saturating_sub(1);
-            if let Some(unit) = near.filter(|_| house.near_wait == 0 && house.inside > 0) {
-                house.near_wait = doom.near_every;
-                let count = doom.near_zombies.min(house.inside);
-                self.let_out(d, count, Bound::To(Lure::seen(unit, tick)), false);
-            }
-            let house = &mut self.doom[d];
-            if (house.roused == 0 && !house.final_call) || house.inside == 0 {
+            if self.doom[d].inside == 0 {
                 continue;
             }
-            house.roused = house.roused.saturating_sub(1);
-            house.release += per_tick;
-            let count = (house.release / 1000).min(house.inside);
-            house.release %= 1000;
-            let bound = if house.final_call { Bound::Final } else { Bound::To(Lure::sent(house.call, tick)) };
-            self.let_out(d, count, bound, false);
+            // Each house at its own hour, on its own day: its number shifts them.
+            let id = self.doom[d].id as u64;
+            if hours > self.doom[d].guard_hour && (hours + id).is_multiple_of(doom.guard_every_hours.max(1)) {
+                self.doom[d].guard_hour = hours;
+                if self.around_house(d) < (doom.guards_per_size * self.doom[d].nest().weight()) as usize {
+                    let count = self.batch(d, doom.guard_batch);
+                    self.let_out(d, count, Bound::Stay);
+                }
+            }
+            if has_command_center && day >= doom.raids_from_day && day > self.doom[d].raid_day && (day + id).is_multiple_of(doom.raid_every_days.max(1)) {
+                self.doom[d].raid_day = day;
+                let count = self.batch(d, doom.raid_batch);
+                self.let_out(d, count, Bound::Raid);
+            }
+            if self.doom[d].final_call {
+                let count = self.batch(d, doom.final_batch);
+                self.let_out(d, count, Bound::Final);
+            }
         }
 
         let wake = data::get().loot.wake_radius;
@@ -279,9 +366,9 @@ impl World {
         }
     }
 
-    /// Every `places_listen_seconds` each house that still has zombies inside listens – each on the tick its number
-    /// gives it – like a zombie with its `awareness` (TAB's nests, `sound.rs`): heard, it is roused until it listens
-    /// again, and its zombies go to the middle of the cell it heard.
+    /// Every `places_listen_seconds` each house that may still let some out listens – each on the tick its number
+    /// gives it – like a zombie with its `awareness` (TAB's nests, `sound.rs`): heard, a batch × `heard_batch` goes to
+    /// the middle of the cell it heard, however quiet it is there by then.
     pub(super) fn listen_houses(&mut self) {
         if self.sound.is_quiet() {
             return;
@@ -289,17 +376,17 @@ impl World {
         let doom = &data::get().doom;
         let every = data::get().sound.places_listen.max(1) as u64;
         let factor = super::sound::hear_factor(doom.awareness);
+        let tick = self.tick;
         for d in 0..self.doom.len() {
             let house = &self.doom[d];
-            if !(self.tick + house.id as u64).is_multiple_of(every) || house.inside == 0 || house.final_call {
+            if !(tick + house.id as u64).is_multiple_of(every) || house.inside == 0 || house.final_call {
                 continue;
             }
             let best = self.sound.best(house.center(), doom.hearing, factor);
             if let Some((c, _)) = best.filter(|&(_, chance)| self.rng.below(100) < chance) {
-                let call = self.sound.middle(c);
-                let house = &mut self.doom[d];
-                house.roused = every as u32;
-                house.call = call;
+                let to = self.sound.middle(c);
+                let count = self.batch(d, doom.heard_batch);
+                self.let_out(d, count, Bound::To(Lure::sent(to, tick)));
             }
         }
     }
@@ -327,37 +414,100 @@ impl World {
         }
     }
 
-    /// One of your units at `from` hit house `d` for `damage`: it loses hit points, and `hit_zombies` more come out –
-    /// on top of the ones inside, as long as it isn't empty – and go for the shooter. Whoever is still inside follows
-    /// the shooter too once it falls (`call`).
-    pub(super) fn hit_house(&mut self, d: usize, damage: u32, from: Vec2) {
+    /// House `d` was hit for `damage` – by one of your units or a barrel going off. Like TAB's (`OnMessage`): it loses
+    /// hit points, and a batch × `hit_batch` goes for the closest of your units within `hit_reach` tiles of its middle
+    /// (none there: they stay at the house). Every other house whose tiles touch the area around it (3 times its size,
+    /// 4 tiles more on every side) sends a batch × `neighbour_batch` to the same spot. Only one batch a second: a
+    /// house shot again and again gives a batch every second.
+    pub(super) fn hit_house(&mut self, d: usize, damage: u32) {
         let doom = &data::get().doom;
         let house = &mut self.doom[d];
         house.hp = house.hp.saturating_sub(damage.saturating_sub(doom.armor).max(1));
-        house.call = from;
-        if house.inside > 0 {
-            let bound = Bound::To(Lure::seen(from, self.tick));
-            self.let_out(d, doom.hit_zombies, bound, true);
+        let count = self.batch(d, doom.hit_batch);
+        if count == 0 {
+            return;
+        }
+        let center = self.doom[d].center();
+        let closest = self
+            .units
+            .iter()
+            .map(|u| u.pos)
+            .filter(|p| p.distance(center) <= doom.hit_reach)
+            .min_by(|a, b| a.distance(center).total_cmp(&b.distance(center)));
+        let bound = closest.map_or(Bound::Stay, |p| Bound::To(Lure::sent(p, self.tick)));
+        self.let_out(d, count, bound);
+        // The area around it: its tiles 3 times as big around its middle (TAB's `Scale(…, 3, true)`), then 4 more.
+        let (l, t, r, b) = self.doom[d].rect();
+        let (w, h) = (r - l, b - t);
+        let area = grown((l - w, t - h, r + w, b + h), 4);
+        for o in 0..self.doom.len() {
+            if o != d && overlap(area, self.doom[o].rect()) {
+                let count = self.batch(o, doom.neighbour_batch);
+                self.let_out(o, count, bound);
+            }
         }
     }
 
-    /// `count` zombies out of house `d`, onto free tiles right around it, going where `bound` says. `extra`: on top of
-    /// the ones inside (a hit) – otherwise they're taken from them. Walled in all around: they wait inside.
-    fn let_out(&mut self, d: usize, count: u32, bound: Bound, extra: bool) {
+    /// TAB's batch (`CInfectionNest`): rounded up 0.5 … 1.5 × the house's size (`Nest::weight`) × its `factor` × `k`
+    /// – at most as many as it may still let out. None if it let out a batch less than `batch_every_seconds` ago;
+    /// otherwise the clock starts anew, even for an empty batch.
+    fn batch(&mut self, d: usize, k: f32) -> u32 {
+        let every = data::get().doom.batch_every as u64;
+        let house = &self.doom[d];
+        if house.inside == 0 || house.last_batch.is_some_and(|t| self.tick < t + every) {
+            return 0;
+        }
+        let roll = 0.5 + self.rng.unit_f32();
+        let house = &mut self.doom[d];
+        house.last_batch = Some(self.tick);
+        let count = (roll * house.nest().weight() as f32 * house.factor * k).ceil() as u32;
+        count.min(house.inside)
+    }
+
+    /// How many zombies stand around house `d` – on its tiles grown by its width on every side, asleep or awake. The
+    /// houses there count too, itself as well (TAB counts every body of the zombies' side).
+    fn around_house(&self, d: usize) -> usize {
+        let house = &self.doom[d];
+        let (l, t, r, b) = grown(house.rect(), house.size.0);
+        let awake: usize = (t..b).flat_map(|y| (l..r).map(move |x| (x, y))).map(|(x, y)| self.grid.cell(x, y).count()).sum();
+        let (min, max) = (vec2(l as f32, t as f32), vec2(r as f32, b as f32));
+        let asleep = self.sleep.count_in(min, max);
+        let houses = self.doom.iter().filter(|o| overlap((l, t, r, b), o.rect())).count();
+        awake + asleep + houses
+    }
+
+    /// `count` zombies out of house `d`, onto free tiles right around it, going where `bound` says – the breeds of its
+    /// size (`breeds` in `data\doom.json`). Walled in all around: none come out, it keeps them.
+    fn let_out(&mut self, d: usize, count: u32, bound: Bound) {
         let map = &self.map;
         let ring: Vec<(i32, i32)> = self.doom[d].ring().into_iter().filter(|&(x, y)| !map.is_blocked(x, y)).collect();
         if ring.is_empty() || count == 0 {
             return;
         }
+        let breeds = self.doom[d].nest().pick(&data::get().doom.breeds);
         for _ in 0..count {
             let (x, y) = ring[self.rng.below(ring.len() as u32) as usize];
             let pos = vec2(x as f32 + self.rng.unit_f32(), y as f32 + self.rng.unit_f32());
-            let breed = self.roll_breed(pos);
+            let breed = self.roll_weighted(breeds);
             self.spawn_bound(pos, breed, bound);
         }
-        if !extra {
-            self.doom[d].inside -= count;
+        self.doom[d].inside -= count;
+    }
+
+    /// One breed out of `breeds`, each as likely as its weight says. An empty list: a walker.
+    fn roll_weighted(&mut self, breeds: &[data::Weighted]) -> Breed {
+        let total: u32 = breeds.iter().map(|b| b.weight).sum();
+        if total == 0 {
+            return Breed::Walker;
         }
+        let mut roll = self.rng.below(total);
+        for b in breeds {
+            if roll < b.weight {
+                return b.breed;
+            }
+            roll -= b.weight;
+        }
+        Breed::Walker
     }
 
     /// All guards of loot `l` come out of the ground around it – on free spots `GUARD_GAP` to `GUARD_SPREAD` tiles away
@@ -379,10 +529,13 @@ impl World {
         }
     }
 
-    /// A zombie that comes out of a house or the ground: lured somewhere (it stays there), or with the final wave.
+    /// A zombie that comes out of a house or the ground: lured somewhere (it stays there), idling where it is, on a
+    /// raid, or with the final wave.
     fn spawn_bound(&mut self, pos: Vec2, breed: Breed, bound: Bound) {
         match bound {
             Bound::To(lure) => self.spawn_lured(pos, breed, lure),
+            Bound::Stay => self.spawn_zombie_as(pos, breed, true),
+            Bound::Raid => self.spawn_zombie_as(pos, breed, false),
             Bound::Final => {
                 self.spawn_zombie_as(pos, breed, false);
                 if let Some(zombie) = self.zombies.last_mut() {
@@ -392,14 +545,12 @@ impl World {
         }
     }
 
-    /// Destroyed houses (no hit points left), at the end of the tick: whoever is still inside comes out at once and goes
-    /// for the last shooter, the house drops loot where it stood (`loot_gold` or `loot_goods`, no guards), and its tiles
-    /// are free again. Returns whether one fell – then the map has to be recomputed.
+    /// Destroyed houses (no hit points left), at the end of the tick: the house drops loot where it stood (`loot_gold`
+    /// or `loot_goods`, no guards, like TAB's), and its tiles are free again. Whatever it hadn't let out yet is gone –
+    /// TAB's lets nothing out when it falls. Returns whether one fell – then the map has to be recomputed.
     pub(super) fn remove_razed_houses(&mut self) -> bool {
         let razed: Vec<usize> = (0..self.doom.len()).filter(|&d| self.doom[d].hp == 0).collect();
         for &d in &razed {
-            let bound = if self.doom[d].final_call { Bound::Final } else { Bound::To(Lure::seen(self.doom[d].call, self.tick)) };
-            self.let_out(d, self.doom[d].inside, bound, false);
             let doom = &data::get().doom;
             let (kind, amount) = self.roll_haul(doom.loot_gold, doom.loot_goods);
             self.add_loot(self.doom[d].center(), kind, amount, 0);

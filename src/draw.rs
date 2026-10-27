@@ -348,7 +348,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // nobody looks right now, not at all where nobody has ever looked.
     for house in world.doom.iter().filter(|d| area.contains(d.center())) {
         if let Some(shade) = seen(world, &view.fog, house.center()) {
-            doom_parts(house, shade, &mut parts);
+            doom_parts(house, world.tick, shade, &mut parts);
         }
     }
     for loot in world.loot.iter().filter(|l| area.contains(l.pos)) {
@@ -835,12 +835,12 @@ fn doom_height(house: &DoomHouse) -> f32 {
 }
 
 /// A house of a village of doom: a block of dark rotten wood and a dark red roof on top – bright red while it stirs
-/// and still has zombies inside. `shade`: how it's seen (`seen`).
-fn doom_parts(house: &DoomHouse, shade: f32, things: &mut Vec<(f32, Prism)>) {
+/// – a batch just came out, or the final wave called it. `shade`: how it's seen (`seen`).
+fn doom_parts(house: &DoomHouse, tick: u64, shade: f32, things: &mut Vec<(f32, Prism)>) {
     let (min, size) = (house.corner(), house.far_corner() - house.corner());
     let height = doom_height(house);
     let middle = house.center();
-    let roof = if house.is_stirring() { DOOM_AWAKE } else { DOOM_ROOF };
+    let roof = if house.is_stirring(tick) { DOOM_AWAKE } else { DOOM_ROOF };
     things.push((middle.x + middle.y, Prism(rect(min, size), 0.0, height, darken(DOOM_WALL, shade))));
     let inset = Vec2::splat(0.25);
     things.push((middle.x + middle.y + 0.01, Prism(rect(min + inset, size - inset * 2.0), height, height + 0.15, darken(roof, shade))));

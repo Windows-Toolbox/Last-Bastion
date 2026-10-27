@@ -102,6 +102,9 @@ pub struct Params {
     pub powerful_from: f32,
     /// Giants on a TAB map at population 1 (`NumInfectedGiants`).
     pub giants: f32,
+    /// How big the batches of the houses of doom are (`InfectionNestsFactor`, `sim/doom.rs`) – the generator doesn't
+    /// use it, the world gives it to every house.
+    pub nests: f32,
     /// TAB's zombie population (`FactorZombiePopulation`): the difficulty sets it (`World::generate`), no slider.
     pub population: f32,
 }
@@ -139,6 +142,7 @@ impl Default for Params {
             strong_from: 45.0,
             powerful_from: 65.0,
             giants: 2.0,
+            nests: 1.0,
             population: 1.0,
         }
     }
@@ -171,6 +175,7 @@ impl Params {
             tiles("Strong from", &mut self.strong_from, 120.0, "Riots alone in a tile from here (MinDistanceForStrongInfected)."),
             tiles("Powerful from", &mut self.powerful_from, 120.0, "Fat ones, harpies and spitters from here (MinDistanceForPowerfulInfected)."),
             count("Giants", &mut self.giants, 10.0, "TAB's NumInfectedGiants on a TAB map at normal population - 0 below half, twice from 1.2, three times from 1.4."),
+            Field { label: "House batches", value: &mut self.nests, min: 0.0, max: 3.0, step: 0.1, show: Show::Number, help: "TAB's InfectionNestsFactor: how many zombies come out of a house of doom at once - times its size and the population." },
         ]
     }
 }

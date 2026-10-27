@@ -89,6 +89,13 @@ impl Sleep {
         self.blocks.iter().flatten()
     }
 
+    /// How many sleep in the rectangle from `min` to `max` (`max` not included) – only the blocks it touches are looked at.
+    pub(super) fn count_in(&self, min: Vec2, max: Vec2) -> usize {
+        let middle = (min + max) / 2.0;
+        let inside = |p: Vec2| p.x >= min.x && p.y >= min.y && p.x < max.x && p.y < max.y;
+        self.blocks_near(middle, middle.distance(max)).map(|b| self.blocks[b].iter().filter(|s| inside(s.pos)).count()).sum()
+    }
+
     /// Has the final wave called, and are some still waiting to wake? Then the round isn't won yet.
     pub fn still_waking(&self) -> bool {
         !self.waiting.is_empty()

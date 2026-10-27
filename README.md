@@ -107,8 +107,9 @@
     Seen), Green Valley (Wild), Broken Lands (Regions), Old Fortress (Rings), Red Canyons (Canyons), Open Plains
     (Blank mit einzelnen Waldkacheln).
   - **Schwierigkeit** (Easy / Normal / Hard / Brutal, `data\game_difficulties.json`): Startgold, -holz und -einheiten,
-    Streuner, wie nah jede Art ans Kommandozentrum darf, Zombies pro Dorfhaus, Wächter der Beute, Stärke der Wellen
-    und des konstanten Spawns. Auf TABs Karten statt Streuner und Abständen TABs **Bevölkerung** (0,6 / 1 / 1,2 / 1,5).
+    Streuner, wie nah jede Art ans Kommandozentrum darf, Wächter der Beute, Stärke der Wellen und des konstanten
+    Spawns – und TABs **Bevölkerung** (0,6 / 1 / 1,2 / 1,5): auf TABs Karten statt Streuner und Abständen, auf allen,
+    wie viele Zombies ein Dorfhaus hat.
   - **Dauer** (`data\game_durations.json`): 10–80 Tage, jede mit eigenem Wellen-Takt.
 - **Custom setup…** (im Editor: „New map“): Generator, Regler (Maus drauf = Erklärung), Schwierigkeit und Dauer.
   „Random values“ würfelt, „Defaults“ setzt zurück. Die letzten Werte merkt sich das Spiel.
@@ -163,9 +164,8 @@
   Walker; ab Tag 15 / 20 / 25 / 30 kommen Riots / Infested / Spitter / Fat mit (15 / 10 / 8 / 5 % jeder Gruppe). Jede
   Gruppe kommt **dicht beieinander an einem Punkt** eines Spawners, nicht über die ganze Seite verstreut.
 - **Auf TABs Karten** legt sie der Generator (oben): auf 256 und Normal ≈ 17.000–46.000 je nach Landschaft, nahe der
-  Basis keine (10 Kacheln), Runner und Riots ab ≈ 25, Fat, Harpyie und Spitter ab ≈ 65 (BR). In einem Dorfhaus schlafen klein
-  1/5, mittel 2/5, groß alle `doom_zombies` (TABs Dörfer haben viel mehr Häuser). Der Rest dieses Abschnitts gilt
-  für unsere Karten.
+  Basis keine (10 Kacheln), Runner und Riots ab ≈ 25, Fat, Harpyie und Spitter ab ≈ 65 (BR). Der Rest dieses
+  Abschnitts gilt für unsere Karten.
 - **Wie viele (wie TAB):** fast überall, in **Grüppchen von 1–3 auf einer Kachel – nie mehr als 3** (`pack` in
   `data\roaming.json`). `roaming_zombies` der Schwierigkeit: pro 1.000 Kacheln, auf denen sie stehen können (Easy 900,
   Normal 1.500, Brutal 2.000 = eine Gruppe auf fast jeder Kachel). Auf 256 und Normal ≈ 65.000, dazu die in Dörfern
@@ -209,14 +209,18 @@
   **wandern** (150). Ein Ausflug geht auf jeder Achse für sich Walker 2–8 Kacheln … Fat 4–30 weit (ein Quadrat, kein
   Kreis), ohne festen Platz – mit der Zeit also überall hin, auch nahe an die Basis. Der **Riese brüllt** alle 12 s
   und bleibt dafür stehen, egal was er tut.
-- **Villages of Doom** (wie TAB, weit weg von der Basis): dunkle Häuser mit rotem Dach. **Wie viele Dörfer und wie
-  groß, sagt die Karte** (Green Valley ≈ 10 mit 3–6 Häusern, Open Plains ≈ 26 kleine mit 2–3, Broken Lands **2
-  riesige** mit 15–25), die Schwierigkeit macht sie mehr oder weniger. In **jedem Haus gleich viele** schlafende
-  Zombies (`doom_zombies`: Easy 150, Normal 250, Hard 350, Brutal 500). Kommt eine Einheit auf 7 Kacheln heran,
-  kommen nur **ein paar** heraus (3, alle 10 s). Was sie wirklich weckt, ist **Lärm** in 24 Kacheln: dann strömen sie
-  heraus (15 pro Sekunde, das Dach leuchtet rot) und laufen zum Lärm. Jeder Treffer lässt einen **zusätzlich** heraus.
-  Haus abschießen (1.500 HP): der Rest kommt auf einmal, es lässt Beute fallen (1.000 Gold oder 20
-  Holz/Stein/Eisenerz/Kohle).
+- **Villages of Doom** (wie TAB, aus dessen Code, `src\sim\doom.rs`): dunkle Häuser mit rotem Dach, klein (2 × 2),
+  mittel (3 × 3) oder groß (5 × 5). Wo und wie viele: TABs Generator bzw. die Karte (Green Valley ≈ 10 Dörfer mit 3–6
+  Häusern, Broken Lands **2 riesige** mit 15–25). Die Zombies liegen nicht drin – sie **entstehen in Schüben**, wenn
+  etwas passiert, bis ein Haus leer ist (klein 50, mittel 100, groß 250 – mal der Bevölkerung). Ein Schub ist etwa
+  1 / 2 / 5 Zombies (zufällig halb bis anderthalb), höchstens einer pro Sekunde und Haus, das Dach leuchtet dabei rot:
+  - **Lärm** in 24 Kacheln: ein halber Schub geht hin.
+  - **Alle 12 Stunden:** stehen zu wenige ums Haus, bleibt ein Schub als **Wache** dort.
+  - **Ab Tag 20 alle 5 Tage** (jedes Haus an seinem Tag): ein Schub **marschiert zum Kommandozentrum**.
+  - **Getroffen:** drei Schübe gehen auf die nächste Einheit in 10 Kacheln, jedes Nachbarhaus schickt einen mit.
+  - Eine Einheit direkt daneben weckt nichts. Zombies: klein Walker, mittel Runner, groß Runner, Riots und selten Fat.
+  - Haus abschießen (1.500 HP): es lässt Beute fallen (1.000 Gold oder 20 Holz/Stein/Eisenerz/Kohle) – wer noch
+    nicht draußen war, kommt nie.
 - **Beute** (≈ 40 Haufen): Gold (500) oder 10 Holz/Stein/Eisenerz/Kohle – drauflaufen hebt sie auf. Um jeden Haufen
   liegen Zombies versteckt (Normal 8–50, mehr weiter draußen), die auf 5 Kacheln oder bei Lärm aus dem Boden kommen.
 - Häuser und Beute bleiben auf der Karte sichtbar, sobald man sie einmal gesehen hat, auch auf der Minimap (rot).

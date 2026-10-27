@@ -292,28 +292,60 @@ pub struct Mix {
     pub share: f32,
 }
 
-/// `data\doom.json`: the houses of a village of doom, like TAB's: full of sleeping zombies until one of your units comes close.
+/// `data\doom.json`: the houses of a village of doom, like TAB's (`CInfectionNest`): their zombies come into being in
+/// batches when something happens – `sim/doom.rs` says when and how many.
 #[derive(Deserialize)]
 pub struct Doom {
     pub hp: u32,
-    /// Subtracted from every shot, like a zombie's. How many zombies sleep in a house: `doom_zombies` of the difficulty.
+    /// Subtracted from every shot, like a zombie's.
     pub armor: u32,
-    /// A unit this close (tiles from its walls) lets a few out (`near_zombies`) – again every `near_every_seconds`
-    /// while it stays.
-    pub wake_radius: f32,
-    pub near_zombies: u32,
-    #[serde(rename = "near_every_seconds", deserialize_with = "seconds")]
-    pub near_every: u32,
-    /// It hears sounds within `hearing` tiles, as surely as a zombie with this `awareness` (`sim/sound.rs`). Heard, it
-    /// lets out `release_per_second` zombies until it listens again – they go where the sound was.
+    /// How many a house lets out in all (TAB's `InfectionNestMaxUnits`), times the difficulty's population.
+    pub max_units: PerNest<u32>,
+    /// At most one batch every this long per house.
+    #[serde(rename = "batch_every_seconds", deserialize_with = "seconds")]
+    pub batch_every: u32,
+    /// It hears sounds within `hearing` tiles, as surely as a zombie with this `awareness` (`sim/sound.rs`). Heard: a
+    /// batch × `heard_batch` goes there.
     pub hearing: f32,
     pub awareness: f32,
-    pub release_per_second: f32,
-    /// Every hit lets out this many more – on top of the ones inside, as long as it isn't empty.
-    pub hit_zombies: u32,
+    pub heard_batch: f32,
+    /// Every `guard_every_hours` (each house at its own hour): fewer than `guards_per_size` × its size of zombies
+    /// around it – a batch × `guard_batch` stays there.
+    pub guard_every_hours: u64,
+    pub guards_per_size: u32,
+    pub guard_batch: f32,
+    /// From day `raids_from_day` every `raid_every_days` days (each house on its own day): a batch × `raid_batch`
+    /// marches on the command center.
+    pub raids_from_day: u64,
+    pub raid_every_days: u64,
+    pub raid_batch: f32,
+    /// Hit: a batch × `hit_batch` goes for the closest of your units within `hit_reach` tiles, and every house nearby
+    /// sends a batch × `neighbour_batch` along.
+    pub hit_batch: f32,
+    pub hit_reach: f32,
+    pub neighbour_batch: f32,
+    /// Called by the final wave: a batch × `final_batch` every time it may, until it's empty.
+    pub final_batch: f32,
+    /// Which breeds come out of a house of each size, and how likely (TAB's weights).
+    pub breeds: PerNest<Vec<Weighted>>,
     /// A destroyed house drops loot: this much gold – or this much wood, stone, iron ore or coal.
     pub loot_gold: u32,
     pub loot_goods: u32,
+}
+
+/// One value for each size of house of doom (TAB's `ZXInfectionNestSize`).
+#[derive(Deserialize)]
+pub struct PerNest<T> {
+    pub small: T,
+    pub medium: T,
+    pub big: T,
+}
+
+/// A breed and how likely it is next to the others in its list.
+#[derive(Deserialize)]
+pub struct Weighted {
+    pub breed: Breed,
+    pub weight: u32,
 }
 
 /// `data\loot.json`: loot lying around, like TAB's: picked up by walking onto it. Zombies lie hidden around it.
@@ -518,15 +550,15 @@ pub struct Difficulty {
     /// Per breed: none lies closer to the command center at the start (tiles). Roaming they may come closer, like in TAB
     /// – only the giant keeps its `roam_ring`.
     pub keep_out: KeepOut,
-    /// TAB's zombie population (`FactorZombiePopulation`) for maps of TAB's generator: how many zombies it lays out
-    /// (times the map's `infected`), half the villages below 0.5, the giants (`mapgen/tab.rs`). The other maps go by
-    /// `roaming_zombies`, `keep_out` and the percentages.
+    /// TAB's zombie population (`FactorZombiePopulation`): on maps of TAB's generator how many zombies it lays out
+    /// (times the map's `infected`), half the villages below 0.5, the giants (`mapgen/tab.rs`); the other maps go by
+    /// `roaming_zombies`, `keep_out` and the percentages. On every map: how many a house of doom lets out in all and
+    /// how big its batches are (`sim/doom.rs`).
     pub population: f32,
-    /// The villages of doom: this many percent as many as the map says, this many percent of its houses in each …
+    /// The villages of doom on our maps: this many percent as many as the map says, this many percent of its houses in
+    /// each.
     pub villages_percent: u32,
     pub village_houses_percent: u32,
-    /// … and this many zombies asleep in every house – the same in each.
-    pub doom_zombies: u32,
     /// The giants: this many percent as many as the map says (`giants` of its setup, `place_giants`).
     pub giants_percent: u32,
     /// Zombies hidden around a pile of loot: `[near the base, at the edge]` – in between it grows with the distance.

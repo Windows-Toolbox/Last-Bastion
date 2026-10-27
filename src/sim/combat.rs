@@ -119,11 +119,11 @@ impl World {
                     self.beams.push((unit.pos, to));
                     self.heal(i, a);
                 }
-                // A house of doom: hit – a few more come out of it (`doom.rs`) – and the shot makes noise like any other.
+                // A house of doom: hit – a batch comes out of it (`doom.rs`) – and the shot makes noise like any other.
                 Some(Target::Doom(d)) => {
                     self.shots.push((unit.pos, to));
                     let from = unit.pos;
-                    self.hit_house(d, damage, from);
+                    self.hit_house(d, damage);
                     self.make_colony_sound(from, shot_noise(stats.noise));
                 }
                 None => {}

@@ -262,14 +262,14 @@ impl World {
         for spot in generated.spawners {
             world.add_spawner(0, spot.name, spot.min, spot.size, Axes::Screen, SpawnMode::Constant);
         }
-        // The villages of doom and the loot where the generator put them (`doom.rs`) – every house as full as the
-        // difficulty says; what lies in each pile is rolled here (or the generator says it). TAB's villages have many
-        // more houses: there a house holds its share by TAB's sizes – small 1, medium 2, big 5 of 5 – until its houses
-        // work like TAB's (`docs\tab-nachbau.md`, step 4).
-        let tab_map = generated.zombies.is_some();
+        // The villages of doom and the loot where the generator put them (`doom.rs`) – every house lets out as many as
+        // its size and the difficulty's population say, in batches as big as the population and the landscape's
+        // `nests` say (TAB's `InfectedFactor`, `InfectionNestsFactor`); what lies in each pile is rolled here (or the
+        // generator says it).
+        let nests = if generated.zombies.is_some() { setup.tab.nests } else { 1.0 };
         for house in generated.houses {
-            let weight = if !tab_map { 5 } else if house.size.0 <= 2 { 1 } else if house.size.0 <= 3 { 2 } else { 5 };
-            world.add_doom(house.tile, house.size, difficulty.doom_zombies * weight / 5);
+            let zombies = World::doom_zombies(house.size, difficulty.population);
+            world.add_doom(house.tile, house.size, zombies, difficulty.population * nests);
         }
         for spot in generated.loot {
             let pos = vec2(spot.tile.0 as f32 + 0.5, spot.tile.1 as f32 + 0.5);
