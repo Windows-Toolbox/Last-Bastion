@@ -318,8 +318,8 @@ Pillar 2. The heart is still the TAB side (open question 13).
 - Box/click select, double click = all of that type on screen, Shift = add/remove. Control groups 1–0.
 - **Attack-move**, move, stop, hold, patrol, **follow** (move onto an own unit). Shift queues every command;
   letting go of Shift takes a waiting command off the mouse, pressing Shift again brings it back.
-- **Hold** only means "don't walk by yourself": holding units can still be pushed, and a squeezed crowd pushes itself
-  apart (2026-10-19 – before they stood like walls).
+- **Hold** only means "don't walk by yourself": holding units can still be pushed by your units, and a squeezed crowd
+  pushes itself apart. Against zombies a holding (or aiming) unit stands firm – TAB's rock (8.1).
 - **Holding a training key** presses it again and again, like StarCraft with Windows' key repeat (2026-10-19).
 - **Smart-casting:** an ability key uses the best-suited unit of the selection, not all.
 - **Smart targeting:** fire is spread over different zombies, no overkill (StarCraft 2). *In since 2026-10-17 – without
@@ -444,23 +444,21 @@ Venom → spitter, Harpy, Giant; the infested is ours (StarCraft 2).
   for the shooter (a unit in a tower: the tower) – once more even out of sight, then to where it was.
 - **Safety:** fewer than 100 zombies left – every 2 minutes each one without a way to the command center dies.
 - Sight is computed from the few units outwards, not from thousands of zombies.
-- **A crowd stands a little inside itself, like in TAB:** a zombie walks into another only up to its core (three
-  quarters of touching), the rest of its step slides along it and ¾ of what's blocked goes sideways – in front of
-  walls and gaps the horde piles up and flows around the pile, instead of merging into one or queuing up in rows. A
-  weak soft push makes room to the sides; a strong one made the crowd jitter.
-- **They push each other:** who walks into another's core pushes it along by ¾ of what's blocked, by weight (size²) –
-  a fat one or a giant shoves walkers aside, a walker hardly moves a giant. In the same tick, and the pushed one
-  doesn't walk into anybody's core either: where nobody can make room, nobody moves. Each keeps half its last step
-  and steps aside to the side it already moves to – no zigzag in a gap. Calm strollers are pushed too, as far as busy
-  ones – a runner shoves idle walkers aside instead of only going around them (8.5). Pushing
-  by walking in and pushing apart afterwards (before the cores) made 600 zombies at a wall step back and forth
-  23,000 times in 3 s – now about 70.
-- **The mass pushes, not only the ones right behind:** who is pushed presses on with it the next tick, but never
-  harder than it walks itself – so a crowd at a wall shoves its front aside along it instead of queuing up behind it
-  (of a stream of 200, 130 reach the wall instead of 96), and nobody is shoved faster than a zombie walks. Your units
-  have cores too: a crowd doesn't press zombies into them. Walking to a wall to hit it, a zombie's last step is only
-  as long as needed – a full step overshot, the crowd pushed it back out of reach, it walked in again: dozens stepped
-  back and forth every few ticks. To a unit it walks until its body touches, an arm's length within its reach.
+- **The crowd flows like a liquid, like TAB's physics** (`src/sim/crowd.rs`): every zombie is a smooth circle with a
+  weight (`mass`). Each takes the step it wants, then in 8 rounds per tick everyone is pushed out of everyone it
+  overlaps – each by its share, the lighter one further – and fully out of walls, buildings and solid ground. Smooth
+  circles slide off each other: the press of the ones behind goes a row deeper each round, the front gives way to the
+  sides – along a wall, around a corner, through a gap (300 through a one-tile gap in 12.5 s; a stream of 200 at a
+  wall spreads along its whole side, about 4 rows deep). A crowd stands a little inside itself and still.
+- **Rocks (TAB):** whoever has just stopped weighs 500 times as much for 5 s – a zombie that just got to its wall
+  stands firm, the ones behind slide past it. Your units too while they hold or aim, so the crowd flows around a
+  shooting soldier; otherwise the crowd shoves them by their weight. A giant (heavy) walks through walkers, a fat one
+  shoves them aside.
+- Walking on, a zombie keeps 30 % of its last step – it doesn't turn on the spot (without it a few at the corner of a
+  gap stepped to and fro). Walking to a wall to hit it, its last step is only as long as needed; to a unit it walks
+  until its body touches, an arm's length within its reach.
+- **Not taken over:** TAB's step rhythm (speed swings with the walk animation) – only worth it with real walk
+  animations, and then only in the picture.
 
 ### 8.2 Waves
 
@@ -755,13 +753,15 @@ of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: no
     walks on with what it decided. Only next to a busy one does it move every tick, so it can be pushed – a calm crowd
     far from them costs nothing more.
   - *Neighbours in memory:* every 2 s the list of zombies is sorted by where they stand, and the grid keeps each one's
-    position, size and number in it, tile after tile – looking at the neighbours finds them in the processor's cache.
-  - *All cores:* what each zombie wants, its step in the crowd and how it's pushed apart is worked out side by side
-    (`rayon`) – only reading, collected in order, so the result is the same on every PC and the checksum doesn't change.
+    position and size in it, tile after tile – looking at the neighbours finds them in the processor's cache. The crowd
+    looks up who it may touch once per tick and only goes through those few in its 8 rounds.
+  - *All cores:* what each zombie wants and every round of pushing the crowd apart is worked out side by side (`rayon`)
+    – each round only from where everyone stood after the round before ("Jacobi"), collected in order, so the result
+    is the same on every PC.
   - *Asleep far away* (8.5): zombies far from your eyes are plain entries per 8 × 8 tiles and cost nothing until your
     eyes, a sound, the scan or the final wave wakes them; calm ones far from everything fall asleep again.
-  - Measured (256, `horde_tick_time`): 65,000 zombies, ≈ 2,200 of them awake near the base ≈ 0.4 ms per tick; ≈ 10 ms
-    when the final wave has called them all (before all this: 16,000 took ≈ 6 ms, all called ≈ 8 ms).
+  - Measured (256, `horde_tick_time`): 65,000 zombies, ≈ 1,600 of them awake near the base ≈ 0.6 ms per tick; ≈ 17 ms
+    when the final wave has called them all (the crowd like TAB's physics costs ≈ 15 % more than the old pushing).
 
 ### 12.2 Language and library
 

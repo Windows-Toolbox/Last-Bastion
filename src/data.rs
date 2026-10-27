@@ -369,6 +369,9 @@ pub struct BreedStats {
     pub roar: Option<u32>,
     /// How big it is (tiles): zombies, units and buildings keep this far from its middle.
     pub radius: f32,
+    /// How heavy it is (a walker: 1) – in the crowd the lighter one gives way (`sim/crowd.rs`): a giant walks through
+    /// walkers, they hardly move it. TAB's `Mass` (unknown, estimated).
+    pub mass: f32,
     /// A ranged zombie: it attacks from this far (tiles). Left out: 0 – it has to touch you.
     #[serde(default)]
     pub range: f32,

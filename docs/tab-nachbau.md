@@ -44,16 +44,22 @@ setz ihn um."
 
 **Schritt 2 (Entscheidungsbaum) ist fertig** – `src/sim/zombies.rs` (`watch`, `wall_in_way`, `zombie_hit_by`,
 `update_minds`, `joins_wave`, `next_idle`, `roam_spot`, `zombie_intent`), Schlafende in `src/sim/sleep.rs`
-(`idle_wait`, `wake_joining`), Infektion in `src/sim/buildings.rs`. Falls noch nicht committet: zuerst committen.
-Was er für die nächsten Schritte hinterlässt:
-- Zombies gehen jetzt gezielt auf die Wand **zwischen sich und ihrem Ziel** – vor einer Mauer ballen sie sich dort
-  (Strom-Test: 105 von 200 an der Mauer statt ~130). Schritt 3 soll das Fließen darum herum bringen. Die Gedränge-Tests
-  hängen außerdem an Zufall und Nummern (Ausweichseite nach gerader/ungerader Nummer) – in Schritt 3 neu fassen.
+(`idle_wait`, `wake_joining`), Infektion in `src/sim/buildings.rs`. Was er für die nächsten Schritte hinterlässt:
 - `keep_out` der Schwierigkeit gilt nur noch beim Verteilen zu Beginn (`scatter_roamers`, `place_giants`) – für
   Schritt 6. Der Riese hält beim Wandern 54 Kacheln (`roam_ring`).
 - Häuser des Untergangs schicken ihre Zombies weiter mit `Lure::seen`/`Lure::sent` (Schritt 4 baut das um).
 - Geschätzt, weil `ZXRules.dat` zu ist: `watch_seconds` 0,5, `stand_seconds`/`growl_seconds` 2, `stroll`-Minima,
   `level`, `extra_infected` (Zelt 2, Steinhaus 8 – so bleibt es bei 4 bzw. 16 Infizierten).
+
+**Schritt 3 (flüssiges Gedränge) ist fertig** – `src/sim/crowd.rs` (`move_crowd`, `neighbours`, `push_out`,
+`out_of_blocked`), aufgerufen am Ende von `move_zombies`; Felsen der Einheiten in `src/sim/units.rs` (`still`,
+`is_rock`, `shove`). Falls noch nicht committet: zuerst committen. Was er hinterlässt:
+- Geschätzt: `mass` je Art in `data\zombies.json` (Walker 1 … Fat 3,25, Riese 25), Einheiten 1 (`UNIT_MASS`).
+  8 Runden × `RELAX` 0,8 pro Tick; ein Zombie behält 30 % seines letzten Schritts (`TURN`, gegen Zucken an Ecken).
+- Unsere Größen sind kleiner als TABs (Walker 0,25 statt 0,4 Durchmesser, Riese 0,9 statt 1,6) – nicht angefasst.
+- TABs Schrittrhythmus (`BellWalkingFactor`) fehlt – erst mit echten Lauf-Animationen, und dann nur im Bild.
+- TABs „angekommen, wenn 1 s lang nicht vorangekommen (innerhalb 2 Kacheln)“ / „aufgeben nach 5 s“ fehlen noch –
+  unsere Ziele haben eigene Geduld (`LURE_PATIENCE`, Leerlauf-Timer).
 
 ---
 

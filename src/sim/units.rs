@@ -7,6 +7,7 @@ use std::f32::consts::{FRAC_PI_4, PI, TAU};
 use macroquad::math::{vec2, Vec2};
 
 use super::combat::{Aim, Target};
+use super::crowd;
 use super::commands::{Task, Waypoint};
 use super::{clear_line, push_apart, slide, World, TICK, UNIT_RADIUS};
 use crate::data;
@@ -35,6 +36,10 @@ pub struct Unit {
     pub(super) queue: VecDeque<Task>,
     /// Did the unit walk towards a target this tick? (Being pushed doesn't count.)
     pub(super) moving: bool,
+    /// Ticks since it last walked (0: it walks) – just stopped, the zombies can't shove it (`is_rock`).
+    pub(super) still: u32,
+    /// How far the crowd of zombies pushed it this tick (`crowd.rs`) – it goes that far along with its own step.
+    pub(super) shove: Vec2,
     /// Where it looks: an angle in radians, 0 = along +x (on screen to the lower right), counted towards +y.
     /// It turns at its `turn_around` speed – when walking, towards where it goes; when shooting, towards the target.
     pub facing: f32,
@@ -97,6 +102,12 @@ impl Unit {
 
     pub fn is_holding(&self) -> bool {
         matches!(self.queue.front(), Some(Task::Hold))
+    }
+
+    /// Does it stand firm against the zombies (TAB's rock, `crowd.rs`)? While it holds, aims at one, or has just stopped
+    /// – then the crowd flows around it instead of shoving it away.
+    pub(super) fn is_rock(&self) -> bool {
+        self.is_holding() || self.is_aiming() || crowd::is_rock(self.still)
     }
 
     /// Did it walk this tick (being pushed doesn't count)? For the picture: the walk animation.
@@ -198,6 +209,8 @@ impl World {
             kills: 0,
             queue: VecDeque::new(),
             moving: false,
+            still: crowd::rock_ticks() + 1,
+            shove: Vec2::ZERO,
             facing: FRAC_PI_4, // along +x and +y: straight down on screen, towards the player
             cooldown: 0,
             aim: 0,
@@ -229,6 +242,7 @@ impl World {
             unit.prev = unit.pos;
             unit.pos = slide(unit.pos, intent.velocity, |x, y| map.blocks_unit(x, y));
             unit.moving = intent.walking;
+            unit.still = if intent.walking { 0 } else { unit.still.saturating_add(1) };
             // Walking turns it towards where it goes – it doesn't wait for that, like most units in StarCraft.
             // (Shooting turns it towards the target – `combat.rs`.)
             if intent.walking {
@@ -364,7 +378,7 @@ impl World {
         };
         // Everyone can be pushed – holding too: "hold" only means it doesn't walk by itself. Before, holding units
         // stood like walls and a crowd squeezed into a corner never came apart again.
-        velocity += self.unit_separation(i) * step;
+        velocity += self.unit_separation(i) * step + unit.shove;
         Intent { velocity, walking: walk_to.is_some(), target }
     }
 
@@ -423,7 +437,8 @@ impl World {
         unit.queue.clear();
     }
 
-    /// Pushing: away from other units and – weaker – away from zombies. Units in a tower don't push anyone.
+    /// Pushing: away from other units. Units in a tower don't push anyone. (The zombies push it in their crowd,
+    /// `shove`.)
     fn unit_separation(&self, me: usize) -> Vec2 {
         let pos = self.units[me].pos;
         let mut push = Vec2::ZERO;
@@ -439,14 +454,6 @@ impl World {
                 }
             } else {
                 push += push_apart(pos, other.pos, UNIT_RADIUS * 2.0);
-            }
-        }
-        let (cx, cy) = (pos.x.floor() as i32, pos.y.floor() as i32);
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                for zombie in self.grid.bodies(cx + dx, cy + dy) {
-                    push += push_apart(pos, zombie.pos, UNIT_RADIUS + zombie.radius) * 0.5;
-                }
             }
         }
         push

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use super::*;
 use super::zombies::{values, Aim, Doing};
+use super::crowd;
 use crate::data;
 use crate::formation::{self, Formation};
 use crate::kinds::Resource;
@@ -56,7 +57,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0xb898_b3d7_7120_49c5;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0x5c16_1da9_30bd_b337;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -1947,9 +1948,10 @@ fn a_group_works_through_queued_points() {
     }
 }
 
-/// 200 zombies in front of a gap one tile wide: they pile up in front of it instead of sliding into each other.
+/// 300 zombies in front of a gap one tile wide flow through it like a liquid (`crowd.rs`): they pile up wide in front
+/// of it instead of sliding into each other, nobody zigzags, and within 12.5 s all of them are through.
 #[test]
-fn zombies_pile_up_instead_of_merging() {
+fn a_horde_flows_through_a_gap() {
     let (mut world, _) = quiet_world();
     world.units.clear();
     let (bx, by) = (world.base.x as i32, world.base.y as i32);
@@ -1958,11 +1960,9 @@ fn zombies_pile_up_instead_of_merging() {
     world.step(&[Order::PaintTerrain { terrain: Terrain::Grass, tiles: field }]);
     world.step(&[
         Order::PaintTerrain { terrain: Terrain::Mountain, tiles: wall },
-        // 300, not 200: with 200 the pile came out at 1.9997 tiles, right at the limit, with 250 at 0.617 of 0.625 once
-        // more roamers had drawn other random numbers (2026-10-22) – it depends on where exactly they were scattered.
         Order::SpawnZombiesAt { count: 300, point: world.base + vec2(22.0, 0.5) },
     ]);
-    // Meanwhile, the last 3 s: how often each one steps visibly back against its step before (by `id`).
+    // From 4.5 s to 7.5 s: how often each one steps visibly back against its step before (by `id`).
     let mut last: HashMap<u32, Vec2> = HashMap::new();
     let mut back: HashMap<u32, u32> = HashMap::new();
     for t in 0..150 {
@@ -1977,32 +1977,31 @@ fn zombies_pile_up_instead_of_merging() {
     }
     let zombies: Vec<Vec2> = world.zombies.iter().map(|z| z.pos).collect();
     // Pairs that stand more than half inside each other (closer than one radius – all of them are runners).
-    // Before: over 100.
     let radius = Breed::Runner.stats().radius;
     let mut merged = 0;
     for (i, p) in zombies.iter().enumerate() {
         merged += zombies[i + 1..].iter().filter(|q| p.distance(**q) < radius).count();
     }
     assert!(merged <= 5, "{merged} pairs of zombies inside each other");
-    // The pile in front of the gap is wide – before, they squeezed together on the line to the gap. Measured in
-    // zombie sizes: half as big (2026-10-20), they need a quarter of the room and more of them get through the gap at
-    // once – the pile came out at 0.69 tiles instead of over 2.
+    // The pile in front of the gap is wide (now about 1 tile to each side), not squeezed on the line to the gap.
     let in_front = |p: &&Vec2| p.x > world.base.x + 12.0 && p.x < world.base.x + 16.0;
     let widest = zombies.iter().filter(in_front).map(|p| (p.y - world.base.y).abs()).fold(0.0, f32::max);
     assert!(widest > 5.0 * radius, "pile only {widest} tiles to each side");
-    // Squeezing into the gap, nobody zigzags (now at most 4–6 times, depending on where exactly they came out). Stepping
-    // aside to the side they want to go instead of the side they already move to, and without keeping half their last
-    // step, 81 of them did, up to 17 times.
+    // Squeezing into the gap, nobody zigzags (now at most 7 times). Turning on the spot (without `TURN`), a few at the
+    // corner of the gap did, up to 16 times.
     let zigzag = back.values().filter(|&&n| n >= 8).count();
     assert_eq!(zigzag, 0, "{zigzag} zombies stepped back and forth 8 times or more in 3 s");
+    for _ in 0..100 {
+        world.step(&[]);
+    }
+    let behind = world.zombies.iter().filter(|z| z.pos.x > world.base.x + 12.0).count();
+    assert_eq!(behind, 0, "{behind} of 300 still in front of the gap after 12.5 s");
 }
 
-/// A crowd pressing from all sides against a ring of walls stands a little inside itself – up to the cores
-/// (`CORE`), hardly deeper – and stands still instead of jittering. Walking into each other as far as they liked,
-/// 431 of these 600 stood more than a quarter inside another. With the soft push five times as strong, about 400 of
-/// them stepped back and forth by more than `VISIBLE` every tick; now hardly ever one. Walking a full last step to the
-/// wall (not `arrive`), they did so about 200 times in these 3 s – pushed back out of reach, walked in again; now about
-/// 70 times.
+/// A crowd pressing from all sides against a ring of walls stands a little inside itself and still, instead of
+/// jittering (`crowd.rs`) – and nobody is pushed into the walls. With 6 rounds of pushing apart and all of the way each
+/// round, 157 of these 600 stood more than a third inside another and they stepped back and forth 600 times in 3 s;
+/// now about 5 and 20.
 #[test]
 fn a_crowd_at_a_wall_stands_a_little_inside_itself_and_calm() {
     /// A step this long (tiles) shows on the screen – about a pixel at the closest zoom.
@@ -2029,6 +2028,10 @@ fn a_crowd_at_a_wall_stands_a_little_inside_itself_and_calm() {
     };
     let deep = zombies.iter().filter(|z| nearest(z) < 0.65).count();
     assert!(deep * 20 <= zombies.len(), "{deep} of {} zombies stand more than a third inside another", zombies.len());
+    // Their bodies stay out of the walls – the walls don't give way.
+    let into_wall = |z: &Zombie| z.radius - world.buildings.iter().map(|b| b.distance_to(z.pos)).fold(f32::MAX, f32::min);
+    let deepest = world.zombies.iter().map(into_wall).fold(0.0, f32::max);
+    assert!(deepest < 0.01, "a zombie stands {deepest} tiles inside a wall");
     // Jitter: visible steps straight back against the one before, over 3 s (by `id` – the list gets sorted).
     let mut last: HashMap<u32, Vec2> = HashMap::new();
     let mut back = 0;
@@ -2042,14 +2045,13 @@ fn a_crowd_at_a_wall_stands_a_little_inside_itself_and_calm() {
             last.insert(z.id, moved);
         }
     }
-    // Fewer than one in 300 per tick.
-    assert!(back <= 60 * zombies.len() / 300, "{back} visible steps back and forth in 60 ticks - the crowd jitters");
+    // Fewer than one in 600 per tick.
+    assert!(back <= 60 * zombies.len() / 600, "{back} visible steps back and forth in 60 ticks - the crowd jitters");
 }
 
 /// A stream of zombies coming in one behind the other (like out of a spawner) doesn't queue up in front of a wall: the
-/// mass behind pushes the front aside along the wall (`shove`, `SIDESTEP`). Of these 200, 96 stood at the wall when
-/// only the ones right behind pushed and they stepped aside by half; about 130 when each went for the wall nearest to
-/// it. Now each goes for the wall between it and the command center (TAB's wall rule) – they bunch up more there: 105.
+/// ones behind press, the front gives way to the sides, and the mass spreads along the whole side of the wall
+/// (`crowd.rs`) – after 45 s all 200 stand within a tile of it (about 0.9), over most of its length.
 #[test]
 fn a_stream_at_a_wall_spreads_along_it() {
     let (mut world, _) = quiet_world();
@@ -2065,24 +2067,26 @@ fn a_stream_at_a_wall_spreads_along_it() {
         let spawn = t < 400 && t % 8 == 0;
         world.step(&if spawn { vec![Order::SpawnZombiesAt { count: 4, point: world.base + vec2(32.0, 0.5) }] } else { vec![] });
     }
-    // At the wall: its body right at one.
-    let to_wall = |z: &Zombie| world.buildings.iter().map(|b| b.distance_to(z.pos)).fold(f32::MAX, f32::min) - z.radius;
-    let at_wall = world.zombies.iter().filter(|z| to_wall(z) < 0.12).count();
     assert_eq!(world.zombies.len(), 200);
-    assert!(at_wall >= 100, "only {at_wall} of 200 at the wall - they queue up behind each other");
+    // The east side of the ring: its outer edge 6.5 tiles from the base, from 6.5 tiles up to 6.5 down.
+    let face = world.base.x + 6.5;
+    let deepest = world.zombies.iter().map(|z| z.pos.x - z.radius - face).fold(0.0, f32::max);
+    assert!(deepest < 1.5, "the pile goes {deepest} tiles out from the wall - they queue up behind each other");
+    let at_face: Vec<f32> =
+        world.zombies.iter().filter(|z| z.pos.x - z.radius - face < 0.12).map(|z| z.pos.y - world.base.y).collect();
+    let (top, bottom) = at_face.iter().fold((0.0f32, 0.0f32), |(t, b), &y| (t.min(y), b.max(y)));
+    assert!(top < -4.5 && bottom > 4.5, "along the wall only from {top} to {bottom}");
 }
 
-/// Who walks into another pushes it along instead of only stepping around it – a heavier one less far, a calm stroller
-/// just as far. A runner heading for the command center walks into one that stands in its way (with speed 0: it doesn't
-/// walk by itself), and steps around it. Without pushing, the one in the way didn't move at all; walking into each
-/// other and being pushed apart (before the cores), a walker was pushed 0.31 tiles, a fat one even further, a calm one
-/// not at all. The runner steps around it to the side its number gives it (`crowd_step`) – its way isn't quite
-/// straight, so that matters a little (a walker: 0.14 or 0.17 tiles): measured on both sides.
+/// Who walks into another pushes it along – by their weight (`mass`, `crowd.rs`): a heavier one less far, a calm
+/// stroller just as far. A runner heading for the command center walks into one that has stood for long in its way
+/// (with speed 0: it doesn't walk by itself), and slides off around it. Measured on both sides – the runner's way
+/// isn't quite straight.
 #[test]
 fn zombies_push_each_other() {
     let pushed = |breed: Breed, calm: bool| {
         let mut sum = 0.0;
-        for parity in [0, 1] {
+        for side in [0.01, -0.01] {
             let (mut world, _) = quiet_world();
             world.units.clear();
             no_more_zombies(&mut world);
@@ -2091,9 +2095,8 @@ fn zombies_push_each_other() {
             world.spawn_zombie_as(p, breed, calm);
             world.zombies[0].speed = 0.0;
             let touching = breed.stats().radius + Breed::Runner.stats().radius;
-            world.spawn_zombie_as(p + vec2(touching, 0.0), Breed::Runner, false);
+            world.spawn_zombie_as(p + vec2(touching, side), Breed::Runner, false);
             world.zombies[1].speed = Breed::Runner.stats().speed;
-            world.zombies[1].id = 1_000_000 + parity; // nobody else is on the map
             for _ in 0..20 {
                 world.step(&[]);
             }
@@ -2103,8 +2106,87 @@ fn zombies_push_each_other() {
     };
     let (walker, fat, calm) = (pushed(Breed::Walker, false), pushed(Breed::Fat, false), pushed(Breed::Walker, true));
     assert!(walker > 0.15, "a walker in the way was pushed only {walker} tiles");
-    assert!(fat > 0.05 && fat < walker * 0.8, "a fat one was pushed {fat} tiles, a walker {walker}");
+    assert!(fat > 0.02 && fat < walker * 0.6, "a fat one was pushed {fat} tiles, a walker {walker}");
     assert!(calm > walker * 0.8, "a calm walker was pushed {calm} tiles, a busy one {walker}");
+}
+
+/// TAB's rocks (`crowd.rs`): one that has just stopped stands firm – the others slide off it instead of shoving it
+/// away; after `ROCK_SECONDS` it gives way again. Your units too, while they hold or aim: the crowd doesn't shove them.
+#[test]
+fn who_just_stopped_stands_firm() {
+    let pushed = |still: u32| {
+        let (mut world, _) = quiet_world();
+        world.units.clear();
+        no_more_zombies(&mut world);
+        let p = world.base + vec2(12.5, 0.5);
+        clear_ground(&mut world, (p.x as i32, p.y as i32), 6);
+        world.spawn_zombie_as(p, Breed::Walker, false);
+        world.zombies[0].speed = 0.0;
+        world.zombies[0].still = still;
+        let touching = 2.0 * Breed::Walker.stats().radius;
+        world.spawn_zombie_as(p + vec2(touching, 0.01), Breed::Runner, false);
+        world.zombies[1].speed = Breed::Runner.stats().speed;
+        for _ in 0..20 {
+            world.step(&[]);
+        }
+        world.zombies.iter().find(|z| z.speed == 0.0).unwrap().pos.distance(p)
+    };
+    let (rock, long_ago) = (pushed(1), pushed(crowd::rock_ticks() + 1));
+    assert!(rock < 0.01, "one that just stopped was pushed {rock} tiles");
+    assert!(long_ago > 0.15, "one that stood for long was pushed only {long_ago} tiles");
+
+    // A zombie pressed deep into one of your units: one that holds stays where it is and the zombie is pushed out of
+    // it; one that has stood around for long gives way. A medic – it doesn't shoot, the zombie stays alive.
+    let shoved = |hold: bool| {
+        let (mut world, _) = quiet_world();
+        no_more_zombies(&mut world);
+        world.units.clear();
+        let p = world.base + vec2(12.5, 0.5);
+        clear_ground(&mut world, (p.x as i32, p.y as i32), 8);
+        world.spawn_unit(UnitKind::Medic, p);
+        if hold {
+            let id = world.units[0].id;
+            world.step(&[Order::Command { units: vec![id], command: Command::Hold, queue: false, formation: None }]);
+        }
+        let touching = UNIT_RADIUS + Breed::Walker.stats().radius;
+        world.spawn_zombie_as(p + vec2(touching * 0.5, 0.0), Breed::Walker, false);
+        world.zombies[0].speed = 0.0;
+        for _ in 0..5 {
+            world.step(&[]);
+        }
+        (world.units[0].pos.distance(p), world.zombies[0].pos.distance(world.units[0].pos) / touching)
+    };
+    let ((held, apart), (idle, _)) = (shoved(true), shoved(false));
+    assert!(held < 0.005, "the holding medic was shoved {held} tiles");
+    assert!(apart > 0.95, "the zombie still stands {apart} of touching from the holding medic");
+    assert!(idle > 0.01, "the idle medic gave way only {idle} tiles");
+}
+
+/// A giant walks through a crowd of walkers: they give way, it hardly slows down (`mass`).
+#[test]
+fn a_giant_walks_through_walkers() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    no_more_zombies(&mut world);
+    let p = world.base + vec2(20.5, 0.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 12);
+    for y in -6..=6 {
+        for x in -3..=3 {
+            world.spawn_zombie_as(p + vec2(x as f32, y as f32) * 0.3, Breed::Walker, true);
+        }
+    }
+    world.spawn_zombie_as(p + vec2(4.0, 0.0), Breed::Giant, false);
+    let giant = world.zombies.len() - 1;
+    world.zombies[giant].speed = Breed::Giant.stats().speed;
+    let start = world.zombies[giant].pos;
+    let ticks = 200;
+    for _ in 0..ticks {
+        world.step(&[]);
+    }
+    let giant = world.zombies.iter().find(|z| z.breed == Breed::Giant).unwrap();
+    let walked = giant.pos.distance(start);
+    let free = Breed::Giant.stats().speed * TICK * ticks as f32;
+    assert!(walked > free * 0.8, "the giant got only {walked} of {free} tiles through the walkers");
 }
 
 /// Walkers are slower and weaker than runners, and the spawners send runners.
@@ -2836,7 +2918,7 @@ fn a_giant_stops_to_roar() {
         }
     }
     assert!(roaring.len() as u32 >= values().growl - 1, "it roared for {} ticks", roaring.len());
-    // The first few ticks it still slides on a little (`INERTIA`), then it stands.
+    // The first few ticks it may still be pushed a little, then it stands.
     assert!(roaring[4].distance(*roaring.last().unwrap()) < 0.01, "it walked on roaring");
     assert!(world.zombies[0].pos.distance(p) > 2.0, "it doesn't walk at all");
 }

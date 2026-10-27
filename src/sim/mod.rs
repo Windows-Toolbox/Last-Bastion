@@ -10,6 +10,7 @@
 //! - `orders.rs`: the players' orders – the first part of every tick.
 //! - `spawning.rs`: walkers at the start, the constant spawn, spawners, waves, dead units rising.
 //! - `zombies.rs`: what a zombie notices, where it walks, whom it hits.
+//! - `crowd.rs`: how the crowd pushes and flows – smooth circles pushed out of each other, like TAB's physics.
 //! - `sleep.rs`: the zombies far from everything – asleep as plain entries until something wakes them.
 //! - `ranged.rs`: the zombies that attack from afar – spitters and infested – and the acid in flight.
 //! - `doom.rs`: the villages of doom and the loot lying around – zombies waiting until you come close.
@@ -32,6 +33,7 @@ mod blast;
 mod buildings;
 mod combat;
 mod commands;
+mod crowd;
 mod debt;
 mod doom;
 mod economy;

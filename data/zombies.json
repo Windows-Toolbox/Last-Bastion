@@ -11,6 +11,7 @@
     "level": 1,
     "stroll": [2.0, 8.0],
     "radius": 0.125,
+    "mass": 1.0,
     "sprite": "test/figure"
   },
   "runner": {
@@ -25,6 +26,7 @@
     "level": 2,
     "stroll": [2.0, 14.0],
     "radius": 0.125,
+    "mass": 1.0,
     "sprite": "test/figure"
   },
   "fat": {
@@ -40,6 +42,7 @@
     "level": 5,
     "stroll": [4.0, 30.0],
     "radius": 0.225,
+    "mass": 3.25,
     "sprite": "test/fat"
   },
   "armored": {
@@ -55,6 +58,7 @@
     "level": 3,
     "stroll": [2.0, 18.0],
     "radius": 0.14,
+    "mass": 1.25,
     "sprite": "test/figure"
   },
   "spitter": {
@@ -70,6 +74,7 @@
     "level": 4,
     "stroll": [3.0, 24.0],
     "radius": 0.15,
+    "mass": 1.45,
     "range": 3.5,
     "splash": 1.0,
     "attack_seconds": 2.5,
@@ -89,6 +94,7 @@
     "level": 4,
     "stroll": [3.0, 22.0],
     "radius": 0.13,
+    "mass": 1.1,
     "range": 4.5,
     "attack_seconds": 1.0,
     "sprite": "test/figure"
@@ -106,6 +112,7 @@
     "level": 3,
     "stroll": [3.0, 20.0],
     "radius": 0.13,
+    "mass": 1.0,
     "attack_seconds": 0.75,
     "hit_noise": 200,
     "jump": 3.0,
@@ -124,6 +131,7 @@
     "level": 6,
     "stroll": [4.0, 30.0],
     "radius": 0.45,
+    "mass": 25.0,
     "attack_seconds": 2.0,
     "roam_ring": 54.0,
     "roar_every_seconds": 12.0

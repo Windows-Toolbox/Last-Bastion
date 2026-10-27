@@ -44,7 +44,7 @@
 | `src\main.rs`, `src\bin\editor.rs` | Die zwei Programme (je ein paar Zeilen) |
 | `src\lib.rs`, `src\app.rs` | Liste aller Module / Fenster, Bildschirm-Wechsel, Kommandozeile |
 | `src\game.rs` | Eine Karte auf dem Bildschirm: Takte, Zeichnen, Endbildschirm, Edit/Test im Editor |
-| `src\sim\` | **Die Simulation** (deterministisch, zeichnet nichts): Befehle, Spawn, Zombies, Fernkampf-Zombies (`ranged.rs`), Villages of Doom und Beute (`doom.rs`), Einheiten, Kampf, Gebäude, Wirtschaft (`economy.rs`), Markt (`market.rs`), Schulden und Bank (`debt.rs`), Sprengfässer (`blast.rs`), Scan (`scan.rs`), Runde, Tests |
+| `src\sim\` | **Die Simulation** (deterministisch, zeichnet nichts): Befehle, Spawn, Zombies, Gedränge (`crowd.rs`), Fernkampf-Zombies (`ranged.rs`), Villages of Doom und Beute (`doom.rs`), Einheiten, Kampf, Gebäude, Wirtschaft (`economy.rs`), Markt (`market.rs`), Schulden und Bank (`debt.rs`), Sprengfässer (`blast.rs`), Scan (`scan.rs`), Runde, Tests |
 | `src\placement.rs` | Alle Bauregeln an einem Ort |
 | `src\data.rs`, `src\kinds.rs` | `data\` lesen / Einheiten- und Gebäudetypen |
 | `src\aggro.rs`, `hunt.rs`, `flow.rs` | Wegfindung der Zombies und Einheiten (Bedrohungs-, Jagdkarte, Flow Field mit Sichtlinie) |
@@ -179,12 +179,13 @@
   lange der Weg gedauert hätte). Ein Ausflug, der nahe deiner Augen endet, weckt sie unterwegs: Sie laufen wach von
   außen herein. **Ein leergeräumter Ort füllt sich so wieder auf** – die Zombies gehen dir nicht aus. Eine Welle, die
   über Schlafende zieht, steckt sie an wie wache.
-- **Gedränge wie in TAB:** Zombies stehen ein Stück ineinander (bis zu einem Viertel), nie verschmolzen und nicht in
-  Reihen. Wer blockiert ist, weicht seitlich aus – vor Mauern und Lücken fließen die hinteren um den Haufen herum.
-  **Sie schieben sich:** wer in einen anderen läuft, schiebt ihn mit – auch herumstehende Bummler. Fat und Riese
-  schieben Kleine weg, ein Walker bewegt einen Riesen kaum. **Die ganze Masse drückt:** wer geschoben wird, schiebt
-  weiter – vor einer Mauer drückt sie die vorderen seitlich auseinander, statt sich dahinter anzureihen. Die Masse
-  steht dabei ruhig, ohne zu zittern, und schlingert nicht durch Lücken.
+- **Gedränge wie TABs Physik – die Masse fließt:** Zombies sind glatte Kreise mit Gewicht, die sich jeden Tick in 8
+  Runden auseinanderschieben (`src\sim\crowd.rs`). Vor einer Mauer drückt die Masse die vorderen seitlich weg und
+  verteilt sich über die ganze Wand, durch eine Lücke fließt sie wie Wasser, um Ecken herum. Sie steht dabei ein Stück
+  ineinander und ruhig, ohne zu zittern, und kein Körper steckt in einer Wand. **Gewicht:** Riese und Fat schieben Kleine
+  weg, ein Walker bewegt einen Riesen kaum. **Felsen wie TAB:** wer gerade angehalten hat, steht 5 s fest (500-fach
+  schwer) – die anderen fließen um ihn herum. Deine Einheiten auch, solange sie halten oder zielen; sonst schiebt die
+  Horde sie.
 - **Einblenden:** Zombies kommen sanft ins Bild (0,6 s) und verschwinden sanft (0,8 s) – wie TAB, kein Aufploppen am
   Sichtrand. Im Editor („All“, „Zombies“) sieht man auch die Schlafenden, dunkler.
 - **Leerlauf wie TAB:** ohne Ziel wird gewürfelt – meistens **stehen** (1300), selten **knurren** (150) oder
@@ -293,7 +294,7 @@
 | Rechte Maus | Laufen / Zombie angreifen / Einheit folgen / in den Turm / Fass aus der Munitionsfabrik holen / Haus eines Dorfs angreifen / auf Beute laufen. Gebäude: Sammelpunkt |
 | Rechte Maus **ziehen** | Formation (X Linie, C Block, V Kreis) |
 | T / P / M + Linksklick | Angriff (Attack-Move) / Patrouille / Laufen – ziehen = in Formation |
-| S / H | Stopp / Halten (läuft nicht von selbst, lässt sich aber schieben) |
+| S / H | Stopp / Halten (läuft nicht von selbst; eigene Einheiten schieben sie, Zombies nicht) |
 | F / X | Ausgewählte Gebäude reparieren / alle reparieren (X nur ohne ausgewählte Einheiten) |
 | **Shift** + Befehl | Hinten an die Befehlskette hängen. Shift loslassen = Befehl weg von der Maus, wieder drücken = zurück |
 | **Shift** + bauen / ausbilden | Fehlt nur Gold: ins Minus, in den Dispo der Banken (ohne Shift ist 0 die Grenze) |

@@ -5,7 +5,7 @@
 //! Filled anew in two rounds – count per tile, then put each one in its place ("counting sort"). Within a tile they
 //! stay in the order they were given (by index) – the same on every PC.
 //!
-//! What's kept is a `Body` – the index, where it stands, how big it is, its number. The crowd only needs those when it
+//! What's kept is a `Body` – the index, where it stands, how big it is. The crowd only needs those when it
 //! looks at its neighbours, and finds them right there, one after the other, instead of fetching every whole zombie
 //! from somewhere in memory. With a hundred thousand zombies that's what makes it fast.
 
@@ -14,11 +14,10 @@ use macroquad::math::Vec2;
 /// "Not on the map" in `tile_of`.
 const OFF_MAP: u32 = u32::MAX;
 
-/// What the crowd needs of a neighbour: its index in the list, its number, where it stands and how big it is.
+/// What the crowd needs of a neighbour: its index in the list, where it stands and how big it is.
 #[derive(Clone, Copy)]
 pub struct Body {
     pub index: u32,
-    pub id: u32,
     pub pos: Vec2,
     pub radius: f32,
 }
@@ -41,13 +40,13 @@ impl SpatialGrid {
         SpatialGrid { size, start: vec![0; size * size + 1], bodies: Vec::new(), slot_of: Vec::new(), next: Vec::new() }
     }
 
-    /// Empties all tiles and enters everyone again: (where, how big, number) – their index is their place in the list.
+    /// Empties all tiles and enters everyone again: (where, how big) – their index is their place in the list.
     /// Gone through twice (`Clone`): first counted per tile, then each one put in its place.
-    pub fn rebuild(&mut self, bodies: impl Iterator<Item = (Vec2, f32, u32)> + Clone) {
+    pub fn rebuild(&mut self, bodies: impl Iterator<Item = (Vec2, f32)> + Clone) {
         // 1. How many per tile (counted one place further on).
         self.start.fill(0);
         let mut count = 0;
-        for (pos, _, _) in bodies.clone() {
+        for (pos, _) in bodies.clone() {
             if let Some(tile) = self.tile(pos) {
                 self.start[tile + 1] += 1;
             }
@@ -61,14 +60,14 @@ impl SpatialGrid {
         self.next.clear();
         self.next.extend_from_slice(&self.start[..self.start.len() - 1]);
         self.bodies.clear();
-        self.bodies.resize(self.start[self.start.len() - 1] as usize, Body { index: 0, id: 0, pos: Vec2::ZERO, radius: 0.0 });
+        self.bodies.resize(self.start[self.start.len() - 1] as usize, Body { index: 0, pos: Vec2::ZERO, radius: 0.0 });
         self.slot_of.clear();
         self.slot_of.resize(count, OFF_MAP);
-        for (i, (pos, radius, id)) in bodies.enumerate() {
+        for (i, (pos, radius)) in bodies.enumerate() {
             if let Some(tile) = self.tile(pos) {
                 let at = self.next[tile];
                 self.next[tile] += 1;
-                self.bodies[at as usize] = Body { index: i as u32, id, pos, radius };
+                self.bodies[at as usize] = Body { index: i as u32, pos, radius };
                 self.slot_of[i] = at;
             }
         }
