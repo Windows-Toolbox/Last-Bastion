@@ -4798,3 +4798,64 @@ fn strolling_sleepers_fill_up_an_empty_place() {
     assert!(near > 0, "nobody strolled in");
 }
 
+
+/// TAB's neutral things (`neutral.rs`): a joinable tent blocks its tiles and does nothing – it's not one of the
+/// colony's – until one of your units comes within a tile of it; then it's an ordinary building of the colony, with the
+/// hit points and the tag it had, and the screen says so. A neutral one (not joinable) stays where it is.
+#[test]
+fn a_joinable_building_joins_when_a_unit_comes_close() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    let tile = (bx + 10, by + 10);
+    clear_ground(&mut world, (tile.0 + 1, tile.1 + 1), 8);
+    let tag = Tag { name_id: "outpost".into(), name: "Old outpost".into(), ..Tag::default() };
+    world.add_neutral(Thing::Building { kind: BuildingKind::Tent, tile, turned: false }, true, 50, false, Some(Box::new(tag.clone())));
+    world.add_neutral(Thing::Building { kind: BuildingKind::Tent, tile: (tile.0 - 5, tile.1), turned: false }, false, 100, false, None);
+    world.step(&[]);
+    assert_eq!(world.neutral.len(), 2);
+    assert!(world.map.is_blocked(tile.0, tile.1) && !world.map.is_buildable(tile.0, tile.1), "its tiles are free");
+    let tents = |w: &World| w.buildings.iter().filter(|b| b.kind == BuildingKind::Tent).count();
+    assert_eq!(tents(&world), 0, "a neutral tent counts as the colony's");
+    // A unit 3 tiles away: nothing. Then right next to both.
+    bait(&mut world, UnitKind::Soldier, vec2(tile.0 as f32 + 0.5, tile.1 as f32 - 3.0));
+    for _ in 0..20 {
+        world.step(&[]);
+    }
+    assert_eq!(world.neutral.len(), 2, "it joined from 3 tiles away");
+    // On the tile left of it – within a tile of its edge.
+    world.units[0].pos = vec2(tile.0 as f32 - 0.5, tile.1 as f32 + 0.5);
+    for _ in 0..20 {
+        world.step(&[]);
+    }
+    assert_eq!(world.neutral.len(), 1, "the joinable tent didn't join, or the neutral one did");
+    let tent = world.buildings.iter().find(|b| b.kind == BuildingKind::Tent).expect("no tent of the colony");
+    assert_eq!((tent.tile, tent.hp, tent.tag.as_deref()), (tile, BuildingKind::Tent.stats().hp / 2, Some(&tag)));
+    assert!(world.notices.iter().any(|n| matches!(n, Notice::Joined { name } if name == "Old outpost")));
+}
+
+/// The editor's owner: a unit of the colony made neutral keeps its hit points, veteran and tag – and back in the colony
+/// too. Neutral it isn't in the colony's list (nobody selects it, the zombies don't see it).
+#[test]
+fn the_owner_can_change_and_back() {
+    let (mut world, id) = quiet_world();
+    let tag = Tag { name: "Sarge".into(), minimap: true, ..Tag::default() };
+    world.apply_orders(&[
+        Order::SetTag { thing: ThingRef::Unit(id), tag: tag.clone() },
+        Order::SetMark { thing: ThingRef::Unit(id), on: true },
+        Order::SetHealth { thing: ThingRef::Unit(id), percent: 40 },
+    ]);
+    let unit = world.units.iter().find(|u| u.id == id).unwrap();
+    assert!(unit.veteran && unit.hp == unit.max_hp() * 40 / 100);
+    assert_eq!(world.minimap_marks().len(), 1);
+    let (_, _, neutral) = world.next_ids();
+    world.apply_orders(&[Order::SetOwner { thing: ThingRef::Unit(id), owner: Owner::Neutral }]);
+    assert!(world.units.iter().all(|u| u.id != id), "still one of the colony's");
+    assert_eq!(world.neutral.len(), 1);
+    assert_eq!(world.neutral[0].id, neutral, "not the number the editor expects");
+    assert_eq!((world.neutral[0].hp_percent, world.neutral[0].veteran), (40, true));
+    let (_, unit_id, _) = world.next_ids();
+    world.apply_orders(&[Order::SetOwner { thing: ThingRef::Neutral(neutral), owner: Owner::Colony }]);
+    let back = world.units.iter().find(|u| u.id == unit_id).expect("not back in the colony");
+    assert!(back.veteran && back.hp == back.max_hp() * 40 / 100 && back.tag.as_deref() == Some(&tag));
+}

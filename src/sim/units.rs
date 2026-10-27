@@ -6,6 +6,7 @@ use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
 use macroquad::math::{vec2, Vec2};
 
+use super::neutral::Tag;
 use super::combat::{Aim, Target};
 use super::crowd;
 use super::commands::{Task, Waypoint};
@@ -62,6 +63,9 @@ pub struct Unit {
     pub(super) hurt_at: u64,
     /// Medic: thousandths of a hit point healed but not given yet – `heal_per_second` is rarely whole per tick.
     pub(super) heal: u32,
+    /// What the editor gave it: a name for the scripts, a name and text for the player, a mark on the minimap
+    /// (`neutral.rs`). `Box`: most units have none, and then it costs only the room of a pointer.
+    pub tag: Option<Box<Tag>>,
 }
 
 impl Unit {
@@ -77,6 +81,15 @@ impl Unit {
     pub fn max_hp(&self) -> u32 {
         let bonus = if self.veteran { data::get().units.veterans.hp_percent } else { 0 };
         self.stats().hp * (100 + bonus) / 100
+    }
+
+    /// It becomes a veteran (`veterans.rs`, or the editor): the extra hit points come right away – a veteran isn't
+    /// promoted half hurt – and its experience is as much as it takes.
+    pub fn make_veteran(&mut self) {
+        let before = self.max_hp();
+        self.veteran = true;
+        self.hp += self.max_hp() - before;
+        self.xp = self.xp.max(data::get().units.veterans.xp * 1000);
     }
 
     /// Damage of one shot before the debt's penalty – a veteran's `damage_percent` more.
@@ -221,6 +234,7 @@ impl World {
             veteran: false,
             hurt_at: 0,
             heal: 0,
+            tag: None,
         });
     }
 

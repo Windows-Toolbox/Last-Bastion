@@ -14,7 +14,7 @@ use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
 use crate::map::{Ore, Region, Terrain};
 use crate::picture;
-use crate::sim::{Breed, Building, DoomHouse, LootKind, Mark, TICK, UNIT_RADIUS, World};
+use crate::sim::{self, Breed, Building, DoomHouse, LootKind, Mark, TICK, UNIT_RADIUS, World};
 use crate::sprites::{Pose, Sprite, Sprites};
 use crate::vision::Vision;
 
@@ -343,6 +343,26 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     let mut parts = Vec::new();
     for building in &world.buildings {
         building_parts(world, building, &mut parts);
+    }
+    // Neutral buildings and units (`sim/neutral.rs`): grey like a building switched off – once seen, like the houses of
+    // doom.
+    for neutral in world.neutral.iter().filter(|n| area.contains(n.center())) {
+        if seen(world, &view.fog, neutral.center()).is_none() {
+            continue;
+        }
+        match neutral.thing {
+            sim::Thing::Building { kind, tile, turned } => {
+                let mut building = Building::standing(0, kind, tile, turned);
+                building.off = true;
+                building_parts(world, &building, &mut parts);
+            }
+            sim::Thing::Unit { kind, pos } => {
+                let p = vec2(pos.0, pos.1);
+                let (size, height) = unit_shape(kind);
+                let color = mix(kind_color(kind), SWITCHED_OFF, 0.6);
+                parts.push((p.x + p.y, Prism(rect(p - Vec2::splat(size / 2.0), Vec2::splat(size)), 0.0, height, color)));
+            }
+        }
     }
     // The houses of the villages of doom and the loot: once seen, they stay on the map like the terrain – darkened where
     // nobody looks right now, not at all where nobody has ever looked.

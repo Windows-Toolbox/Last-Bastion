@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 
 use macroquad::math::{vec2, Vec2};
 
+use super::neutral::Tag;
 use super::commands::Command;
 use super::terrain::free_point_near;
 
@@ -65,6 +66,9 @@ pub struct Building {
     pub selling: bool,
     pub sold_goods: u32,
     pub sold_gold: u32,
+    /// What the editor gave it: a name for the scripts, a name and text for the player, a mark on the minimap
+    /// (`neutral.rs`).
+    pub tag: Option<Box<Tag>>,
 }
 
 /// What a production queue makes: a unit (barracks, inn) or a barrel (munitions factory, `blast.rs`).
@@ -101,6 +105,37 @@ impl Product {
 }
 
 impl Building {
+    /// A building of this kind standing there, finished and unhurt, with number `id` – what `add_building` puts on the
+    /// map (and what a neutral one is drawn as, `draw.rs`).
+    pub fn standing(id: u32, kind: BuildingKind, tile: (i32, i32), turned: bool) -> Building {
+        Building {
+            id,
+            kind,
+            tile,
+            turned,
+            hp: kind.stats().hp,
+            shield: kind.stats().max_shield(),
+            infected: false,
+            off: false,
+            construction: 0,
+            repair_left: 0,
+            production: VecDeque::new(),
+            progress: 0,
+            charge: 0,
+            fuelled: false,
+            smelted: 0,
+            reload: 0,
+            fed: true,
+            paid: 0,
+            rally: None,
+            blown: false,
+            selling: true,
+            sold_goods: 0,
+            sold_gold: 0,
+            tag: None,
+        }
+    }
+
     pub fn stats(&self) -> &'static BuildingStats {
         self.kind.stats()
     }
@@ -307,31 +342,7 @@ impl World {
 
     pub(super) fn add_building(&mut self, kind: BuildingKind, tile: (i32, i32), turned: bool) {
         self.next_building_id += 1;
-        self.buildings.push(Building {
-            id: self.next_building_id,
-            kind,
-            tile,
-            turned,
-            hp: kind.stats().hp,
-            shield: kind.stats().max_shield(),
-            infected: false,
-            off: false,
-            construction: 0,
-            repair_left: 0,
-            production: VecDeque::new(),
-            progress: 0,
-            charge: 0,
-            fuelled: false,
-            smelted: 0,
-            reload: 0,
-            fed: true,
-            paid: 0,
-            rally: None,
-            blown: false,
-            selling: true,
-            sold_goods: 0,
-            sold_gold: 0,
-        });
+        self.buildings.push(Building::standing(self.next_building_id, kind, tile, turned));
         // Block the map right away – the next building in the same tick must not go on the same spot.
         let size = kind.footprint(turned);
         self.map.set_occupied(tile.0, tile.1, size, true);

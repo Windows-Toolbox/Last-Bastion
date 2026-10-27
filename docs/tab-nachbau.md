@@ -390,6 +390,14 @@ Kommandozentrum, eigene Zähler. Ohne Steam-Workshop und Deko-Ebenen.
 (Radierer, kein Erz, Gras über alles – drei Befehle, ein Undo-Schritt), die Kachel unter der Maus unten im Panel,
 Pinsel rund/eckig (`square_brush`); der Startbildschirm zeigt Autor, Beschreibung und das Bild (`level_picture`).
 
+**(b) ist fertig:** `src/sim/neutral.rs` – `Tag` (Name-ID, Name, Text, Minimap) an `Building`/`Unit`, `Owner`
+(Kolonie, neutral, beitretbar), neutrale Dinge in `World::neutral` (nehmen an nichts teil, ein Gebäude sperrt seine
+Kacheln über die Dorf-Markierung der Karte), Beitreten wie `CNeutralJoinable` (alle 7 Takte, eine Einheit innerhalb einer
+Kachel), Befehle `SetTag`, `SetOwner`, `SetHealth`, `SetMark`, `RemoveThing`; Kartendatei: `hp_percent`, `infected`,
+`veteran`, `tag` an Gebäuden und Einheiten, Liste `neutral`; Editor: Abschnitte „Placed" und „Object"; die Leiste zeigt
+Name und Text, die Minimap eine weiße Raute. Nicht übernommen: TABs Schild-Text, „Center Camera", eigene Töne beim
+Beitreten; „Script On Join" kommt mit (c).
+
 ---
 
 ## Schritt 8 – Kohle wieder dazu

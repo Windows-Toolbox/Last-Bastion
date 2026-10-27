@@ -920,7 +920,11 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      loot, a zombie's breed and state, HP, owner; move, copy, delete.
      *In the prototype:* a right click on a spawner opens its properties (name, straight or slanted, mode, remove); Del
      removes selected buildings (the command center too). The zombie brush works like TAB's: per tile up to 3 of each
-     breed (a slider each), painting again only fills up; giants are placed one at a time.
+     breed (a slider each), painting again only fills up; giants are placed one at a time. Like TAB's entities: a list
+     of everything placed (filters), and per building or unit its owner (colony, neutral, or joining the colony when a
+     unit comes within a tile – TAB's `NeutralJoinable`), its life in %, infected or veteran, and a tag (a name ID for
+     the scripts, a name and text the player sees, a mark on the minimap); locate, clone, delete. Neutral things wait in
+     a list of their own and take part in nothing (`sim/neutral.rs`) – step 7's owner, without the ally AIs.
   4. **Painter:** line, rectangle, fill, noise brush, a generator on a part of the map, copy and paste areas.
   5. **Regions and points (SC2):** named areas and spots – what triggers talk about ("north gate", "village 3").
   6. **Triggers (SC2):** events + conditions + actions, variables. Events: a time, a unit in a region, built/destroyed,

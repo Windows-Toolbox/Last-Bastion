@@ -97,7 +97,7 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
-/// Something about the events the screen should tell the player – the game takes them (`World::notices`).
+/// Something about the events (and the neutral things) the screen should tell the player – the game takes them (`World::notices`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Notice {
     /// An announced event will come at tick `at`, with about this many zombies, from these sides (`Spawner::side`:
@@ -105,6 +105,8 @@ pub enum Notice {
     Coming { name: String, at: u64, zombies: u32, sides: Vec<u32>, final_wave: bool },
     /// An announced event came.
     Came { name: String, zombies: u32, final_wave: bool },
+    /// A neutral building or unit joined the colony (`neutral.rs`).
+    Joined { name: String },
 }
 
 /// Zombies an event still has to bring out of one side (TAB's `GenerationRequest`): every `stream_every_seconds` the

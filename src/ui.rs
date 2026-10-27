@@ -17,7 +17,7 @@ use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{to_frame, Ore, Region, Terrain};
 use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
-use crate::sim::{spawner_corners, Axes, Breed, Command, Mark, Order, Rally, SwitchBlock, World, MAX_PRODUCTION, UNIT_RADIUS};
+use crate::sim::{spawner_corners, Axes, Breed, Command, Mark, Order, Rally, SwitchBlock, ThingRef, World, MAX_PRODUCTION, UNIT_RADIUS};
 
 /// One entry of the selection, as an index into the world's list of units or buildings.
 #[derive(Clone, Copy, PartialEq)]
@@ -691,7 +691,13 @@ impl Ui {
 
     pub fn handle_input(&mut self, world: &World, camera: &mut Camera, orders: &mut Vec<Order>, dt: f32) {
         self.forget_dead(world);
-        self.editor.sync(self.placing, tile_of(camera.screen_to_world(Vec2::from(mouse_position()))));
+        // One building or one unit selected: the editor shows its properties.
+        let selected = match (self.selected.as_slice(), self.selected_buildings.as_slice()) {
+            ([unit], []) => Some(ThingRef::Unit(*unit)),
+            ([], [building]) => Some(ThingRef::Building(*building)),
+            _ => None,
+        };
+        self.editor.sync(self.placing, tile_of(camera.screen_to_world(Vec2::from(mouse_position()))), selected);
         // What the editor's panel did this frame (it ran before, `Game::frame`): a building button hangs the building
         // on the mouse; a tool taken in hand takes off whatever is on it – a building, a command waiting for its target.
         if let Some(place) = self.editor.place.take() {

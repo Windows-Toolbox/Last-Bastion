@@ -14,6 +14,7 @@
 //! - `crowd.rs`: how the crowd pushes and flows – smooth circles pushed out of each other, like TAB's physics.
 //! - `sleep.rs`: the zombies far from everything – asleep as plain entries until something wakes them.
 //! - `ranged.rs`: the zombies that attack from afar – spitters and infested – and the acid in flight.
+//! - `neutral.rs`: what the editor gives a placed thing – a tag, an owner (neutral, joinable) – and the neutral ones.
 //! - `doom.rs`: the villages of doom and the loot lying around – zombies waiting until you come close.
 //! - `sound.rs`: noise like in TAB – what makes how much, where it adds up, who hears it and comes.
 //! - `units.rs`: your units – walking, arriving, pushing, climbing into towers.
@@ -40,6 +41,7 @@ mod doom;
 mod economy;
 mod events;
 mod market;
+mod neutral;
 mod orders;
 mod ranged;
 mod round;
@@ -77,6 +79,7 @@ pub use debt::DebtStage;
 pub use doom::{DoomHouse, Loot, LootKind};
 pub use economy::{Power, Stock};
 pub use events::{plan_events, Event, Notice};
+pub use neutral::{Neutral, Owner, Tag, Thing, ThingRef};
 pub use ranged::Spit;
 pub use orders::{Order, MAP_SIZES, MOST_PER_TILE};
 pub use round::{Outcome, Score};
@@ -120,6 +123,8 @@ pub struct World {
     pub corpses: Vec<Corpse>,
     /// The houses of the villages of doom, and the loot lying around (`doom.rs`).
     pub doom: Vec<DoomHouse>,
+    /// Neutral buildings and units (`neutral.rs`) – nobody's, until a joinable one joins the colony.
+    pub neutral: Vec<Neutral>,
     pub loot: Vec<Loot>,
     /// Spitters' acid in flight (`ranged.rs`).
     pub spits: Vec<Spit>,
@@ -235,6 +240,7 @@ pub struct World {
     next_spawner_id: u32,
     next_doom_id: u32,
     next_loot_id: u32,
+    next_neutral_id: u32,
 }
 
 impl World {
@@ -364,6 +370,7 @@ impl World {
             buildings: Vec::new(),
             corpses: Vec::new(),
             doom: Vec::new(),
+            neutral: Vec::new(),
             loot: Vec::new(),
             spits: Vec::new(),
             gold: difficulty.start_gold,
@@ -422,6 +429,7 @@ impl World {
             next_spawner_id: 0,
             next_doom_id: 0,
             next_loot_id: 0,
+            next_neutral_id: 0,
         }
     }
 
@@ -500,6 +508,7 @@ impl World {
         self.move_zombies(); // zombies.rs, infected buildings in buildings.rs, shots of the ranged ones in ranged.rs
         self.fly_spits(); // ranged.rs
         self.update_units(); // units.rs, shooting in combat.rs
+        self.join_neutrals(); // neutral.rs
         self.fire_towers(); // towers.rs – the ballista and the machine gun tower
         self.detonate(); // blast.rs – barrels hit or carried by the dead go off
         self.update_buildings(); // buildings.rs, gold too

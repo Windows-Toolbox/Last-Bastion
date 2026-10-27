@@ -32,7 +32,8 @@ use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Ore, Terrain};
 use crate::map::BORDER;
 use crate::sim::{
-    Axes, Breed, BreedCount, Event, Order, SpawnMode, Spawner, WaveFrom, WaveGroup, World, MAP_SIZES, MOST_PER_TILE,
+    Axes, Breed, BreedCount, Event, Order, Owner, SpawnMode, Spawner, Tag, Thing, ThingRef, WaveFrom, WaveGroup, World,
+    MAP_SIZES, MOST_PER_TILE,
 };
 
 /// Width of the panel. egui counts in points – here the same as macroquad's pixels.
@@ -189,6 +190,18 @@ pub enum EditorRequest {
     /// "Undo" (Ctrl+Z) and "Redo" (Ctrl+Y).
     Undo,
     Redo,
+    /// "Locate": the camera to this point (TAB's "Locate on map").
+    Locate(Vec2),
+}
+
+/// Which placed things the list shows (TAB: "Filter by selected Template", "Show All").
+#[derive(Clone, Copy, PartialEq)]
+pub enum Filter {
+    All,
+    Buildings,
+    Units,
+    Neutral,
+    Tagged,
 }
 
 /// The kinds of waves the editor can send right now – all of them from the spawners.
@@ -242,6 +255,12 @@ pub struct Editor {
     mouse_tile: Option<(i32, i32)>,
     /// The brush round (big ones a rough circle) or square, like TAB's pencil shape.
     pub square_brush: bool,
+    /// The placed thing whose properties the "Entities" tab shows (TAB's "Edit") – picked in the list, or the one
+    /// selected on the map; and that selection when it last changed, so a pick in the list stays until it changes.
+    object: Option<ThingRef>,
+    seen_selection: Option<ThingRef>,
+    /// What the list of placed things shows.
+    filter: Filter,
     /// What map this is (generator, seed, days) – set by `game.rs`.
     pub map_info: String,
     /// What came of the last "Save" – set by `game.rs`.
@@ -293,6 +312,9 @@ impl Editor {
             info: MapInfo::default(),
             mouse_tile: None,
             square_brush: false,
+            object: None,
+            seen_selection: None,
+            filter: Filter::All,
             map_info: String::new(),
             status: None,
             request: None,
@@ -313,10 +335,17 @@ impl Editor {
         }
     }
 
-    /// Every frame: the building `ui.rs` has on the mouse – its button is lit – and the tile under the mouse.
-    pub fn sync(&mut self, placing: Option<BuildingKind>, mouse_tile: (i32, i32)) {
+    /// Every frame: the building `ui.rs` has on the mouse – its button is lit –, the tile under the mouse, and the one
+    /// building or unit selected on the map (if it's one): a new selection shows its properties.
+    pub fn sync(&mut self, placing: Option<BuildingKind>, mouse_tile: (i32, i32), selected: Option<ThingRef>) {
         self.placing = placing;
         self.mouse_tile = Some(mouse_tile);
+        if selected != self.seen_selection {
+            self.seen_selection = selected;
+            if selected.is_some() {
+                self.object = selected;
+            }
+        }
     }
 
     /// The drop: `drop` zombies around `center`, in the radius of the brush – at least as big as the crowd needs.
@@ -673,6 +702,8 @@ impl Editor {
     }
 
     fn entities_tab(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        self.placed_section(ui, world);
+        self.object_section(ui, world, orders);
         section(ui, "Units", "click inside the border", |ui| {
             ui.horizontal_wrapped(|ui| {
                 for kind in UnitKind::ALL {
@@ -719,6 +750,122 @@ impl Editor {
         self.brush_size(ui);
         section(ui, "Spawners", "click to place or select", |ui| self.tool_button(ui, Tool::Spawner));
         self.spawner_section(ui, world, orders);
+    }
+
+    /// TAB's list of the entities created: every building, unit and neutral thing on the map (filtered), a click picks
+    /// one – its properties show below (`object_section`). At most `MAX_LISTED` rows, the rest only counted.
+    fn placed_section(&mut self, ui: &mut Ui, world: &World) {
+        const MAX_LISTED: usize = 300;
+        section(ui, "Placed", "click one - its properties below", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (filter, text) in [(Filter::All, "All"), (Filter::Buildings, "Buildings"), (Filter::Units, "Units"), (Filter::Neutral, "Neutral"), (Filter::Tagged, "Tagged")] {
+                    ui.selectable_value(&mut self.filter, filter, text);
+                }
+            });
+            let rows = placed(world, self.filter);
+            ScrollArea::vertical().id_salt("placed").max_height(150.0).show(ui, |ui| {
+                for (thing, label) in rows.iter().take(MAX_LISTED) {
+                    if ui.selectable_label(self.object == Some(*thing), label).clicked() {
+                        self.object = Some(*thing);
+                    }
+                }
+            });
+            let more = rows.len().saturating_sub(MAX_LISTED);
+            let count = if more > 0 { format!("{} - {more} more not listed", rows.len()) } else { rows.len().to_string() };
+            ui.label(RichText::new(count).small().weak());
+        });
+    }
+
+    /// TAB's entity properties for the picked thing (`sim/neutral.rs`): locate, clone (its kind into the hand),
+    /// delete; its owner – the colony, neutral, or joining the colony when a unit comes close –, its hit points, infected
+    /// or veteran, and its tag: the name scripts know it by, a name and a text the player sees, a mark on the minimap.
+    fn object_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        let Some(thing) = self.object else {
+            return;
+        };
+        let Some(at) = world.thing_center(thing) else {
+            self.object = None;
+            return;
+        };
+        let (kind_name, owner, percent, mark, clone) = describe(world, thing);
+        section(ui, "Object", kind_name, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Locate").clicked() {
+                    self.request = Some(EditorRequest::Locate(at));
+                }
+                if ui.button("Clone").on_hover_text("Its kind into the hand - click to place another").clicked() {
+                    match clone {
+                        Copies::Building(kind) => {
+                            self.tool = None;
+                            self.place = Some(Some(kind));
+                        }
+                        Copies::Unit(kind) => {
+                            self.place = Some(None);
+                            self.tool = Some(Tool::Unit(kind));
+                        }
+                    }
+                }
+                if ui.button("Delete").clicked() {
+                    orders.push(Order::RemoveThing { thing });
+                    self.object = None;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Owner");
+                for (o, text, hint) in [
+                    (Owner::Colony, "Colony", "Yours"),
+                    (Owner::Neutral, "Neutral", "Nobody's: it does nothing, the zombies leave it alone"),
+                    (Owner::Joinable, "Joins", "Nobody's until one of your units comes within a tile - then yours"),
+                ] {
+                    if ui.selectable_label(owner == o, text).on_hover_text(hint).clicked() && owner != o {
+                        orders.push(Order::SetOwner { thing, owner: o });
+                        // It gets a new number in its new list – the one the world gives next.
+                        let (building, unit, neutral) = world.next_ids();
+                        self.object = Some(match (thing, o) {
+                            (ThingRef::Neutral(id), Owner::Neutral | Owner::Joinable) => ThingRef::Neutral(id),
+                            (_, Owner::Neutral | Owner::Joinable) => ThingRef::Neutral(neutral),
+                            (ThingRef::Neutral(_), Owner::Colony) if matches!(clone, Copies::Building(_)) => ThingRef::Building(building),
+                            (ThingRef::Neutral(_), Owner::Colony) => ThingRef::Unit(unit),
+                            (other, Owner::Colony) => other,
+                        });
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Life");
+                if let Some(percent) = settled(ui, percent, |v| DragValue::new(v).range(1..=100).suffix(" %")) {
+                    orders.push(Order::SetHealth { thing, percent });
+                }
+                if let Some((text, on)) = mark {
+                    let mut now = on;
+                    if ui.checkbox(&mut now, text).changed() {
+                        orders.push(Order::SetMark { thing, on: now });
+                    }
+                }
+            });
+            let tag = world.tag_of(thing).cloned().unwrap_or_default();
+            let mut changed = tag.clone();
+            egui::Grid::new(("tag", thing_key(thing))).num_columns(2).show(ui, |ui| {
+                ui.label("Name ID").on_hover_text("The name the scripts know it by");
+                if let Some(text) = settled_text(ui, &tag.name_id, false) {
+                    changed.name_id = text;
+                }
+                ui.end_row();
+                ui.label("Name").on_hover_text("Shown instead of its kind's name");
+                if let Some(text) = settled_text(ui, &tag.name, false) {
+                    changed.name = text;
+                }
+                ui.end_row();
+            });
+            ui.label("Text");
+            if let Some(text) = settled_text(ui, &tag.text, true) {
+                changed.text = text;
+            }
+            ui.checkbox(&mut changed.minimap, "Mark on the minimap");
+            if changed != tag {
+                orders.push(Order::SetTag { thing, tag: changed });
+            }
+        });
     }
 
     /// The selected spawner in the panel – unless its properties window is open (right click): the same fields twice
@@ -1113,6 +1260,89 @@ where
     }
     ui.data_mut(|data| data.remove::<T>(id));
     (shown != value).then_some(shown)
+}
+
+/// A text field like `settled_name` – but an empty text counts too (it takes the text away), and it may have several
+/// lines.
+fn settled_text(ui: &mut Ui, value: &str, multiline: bool) -> Option<String> {
+    let id = ui.next_auto_id().with("settled text");
+    let mut text = ui.data(|data| data.get_temp::<String>(id)).unwrap_or_else(|| value.to_owned());
+    let field = if multiline {
+        ui.add(TextEdit::multiline(&mut text).char_limit(400).desired_rows(2).desired_width(f32::INFINITY))
+    } else {
+        ui.add(TextEdit::singleline(&mut text).char_limit(MAX_NAME * 2).desired_width(f32::INFINITY))
+    };
+    if field.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, text));
+        return None;
+    }
+    ui.data_mut(|data| data.remove::<String>(id));
+    let text = text.trim();
+    (text != value).then(|| text.to_owned())
+}
+
+/// What a placed thing's "Clone" puts into the hand.
+#[derive(Clone, Copy)]
+enum Copies {
+    Building(BuildingKind),
+    Unit(UnitKind),
+}
+
+/// A number per placed thing, for egui to tell its fields apart.
+fn thing_key(thing: ThingRef) -> (u8, u32) {
+    match thing {
+        ThingRef::Building(id) => (0, id),
+        ThingRef::Unit(id) => (1, id),
+        ThingRef::Neutral(id) => (2, id),
+    }
+}
+
+/// The rows of the list of placed things: each thing and its line ("Tent (12, 40)", "Neutral: Soldier …").
+fn placed(world: &World, filter: Filter) -> Vec<(ThingRef, String)> {
+    let tagged = |tag: Option<&Tag>| tag.map(|t| format!(" - {}", if t.name.is_empty() { &t.name_id } else { &t.name })).unwrap_or_default();
+    let mut rows = Vec::new();
+    if matches!(filter, Filter::All | Filter::Buildings | Filter::Tagged) {
+        for b in world.buildings.iter().filter(|b| filter != Filter::Tagged || b.tag.is_some()) {
+            rows.push((ThingRef::Building(b.id), format!("{} ({}, {}){}", b.stats().name, b.tile.0, b.tile.1, tagged(b.tag.as_deref()))));
+        }
+    }
+    if matches!(filter, Filter::All | Filter::Units | Filter::Tagged) {
+        for u in world.units.iter().filter(|u| filter != Filter::Tagged || u.tag.is_some()) {
+            rows.push((ThingRef::Unit(u.id), format!("{} ({:.0}, {:.0}){}", u.stats().name, u.pos.x, u.pos.y, tagged(u.tag.as_deref()))));
+        }
+    }
+    if matches!(filter, Filter::All | Filter::Neutral | Filter::Tagged) {
+        for n in world.neutral.iter().filter(|n| filter != Filter::Tagged || n.tag.is_some()) {
+            let who = if n.joinable { "Joins" } else { "Neutral" };
+            let at = n.center();
+            rows.push((ThingRef::Neutral(n.id), format!("{who}: {} ({:.0}, {:.0}){}", n.name(), at.x, at.y, tagged(n.tag.as_deref()))));
+        }
+    }
+    rows
+}
+
+/// What the properties of a placed thing start from: its kind's name, its owner, its hit points in percent, its mark
+/// (the box's text and whether it's set – a neutral building has none), and what "Clone" takes into the hand.
+fn describe(world: &World, thing: ThingRef) -> (&'static str, Owner, u32, Option<(&'static str, bool)>, Copies) {
+    let percent = |hp: u32, full: u32| (hp * 100 / full.max(1)).clamp(1, 100);
+    match thing {
+        ThingRef::Building(id) => {
+            let b = world.buildings.iter().find(|b| b.id == id).expect("looked up before");
+            (&b.stats().name, Owner::Colony, percent(b.hp, b.stats().hp), Some(("Infected", b.infected)), Copies::Building(b.kind))
+        }
+        ThingRef::Unit(id) => {
+            let u = world.units.iter().find(|u| u.id == id).expect("looked up before");
+            (&u.stats().name, Owner::Colony, percent(u.hp, u.max_hp()), Some(("Veteran", u.veteran)), Copies::Unit(u.kind))
+        }
+        ThingRef::Neutral(id) => {
+            let n = world.neutral.iter().find(|n| n.id == id).expect("looked up before");
+            let owner = if n.joinable { Owner::Joinable } else { Owner::Neutral };
+            match n.thing {
+                Thing::Building { kind, .. } => (&kind.stats().name, owner, n.hp_percent, None, Copies::Building(kind)),
+                Thing::Unit { kind, .. } => (&kind.stats().name, owner, n.hp_percent, Some(("Veteran", n.veteran)), Copies::Unit(kind)),
+            }
+        }
+    }
 }
 
 /// A name field like `settled`: while it has the keyboard the text so far stays in egui's memory, the new name counts

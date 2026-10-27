@@ -6,6 +6,7 @@ use macroquad::math::{vec2, Vec2};
 use super::buildings::{Product, Rally, MAX_PRODUCTION};
 use super::commands::Command;
 use super::events::Event;
+use super::neutral::{Owner, Tag, ThingRef};
 use super::spawning::{Axes, BreedCount, SpawnMode, WaveFrom, WaveGroup, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
@@ -89,6 +90,13 @@ pub enum Order {
     RemoveAt { tiles: Vec<(i32, i32)> },
     /// Editor (Del): these buildings go, whatever they are – nothing comes back.
     RemoveBuildings { buildings: Vec<u32> },
+    /// Editor, TAB's entity properties (`neutral.rs`): a placed thing's tag (empty: none), its owner, its hit points in
+    /// percent, infected (a building) or a veteran (a unit) – and the thing removed.
+    SetTag { thing: ThingRef, tag: Tag },
+    SetOwner { thing: ThingRef, owner: Owner },
+    SetHealth { thing: ThingRef, percent: u32 },
+    SetMark { thing: ThingRef, on: bool },
+    RemoveThing { thing: ThingRef },
     /// Editor "Grid": the whole map gets this edge length (`Map::size`, even) – it grows or shrinks on every side,
     /// everything on it stays where it is, new ground is grass (`mapfile::MapFile::resized`).
     ResizeMap { size: usize },
@@ -298,6 +306,11 @@ impl World {
                     self.take_down(id);
                 }
             }
+            Order::SetTag { thing, tag } => self.set_tag(*thing, tag),
+            Order::SetOwner { thing, owner } => self.set_owner(*thing, *owner),
+            Order::SetHealth { thing, percent } => self.set_health(*thing, *percent),
+            Order::SetMark { thing, on } => self.set_mark(*thing, *on),
+            Order::RemoveThing { thing } => self.remove_thing(*thing),
             Order::ResizeMap { size } => self.resize(*size),
             Order::SetPlayArea { min, size } => {
                 self.map.set_play_area(*min, *size);
@@ -477,6 +490,7 @@ impl World {
         self.sleep.remove(on);
         self.loot.retain(|l| !on(l.pos));
         self.corpses.retain(|c| !on(c.pos));
+        self.remove_neutral_at(on_tile);
     }
 
     /// The zombie brush (`Order::PaintZombies`). Who stands on a painted tile already is counted first – awake or asleep

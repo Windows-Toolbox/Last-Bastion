@@ -209,6 +209,7 @@ impl Game {
                 EditorRequest::Mode(mode) => self.switch_mode(mode),
                 EditorRequest::Undo => self.undo(false),
                 EditorRequest::Redo => self.undo(true),
+                EditorRequest::Locate(at) => self.camera.center = at,
             }
         }
         let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
@@ -327,6 +328,7 @@ impl Game {
                 }
                 Notice::Came { zombies, final_wave: true, .. } => format!("THE FINAL WAVE is here - {zombies} zombies!"),
                 Notice::Came { zombies, .. } => format!("The swarm is here - {zombies} zombies!"),
+                Notice::Joined { name } => format!("{name} joins the colony!"),
             };
             self.ui.alert(&text);
         }

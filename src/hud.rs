@@ -830,6 +830,16 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
         draw_circle(m.x, m.y, 4.0, MARK_EDGE);
         draw_circle(m.x, m.y, 3.0, GIANT_MINIMAP);
     }
+    // What the editor marked for the minimap (TAB's "Display Icon on Minimap", `sim/neutral.rs`): a white diamond.
+    for at in world.minimap_marks() {
+        let m = pin(at, 5.0);
+        let (top, right, bottom, left) = (m + vec2(0.0, -5.0), m + vec2(5.0, 0.0), m + vec2(0.0, 5.0), m + vec2(-5.0, 0.0));
+        draw_triangle(top, right, bottom, MARK_EDGE);
+        draw_triangle(top, left, bottom, MARK_EDGE);
+        let (top, right, bottom, left) = (m + vec2(0.0, -3.5), m + vec2(3.5, 0.0), m + vec2(0.0, 3.5), m + vec2(-3.5, 0.0));
+        draw_triangle(top, right, bottom, WHITE);
+        draw_triangle(top, left, bottom, WHITE);
+    }
     for (middle, count) in world.swarms() {
         let r = 5.0 + (count as f32).sqrt().min(10.0) * 0.4;
         let m = pin(middle, r);
@@ -982,14 +992,18 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
     let stats = unit.stats();
     draw_portrait(layout, kind_color(unit.kind), &stats.letter, BORDER);
     let text = layout.text_column();
-    let name = if unit.veteran { format!("{} (veteran)", stats.name) } else { stats.name.clone() };
+    // A tag of the editor's (`sim/neutral.rs`): its own name, and its text instead of the kind's.
+    let tag = unit.tag.as_deref();
+    let shown = tag.filter(|t| !t.name.is_empty()).map_or(stats.name.as_str(), |t| t.name.as_str());
+    let name = if unit.veteran { format!("{shown} (veteran)") } else { shown.to_owned() };
     let y = draw_title(layout, &name, (unit.hp, unit.max_hp()), (0, 0));
     let order = match unit.queue_len() {
         0 | 1 => format!("Order: {}", unit.order_name()),
         n => format!("Order: {} (+{} queued)", unit.order_name(), n - 1),
     };
     draw_fitted_left(&order, text.x, y, text.w, 15.0, WHITE);
-    draw_wrapped(unit_text(unit.kind), text.x, y + 16.0, text.w, 14.0, 1, DIM);
+    let about = tag.filter(|t| !t.text.is_empty()).map_or(unit_text(unit.kind), |t| t.text.as_str());
+    draw_wrapped(about, text.x, y + 16.0, text.w, 14.0, 1, DIM);
 
     let mut cells = vec![
         ("HP", format!("{}/{}", unit.hp, unit.max_hp())),
@@ -1132,7 +1146,9 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     let power = world.power();
     draw_portrait(layout, building_color(building.kind), &stats.letter, BORDER);
     let text = layout.text_column();
-    let y = draw_title(layout, &stats.name, (building.hp, stats.hp), (building.shield, stats.max_shield()));
+    let tag = building.tag.as_deref();
+    let name = tag.filter(|t| !t.name.is_empty()).map_or(stats.name.as_str(), |t| t.name.as_str());
+    let y = draw_title(layout, name, (building.hp, stats.hp), (building.shield, stats.max_shield()));
 
     let mut cells = vec![("HP", format!("{}/{}", building.hp, stats.hp))];
     if stats.max_shield() > 0 {
@@ -1309,6 +1325,10 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
 /// first, in capitals: infected, no power, hungry, out of wood.
 fn building_text(world: &World, power: &Power, b: usize) -> String {
     let building = &world.buildings[b];
+    // The editor's text for it (its tag, `sim/neutral.rs`) instead of the usual one.
+    if let Some(text) = building.tag.as_deref().map(|t| t.text.clone()).filter(|t| !t.is_empty()) {
+        return text;
+    }
     let stats = building.stats();
     let share = power.share(world, b);
     if building.infected {

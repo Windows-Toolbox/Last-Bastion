@@ -21,7 +21,7 @@ use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
-use crate::sim::{Axes, Breed, Event, LootKind, SpawnMode, WaveFrom, WaveGroup, World};
+use crate::sim::{Axes, Breed, Event, LootKind, SpawnMode, Tag, Thing, ThingRef, WaveFrom, WaveGroup, World};
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
 /// 2 (2026-10-17): the round, the constant spawn, the setup, and waves with breed and final wave.
@@ -76,6 +76,9 @@ pub struct MapFile {
     pub buildings: Vec<BuildingData>,
     pub units: Vec<UnitData>,
     pub zombies: Vec<ZombieData>,
+    /// Neutral buildings and units – nobody's, maybe joining the colony (`sim/neutral.rs`).
+    #[serde(default)]
+    pub neutral: Vec<NeutralData>,
     /// The houses of the villages of doom and the loot – files from before 2026-10-20 have none.
     #[serde(default)]
     pub doom: Vec<DoomData>,
@@ -228,17 +231,62 @@ pub struct SpawnerData {
     pub mode: SpawnMode,
 }
 
+/// A building of the colony – with what the editor gave it (TAB's entity properties): its hit points in percent,
+/// infected, a tag. Left out in the file when they're as usual.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct BuildingData {
     pub kind: BuildingKind,
     pub tile: (i32, i32),
     pub turned: bool,
+    #[serde(default = "hundred", skip_serializing_if = "is_hundred")]
+    pub hp_percent: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub infected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<Tag>,
 }
 
+/// A unit of the colony – the same, and a veteran or not.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct UnitData {
     pub kind: UnitKind,
     pub pos: (f32, f32),
+    #[serde(default = "hundred", skip_serializing_if = "is_hundred")]
+    pub hp_percent: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub veteran: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<Tag>,
+}
+
+/// A neutral building or unit (`sim/neutral.rs`): what it is, whether it joins the colony when a unit comes close, and
+/// how it will be then.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct NeutralData {
+    pub thing: Thing,
+    #[serde(default)]
+    pub joinable: bool,
+    #[serde(default = "hundred", skip_serializing_if = "is_hundred")]
+    pub hp_percent: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub veteran: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<Tag>,
+}
+
+/// 100 – full hit points, when a file says nothing (`#[serde(default = "hundred")]`) …
+fn hundred() -> u32 {
+    100
+}
+
+/// … and then it isn't written either.
+fn is_hundred(n: &u32) -> bool {
+    *n == 100
+}
+
+/// A thing's hit points in percent of its full ones, rounded down – at least 1.
+fn percent(hp: u32, full: u32) -> u32 {
+    (hp * 100 / full.max(1)).clamp(1, 100)
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -325,8 +373,34 @@ impl MapFile {
                 .iter()
                 .map(|s| SpawnerData { name: s.name.clone(), id: s.id, min: s.min, size: s.size, axes: s.axes, mode: s.mode })
                 .collect(),
-            buildings: world.buildings.iter().map(|b| BuildingData { kind: b.kind, tile: b.tile, turned: b.turned }).collect(),
-            units: world.units.iter().map(|u| UnitData { kind: u.kind, pos: (u.pos.x, u.pos.y) }).collect(),
+            buildings: world
+                .buildings
+                .iter()
+                .map(|b| BuildingData {
+                    kind: b.kind,
+                    tile: b.tile,
+                    turned: b.turned,
+                    hp_percent: percent(b.hp, b.stats().hp),
+                    infected: b.infected,
+                    tag: b.tag.as_deref().cloned(),
+                })
+                .collect(),
+            units: world
+                .units
+                .iter()
+                .map(|u| UnitData {
+                    kind: u.kind,
+                    pos: (u.pos.x, u.pos.y),
+                    hp_percent: percent(u.hp, u.max_hp()),
+                    veteran: u.veteran,
+                    tag: u.tag.as_deref().cloned(),
+                })
+                .collect(),
+            neutral: world
+                .neutral
+                .iter()
+                .map(|n| NeutralData { thing: n.thing, joinable: n.joinable, hp_percent: n.hp_percent, veteran: n.veteran, tag: n.tag.as_deref().cloned() })
+                .collect(),
             zombies: zombie_data(world),
             doom: world.doom.iter().map(|d| DoomData { house: d.tile, size: d.size, zombies: d.inside, factor: d.factor }).collect(),
             loot: world
@@ -350,7 +424,12 @@ impl MapFile {
             world.add_spawner(s.id, s.name.clone(), s.min, s.size, s.axes, s.mode);
         }
         for b in &self.buildings {
+            let before = world.buildings.len();
             world.add_building_anywhere(b.kind, b.tile, b.turned);
+            // What the editor gave it – if it fit (`add_building_anywhere` leaves out one that doesn't).
+            if let Some(id) = world.buildings.get(before).map(|built| built.id) {
+                world.edit_thing(ThingRef::Building(id), b.hp_percent, b.infected, b.tag.as_ref());
+            }
         }
         // The base is where the command center stands – on a map made in the editor it may stand anywhere, a new map has
         // it in the middle (`World::empty`, the same point). What the zombies keep away from (`keep_out`) and where waves
@@ -360,6 +439,11 @@ impl MapFile {
         }
         for u in &self.units {
             world.add_unit(u.kind, vec2(u.pos.0, u.pos.1));
+            let id = world.units.last().map_or(0, |unit| unit.id);
+            world.edit_thing(ThingRef::Unit(id), u.hp_percent, u.veteran, u.tag.as_ref());
+        }
+        for n in &self.neutral {
+            world.add_neutral(n.thing, n.joinable, n.hp_percent, n.veteran, n.tag.clone().map(Box::new));
         }
         // Wanderers lie down asleep – the ones near your eyes wake when the world settles (`World::settle`).
         for z in &self.zombies {
@@ -493,6 +577,24 @@ impl MapFile {
             .collect();
         file.doom = self.doom.iter().map(|h| DoomData { house: shift(h.house), ..h.clone() }).filter(|h| all_on_map(h.house, h.size.0, h.size.1)).collect();
         file.units = self.units.iter().map(|u| UnitData { pos: moved(u.pos), ..u.clone() }).filter(|u| point_on_map(u.pos)).collect();
+        file.neutral = self
+            .neutral
+            .iter()
+            .map(|n| {
+                let thing = match n.thing {
+                    Thing::Building { kind, tile, turned } => Thing::Building { kind, tile: shift(tile), turned },
+                    Thing::Unit { kind, pos } => Thing::Unit { kind, pos: moved(pos) },
+                };
+                NeutralData { thing, ..n.clone() }
+            })
+            .filter(|n| match n.thing {
+                Thing::Building { kind, tile, turned } => {
+                    let (w, h) = kind.footprint(turned);
+                    all_on_map(tile, w, h)
+                }
+                Thing::Unit { pos, .. } => point_on_map(pos),
+            })
+            .collect();
         file.zombies = self.zombies.iter().map(|z| ZombieData { pos: moved(z.pos), ..z.clone() }).filter(|z| point_on_map(z.pos)).collect();
         file.loot = self.loot.iter().map(|l| LootData { pos: moved(l.pos), ..l.clone() }).filter(|l| point_on_map(l.pos)).collect();
         // In the screen axes (`map::to_frame`: across x − y, down x + y) d tiles both ways are 0 across and 2 · d down.
@@ -550,12 +652,12 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "events", "setup", "spawners", "buildings", "units", "zombies", "doom", "loot", "deposits", "terrain"] {
+    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "events", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "deposits", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
     // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units
     // with "kind", houses of doom with "house", piles of loot with "loot".
-    for first in ["name", "from", "kind", "house", "loot"] {
+    for first in ["name", "from", "kind", "thing", "house", "loot"] {
         text = text.replace(&format!("{{\"{first}\":"), &format!("\n  {{\"{first}\":"));
     }
     // The terrain: rows only have the letters `. D M F T W`, so between two rows there's always `","`.
@@ -676,6 +778,7 @@ mod tests {
         let mut world = World::new(4);
         let c = world.map.size as i32 / 2;
         let (first, last) = (world.spawners[0].id, world.spawners[11].id);
+        let (unit, other, cc) = (world.units[0].id, world.units[1].id, world.buildings[0].id);
         let mut event = Event { final_wave: true, reveal: true, every_hours: 30, times: 3, growth: 1.5, notify_hours: Some(4), ..Event::new("Big", 123, WaveFrom::Sides(2), Breed::Fat, 300) };
         let zombies = vec![BreedCount { count: 50, up_to: 60, breed: Breed::Harpy }, BreedCount::new(7, Breed::Giant)];
         event.groups.push(WaveGroup { from: WaveFrom::Spawners(vec![first, last]), breeds: zombies });
@@ -689,6 +792,11 @@ mod tests {
             Order::SetDays { days: 25 },
             Order::SetGold { gold: 777 },
             Order::SetWood { wood: 55 },
+            Order::SetTag { thing: ThingRef::Unit(unit), tag: Tag { name_id: "hero".into(), text: "A long text".into(), ..Tag::default() } },
+            Order::SetHealth { thing: ThingRef::Unit(unit), percent: 30 },
+            Order::SetMark { thing: ThingRef::Building(cc), on: true },
+            // Neutral, not joinable: the start units right next to it would take it in at once.
+            Order::SetOwner { thing: ThingRef::Unit(other), owner: crate::sim::Owner::Neutral },
         ]);
         let mut file = MapFile::from_world(&world, "Test: map?");
         file.setup = Some(MapSetup::default());
@@ -710,6 +818,11 @@ mod tests {
         assert_eq!(loaded.units.len(), world.units.len());
         assert_eq!(loaded.zombies.len() + loaded.sleep.len(), world.zombies.len() + world.sleep.len());
         assert_eq!(loaded.events, world.events);
+        // What the editor gave the things: a tag, hit points, infected, a neutral unit.
+        assert_eq!(loaded.units[0].tag.as_ref().map(|t| t.name_id.as_str()), Some("hero"));
+        assert_eq!(loaded.units[0].hp, loaded.units[0].max_hp() * 30 / 100);
+        assert!(loaded.buildings[0].infected);
+        assert!(loaded.neutral.len() == 1 && !loaded.neutral[0].joinable);
         assert_eq!((loaded.days, loaded.gold, loaded.stock.get(Resource::Wood)), (25, world.gold, 55));
         let again = MapFile {
             setup: file.setup.clone(),

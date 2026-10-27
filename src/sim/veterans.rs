@@ -39,10 +39,7 @@ impl World {
                 let unit = &mut self.units[u];
                 unit.xp += gain;
                 if !unit.veteran && unit.xp >= veterans.xp * 1000 {
-                    // The extra hit points come right away – a veteran isn't promoted half hurt.
-                    let before = unit.max_hp();
-                    unit.veteran = true;
-                    unit.hp += unit.max_hp() - before;
+                    unit.make_veteran();
                 }
             }
         }
