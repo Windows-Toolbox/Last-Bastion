@@ -35,6 +35,7 @@ pub enum Switch {
     ConfineMouse,
     HealthBars,
     FullQueue,
+    Grid,
 }
 
 /// One line: its text, what a click does (`None`: only text), and for a switch whether it's on.

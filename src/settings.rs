@@ -34,6 +34,8 @@ pub struct Settings {
     /// Lines through the whole command queue of the selected units. Off: only the current target, the whole
     /// queue only while Shift is held (like StarCraft 2).
     pub always_full_queue: bool,
+    /// The lines between the tiles on the ground (F4, the button next to the pause button).
+    pub show_grid: bool,
     /// Stats and key help in the top left (F3).
     pub dev_overlay: bool,
     /// The sections of that overlay that are folded shut (`overlay.rs`) – by their key.
@@ -51,6 +53,7 @@ impl Default for Settings {
             confine_mouse: true,
             always_health_bars: false,
             always_full_queue: true,
+            show_grid: false,
             dev_overlay: true,
             // At first only the measurements and the switches are open – the key help is there, one click away.
             overlay_folded: ["select", "commands", "buildings", "groups", "keys"].map(String::from).to_vec(),

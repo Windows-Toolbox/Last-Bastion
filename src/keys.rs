@@ -37,6 +37,8 @@ pub enum Action {
     Slower,
     /// The overlay in the top left: measurements, switches, key help.
     Overlay,
+    /// The lines between the tiles on the ground, on or off.
+    GridView,
     ConfineMouse,
     /// Editor: Edit ↔ Test.
     EditTest,
@@ -80,6 +82,8 @@ impl Action {
             Faster => [Some(KeyCode::RightBracket), Some(KeyCode::KpAdd)],
             Slower => [Some(KeyCode::Slash), Some(KeyCode::KpSubtract)],
             Overlay => one(KeyCode::F3),
+            // TAB's own key for its view with the grid (flat mode).
+            GridView => one(KeyCode::F4),
             ConfineMouse => one(KeyCode::F12),
             EditTest => one(KeyCode::F10),
             SelectArmy => one(KeyCode::F2),
@@ -117,6 +121,7 @@ impl Action {
             Faster => "Faster".to_owned(),
             Slower => "Slower".to_owned(),
             Overlay => "Stats and key help (top left)".to_owned(),
+            GridView => "Grid view (lines between the tiles)".to_owned(),
             ConfineMouse => "Keep the mouse in the window".to_owned(),
             EditTest => "Editor: Edit / Test".to_owned(),
             SelectArmy => "Select all units".to_owned(),
@@ -141,7 +146,7 @@ impl Action {
     pub fn all() -> Vec<Action> {
         let mut all = vec![CameraUp, CameraLeft, CameraDown, CameraRight, Base];
         all.extend((0..4).map(Bookmark));
-        all.extend([Pause, Faster, Slower, Overlay, ConfineMouse, EditTest, SelectArmy, NextType]);
+        all.extend([Pause, Faster, Slower, Overlay, GridView, ConfineMouse, EditTest, SelectArmy, NextType]);
         all.extend((0..10).map(Group));
         all.extend([RepairAll, TurnGate]);
         for button in hud::all_cards().into_iter().flatten() {

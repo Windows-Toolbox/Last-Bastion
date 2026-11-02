@@ -13,9 +13,9 @@ use crate::data;
 use crate::effects::Effects;
 use crate::ground::{Decor, Landscape};
 use crate::hud::{draw_life, hp_color};
-use crate::iso::{Camera, TILE_H, TILE_W};
+use crate::iso::{Camera, FLAT, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::{Deposit, Ore, Region, Terrain};
+use crate::map::{to_frame, Deposit, Ore, Region, Terrain};
 use crate::picture;
 use crate::sim::{self, Breed, Building, DoomHouse, LootKind, Mark, TICK, UNIT_RADIUS, World};
 use crate::sprites::{Pose, Sprite, Sprites};
@@ -77,7 +77,18 @@ pub const BACKGROUND: Color = Color::new(20.0 / 255.0, 22.0 / 255.0, 28.0 / 255.
 /// Fog of war: never seen – black like in StarCraft 2 (also on the minimap) …
 pub const UNEXPLORED: Color = Color::new(0.0, 0.0, 0.0, 1.0);
 /// … seen before, but nobody is looking right now – darkened.
-const EXPLORED: Color = Color::new(0.0, 0.0, 0.0, 0.5);
+/// How bright the map is without a light on it: TAB's light for the fog (`ZXMapTheme.GlobalLightColorForFog`, 180 of
+/// 255). Its Dark Moorland has 200 – see `FogPicture::paint`.
+const EXPLORED_LIGHT: f32 = 180.0 / 255.0;
+const EXPLORED_LIGHT_BR: f32 = 200.0 / 255.0;
+/// Everyone who sees carries a soft light (TAB's `CMapWatcher`): its radius is this many times the sight range …
+const LIGHT_REACH: f32 = 1.1 * std::f32::consts::SQRT_2;
+/// … and this is how bright it is from its middle out, in steps of 5 % of that radius (TAB's picture `Light_A`). Further
+/// out it's darker than the map anyway, so the curve can stop at half the radius.
+const LIGHT_CURVE: [f32; 11] = [1.0, 1.0, 1.0, 1.0, 1.0, 0.988, 0.969, 0.925, 0.847, 0.776, 0.647];
+const LIGHT_STEP: f32 = 0.05;
+/// TAB moves its fog this far from the tile it belongs to (tiles, `_OMapFog.Location`): a bit up the screen.
+const FOG_SHIFT: f32 = 0.7;
 /// Editor "View: Zombies": where no zombie looks – dark red, so it doesn't get mixed up with the player's fog.
 const ZOMBIE_DARK: Color = Color::new(0.12, 0.0, 0.0, 0.6);
 /// The parts of the wall skin (only the look): width of a wall piece, width and height of the post in the middle.
@@ -109,6 +120,8 @@ pub struct View<'a> {
     pub full_plan: bool,
     /// Health bars above all units (setting).
     pub always_bars: bool,
+    /// The lines between the tiles on the ground (setting, TAB's grid).
+    pub grid: bool,
     /// Whose eyes: fog of war like in the game, the zombies' view, or none (editor).
     pub fog: Fog<'a>,
     /// That fog, painted for this frame (`FogPicture::paint`).
@@ -293,10 +306,9 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             }
         }
     }
-    // Fog of war on top of the ground – before the figures, which are hidden in the fog anyway (zombies) or
-    // always visible (your own units and buildings see themselves).
-    if !matches!(view.fog, Fog::Off) {
-        view.fog_picture.draw(camera, area);
+    // The grid lies on the ground like the fields: the fog darkens it, and whatever stands there covers it.
+    if view.grid {
+        draw_grid(camera, area);
     }
     // Blood and acid lying on the ground (`effects.rs`) – where you see it.
     let now = (world.tick as f32 + alpha) * TICK;
@@ -398,7 +410,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // Neutral buildings and units (`sim/neutral.rs`): grey like a building switched off – once seen, like the houses of
     // doom.
     for neutral in world.neutral.iter().filter(|n| area.contains(n.center())) {
-        if seen(world, &view.fog, neutral.center()).is_none() {
+        if !seen(world, &view.fog, neutral.center()) {
             continue;
         }
         match neutral.thing {
@@ -420,14 +432,14 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // The houses of the villages of doom and the loot: once seen, they stay on the map like the terrain – darkened where
     // nobody looks right now, not at all where nobody has ever looked.
     for house in world.doom.iter().filter(|d| area.contains(d.center())) {
-        let Some(shade) = seen(world, &view.fog, house.center()) else {
+        if !seen(world, &view.fog, house.center()) {
             continue;
-        };
+        }
         // TAB's house, its flag waving – reddish while it stirs (ours: so you see a batch come out).
         if let Some(sprite) = view.sprites.doom(house.nest(), tile_look(house.tile))
             && let Some(body) = sprite.body()
         {
-            let color = darken(if house.is_stirring(world.tick) { DOOM_STIRRING } else { WHITE }, shade);
+            let color = if house.is_stirring(world.tick) { DOOM_STIRRING } else { WHITE };
             let width = house.size.0 as f32;
             let at = house.far_corner();
             let ticking = clock(time, house.id);
@@ -436,25 +448,21 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             things.push((middle.x + middle.y, Thing::Picture(picture)));
             continue;
         }
-        doom_parts(house, world.tick, shade, &mut parts);
+        doom_parts(house, world.tick, &mut parts);
     }
     for loot in world.loot.iter().filter(|l| area.contains(l.pos)) {
-        if let Some(shade) = seen(world, &view.fog, loot.pos) {
-            let color = darken(loot_color(loot.kind), shade);
+        if seen(world, &view.fog, loot.pos) {
+            let color = loot_color(loot.kind);
             let p = loot.pos;
             parts.push((p.x + p.y, Prism(rect(p - Vec2::splat(0.18), Vec2::splat(0.36)), 0.0, 0.22, color)));
             parts.push((p.x + p.y + 0.01, Prism(rect(p - Vec2::splat(0.1), Vec2::splat(0.2)), 0.22, 0.27, lighten(color))));
         }
     }
     things.extend(parts.into_iter().map(|(depth, part)| (depth, Thing::Body(part))));
-    // Trees and rocks (`ground.rs`): sorted in like everything else – like the houses of doom only once seen, darker
-    // where nobody looks now.
+    // Trees and rocks (`ground.rs`): sorted in like everything else. Always there, like TAB's – the fog lies over them,
+    // so they never pop up tile by tile.
     if let Some(landscape) = view.landscape {
-        landscape.decor_in(area, true, |d| {
-            if let Some(shade) = seen(world, &view.fog, d.at - Vec2::splat(0.5)) {
-                things.push((d.at.x + d.at.y, Thing::Decor(landscape, *d, darken(WHITE, shade))));
-            }
-        });
+        landscape.decor_in(area, true, |d| things.push((d.at.x + d.at.y, Thing::Decor(landscape, *d, WHITE))));
     }
     // Killed zombies dying (`sim/fallen.rs`) – only as a picture with a death, as before they're just gone otherwise.
     for body in world.dying.iter().filter(|d| area.contains(d.pos)) {
@@ -578,15 +586,15 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         let s = camera.world_to_screen(blast.at);
         let t = blast.left as f32 / 12.0; // 1 when it goes off, 0 when it's gone
         let r = blast_radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom * (1.2 - 0.5 * t);
-        draw_ellipse(s.x, s.y, r, r / 2.0, 0.0, Color::new(1.0, 0.55, 0.15, 0.55 * t));
-        draw_ellipse(s.x, s.y, r * 0.5, r * 0.25, 0.0, Color::new(1.0, 0.9, 0.5, 0.8 * t));
+        draw_ellipse(s.x, s.y, r, r * FLAT, 0.0, Color::new(1.0, 0.55, 0.15, 0.55 * t));
+        draw_ellipse(s.x, s.y, r * 0.5, r * 0.5 * FLAT, 0.0, Color::new(1.0, 0.9, 0.5, 0.8 * t));
     }
     // The command center's scans: the circle they show (`sim/scan.rs`).
     let scan_radius = data::get().buildings.scan.radius;
     for scan in &world.scans {
         let s = camera.world_to_screen(scan.at);
         let r = scan_radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom;
-        draw_ellipse_lines(s.x, s.y, r, r / 2.0, 0.0, 2.0, Color::new(0.55, 0.85, 1.0, 0.6));
+        draw_ellipse_lines(s.x, s.y, r, r * FLAT, 0.0, 2.0, Color::new(0.55, 0.85, 1.0, 0.6));
     }
     // Acid in flight: a blob on an arc, its shadow on the ground below – so you see where it will land.
     for spit in world.spits.iter().filter(|s| shows(s.from) || shows(s.to)) {
@@ -595,8 +603,14 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         let height = (0.3 + 4.0 * t * (1.0 - t) * spit.from.distance(spit.to) * 0.25) * TILE_W * camera.zoom;
         // At least a few pixels – zoomed out it would vanish.
         let size = (0.1 * TILE_W * camera.zoom).max(2.5);
-        draw_ellipse(ground.x, ground.y, size, size / 2.0, 0.0, Color::new(0.0, 0.0, 0.0, 0.4));
+        draw_ellipse(ground.x, ground.y, size, size * FLAT, 0.0, Color::new(0.0, 0.0, 0.0, 0.4));
         draw_circle(ground.x, ground.y - height, size, ACID);
+    }
+
+    // Fog of war over everything that stands on the map, like TAB's: a tall thing is covered where its top reaches into
+    // the dark. The bars come after it – your units and buildings always see themselves.
+    if !matches!(view.fog, Fog::Off) {
+        view.fog_picture.draw(camera, area);
     }
 
     // --- Health bars above hurt and selected units, just above the block ---
@@ -630,7 +644,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         draw_life(bar, (building.hp, stats.hp), (building.shield, stats.max_shield()), BLACK, None);
     }
     // The same over shot houses of doom you can see.
-    for house in world.doom.iter().filter(|d| d.hp < d.full_hp() && seen(world, &view.fog, d.center()) == Some(1.0)) {
+    for house in world.doom.iter().filter(|d| d.hp < d.full_hp() && watched(world, &view.fog, d.center())) {
         let middle = camera.world_to_screen(house.center());
         let lift = ((house.size.0 + house.size.1) as f32 * TILE_H / 4.0 + (doom_height(house) + 0.3) * TILE_W) * camera.zoom;
         let w = house.size.0 as f32 * 0.5 * TILE_W * camera.zoom;
@@ -649,11 +663,12 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
 }
 
 /// What lies over a tile: nothing (seen right now, or no fog), or a darkening colour.
-fn fog_cover(world: &World, fog: &Fog, x: i32, y: i32) -> Option<Color> {
+fn fog_cover(world: &World, fog: &Fog, x: i32, y: i32, light: f32) -> Option<Color> {
     match fog {
         Fog::Off => None,
-        Fog::Player if world.vision.is_visible(x, y) => None,
-        Fog::Player if world.vision.is_explored(x, y) => Some(EXPLORED),
+        Fog::Player if world.vision.is_visible(x, y) || world.vision.is_explored(x, y) => {
+            (light < 1.0).then_some(Color::new(0.0, 0.0, 0.0, 1.0 - light))
+        }
         Fog::Player => Some(UNEXPLORED),
         Fog::Zombies(sight) => (!sight.is_visible(x, y)).then_some(ZOMBIE_DARK),
     }
@@ -665,27 +680,43 @@ fn fog_cover(world: &World, fog: &Fog, x: i32, y: i32) -> Option<Color> {
 /// thinner than a pixel – at some zoom levels it caught a whole row of pixels, a line through the black.
 pub struct FogPicture {
     image: Image,
+    /// How bright the lights make every tile (0..1), worked out anew every frame.
+    light: Vec<f32>,
     /// `None` until painted for the first time.
     texture: Option<Texture2D>,
 }
 
 impl FogPicture {
     pub fn new() -> FogPicture {
-        FogPicture { image: Image { bytes: Vec::new(), width: 0, height: 0 }, texture: None }
+        FogPicture { image: Image { bytes: Vec::new(), width: 0, height: 0 }, light: Vec::new(), texture: None }
     }
 
     /// Paints the tiles of `area` anew – every frame, the fog changes with every step of every unit. Tiles outside
     /// it keep what they had: they aren't drawn (`draw_world` covers everything outside `area`).
     pub fn paint(&mut self, world: &World, fog: &Fog, area: Region) {
+        let ambient = match world.look.as_str() {
+            _ if world.revealed => 1.0, // TAB switches its light off when the whole map is shown
+            "BR" => EXPLORED_LIGHT_BR,
+            _ => EXPLORED_LIGHT,
+        };
+        let area = with_fog_margin(area);
         let n = world.map.size;
         if self.image.width as usize != n {
             self.image = Image { bytes: vec![0; n * n * 4], width: n as u16, height: n as u16 };
         }
+        self.light.clear();
+        self.light.resize(n * n, 0.0);
+        if matches!(fog, Fog::Player) {
+            for (eye, range) in world.eyes() {
+                shine(&mut self.light, n, eye, range);
+            }
+        }
         let rgba = |c: Color| [(c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, (c.a * 255.0) as u8];
         for (y, xs) in area.rows(1.0) {
             for x in xs.filter(|&x| x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n) {
-                let i = (y as usize * n + x as usize) * 4;
-                let c = fog_cover(world, fog, x, y).unwrap_or(Color::new(0.0, 0.0, 0.0, 0.0));
+                let tile = y as usize * n + x as usize;
+                let i = tile * 4;
+                let c = fog_cover(world, fog, x, y, self.light[tile].max(ambient)).unwrap_or(Color::new(0.0, 0.0, 0.0, 0.0));
                 self.image.bytes[i..i + 4].copy_from_slice(&rgba(c));
             }
         }
@@ -693,8 +724,8 @@ impl FogPicture {
             Some(texture) if texture.width() as usize == n => texture.update(&self.image),
             _ => {
                 let texture = Texture2D::from_image(&self.image);
-                // Sharp pixels: every tile stays a sharp diamond, like the strips were.
-                texture.set_filter(FilterMode::Nearest);
+                // Smoothed between the tiles (TAB: `TImageFilter.Linear`) – a soft edge, not a saw of diamonds.
+                texture.set_filter(FilterMode::Linear);
                 self.texture = Some(texture);
             }
         }
@@ -702,9 +733,45 @@ impl FogPicture {
 
     fn draw(&self, camera: &Camera, area: Region) {
         if let Some(texture) = &self.texture {
-            picture::draw_tiles(texture, area, |p| camera.world_to_screen(p));
+            let shift = Vec2::splat(FOG_SHIFT);
+            picture::draw_tiles(texture, with_fog_margin(area), |p| camera.world_to_screen(p - shift));
         }
     }
+}
+
+/// How bright a light is at this share of its radius (0: its middle, 1: its edge) – `LIGHT_CURVE`, smooth between its
+/// steps. 0 where the curve ends.
+fn light_at(share: f32) -> f32 {
+    let at = share / LIGHT_STEP;
+    let step = at as usize;
+    if step + 1 >= LIGHT_CURVE.len() {
+        return 0.0;
+    }
+    LIGHT_CURVE[step] + (LIGHT_CURVE[step + 1] - LIGHT_CURVE[step]) * (at - step as f32)
+}
+
+/// Adds the light of someone at `eye` who sees `range` tiles. Where lights overlap the brightest counts, like TAB's
+/// (`GlobalLightUseMaxValue`). The light ignores forests, like TAB's: it only shows how bright it is, not who sees what.
+fn shine(light: &mut [f32], n: usize, eye: Vec2, range: f32) {
+    let radius = range * LIGHT_REACH;
+    let reach = radius * LIGHT_STEP * (LIGHT_CURVE.len() - 1) as f32;
+    // The fog is drawn `FOG_SHIFT` away from its tile – the light has to fall where the tile is shown.
+    let spot = eye + Vec2::splat(FOG_SHIFT);
+    let (x0, x1) = (((spot.x - reach).floor() as i32).max(0), ((spot.x + reach).ceil() as i32).min(n as i32 - 1));
+    let (y0, y1) = (((spot.y - reach).floor() as i32).max(0), ((spot.y + reach).ceil() as i32).min(n as i32 - 1));
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let brightness = light_at(vec2(x as f32 + 0.5, y as f32 + 0.5).distance(spot) / radius);
+            let tile = &mut light[y as usize * n + x as usize];
+            *tile = tile.max(brightness);
+        }
+    }
+}
+
+/// `area` a little bigger: moved up the screen, the fog would leave a strip of its lower edge uncovered. What sticks out
+/// is covered at the end (`cover_outside`).
+fn with_fog_margin(area: Region) -> Region {
+    Region { min: area.min - Vec2::splat(2.0), max: area.max + Vec2::splat(2.0) }
 }
 
 /// Everything on screen outside the straight rectangle of `area` gets the background colour again: four bars
@@ -1120,15 +1187,21 @@ fn building_pictures<'a>(world: &World, building: &Building, view: &View<'a>, ti
     true
 }
 
-/// How something lying on the map (a house of doom, loot) is seen in this view: fully (1), darkened (0.5 – seen
-/// before, nobody looks right now) or not at all (`None` – nobody has ever looked). Only the player's view has fog.
-fn seen(world: &World, fog: &Fog, p: Vec2) -> Option<f32> {
+/// Has something lying on the map (a house of doom, loot) ever been seen in this view? Only the player's view has fog
+/// that hides it. How dark it is now is the fog's business: it lies over it.
+fn seen(world: &World, fog: &Fog, p: Vec2) -> bool {
     let (x, y) = (p.x.floor() as i32, p.y.floor() as i32);
     match fog {
-        Fog::Player if world.vision.is_visible(x, y) => Some(1.0),
-        Fog::Player if world.vision.is_explored(x, y) => Some(0.5),
-        Fog::Player => None,
-        _ => Some(1.0),
+        Fog::Player => world.vision.is_visible(x, y) || world.vision.is_explored(x, y),
+        _ => true,
+    }
+}
+
+/// Does someone look at this point right now? Only the player's view asks.
+fn watched(world: &World, fog: &Fog, p: Vec2) -> bool {
+    match fog {
+        Fog::Player => world.vision.is_visible(p.x.floor() as i32, p.y.floor() as i32),
+        _ => true,
     }
 }
 
@@ -1138,15 +1211,15 @@ fn doom_height(house: &DoomHouse) -> f32 {
 }
 
 /// A house of a village of doom: a block of dark rotten wood and a dark red roof on top – bright red while it stirs
-/// – a batch just came out, or the final wave called it. `shade`: how it's seen (`seen`).
-fn doom_parts(house: &DoomHouse, tick: u64, shade: f32, things: &mut Vec<(f32, Prism)>) {
+/// – a batch just came out, or the final wave called it.
+fn doom_parts(house: &DoomHouse, tick: u64, things: &mut Vec<(f32, Prism)>) {
     let (min, size) = (house.corner(), house.far_corner() - house.corner());
     let height = doom_height(house);
     let middle = house.center();
     let roof = if house.is_stirring(tick) { DOOM_AWAKE } else { DOOM_ROOF };
-    things.push((middle.x + middle.y, Prism(rect(min, size), 0.0, height, darken(DOOM_WALL, shade))));
+    things.push((middle.x + middle.y, Prism(rect(min, size), 0.0, height, DOOM_WALL)));
     let inset = Vec2::splat(0.25);
-    things.push((middle.x + middle.y + 0.01, Prism(rect(min + inset, size - inset * 2.0), height, height + 0.15, darken(roof, shade))));
+    things.push((middle.x + middle.y + 0.01, Prism(rect(min + inset, size - inset * 2.0), height, height + 0.15, roof)));
 }
 
 /// The colour of a pile of loot – like what lies in it.
@@ -1328,7 +1401,7 @@ fn mix(a: Color, b: Color, share: f32) -> Color {
 pub fn draw_ring(camera: &Camera, at: Vec2, radius: f32, thickness: f32, color: Color) {
     let s = camera.world_to_screen(at);
     let w = (radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom).max(MIN_RING);
-    draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, thickness, color);
+    draw_ellipse_lines(s.x, s.y, w, w * FLAT, 0.0, thickness, color);
 }
 
 /// The colour of a kind of command: move green, attack red, patrol yellow, heal light green.
@@ -1339,6 +1412,48 @@ pub fn mark_color(mark: Mark) -> Color {
         Mark::Patrol => YELLOW,
         Mark::Heal => BEAM,
     }
+}
+
+/// TAB's grid view (`DXIsometricGridObject`: thin white lines around every tile, on the ground under everything that
+/// stands): the lines inside `area` that are on screen.
+fn draw_grid(camera: &Camera, area: Region) {
+    let screen = Region {
+        min: to_frame(camera.screen_to_world(Vec2::ZERO)),
+        max: to_frame(camera.screen_to_world(vec2(screen_width(), screen_height()))),
+    };
+    let shown = Region { min: screen.min.max(area.min), max: screen.max.min(area.max) };
+    // Zoomed far out the lines lie close together – fainter, so the map still shows through.
+    let tile_pixels = TILE_W * camera.zoom;
+    let color = Color::new(1.0, 1.0, 1.0, 0.35 * (tile_pixels / 40.0).clamp(0.3, 1.0));
+    for (from, to) in grid_lines(shown) {
+        let (p, q) = (camera.world_to_screen(from), camera.world_to_screen(to));
+        draw_line(p.x, p.y, q.x, q.y, 1.0, color);
+    }
+}
+
+/// Every line between two tiles inside `shown`, cut off at its edges: from one end to the other, in tiles.
+///
+/// In the screen axes (`to_frame`) the point `(x, y)` is `(x - y, x + y)`. So on a line with a fixed `x = k`, staying
+/// between `min.x` and `max.x` means `k - max.x <= y <= k - min.x`, and staying between `min.y` and `max.y` means
+/// `min.y - k <= y <= max.y - k` – the line runs where both hold. On a line with a fixed `y = k` likewise.
+fn grid_lines(shown: Region) -> Vec<(Vec2, Vec2)> {
+    let (min, max) = (shown.min, shown.max);
+    let mut lines = Vec::new();
+    for k in ((min.x + min.y) / 2.0).ceil() as i32..=((max.x + max.y) / 2.0).floor() as i32 {
+        let k = k as f32;
+        let (from, to) = ((k - max.x).max(min.y - k), (k - min.x).min(max.y - k));
+        if from < to {
+            lines.push((vec2(k, from), vec2(k, to)));
+        }
+    }
+    for k in ((min.y - max.x) / 2.0).ceil() as i32..=((max.y - min.x) / 2.0).floor() as i32 {
+        let k = k as f32;
+        let (from, to) = ((min.x + k).max(min.y - k), (max.x + k).min(max.y - k));
+        if from < to {
+            lines.push((vec2(from, k), vec2(to, k)));
+        }
+    }
+    lines
 }
 
 /// A rectangle of the world (corner + size in tiles) as a diamond on screen.
@@ -1357,4 +1472,55 @@ fn on_screen(p: Vec2, margin: f32) -> bool {
 
 fn lerp(from: Vec2, to: Vec2, t: f32) -> Vec2 {
     from + (to - from) * t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A light is brightest in its middle, fades steadily, and has gone out where its curve ends.
+    #[test]
+    fn a_light_fades_outwards() {
+        assert_eq!(light_at(0.0), 1.0);
+        let steps: Vec<f32> = (0..=40).map(|k| light_at(k as f32 * 0.0125)).collect();
+        assert!(steps.windows(2).all(|w| w[1] <= w[0]), "{steps:?}");
+        assert_eq!(light_at(0.6), 0.0);
+        assert_eq!(light_at(5.0), 0.0);
+    }
+
+    /// Where two lights overlap the brighter one counts; they don't add up, and nothing leaves the map.
+    #[test]
+    fn lights_overlap_by_the_brightest() {
+        let n = 16;
+        let mut light = vec![0.0; n * n];
+        shine(&mut light, n, vec2(0.0, 0.0), 40.0);
+        shine(&mut light, n, vec2(8.0, 8.0), 4.0);
+        assert!(light.iter().all(|&l| (0.0..=1.0).contains(&l)));
+        assert!(light[8 * n + 8] > 0.9);
+    }
+
+    /// The grid's lines stay inside what's shown, end on its edges, and none is missing.
+    #[test]
+    fn grid_lines_are_cut_at_the_edges() {
+        let shown = Region { min: vec2(-3.5, 10.25), max: vec2(4.5, 18.0) };
+        let lines = grid_lines(shown);
+        for (from, to) in &lines {
+            for end in [*from, *to] {
+                let f = to_frame(end);
+                assert!(f.x >= shown.min.x - 1e-4 && f.x <= shown.max.x + 1e-4, "{end} is outside");
+                assert!(f.y >= shown.min.y - 1e-4 && f.y <= shown.max.y + 1e-4, "{end} is outside");
+            }
+        }
+        // Every tile corner inside lies on a line in each direction.
+        for x in 0..20 {
+            for y in 0..20 {
+                let p = vec2(x as f32, y as f32);
+                if shown.contains(p) {
+                    let along_y = lines.iter().any(|(a, b)| a.x == p.x && b.x == p.x && a.y <= p.y && p.y <= b.y);
+                    let along_x = lines.iter().any(|(a, b)| a.y == p.y && b.y == p.y && a.x <= p.x && p.x <= b.x);
+                    assert!(along_y && along_x, "no lines through {p}");
+                }
+            }
+        }
+    }
 }

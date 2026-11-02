@@ -145,7 +145,7 @@ pub struct Region {
 }
 
 impl Region {
-    /// `half` steps of the screen axes to every side of the world point `center` – on screen twice as wide as high.
+    /// `half` steps of the screen axes to every side of the world point `center` – on screen `TILE_W` : `TILE_H`.
     pub fn around(center: Vec2, half: f32) -> Region {
         let c = to_frame(center);
         Region { min: c - Vec2::splat(half), max: c + Vec2::splat(half) }
@@ -401,6 +401,48 @@ impl Map {
         Map::line_is_clear(from, to, |x, y| self.blocks_sight(x, y))
     }
 
+    /// Can your eyes on tile `from` make out tile `to`? TAB's rule (`DXWorldGrid.IsCellVisibleThoughOpaqueFrom`): they
+    /// look up to `depth` forest tiles in a row into a forest – but not past it, nor between two forest tiles standing
+    /// corner to corner. Only for what you see (`vision.rs`): a shot still needs `clear_sight`.
+    ///
+    /// A line like Bresenham's: along its longer side it moves one tile every step, along the shorter one when `gathered`
+    /// has come together – then that step is diagonal.
+    pub fn sees_into_forest(&self, from: (i32, i32), to: (i32, i32), depth: u32) -> bool {
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let (sx, sy) = (dx.signum(), dy.signum());
+        let (long, short, straight) =
+            if dx.abs() > dy.abs() { (dx.abs(), dy.abs(), (sx, 0)) } else { (dy.abs(), dx.abs(), (0, sy)) };
+        let (mut x, mut y) = from;
+        let mut forest = 0;
+        let mut gathered = long / 2;
+        for _ in 0..=long {
+            if self.index(x, y).is_none() {
+                return false;
+            }
+            if self.blocks_sight(x, y) {
+                if forest >= depth {
+                    return false;
+                }
+                forest += 1;
+            } else if forest > 0 {
+                return false; // out of the forest again: what lies behind it stays hidden
+            }
+            gathered += short;
+            if gathered >= long {
+                gathered -= long;
+                if sx != 0 && sy != 0 && self.blocks_sight(x + sx, y) && self.blocks_sight(x, y + sy) {
+                    return false;
+                }
+                x += sx;
+                y += sy;
+            } else {
+                x += straight.0;
+                y += straight.1;
+            }
+        }
+        true
+    }
+
     /// Is none of the tiles **between** `from` and `to` `blocked`? (The tiles of the two points themselves
     /// don't count.)
     ///
@@ -619,6 +661,41 @@ mod tests {
         // Mountains don't block the view.
         map.set_terrain(c, c + 3, Terrain::Mountain);
         assert!(map.clear_sight(p(c, c), p(c, c + 6)));
+    }
+
+    /// Your eyes reach three forest tiles deep, like TAB's – not further, and not past the forest.
+    #[test]
+    fn eyes_look_into_a_forest_but_not_through_it() {
+        let mut map = Map::blank(160, BORDER);
+        let c = map.size as i32 / 2;
+        // A wall of forest: three wide across the line, six deep.
+        for x in c + 3..c + 9 {
+            for y in c - 1..=c + 1 {
+                map.set_terrain(x, y, Terrain::Forest);
+            }
+        }
+        let from = (c, c);
+        assert!(map.sees_into_forest(from, (c + 2, c), 3), "open ground");
+        for deep in 3..6 {
+            assert!(map.sees_into_forest(from, (c + deep, c), 3), "{deep} tiles away, inside the forest");
+        }
+        assert!(!map.sees_into_forest(from, (c + 6, c), 3), "the fourth forest tile");
+        assert!(!map.sees_into_forest(from, (c + 10, c), 3), "behind the forest");
+        // One deep is just the edge – what `clear_sight` calls visible.
+        assert!(map.sees_into_forest(from, (c + 3, c), 1));
+        assert!(!map.sees_into_forest(from, (c + 4, c), 1));
+        // A single tree: you see it, but not what's behind it – like TAB's.
+        let mut map = Map::blank(160, BORDER);
+        map.set_terrain(c + 3, c, Terrain::Forest);
+        assert!(map.sees_into_forest(from, (c + 3, c), 3));
+        assert!(!map.sees_into_forest(from, (c + 4, c), 3));
+        // Not between two trees standing corner to corner.
+        let mut map = Map::blank(160, BORDER);
+        map.set_terrain(c + 1, c, Terrain::Forest);
+        map.set_terrain(c, c + 1, Terrain::Forest);
+        assert!(!map.sees_into_forest(from, (c + 1, c + 1), 3));
+        // Looking at your own tile always works.
+        assert!(map.sees_into_forest(from, from, 3));
     }
 
     /// The bits of a tile follow terrain and buildings: who may walk, build and look where.

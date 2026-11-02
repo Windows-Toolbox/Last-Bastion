@@ -338,7 +338,8 @@ impl World {
     }
 
     /// Your eyes – units (in a tower they see further) and buildings that aren't infected: where, and how far they see.
-    fn eyes(&self) -> Vec<(Vec2, f32)> {
+    /// The picture puts a light on each of them (`draw.rs`).
+    pub fn eyes(&self) -> Vec<(Vec2, f32)> {
         let units = self.units.iter().map(|u| (u.pos, self.eye_range(u.sight())));
         let buildings = self.buildings.iter().filter(|b| !b.infected).map(|b| (b.center(), self.eye_range(b.stats().sight)));
         units.chain(buildings).collect()

@@ -55,6 +55,8 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "
 
 # Pixels per tile width (like the figures, tab_skins.py).
 PIXELS_PER_TILE = 80
+# A tile's height on screen: TAB's tiles are sqrt(2) times as wide as high (`DXWorldGrid.IsometricTileSize`).
+TILE_HEIGHT = PIXELS_PER_TILE / 2 ** 0.5
 # At most this many frames per moving part - TAB's have up to 91 (the machine gun's turn), all of them fit.
 MAX_FRAMES = 96
 # Transparent pixels around every picture in the sheet.
@@ -569,7 +571,7 @@ def clip_building(tab, project, key, template, clip_names, width):
             # between body and front). Lifted this many tile widths from the middle of the site.
             front = next(l for l in layers(project, clip) if l.name == "@Front")
             stand = (front.area[1] + 0.6 * front.area[3]) * scale
-            meta["roof"] = round((feet[1] - PIXELS_PER_TILE / 4 - stand) / PIXELS_PER_TILE, 3)
+            meta["roof"] = round((feet[1] - TILE_HEIGHT / 2 - stand) / PIXELS_PER_TILE, 3)
         else:
             meta["body"] = looks(tab, project, sheet, clip, scale, feet, look, tint,
                                  lambda name: not name.startswith(HIDDEN) and "Telescope" not in name, TURRETS.get(key))
@@ -688,8 +690,8 @@ def gate(tab, project, key, pillar_image, walls_clip, gate_clip):
     h = round(image.height * w / image.width)
     pillar = tinted(premultiplied_resize(image, (w, h)), look, tint)
     # The tile's lowest corner is a quarter tile further down the screen than the pillar's bottom middle: (0.25, 0.25)
-    # tiles in the world are 0.25 tile heights on screen - an eighth of a tile width.
-    feet = (w / 2, h + PIXELS_PER_TILE / 8)
+    # tiles in the world are 0.25 tile heights on screen.
+    feet = (w / 2, h + TILE_HEIGHT / 4)
     sheet = Sheet()
     meta = {"size": 1, "pieces": {"pillar": plain(sheet.add(pillar, feet), sheet.add(ghost(pillar), feet))}}
     box = (-feet[0], -feet[1], w, h)

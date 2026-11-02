@@ -21,7 +21,7 @@ pub const PANEL_H: f32 = 200.0;
 const PAD: f32 = 8.0;
 /// Between two parts of the panel.
 const GAP: f32 = 8.0;
-const MINIMAP_W: f32 = 260.0; // the minimap is twice as wide as high, like the map on screen
+const MINIMAP_W: f32 = 260.0; // the minimap has the shape of the map on screen (`TILE_W` : `TILE_H`)
 const CLOCK_W: f32 = 104.0;
 const GROUPS_W: f32 = 46.0;
 const STOCK_W: f32 = 224.0;
@@ -557,6 +557,8 @@ pub enum HudHit {
     Minimap(Vec2),
     /// The pause button of the clock.
     Pause,
+    /// The grid button next to it.
+    GridView,
     /// A control group (0 = key 1 … 9 = key 0).
     Group(usize),
     /// An icon in the selection – the index in `Ui::selection_view` (units and buildings).
@@ -589,7 +591,7 @@ impl Layout {
         let (w, h) = (screen_width(), screen_height());
         let panel = Rect::new(0.0, h - PANEL_H, w, PANEL_H);
         let (top, inner_h) = (panel.y + PAD, PANEL_H - 2.0 * PAD);
-        let minimap_h = MINIMAP_W / 2.0;
+        let minimap_h = MINIMAP_W * TILE_H / TILE_W;
         let minimap = Rect::new(PAD, panel.y + (PANEL_H - minimap_h) / 2.0, MINIMAP_W, minimap_h);
         let clock = Rect::new(minimap.right() + GAP, top, CLOCK_W, inner_h);
         let groups = Rect::new(clock.right() + GAP, top, GROUPS_W, inner_h);
@@ -622,6 +624,9 @@ impl Layout {
         if self.pause_rect().contains(mouse) {
             return Some(HudHit::Pause);
         }
+        if self.grid_rect().contains(mouse) {
+            return Some(HudHit::GridView);
+        }
         for g in 0..10 {
             if self.group_rect(g).contains(mouse) {
                 return Some(HudHit::Group(g));
@@ -652,7 +657,7 @@ impl Layout {
 
     // --- Minimap: the map turned the same way as on screen, only small – `area` as big as fits, not stretched ---
 
-    /// The part of the minimap `area` takes: all of it if the area is twice as wide as high on screen like the minimap
+    /// The part of the minimap `area` takes: all of it if the area has the minimap's shape on screen
     /// (a new map's playing field, the whole map in the editor), otherwise a narrower or flatter rectangle in its
     /// middle. A step of the screen axes across is `TILE_W / 2` pixels, one down `TILE_H / 2`.
     fn minimap_fit(&self, area: Region) -> Rect {
@@ -690,6 +695,12 @@ impl Layout {
     fn pause_rect(&self) -> Rect {
         let w = 56.0;
         Rect::new(self.clock.x + (self.clock.w - w) / 2.0, self.clock.y + 72.0, w, 40.0)
+    }
+
+    /// The grid button: in the free space to the right of the pause button.
+    fn grid_rect(&self) -> Rect {
+        let pause = self.pause_rect();
+        Rect::new(pause.right() + 2.0, pause.y + 9.0, 20.0, 22.0)
     }
 
     /// The control groups one below the other, like TAB's numbers next to the selection.
@@ -868,6 +879,30 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
 
 /// The clock like in TAB: day and hour in big numbers, the pause button between them and below, the speed, and how
 /// long until the next wave (the final wave in its colour).
+/// The button that switches the grid on and off: a tile with a cross in it, lit while the grid is on.
+fn draw_grid_button(layout: &Layout, ui: &Ui) {
+    let r = layout.grid_rect();
+    let on = ui.settings.show_grid;
+    let hover = r.contains(Vec2::from(mouse_position()));
+    draw_rectangle(r.x, r.y, r.w, r.h, if hover { HOVER_BG } else { BOX_BG });
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, if on { GLOW } else { BRASS });
+    let color = if on { GLOW } else { DIM };
+    let c = r.center();
+    let (w, h) = (7.0, 7.0 * TILE_H / TILE_W);
+    let corners = [vec2(0.0, -h), vec2(w, 0.0), vec2(0.0, h), vec2(-w, 0.0)].map(|p| c + p);
+    for k in 0..4 {
+        let (p, q) = (corners[k], corners[(k + 1) % 4]);
+        draw_line(p.x, p.y, q.x, q.y, 1.0, color);
+        // From the middle of this edge to the middle of the opposite one.
+        let (m, n) = ((p + q) / 2.0, (corners[(k + 2) % 4] + corners[(k + 3) % 4]) / 2.0);
+        draw_line(m.x, m.y, n.x, n.y, 1.0, color);
+    }
+    if hover {
+        let text = format!("Grid view ({})", ui.settings.keys.label(Action::GridView));
+        draw_tooltip(&[&text], r.x, layout.panel.y - 4.0);
+    }
+}
+
 fn draw_clock(layout: &Layout, world: &World, ui: &Ui) {
     let r = layout.clock;
     let (day, hour) = world.clock();
@@ -892,6 +927,7 @@ fn draw_clock(layout: &Layout, world: &World, ui: &Ui) {
         draw_rectangle(c.x - 8.0, c.y - 10.0, 5.0, 20.0, BRASS);
         draw_rectangle(c.x + 3.0, c.y - 10.0, 5.0, 20.0, BRASS);
     }
+    draw_grid_button(layout, ui);
     let speed = if ui.paused { "PAUSED".to_owned() } else { format!("Speed x{}", ui.speed) };
     draw_centered(&speed, c.x, pause.bottom() + 18.0, 15.0, if ui.paused { GLOW } else { DIM });
 

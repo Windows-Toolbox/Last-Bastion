@@ -145,6 +145,7 @@ pub fn settings_page(col: &mut Column, s: &mut Settings) -> bool {
     }
     toggle(col.row(), "Always show health bars", &mut s.always_health_bars);
     toggle(col.row(), "Always show the whole command queue", &mut s.always_full_queue);
+    toggle(col.row(), "Show the grid", &mut s.show_grid);
     toggle(col.row(), "Stats in the top left (F3)", &mut s.dev_overlay);
 
     col.gap();

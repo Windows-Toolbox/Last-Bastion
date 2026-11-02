@@ -184,7 +184,8 @@ impl Game {
         let modal = self.leaving.is_some() || self.end_screen_shown() || story;
         // The editor's panel first (egui): what it takes – a click, a field being typed into – the map and the keys
         // below don't get. Greyed out while the menu or a question is in front.
-        if self.ui.editor.available {
+        // Not while the window is minimized: it has no size then, so there's no room for the panel (egui would panic).
+        if self.ui.editor.available && screen_width() >= 1.0 && screen_height() >= 1.0 {
             let enabled = !self.menu.open && !modal;
             self.ui.editor.steps = self.history.counts();
             // Three fields of `self` lent apart: the closure gets the editor, the world and the orders – nothing else.
@@ -650,6 +651,7 @@ impl Game {
                 || is_key_down(KeyCode::LeftShift)
                 || is_key_down(KeyCode::RightShift),
             always_bars: self.ui.settings.always_health_bars,
+            grid: self.ui.settings.show_grid,
             fog,
             fog_picture: &self.fog_picture,
             looks: &self.looks,
@@ -772,7 +774,8 @@ impl Game {
             .switch("Edge scrolling", ui.settings.edge_scroll, Switch::EdgeScroll)
             .switch(&format!("Keep the mouse in the window ({})", k(K::ConfineMouse)), ui.settings.confine_mouse, Switch::ConfineMouse)
             .switch("Health bars on all units", ui.settings.always_health_bars, Switch::HealthBars)
-            .switch("Whole command queue (else: hold Shift)", ui.settings.always_full_queue, Switch::FullQueue);
+            .switch("Whole command queue (else: hold Shift)", ui.settings.always_full_queue, Switch::FullQueue)
+            .switch(&format!("Grid view ({})", k(K::GridView)), ui.settings.show_grid, Switch::Grid);
         o.section("select", "Select")
             .text("Click / box, Shift: add or remove, on nothing or Esc: none")
             .text("Click a zombie: its values")
@@ -843,6 +846,7 @@ impl Game {
             Action::Switch(Switch::ConfineMouse) => s.confine_mouse = !s.confine_mouse,
             Action::Switch(Switch::HealthBars) => s.always_health_bars = !s.always_health_bars,
             Action::Switch(Switch::FullQueue) => s.always_full_queue = !s.always_full_queue,
+            Action::Switch(Switch::Grid) => s.show_grid = !s.show_grid,
             Action::CopySeed => {
                 macroquad::miniquad::window::clipboard_set(&self.world.seed.to_string());
                 self.ui.alert("Seed copied");

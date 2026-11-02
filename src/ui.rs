@@ -11,7 +11,7 @@ use crate::draw::{draw_diamond, draw_ring, mark_color, ore_color, terrain_color,
 use crate::editor::{Editor, Sight, Tool};
 use crate::formation::{self, Formation, Shape, MIN_DRAG};
 use crate::hud::{building_buttons, menu_buttons, Button, HudHit, Layout, Submenu, COMMAND_CENTER_BUTTONS, UNIT_BUTTONS};
-use crate::iso::{Camera, TILE_H, TILE_W};
+use crate::iso::{Camera, FLAT, TILE_H, TILE_W};
 use crate::keys::Action;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{to_frame, Ore, Region, Terrain};
@@ -901,6 +901,7 @@ impl Ui {
                     }
                     Some(HudHit::Button(button)) => self.press(button, world, orders, shift, ctrl),
                     Some(HudHit::Pause) => self.paused = !self.paused,
+                    Some(HudHit::GridView) => self.settings.show_grid = !self.settings.show_grid,
                     Some(HudHit::RepairAll) => self.repair(world, orders, (0..world.buildings.len()).collect()),
                     Some(HudHit::Panel) => {}
                 }
@@ -1773,8 +1774,8 @@ impl Ui {
         }
     }
 
-    /// Time, overlay, editor. The developer tools are buttons in the editor now (F10) –
-    /// so the keys Insert, Home, Delete, End, Page Up/Down, F4 and F11 are free again.
+    /// Time, overlay, grid, editor. The developer tools are buttons in the editor now (F10) –
+    /// so the keys Insert, Home, Delete, End, Page Up/Down and F11 are free again.
     fn other_keys(&mut self, card: &[Button]) {
         if self.global_pressed(Action::Pause, card) {
             self.paused = !self.paused;
@@ -1787,6 +1788,9 @@ impl Ui {
         }
         if self.global_pressed(Action::Overlay, card) {
             self.settings.dev_overlay = !self.settings.dev_overlay;
+        }
+        if self.global_pressed(Action::GridView, card) {
+            self.settings.show_grid = !self.settings.show_grid;
         }
         // Game view ↔ editor mode (the two buttons in the top right).
         if self.global_pressed(Action::EditTest, card) {
@@ -2053,7 +2057,7 @@ impl Ui {
                 Tool::ZombieDrop => {
                     // The area where they land: a circle on the ground – on screen a flat ellipse (like the tiles).
                     let w = self.editor.drop_radius() * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom;
-                    draw_ellipse_lines(mouse.x, mouse.y, w, w / 2.0, 0.0, 2.0, ZOMBIE);
+                    draw_ellipse_lines(mouse.x, mouse.y, w, w * FLAT, 0.0, 2.0, ZOMBIE);
                     draw_text(format!("{} zombies", self.editor.drop), mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
                 }
                 Tool::Unit(_) | Tool::Spawner | Tool::Doom | Tool::Loot | Tool::Giant => {
@@ -2115,7 +2119,7 @@ impl Ui {
         if let Some((target, time_left, mark)) = self.marker {
             let s = camera.world_to_screen(target);
             let w = 24.0 * camera.zoom * (time_left / 0.6 + 0.5);
-            draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, 2.0, mark_color(mark));
+            draw_ellipse_lines(s.x, s.y, w, w * FLAT, 0.0, 2.0, mark_color(mark));
         }
         if let Some(button) = self.targeting {
             let color = mark_color(button_mark(button));
@@ -2171,17 +2175,17 @@ fn draw_ground_frame(camera: &Camera, min: Vec2, max: Vec2, thickness: f32, colo
 fn draw_ground_circle(camera: &Camera, center: Vec2, radius: f32, thickness: f32, color: Color) {
     let s = camera.world_to_screen(center);
     let w = radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom;
-    draw_ellipse_lines(s.x, s.y, w, w / 2.0, 0.0, thickness, color);
+    draw_ellipse_lines(s.x, s.y, w, w * FLAT, 0.0, thickness, color);
 }
 
 /// How close to its edge (in steps of its axes) a spawner can be grabbed: `GRAB_PIXELS` on screen. Straight: a step
-/// across the screen is twice as wide as a step down. Slanted: one tile – two lines a tile apart along a tile's edge lie
+/// down the screen is `FLAT` of a step across. Slanted: one tile – two lines a tile apart along a tile's edge lie
 /// `TILE_W · TILE_H / 2 / edge` pixels apart (the area of a tile's diamond over the length of its edge).
 fn grab_tolerance(camera: &Camera, axes: Axes) -> Vec2 {
     match axes {
         Axes::Screen => {
             let down = (GRAB_PIXELS / (TILE_H / 2.0 * camera.zoom)).clamp(0.4, 3.0);
-            vec2(down / 2.0, down)
+            vec2(down * FLAT, down)
         }
         Axes::Tiles => {
             let apart = TILE_W * TILE_H / 2.0 / vec2(TILE_W / 2.0, TILE_H / 2.0).length() * camera.zoom;

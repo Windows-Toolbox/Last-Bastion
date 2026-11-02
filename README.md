@@ -157,10 +157,13 @@
   Ein Test prüft das für jede Karte mit 10 Seeds.
 - **Wege hinein:** gewundene offene Wege von jeder Seite zur Basis, die sich wie Äste vereinigen – die Stellen zum
   Zumauern. Flüsse bekommen dort Furten, Regionswände Pässe. Ein Sicherheitsnetz verbindet alles Abgeschnittene.
-- **Weltgrenze:** gerade auf dem Bildschirm wie in TAB – die Spielfläche ist ein Rechteck (doppelt so breit wie
-  hoch), die Minimap auch. Außen ein Ring offenen Geländes (≈ 11 Kacheln) mit den **Spawnern** (3 pro Seite, fast die
+- **Weltgrenze:** gerade auf dem Bildschirm wie in TAB – die Spielfläche ist ein Rechteck (√2-mal so breit wie
+  hoch, TABs Kachelform), die Minimap auch. Außen ein Ring offenen Geländes (≈ 11 Kacheln) mit den **Spawnern** (3 pro Seite, fast die
   ganze Seite breit). Dahinter sieht und läuft man nicht. Größe = so viele Kacheln wie ein Quadrat dieser Kante.
   Im Editor lässt sich die Spielfläche überallhin ziehen und beliebig groß machen – Kamera und Minimap folgen ihr.
+- **Nebel:** wie TAB eine weiche Schicht über allem auf der Karte: nie Gesehenes schwarz, Erkundetes samt Bäumen und
+  Felsen nur gedimmt (TABs 70 %, Dunkles Moor 78 %), um jeden, der sieht, ein weicher Lichtkreis. Zombies nur, wo
+  jemand hinschaut. In einen Wald sieht man 3 Kacheln tief, durch ihn nicht – schießen geht nur bis zum Waldrand.
 - **Erz:** Eisenerz (rostbraun), Kohle (schwarz), Stein (hellgrau) als Felder; neben der Basis je ein kleines (Stein
   12–16 Kacheln weg, Eisen und Kohle 14–24 – ein, zwei Tesla-Türme), draußen größer und reicher. Abgebaut von der **Mine** –
   am besten mitten aufs Feld, sie baut auch das Erz unter sich ab.
@@ -375,6 +378,7 @@
 | Leertaste | Pause (Befehle gehen weiter) · `+` / `-`: Tempo ×1–×8 |
 | Esc | Bricht ab, was wartet → hebt die Auswahl auf → Spielmenü (Settings, **Key mapping**, Restart, New map, Main menu) |
 | F3 / F12 | Messwerte, Schalter, Tastenhilfe (Abschnitte per Klick ein-/ausklappen) / Maus im Fenster halten an/aus |
+| F4 | Gitter an/aus: dünne Linien zwischen den Kacheln, wie TAB (auch: Knopf neben der Pause, F3-Schalter, Settings) |
 
 - **Die Tabelle zeigt die Standardtasten – jede ist änderbar:** Esc → **Key mapping** (auch im Startbildschirm).
   - 5 Tabs: Kamera und Zeit, Auswahl und Gruppen, Einheiten (Befehle, Formationen), Kommandozentrum (die Baumenüs und

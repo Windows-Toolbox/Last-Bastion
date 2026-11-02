@@ -623,7 +623,7 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   clearing stays free; is it wider than the grid, one tesla tower further). The start patches of ore are planned with
   the grid too: stone one tesla tower out (the barracks needs it), iron ore and coal one or two. A test checks every
   map with 10 seeds.
-- **World border:** straight on screen like TAB's – the playing field is a rectangle twice as wide as high (a
+- **World border:** straight on screen like TAB's – the playing field is a rectangle √2 times as wide as high (a
   diamond in the grid), the minimap too. Around it a ring of open ground (16 steps, ≈ 11 tiles); the grid corners
   beyond are off the map. Units and the camera stop at the border. Spawners are rectangles on screen as well – in the
   editor also slanted like the tiles. Like SC2's map bounds inside its map size, the playing field is a rectangle of
@@ -656,8 +656,8 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 | Medium | 192 × 192 | ~7,000 |
 | Large | 256 × 256 | Our maps ~73,000: ≈ 65,000 roaming almost everywhere in packs of 1–3 per tile, never more than 3 – near the base only walkers, further out the harder breeds; ≈ 8,000 asleep in villages and around loot. TAB's landscapes with TAB's numbers: ≈ 13,000–25,000 |
 
-- **Fog of war:** unexplored (black) / explored (dark, no zombies shown) / visible. Sight per unit and building,
-  blocked by forest, computed in the simulation (co-op players share it).
+- **Fog of war:** unexplored (black) / explored (dimmed to TAB's 70–78 % with trees and rocks, no zombies shown) /
+  visible. A soft layer over everything on the map, and a soft light around everyone who sees, like TAB's. Sight per unit and building, up to 3 tiles into a forest but not through it (TAB's), computed in the simulation (co-op players share it).
 
 ---
 

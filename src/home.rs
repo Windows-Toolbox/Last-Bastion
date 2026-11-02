@@ -205,7 +205,7 @@ impl Home {
         self.preview_time = get_time();
     }
 
-    /// The preview of the whole map (turned like on screen, twice as wide as high), as big as fits into `r`.
+    /// The preview of the whole map (turned like on screen), as big as fits into `r`.
     fn draw_preview(&self, r: Rect) {
         let n = self.preview_size.max(1);
         let area = Map::full_area_of(n);
@@ -218,7 +218,10 @@ impl Home {
 
     /// The map of the current setup over the whole screen, darkened – behind the main page.
     fn draw_backdrop(&self, dark: f32) {
-        self.draw_preview(Rect::new(-60.0, 0.0, screen_width() + 120.0, screen_height() * 1.15));
+        // High enough that the width decides how big it is: it fills the screen to both sides.
+        let width = screen_width() + 120.0;
+        let height = (width * TILE_H / TILE_W).max(screen_height() * 1.15);
+        self.draw_preview(Rect::new(-60.0, (screen_height() - height) / 2.0, width, height));
         draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.03, 0.04, 0.05, dark));
     }
 

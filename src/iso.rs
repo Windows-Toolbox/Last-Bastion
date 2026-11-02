@@ -5,9 +5,12 @@ use macroquad::prelude::*;
 
 use crate::map::Region;
 
-/// On screen a tile is a diamond, twice as wide as it is high (like in TAB).
+/// On screen a tile is a diamond, √2 times as wide as it is high – exactly TAB's (`DXWorldGrid`: a tile is 1.4142 wide
+/// and 1 high), which its pictures are painted for: a camera looking down at 45°.
 pub const TILE_W: f32 = 64.0;
-pub const TILE_H: f32 = 32.0;
+pub const TILE_H: f32 = TILE_W * FLAT;
+/// Anything lying on the ground is this much lower than wide on screen: a circle becomes an ellipse (`w * FLAT` high).
+pub const FLAT: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
 pub struct Camera {
     /// The world point (in tiles) shown in the middle of the screen.

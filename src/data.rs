@@ -490,6 +490,8 @@ pub struct BreedStats {
 /// `data\colony.json` – what the colony starts with is up to the difficulty (`Difficulty`).
 #[derive(Deserialize)]
 pub struct Colony {
+    /// Your eyes look this many forest tiles deep into a forest (TAB's `MaxOpaqueCellsVisible`) – not past it.
+    pub sight_into_forest: u32,
     /// The storage (`World::storage`): this much gold at most, like TAB's command center …
     pub storage_gold: u32,
     /// … this much of every good – wood, stone, iron ore, coal …

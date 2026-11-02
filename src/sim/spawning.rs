@@ -17,7 +17,7 @@ use crate::map::{from_frame, to_frame, Map, Region};
 /// So many random spots in the spawners are tried for a new zombie before giving up
 /// (e.g. when the base has been walled off with water and is unreachable from everywhere).
 const SPAWN_TRIES: u32 = 1000;
-/// A spawner placed in the editor starts this big (steps of the screen axes – on screen twice as wide as high).
+/// A spawner placed in the editor starts this big (steps of the screen axes – on screen √2 times as wide as high).
 pub(super) const NEW_SPAWNER_SIZE: i32 = 8;
 
 /// An area on the map where zombies come from – the only place they come from. Placed, renamed and resized

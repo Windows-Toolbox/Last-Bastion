@@ -4,11 +4,13 @@
 //! - **explored**: seen before, but nobody is looking right now – the terrain shows darkened, zombies don't,
 //! - **unexplored**: never seen – black.
 //!
-//! Everyone looks around in a circle (sight range), but not through forest (`Map::clear_sight`).
+//! Everyone looks around in a circle (sight range), a few tiles into a forest but not through it
+//! (`Map::sees_into_forest`).
 //! Computed in the simulation, so it's the same on every PC – in co-op both players share the view.
 
 use macroquad::math::{vec2, Vec2};
 
+use crate::data;
 use crate::map::Map;
 
 #[derive(Clone)]
@@ -33,6 +35,7 @@ impl Vision {
     /// Forgets what is visible and looks again from every eye: (position, sight range in tiles).
     pub fn update(&mut self, map: &Map, eyes: impl Iterator<Item = (Vec2, f32)>) {
         self.visible.fill(false);
+        let depth = data::get().colony.sight_into_forest;
         for (eye, range) in eyes {
             let r = range.ceil() as i32;
             let (cx, cy) = (eye.x.floor() as i32, eye.y.floor() as i32);
@@ -45,7 +48,7 @@ impl Vision {
                         continue; // someone else already sees it – saves the line of sight
                     }
                     let center = vec2(x as f32 + 0.5, y as f32 + 0.5);
-                    if center.distance(eye) <= range && map.clear_sight(eye, center) {
+                    if center.distance(eye) <= range && map.sees_into_forest((cx, cy), (x, y), depth) {
                         self.visible[i] = true;
                         self.explored[i] = true;
                     }

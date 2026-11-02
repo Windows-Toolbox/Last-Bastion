@@ -159,7 +159,7 @@ pub const MATERIALS: &[&str] = &["Mountains", "Forest", "Mixed", "Water"];
 #[serde(default)]
 pub struct Common {
     /// How big the playing field inside the world border is: as many tiles as a square with this edge (TAB: 256).
-    /// On screen it's a rectangle twice as wide as high (`map.rs`).
+    /// On screen it's a rectangle √2 times as wide as high (`map.rs`).
     pub size: f32,
     /// Radius around the base where nothing grows (tiles).
     pub base_clear: f32,

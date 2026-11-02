@@ -503,7 +503,7 @@ impl Editor {
     /// What's always there: Edit / Test, the tabs, whose view.
     fn top(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+            let w = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(0.0);
             for (mode, text) in [(Mode::Edit, "Edit"), (Mode::Test, "Test (F10)")] {
                 let button = egui::Button::new(RichText::new(text).strong()).selected(self.mode == mode);
                 if ui.add_sized([w, 28.0], button).clicked() && mode != self.mode {

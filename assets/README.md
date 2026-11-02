@@ -78,8 +78,8 @@ Alle Bilder des Spiels – vorgerenderte **Sprite-Sheets** wie in TAB (DESIGN.md
 
 - **Zombie-Angriff:** genau **ein** Durchlauf pro Schlag (in der Pause bis zum nächsten), `fps` zählt da nicht.
   Einheiten: `attack` läuft im Kreis, solange sie zielt und schießt.
-- **Kamera fürs Rendern** (Blender): orthografisch, 30° von oben (Rotation X = 60°), um 45° gedreht (Z = 45°).
-  Dann passt die Figur genau auf die Rauten (2 : 1).
+- **Kamera fürs Rendern** (Blender): orthografisch, 45° von oben (Rotation X = 45°), um 45° gedreht (Z = 45°).
+  Dann passt die Figur genau auf die Rauten (√2 : 1, wie TABs).
 - **Rand lassen:** ein paar durchsichtige Pixel um jede Figur, sonst färben beim Herauszoomen die Nachbarbilder ab.
 - **Testbild neu malen:** `cargo run --release --example test_sprites` → `assets\test\figure.png`.
 

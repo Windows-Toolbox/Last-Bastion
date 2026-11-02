@@ -172,7 +172,7 @@ fn lines(tab: usize) -> Vec<Line> {
             heading(&mut lines, "Time");
             binds(&mut lines, [Action::Pause, Action::Faster, Action::Slower]);
             heading(&mut lines, "Window and tools");
-            binds(&mut lines, [Action::Overlay, Action::ConfineMouse, Action::EditTest]);
+            binds(&mut lines, [Action::Overlay, Action::GridView, Action::ConfineMouse, Action::EditTest]);
         }
         1 => {
             binds(&mut lines, [Action::SelectArmy, Action::NextType, Action::RepairAll]);

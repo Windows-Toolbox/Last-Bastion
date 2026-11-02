@@ -278,6 +278,7 @@ Womit die Kolonie startet (Gold, Holz, Einheiten), sagt die Schwierigkeit (`game
 | Wert | Bedeutung |
 |---|---|
 | `economy_every_seconds` | So viele Sekunden von einer **Abrechnung** der Wirtschaft zur nächsten (TAB: 28) |
+| `sight_into_forest` | So viele Waldkacheln tief sehen deine Einheiten und Gebäude in einen Wald (TAB: 3), dahinter nichts. Schießen geht weiter nur bis zum Waldrand |
 | `storage_gold`, `storage_goods`, `storage_food` | **Lager:** so viel Gold, so viel von jeder Ware (Holz, Stein, Eisenerz, Kohle) und so viel Nahrung passt höchstens hinein – wie TABs Kommandozentrum (2000 Gold, 50 Waren). Was bei einer Abrechnung oder als Beute darüber hinaus käme, ist verloren. Nahrung lagert TAB nicht, bei uns sammelt sie sich zwischen den Abrechnungen – daher eine eigene Grenze. In der Leiste: der Balken füllt sich, voll wird er rot |
 | `debt_penalty_percent` | **Schulden:** Unterhalt, den das Gold nicht deckt, wird Schulden – neues Gold zahlt sie zuerst ab. Verschuldet machen die Einheiten so viel Prozent weniger Schaden und schießen so viel langsamer |
 | `deep_debt_payouts`, `deep_debt_penalty_percent`, `deep_debt_slow_percent` | Mehr Schulden als so viele Abrechnungen Unterhalt (gerade jetzt): so viel Prozent weniger Schaden, und sie laufen so viel langsamer |
