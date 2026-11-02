@@ -5,11 +5,12 @@ use std::collections::VecDeque;
 
 use macroquad::math::{vec2, Vec2};
 
+use super::fx::{Fallen, Fx};
 use super::neutral::Tag;
 use super::commands::Command;
 use super::terrain::free_point_near;
 
-use super::{payout_ticks, World, TICKS_PER_SECOND};
+use super::{after_armor, payout_ticks, World, TICKS_PER_SECOND};
 use crate::data;
 use crate::kinds::{BuildingKind, BuildingStats, Resource, UnitKind};
 
@@ -187,14 +188,14 @@ impl Building {
     /// then the building is infected now (`World::infect` lets the zombies out). What's left over of a hit that
     /// breaks the shield is lost, like in TAB a hit only ever goes to one of the two.
     pub fn take_damage(&mut self, damage: u32) -> bool {
-        let damage = damage.saturating_sub(self.stats().armor).max(1);
+        let damage = after_armor(damage, self.stats().armor);
         if self.shield == 0 {
             self.hp = self.hp.saturating_sub(damage);
             return false;
         }
         self.shield = self.shield.saturating_sub(damage);
-        // The command center is never infected – its shield is just more life, it falls when its hit points are gone.
-        let broke = self.shield == 0 && self.stats().colonists > 0 && self.kind != BuildingKind::CommandCenter;
+        // The command center too, like TAB's (`EndGameIfInfected`): infected, the round is lost (`round.rs`).
+        let broke = self.shield == 0 && self.stats().colonists > 0;
         self.infected |= broke;
         broke
     }
@@ -323,6 +324,15 @@ impl World {
         self.buildings.iter().position(|b| b.id == id)
     }
 
+    /// How fast one walks at this point, as a factor: 1 – on a trap that slows (TAB's stakes, `slow_percent`) less,
+    /// for zombies and your units alike. A trap still being built slows too, like TAB's.
+    pub(super) fn ground_pace(&self, p: Vec2) -> f32 {
+        match self.building_at_point(p).map(|b| self.buildings[b].stats().slow_percent) {
+            Some(slow) if slow > 0 => (100 - slow.min(100)) as f32 / 100.0,
+            _ => 1.0,
+        }
+    }
+
     /// The building whose tiles this point lies on.
     pub fn building_at_point(&self, p: Vec2) -> Option<usize> {
         let (x, y) = (p.x.floor() as i32, p.y.floor() as i32);
@@ -429,6 +439,8 @@ impl World {
         if self.buildings[b].kind == BuildingKind::Barrel && self.barrels < self.barrel_room() {
             self.barrels += 1;
         }
+        let building = &self.buildings[b];
+        self.fx.push(Fx::Fell { what: Fallen::Building(building.kind), tile: building.tile, size: building.footprint() });
         self.take_down(id);
     }
 
@@ -451,6 +463,10 @@ impl World {
                     unit.inside = None;
                 }
                 command_center_fell |= building.kind == BuildingKind::CommandCenter;
+                // A barrel that went off shows its blast instead (`blast.rs`).
+                if !building.blown {
+                    self.fx.push(Fx::Fell { what: Fallen::Building(building.kind), tile: building.tile, size: building.footprint() });
+                }
                 // Switched off or not finished yet, nobody works in it – nobody comes out.
                 let workers = if building.works() { building.stats().worker_cost } else { 0 };
                 fallen.push((building.center(), building.tiles(), workers));
@@ -475,6 +491,7 @@ impl World {
     /// way to the command center is computed anew. Still being built, it falls (TAB).
     pub(super) fn infect(&mut self, b: usize) {
         let (tile, size) = (self.buildings[b].tile, self.buildings[b].footprint());
+        self.fx.push(Fx::Infected { tile, size });
         self.buildings[b].repair_left = 0; // a repair underway is lost with it
         self.map.set_taken(tile.0, tile.1, size, true);
         self.refresh_map();
@@ -631,7 +648,8 @@ impl World {
             return Some(SwitchBlock::Workers);
         }
         // Switched off it's in no grid – `spare_power_at` finds the one reaching it.
-        if stats.energy_use > 0 && self.spare_power_at(&self.power(), building.center()).map_or(0, |(_, spare)| spare) < stats.energy_use {
+        let need = self.energy_use(building.kind);
+        if need > 0 && self.spare_power_at(&self.power(), building.center()).map_or(0, |(_, spare)| spare) < need {
             return Some(SwitchBlock::Power);
         }
         if stats.upkeep > 0 && self.income() < self.upkeep() + stats.upkeep {
@@ -658,8 +676,8 @@ impl World {
             }
             trap.hp = trap.hp.saturating_sub(stats.trap_wear);
             let zombie = &mut self.zombies[z];
-            let damage = stats.trap_damage.saturating_sub(zombie.breed.stats().armor).max(1);
-            zombie.hp = zombie.hp.saturating_sub(damage);
+            let damage = after_armor(stats.trap_damage, zombie.breed.stats().armor);
+            zombie.hurt(damage, self.tick);
         }
     }
 

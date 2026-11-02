@@ -41,8 +41,9 @@ use serde::{Deserialize, Serialize};
 
 use super::sound::{cell_xy, CELL};
 use super::terrain::nearest_free_tile;
-use super::crowd::rock_ticks;
-use super::{clear_line, World, TICK, TICKS_PER_SECOND, UNIT_RADIUS};
+use super::crowd::{rock_ticks, UNIT_MASS};
+use super::fallen::Fling;
+use super::{after_armor, clear_line, Building, World, TICK, TICKS_PER_SECOND, UNIT_RADIUS};
 use crate::data::{self, BreedStats};
 use crate::kinds::BuildingKind;
 use crate::lure::LureField;
@@ -114,6 +115,8 @@ pub struct Zombie {
     /// An attack order remembers this number, not the index.
     pub id: u32,
     pub(super) hp: u32,
+    /// The tick it was last hurt – it heals itself only a while after (`regen.rs`).
+    pub(super) hurt_at: u64,
     /// Its own speed: that of its breed, a bit faster or slower at random – so a crowd doesn't walk in step.
     pub(super) speed: f32,
     /// How big it is (tiles) – that of its breed. Kept here like `speed`: the crowd asks for it thousands of times
@@ -148,6 +151,17 @@ pub struct Zombie {
     pub(super) leap: Option<Leap>,
     /// Ticks left of a giant's roar (`roar_every_seconds`) – it stands still meanwhile.
     pub(super) roar: u32,
+    /// Which of its breed's skins it wears (`skins` in `data\zombies.json`, `sprites.rs`) – only for the picture, the
+    /// simulation never looks at it. Fixed for life, also while it sleeps (`Sleeper`).
+    pub look: u8,
+    /// Killed by a blow that throws (`push`, `fallen.rs`): how its body flies. Default: it doesn't.
+    pub(super) fling: Fling,
+}
+
+/// A skin number out of any number – the same number always gives the same skin, neighbouring numbers very
+/// different ones. Multiplied by a big odd number (from the golden ratio), the top 8 bits kept: a cheap "hash".
+pub(super) fn look_from(seed: u32) -> u8 {
+    (seed.wrapping_mul(0x9E37_79B9) >> 24) as u8
 }
 
 /// What a zombie is after – by number, so it stays right while the lists change.
@@ -180,7 +194,7 @@ pub(super) enum Doing {
     Stand,
     /// Its special animation – TAB's zombie shakes and growls.
     Growl,
-    /// On its way to this spot, at its walking pace (`wander_pace`).
+    /// On its way to this spot, at its walking pace (`Breed::walk_share`).
     Roam(Vec2),
 }
 
@@ -322,6 +336,23 @@ impl Breed {
         self.stats().attack.unwrap_or(values().hit_cooldown).max(1)
     }
 
+    /// Ticks it stands when it idles: its own `stand_seconds`, otherwise that of all zombies.
+    pub fn stand_ticks(self) -> u32 {
+        self.stats().stand.unwrap_or(values().stand)
+    }
+
+    /// Ticks it growls (a giant: roars): its own `growl_seconds`, otherwise that of all zombies.
+    pub fn growl_ticks(self) -> u32 {
+        self.stats().growl.unwrap_or(values().growl).max(1)
+    }
+
+    /// Roaming, it walks at this share of its running speed: TAB's `WalkSpeed` / `RunSpeed`. A zombie's own speed is a
+    /// bit off its breed's (`Zombie::speed`) – it walks off by as much.
+    pub fn walk_share(self) -> f32 {
+        let stats = self.stats();
+        if stats.speed > 0.0 { (stats.walk_speed / stats.speed).min(1.0) } else { 0.0 }
+    }
+
     /// How much noise one of its hits makes: its own `hit_noise`, otherwise `zombie_hit` of `data\sound.json`.
     pub fn hit_noise(self) -> u32 {
         self.stats().hit_noise.unwrap_or(data::get().sound.zombie_hit)
@@ -338,15 +369,33 @@ impl Zombie {
         self.hp
     }
 
+    /// Hurt by `damage` (armor already taken off) at `tick` – it heals itself only a while after (`regen.rs`).
+    pub(super) fn hurt(&mut self, damage: u32, tick: u64) {
+        self.hp = self.hp.saturating_sub(damage);
+        self.hurt_at = tick;
+    }
+
     /// Its own speed (tiles per second) – for the panel when it's clicked.
     pub fn speed(&self) -> f32 {
         self.speed
+    }
+
+    /// How it moved by itself in the last tick (tiles): the step it wanted to walk – not where the crowd pushed it – or
+    /// in the air over a wall, its flight. Only for the picture: whether it walks, how fast its feet go, which way it
+    /// faces (`draw::Looks`).
+    pub fn own_step(&self) -> Vec2 {
+        if self.leap.is_some() { self.pos - self.prev } else { self.step }
     }
 
     /// Right after a hit: how far it is through the pause until the next one (0 = it just hit, towards 1 = ready
     /// again). For the picture: one swing of the attack animation per hit. `None`: it hasn't hit for a while.
     pub fn since_hit(&self) -> Option<f32> {
         (self.cooldown > 0).then(|| 1.0 - self.cooldown as f32 / self.breed.attack_ticks() as f32)
+    }
+
+    /// Growling right now (an idle zombie's "special" animation in TAB) – or roaring, a giant? Only for the picture.
+    pub fn is_growling(&self) -> bool {
+        self.roar > 0 || (self.idle.doing == Doing::Growl && self.aim.is_none() && !self.siege && self.lure.is_none())
     }
 
     /// Where it heads for – for the panel and the editor.
@@ -365,7 +414,7 @@ impl Zombie {
 }
 
 /// Whom a zombie hits this tick (index in the respective list) – a ranged one shoots at it instead (`ranged.rs`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) enum Hit {
     Unit(usize),
     Building(usize),
@@ -387,7 +436,7 @@ impl World {
             self.zombies.iter().map(|z| (z.pos.x.floor() as i32, z.pos.y.floor() as i32, z.breed.index())).collect();
         tiles.sort_unstable();
         tiles.dedup();
-        let eyes = tiles.into_iter().map(|(x, y, b)| (vec2(x as f32 + 0.5, y as f32 + 0.5), Breed::ALL[b].stats().sight));
+        let eyes = tiles.into_iter().map(|(x, y, b)| (vec2(x as f32 + 0.5, y as f32 + 0.5), self.zombie_sight(Breed::ALL[b])));
         vision.update(&self.map, eyes);
     }
 
@@ -401,7 +450,7 @@ impl World {
     /// with a wave (`siege`).
     pub(super) fn spawn_zombie_as(&mut self, pos: Vec2, breed: Breed, wander: bool) {
         let stats = breed.stats();
-        let speed = stats.speed * (0.8 + 0.4 * self.rng.unit_f32());
+        let speed = stats.speed * (0.8 + 0.4 * self.rng.unit_f32()) * self.zombie_pace();
         let id = self.new_zombie_id();
         let radius = stats.radius;
         self.zombies.push(Zombie {
@@ -409,6 +458,7 @@ impl World {
             prev: pos,
             id,
             hp: stats.hp,
+            hurt_at: 0,
             speed,
             radius,
             cooldown: 0,
@@ -426,6 +476,8 @@ impl World {
             calm_for: 0,
             leap: None,
             roar: 0,
+            look: look_from(id),
+            fling: Fling::default(),
         });
     }
 
@@ -579,7 +631,7 @@ impl World {
         if ids == self.manned_ids {
             return;
         }
-        let sight = Breed::ALL.iter().map(|b| b.stats().sight).fold(0.0, f32::max);
+        let sight = Breed::ALL.iter().map(|&b| self.zombie_sight(b)).fold(0.0, f32::max);
         self.manned.clear();
         for &id in &ids {
             if let Some(b) = self.building_index(id) {
@@ -602,7 +654,7 @@ impl World {
         // Sight, once per breed – they see differently far. The units in a tower can be seen too – then the zombies
         // go for the tower.
         for breed in Breed::ALL {
-            let sight = breed.stats().sight;
+            let sight = self.zombie_sight(breed);
             self.zombie_sight[breed.index()].update(&self.map, self.units.iter().map(|u| (u.pos, sight)));
         }
         self.mark_manned();
@@ -643,7 +695,8 @@ impl World {
             if let Some(to) = world.leap_over(zombie, hit, goal) {
                 return (Vec2::ZERO, None, Some(to));
             }
-            (dir * zombie.speed * TICK, hit.filter(|_| zombie.cooldown == 0), None)
+            // On stakes it wades (`ground_pace`).
+            (dir * zombie.speed * TICK * world.ground_pace(zombie.pos), hit.filter(|_| zombie.cooldown == 0), None)
         });
         // Who is in the crowd this tick (`move_crowd`): not resting, not in the air, not taking off.
         let solving: Vec<bool> = self
@@ -669,6 +722,8 @@ impl World {
         let mut shots = Vec::new();
         // Every hit makes noise (`sound.rs`) – a crowd tearing at a wall gets loud, a harpy alone does.
         let mut hits = Vec::new();
+        // The blows that sweep (the giant's, `sweep`) – dealt after the loop, they hit everyone around.
+        let mut sweeps = Vec::new();
         for (i, (zombie, ((_, hit, leap), &want))) in self.zombies.iter_mut().zip(intents.into_iter().zip(&wants)).enumerate() {
             zombie.roar = zombie.roar.saturating_sub(1);
             zombie.prev = zombie.pos;
@@ -700,6 +755,7 @@ impl World {
             }
             match hit {
                 Some(hit) if zombie.breed.is_ranged() => shots.push((zombie.pos, zombie.breed, hit)),
+                Some(hit) if zombie.breed.stats().sweep_radius > 0.0 => sweeps.push((i, hit)),
                 Some(Hit::Unit(u)) => self.units[u].take_hit(zombie.breed.stats().damage, tick),
                 Some(Hit::Building(b)) => {
                     if self.buildings[b].take_damage(zombie.breed.stats().damage) {
@@ -708,6 +764,9 @@ impl World {
                 }
                 None => {}
             }
+        }
+        for (z, hit) in sweeps {
+            self.sweep(z, hit, &mut infected);
         }
         // 5. Everyone walks at once, the crowd pushes and flows (`crowd.rs`). Before the infected houses let their people
         // out – those are in none of the lists yet, they walk the next tick.
@@ -725,6 +784,58 @@ impl World {
         }
         // The grid now matches the new positions – the units look up their zombies in it afterwards.
         self.fill_zombie_grid();
+    }
+
+    /// A blow that sweeps (TAB's giant: `Arc120`, `EffectRadius` 3.5, `FriendlyDamage`): zombie `z` hits its target and
+    /// everyone else in front of it – within `sweep_radius` of it (to their edge), at most half of `sweep_degrees` off
+    /// the line to its target: your units on the ground, your buildings (not infected ones, not traps), and with
+    /// `sweep_hits_zombies` the other zombies too, each minus its armor. Buildings whose shield breaks go into
+    /// `infected`.
+    pub(super) fn sweep(&mut self, z: usize, hit: Hit, infected: &mut Vec<usize>) {
+        let (from, breed) = (self.zombies[z].pos, self.zombies[z].breed);
+        let stats = breed.stats();
+        let (damage, radius, tick) = (stats.damage, stats.sweep_radius, self.tick);
+        // The point of a building nearest to it – its target, and how far any building is.
+        let nearest = |b: &Building| from.clamp(b.corner(), b.far_corner());
+        let aim = match hit {
+            Hit::Unit(u) => self.units[u].pos,
+            Hit::Building(b) => nearest(&self.buildings[b]),
+        };
+        let dir = (aim - from).normalize_or_zero();
+        let half = libm::cosf(stats.sweep_degrees.to_radians() / 2.0);
+        // In the arc: close enough, and not too far off the line – right on top of it always.
+        let in_arc = |p: Vec2, edge: f32| {
+            let d = p - from;
+            let len = d.length();
+            len <= radius + edge && (len <= edge || dir == Vec2::ZERO || d.dot(dir) >= half * len)
+        };
+        // Whom it kills flies away from it (TAB's `FactorPush` – only the dead).
+        let push = stats.push;
+        for (u, unit) in self.units.iter_mut().enumerate() {
+            if unit.hp > 0 && !unit.is_inside() && (hit == Hit::Unit(u) || in_arc(unit.pos, UNIT_RADIUS)) {
+                unit.take_hit(damage, tick);
+                if unit.hp == 0 && push > 0.0 {
+                    unit.fling = Fling::new(from, unit.pos, push, UNIT_MASS);
+                }
+            }
+        }
+        for (b, building) in self.buildings.iter_mut().enumerate() {
+            let target = hit == Hit::Building(b);
+            let open = building.hp > 0 && !building.zombies_ignore();
+            if open && (target || in_arc(nearest(building), 0.0)) && building.take_damage(damage) {
+                infected.push(b);
+            }
+        }
+        if stats.sweep_hits_zombies {
+            for (j, other) in self.zombies.iter_mut().enumerate() {
+                if j != z && other.is_alive() && other.leap.is_none() && in_arc(other.pos, other.radius) {
+                    other.hurt(after_armor(damage, other.breed.stats().armor), tick);
+                    if !other.is_alive() && push > 0.0 {
+                        other.fling = Fling::new(from, other.pos, push, other.breed.stats().mass);
+                    }
+                }
+            }
+        }
     }
 
     /// Is it this zombie's tick to look around (TAB's `WatchForEnemies`)? Every `watch_seconds` of its breed, each on
@@ -781,7 +892,7 @@ impl World {
     /// (from their edge), nothing blocking the view. A unit in a tower: the tower. Equally far: the first found –
     /// tile row after row, a unit before a building (the same on every PC).
     fn nearest_enemy(&self, zombie: &Zombie) -> Option<Aim> {
-        let (pos, sight) = (zombie.pos, zombie.breed.stats().sight);
+        let (pos, sight) = (zombie.pos, self.zombie_sight(zombie.breed));
         let mut best: Option<(f32, Aim)> = None;
         // Does any unit see this tile? Seeing goes both ways (`zombie_sight`) – most zombies see nobody, and needn't look.
         if self.zombie_sight[zombie.breed.index()].sees(pos) {
@@ -892,11 +1003,12 @@ impl World {
                     zombie.idle = Idle::new();
                 }
             }
-            if waves && let Some(swarm) = self.joins_wave(i) {
+            if waves && let Some((swarm, last)) = self.joins_wave(i) {
                 let zombie = &mut self.zombies[i];
                 zombie.siege = true;
                 zombie.lure = None;
                 zombie.swarm = swarm;
+                zombie.final_wave = last;
             }
             let zombie = &self.zombies[i];
             if self.idles(zombie) && self.thinks_now(zombie) {
@@ -917,7 +1029,7 @@ impl World {
             let lost = cull && (tick + zombie.id as u64).is_multiple_of(values().cull_every.max(1) as u64) && !self.to_base.reachable(x, y);
             let zombie = &mut self.zombies[i];
             if roar_due && zombie.roar == 0 {
-                zombie.roar = values().growl.max(1);
+                zombie.roar = zombie.breed.growl_ticks();
             }
             if lost {
                 zombie.hp = 0;
@@ -928,9 +1040,9 @@ impl World {
     /// TAB's contagion (`CheckNearZombiesToAttackCommandCenter`): every `contagion_seconds` – each zombie on another
     /// tick by its number – one that isn't with a wave and has nothing else in mind before that (TAB's tree: not after
     /// anything, not on its way to where it lost you or was sent) counts the wave zombies on its tile with its `level` or
-    /// a higher one. At least `contagion_count`: it joins them – the swarm of the first of them (returned). Not the
-    /// giant.
-    fn joins_wave(&self, i: usize) -> Option<u32> {
+    /// a higher one. At least `contagion_count`: it joins them – the swarm of the first of them (returned), and if that
+    /// one walks with the final wave, so does it (`true`): the round isn't won while it still comes. Not the giant.
+    fn joins_wave(&self, i: usize) -> Option<(u32, bool)> {
         let zombie = &self.zombies[i];
         let every = values().contagion.max(1) as u64;
         if zombie.siege || zombie.breed.roars() || zombie.aim.is_some() || !(self.tick + zombie.id as u64).is_multiple_of(every) {
@@ -948,7 +1060,7 @@ impl World {
             .map(|o| &self.zombies[o])
             .filter(|o| o.siege && o.is_alive() && o.breed.stats().level >= level);
         let first = wave.next()?;
-        (1 + wave.count() >= values().contagion_count).then_some(first.swarm)
+        (1 + wave.count() >= values().contagion_count).then_some((first.swarm, first.final_wave))
     }
 
     /// Has it nothing else in mind – does it idle (the last point of TAB's tree)? Not after anything, not with a wave,
@@ -962,19 +1074,20 @@ impl World {
     }
 
     /// What an idle zombie does next, rolled with TAB's weights (`idle`: 1300 stand, 150 growl, 150 roam): stand or
-    /// growl for `stand_seconds` / `growl_seconds`, or roam to a spot (`roam_spot`) – at its walking pace, with the time
-    /// it needs and half as much again for detours before it gives up. No spot free: it rolls again the next time.
+    /// growl as long as its breed does (`stand_ticks`, `growl_ticks`), or roam to a spot (`roam_spot`) – at its walking
+    /// pace, with the time it needs and half as much again for detours before it gives up. No spot free: it rolls
+    /// again the next time.
     pub(super) fn next_idle(&mut self, pos: Vec2, breed: Breed, speed: f32) -> Idle {
-        let (z, w) = (values(), &values().idle);
+        let w = &values().idle;
         let roll = self.rng.below((w.stand + w.growl + w.roam).max(1));
         if roll < w.stand {
-            Idle { doing: Doing::Stand, timer: z.stand }
+            Idle { doing: Doing::Stand, timer: breed.stand_ticks() }
         } else if roll < w.stand + w.growl {
-            Idle { doing: Doing::Growl, timer: z.growl }
+            Idle { doing: Doing::Growl, timer: breed.growl_ticks() }
         } else {
             match self.roam_spot(pos, breed) {
                 Some(goal) => {
-                    let pace = (speed * z.wander_pace).max(0.05);
+                    let pace = (speed * breed.walk_share()).max(0.05);
                     Idle::roaming(goal, (goal.distance(pos) / pace * 1.5 * TICKS_PER_SECOND) as u32 + 40)
                 }
                 None => Idle::new(),
@@ -1147,7 +1260,7 @@ impl World {
             return (dir, hit, Some(lure.to));
         }
         match zombie.idle.doing {
-            Doing::Roam(goal) => ((goal - pos).normalize_or_zero() * values().wander_pace, None, None),
+            Doing::Roam(goal) => ((goal - pos).normalize_or_zero() * zombie.breed.walk_share(), None, None),
             Doing::Stand | Doing::Growl => (Vec2::ZERO, None, None),
         }
     }

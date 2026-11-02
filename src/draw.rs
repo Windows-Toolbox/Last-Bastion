@@ -1,18 +1,21 @@
 //! Drawing. Only reads the world, never changes it.
-//! Zombies and units are pictures (`sprites.rs`) where their kind has one, otherwise small boxes. Placeholder graphics
-//! for the rest: diamonds for the ground, blocks and joined-up walls for buildings (DESIGN.md 12.3). In the game view
-//! the fog of war lies over everything nobody sees.
+//! Zombies, units and buildings are pictures (`sprites.rs`, `building_sprites.rs`) where their kind has one, otherwise
+//! boxes. Placeholder graphics for the rest: diamonds for the ground, blocks and joined-up walls for buildings without
+//! pictures (DESIGN.md 12.3). In the game view the fog of war lies over everything nobody sees.
 
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 use macroquad::prelude::*;
 
+use crate::building_sprites::{Aim, Appearance, BuildingSprite, State};
 use crate::data;
+use crate::effects::Effects;
+use crate::ground::{Decor, Landscape};
 use crate::hud::{draw_life, hp_color};
 use crate::iso::{Camera, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::{Ore, Region, Terrain};
+use crate::map::{Deposit, Ore, Region, Terrain};
 use crate::picture;
 use crate::sim::{self, Breed, Building, DoomHouse, LootKind, Mark, TICK, UNIT_RADIUS, World};
 use crate::sprites::{Pose, Sprite, Sprites};
@@ -87,6 +90,10 @@ const DOOR_COLOR: Color = Color::new(0.45, 0.31, 0.17, 1.0);
 /// Spawners in the editor, and the glowing edge of the selected one.
 const SPAWNER: Color = Color::new(0.85, 0.25, 0.55, 1.0);
 const SPAWNER_GLOW: Color = Color::new(1.0, 0.85, 0.30, 1.0);
+/// A house of doom with TAB's picture is drawn in this colour while it stirs.
+const DOOM_STIRRING: Color = Color::new(1.0, 0.72, 0.66, 1.0);
+/// Where the units in a tower with TAB's picture stand on it – around the middle, the ones behind first.
+const TOWER_SPOTS: [Vec2; 4] = [vec2(-0.12, -0.12), vec2(0.12, -0.12), vec2(-0.12, 0.12), vec2(0.12, 0.12)];
 /// A building being built is mixed with this – fresh timber, scaffolding.
 const SCAFFOLD: Color = Color::new(0.85, 0.75, 0.55, 1.0);
 
@@ -110,6 +117,9 @@ pub struct View<'a> {
     pub looks: &'a Looks,
     /// The pictures of zombies and units.
     pub sprites: &'a Sprites,
+    /// TAB's landscape pictures (`ground.rs`) – `Some` if there are some for this map's look, else the coloured
+    /// diamonds.
+    pub landscape: Option<&'a Landscape>,
     /// The spawners to show (only in editor mode) – with the size they have while being dragged.
     pub spawners: Vec<SpawnerShape>,
 }
@@ -122,15 +132,17 @@ const FADE_TIME: f32 = 0.8;
 /// A zombie turns this fast towards where it walks (radians per second) – so it doesn't flicker between directions
 /// when the crowd jostles it.
 const ZOMBIE_TURN: f32 = TAU;
-/// It counts as walking when it moved at least this share of its speed in the last tick – being pushed a little
-/// doesn't count.
-const WALKING: f32 = 0.25;
+/// It counts as walking when it wants to walk at least this share of its speed (`Zombie::own_step`) – low, so a
+/// roaming walker wading through stakes still walks.
+const WALKING: f32 = 0.05;
 
 /// What the picture remembers about every zombie from frame to frame. Only for the picture, not part of the
 /// simulation, so a `HashMap` is fine here (DESIGN.md 12.8 only forbids it in the simulation).
 #[derive(Default)]
 pub struct Looks {
     zombies: HashMap<u32, Look>,
+    /// TAB's effects playing, and where the turning guns point (`effects.rs`).
+    pub effects: Effects,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -141,12 +153,16 @@ pub struct Look {
     /// Which way it faces (radians, like `Unit::facing`): turning towards where it walks, kept while it stands.
     pub facing: f32,
     pub walking: bool,
+    /// How fast it wants to walk (tiles per second, `Zombie::own_step`) – a slow one walks, a fast one runs (`sprites.rs`).
+    pub speed: f32,
+    /// Since when it growls (seconds of game time) – its growl is played once from there. `None`: it doesn't.
+    pub growl_from: Option<f32>,
 }
 
 impl Looks {
-    /// Once per frame (`dt` seconds): seen zombies fade in, the others fade out; walking ones turn. Gone: forgotten.
-    /// A zombie the picture hasn't met yet starts invisible – it fades in too.
-    pub fn update(&mut self, world: &World, dt: f32) {
+    /// Once per frame (`dt` seconds, `time`: seconds of game time): seen zombies fade in, the others fade out; walking
+    /// ones turn. Gone: forgotten. A zombie the picture hasn't met yet starts invisible – it fades in too.
+    pub fn update(&mut self, world: &World, dt: f32, time: f32) {
         let mut next = HashMap::with_capacity(world.zombies.len());
         for zombie in &world.zombies {
             // A new one: not seen yet, and facing a way of its own – so a horde standing still doesn't all look the
@@ -158,12 +174,24 @@ impl Looks {
             } else {
                 (old.alpha - dt / FADE_TIME).max(0.0)
             };
-            let step = zombie.pos - zombie.prev;
+            // What it walks by itself – being pushed by the crowd neither makes it walk nor its feet faster, and doesn't
+            // turn it (like TAB: the animation follows what the zombie does, not where it's shoved).
+            let step = zombie.own_step();
             let walking = step.length() > zombie.speed() * TICK * WALKING;
             let facing = if walking { turn(old.facing, step.y.atan2(step.x), ZOMBIE_TURN * dt) } else { old.facing };
-            next.insert(zombie.id, Look { alpha, facing, walking });
+            let speed = step.length() / TICK;
+            // Just started growling: from now. Still growling: since then. `or`: the first `Some` of the two.
+            let growl_from = zombie.is_growling().then(|| old.growl_from.unwrap_or(time));
+            next.insert(zombie.id, Look { alpha, facing, walking, speed, growl_from });
+        }
+        // The dying keep the way they faced, and fade like the living when nobody sees them.
+        for body in &world.dying {
+            let old = self.zombies.get(&body.id).copied().unwrap_or_default();
+            let alpha = if world.vision.sees(body.pos) { old.alpha } else { (old.alpha - dt / FADE_TIME).max(0.0) };
+            next.insert(body.id, Look { alpha, walking: false, growl_from: None, ..old });
         }
         self.zombies = next;
+        self.effects.update(world, time, dt);
     }
 
     pub fn get(&self, id: u32) -> Look {
@@ -203,8 +231,12 @@ pub struct SpawnerShape {
 pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32], alpha: f32) {
     let area = view.area;
 
-    // --- Ground: one big rectangle for the visible area, terrain as small diamonds on top ---
-    draw_quad(camera, area.corners(), GROUND);
+    // --- Ground: TAB's pictures (`ground.rs`) – or one big rectangle for the visible area, terrain as small diamonds
+    // on top ---
+    match view.landscape {
+        Some(landscape) => landscape.draw_ground(camera, area),
+        None => draw_quad(camera, area.corners(), GROUND),
+    }
     // Every tile that shows at least a bit of itself inside the area – what sticks out over its straight edge is
     // covered at the end (`cover_outside`).
     let rows: Vec<(i32, std::ops::Range<i32>)> = area.rows(1.0).collect();
@@ -214,6 +246,14 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             let deposit = world.map.deposit(x, y);
             if terrain == Terrain::Grass && deposit.is_none() {
                 continue;
+            }
+            // With TAB's pictures only what the look has no picture for is still drawn like this: coal (older
+            // landscapes without our coal lumps) and oil (no oil source).
+            if let Some(landscape) = view.landscape {
+                let ours = |d: Deposit| (d.ore == Ore::Coal && !landscape.draws_coal()) || (d.ore == Ore::Oil && !landscape.draws_oil());
+                if !deposit.is_some_and(ours) {
+                    continue;
+                }
             }
             let corner = vec2(x as f32, y as f32);
             if !on_screen(camera.world_to_screen(corner + 0.5), 40.0) {
@@ -240,6 +280,10 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             }
         }
     }
+    // The flat things on the ground (herbs, ore lumps) – before the fog, which darkens them like the ground.
+    if let Some(landscape) = view.landscape {
+        landscape.decor_in(area, false, |d| landscape.draw_decor(camera, d, WHITE));
+    }
     // The fields of the farms: every grass tile a farm works, a field (`World::worked_tiles`). Before the fog, so it
     // darkens them like the ground.
     for (b, farm) in world.buildings.iter().enumerate().filter(|(_, b)| b.kind == BuildingKind::Farm && !b.infected) {
@@ -254,6 +298,10 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     if !matches!(view.fog, Fog::Off) {
         view.fog_picture.draw(camera, area);
     }
+    // Blood and acid lying on the ground (`effects.rs`) – where you see it.
+    let now = (world.tick as f32 + alpha) * TICK;
+    let shows = |p: Vec2| !matches!(view.fog, Fog::Player) || world.vision.sees(p);
+    view.looks.effects.draw_stains(camera, now, shows);
     for spawner in &view.spawners {
         draw_spawner(camera, spawner);
     }
@@ -304,11 +352,12 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         // drawn that much further back, but sorted by where it stands.
         let lift = zombie.leap_height(alpha);
         let color = breed_color(zombie.breed);
-        if let Some(sprite) = view.sprites.get(zombie.breed.stats().sprite.as_deref()) {
-            let pose = match zombie.since_hit() {
-                Some(share) => Pose::Attack(Some(share)),
-                None if look.walking => Pose::Walk(zombie.speed()),
-                None => Pose::Idle,
+        if let Some(sprite) = view.sprites.breed(zombie.breed, zombie.look as u32) {
+            let pose = match (zombie.since_hit(), look.growl_from) {
+                (Some(share), _) => Pose::Attack(Some(share)),
+                _ if look.walking => Pose::Walk(look.speed),
+                (None, Some(from)) => Pose::Special(time - from),
+                (None, None) => Pose::Idle,
             };
             let color = Color { a: visible, ..if sprite.tinted() { color } else { WHITE } };
             let at = p - Vec2::splat(2.0 * lift);
@@ -328,7 +377,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             let color = darken(breed_color(sleeper.breed), 0.7);
             // A way to face of its own, from where it lies – the same every frame.
             let facing = (sleeper.pos.x * 7.0 + sleeper.pos.y * 3.0).rem_euclid(TAU);
-            if let Some(sprite) = view.sprites.get(sleeper.breed.stats().sprite.as_deref()) {
+            if let Some(sprite) = view.sprites.breed(sleeper.breed, sleeper.look as u32) {
                 let color = if sprite.tinted() { color } else { WHITE };
                 let figure = Figure { sprite, at: sleeper.pos, facing, pose: Pose::Idle, clock: 0.0, color };
                 things.push((sleeper.pos.x + sleeper.pos.y, Thing::Figure(figure)));
@@ -342,7 +391,9 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
     let mut parts = Vec::new();
     for building in &world.buildings {
-        building_parts(world, building, &mut parts);
+        if !building_pictures(world, building, view, time, &mut things) {
+            building_parts(world, building, &mut parts);
+        }
     }
     // Neutral buildings and units (`sim/neutral.rs`): grey like a building switched off – once seen, like the houses of
     // doom.
@@ -354,7 +405,9 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             sim::Thing::Building { kind, tile, turned } => {
                 let mut building = Building::standing(0, kind, tile, turned);
                 building.off = true;
-                building_parts(world, &building, &mut parts);
+                if !building_pictures(world, &building, view, time, &mut things) {
+                    building_parts(world, &building, &mut parts);
+                }
             }
             sim::Thing::Unit { kind, pos } => {
                 let p = vec2(pos.0, pos.1);
@@ -367,9 +420,23 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     // The houses of the villages of doom and the loot: once seen, they stay on the map like the terrain – darkened where
     // nobody looks right now, not at all where nobody has ever looked.
     for house in world.doom.iter().filter(|d| area.contains(d.center())) {
-        if let Some(shade) = seen(world, &view.fog, house.center()) {
-            doom_parts(house, world.tick, shade, &mut parts);
+        let Some(shade) = seen(world, &view.fog, house.center()) else {
+            continue;
+        };
+        // TAB's house, its flag waving – reddish while it stirs (ours: so you see a batch come out).
+        if let Some(sprite) = view.sprites.doom(house.nest(), tile_look(house.tile))
+            && let Some(body) = sprite.body()
+        {
+            let color = darken(if house.is_stirring(world.tick) { DOOM_STIRRING } else { WHITE }, shade);
+            let width = house.size.0 as f32;
+            let at = house.far_corner();
+            let ticking = clock(time, house.id);
+            let picture = Picture { sprite, looks: body, state: State::Working, clock: ticking, aim: Aim::default(), at, width, color };
+            let middle = house.center();
+            things.push((middle.x + middle.y, Thing::Picture(picture)));
+            continue;
         }
+        doom_parts(house, world.tick, shade, &mut parts);
     }
     for loot in world.loot.iter().filter(|l| area.contains(l.pos)) {
         if let Some(shade) = seen(world, &view.fog, loot.pos) {
@@ -380,8 +447,42 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         }
     }
     things.extend(parts.into_iter().map(|(depth, part)| (depth, Thing::Body(part))));
-    // Fallen units: flat and darker, a bit bigger than standing – they lie there.
+    // Trees and rocks (`ground.rs`): sorted in like everything else – like the houses of doom only once seen, darker
+    // where nobody looks now.
+    if let Some(landscape) = view.landscape {
+        landscape.decor_in(area, true, |d| {
+            if let Some(shade) = seen(world, &view.fog, d.at - Vec2::splat(0.5)) {
+                things.push((d.at.x + d.at.y, Thing::Decor(landscape, *d, darken(WHITE, shade))));
+            }
+        });
+    }
+    // Killed zombies dying (`sim/fallen.rs`) – only as a picture with a death, as before they're just gone otherwise.
+    for body in world.dying.iter().filter(|d| area.contains(d.pos)) {
+        let look = view.looks.get(body.id);
+        let visible = if matches!(view.fog, Fog::Player) { look.alpha } else { 1.0 };
+        let Some(sprite) = view.sprites.breed(body.breed, body.look as u32).filter(|s| s.dies()) else {
+            continue;
+        };
+        if visible <= 0.0 {
+            continue;
+        }
+        let p = lerp(body.prev, body.pos, alpha);
+        let color = Color { a: visible, ..if sprite.tinted() { breed_color(body.breed) } else { WHITE } };
+        let pose = Pose::Die(time - body.died as f32 * TICK);
+        let figure = Figure { sprite, at: p, facing: look.facing, pose, clock: 0.0, color };
+        things.push((p.x + p.y, Thing::Figure(figure)));
+    }
+    // Fallen units: their death, then lying in its last picture. Without one: flat and darker, a bit bigger than
+    // standing.
     for corpse in world.corpses.iter().filter(|c| area.contains(c.pos)) {
+        if let Some(sprite) = view.sprites.unit(corpse.kind, corpse.id).filter(|s| s.dies()) {
+            let p = lerp(corpse.prev, corpse.pos, alpha);
+            let color = if sprite.tinted() { kind_color(corpse.kind) } else { WHITE };
+            let pose = Pose::Die(time - corpse.died as f32 * TICK);
+            let figure = Figure { sprite, at: p, facing: corpse.facing, pose, clock: 0.0, color };
+            things.push((p.x + p.y, Thing::Figure(figure)));
+            continue;
+        }
         let (size, _) = unit_shape(corpse.kind);
         let ground = rect(corpse.pos - Vec2::splat(size * 0.7), Vec2::splat(size * 1.4));
         let body = Prism(ground, 0.0, CORPSE_HEIGHT, mix(kind_color(corpse.kind), WALKER, 0.6));
@@ -405,11 +506,10 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             things.push((p.x + p.y + 0.01, Thing::Body(mark)));
         }
         if unit.barrel {
-            let back = p - vec2(unit.facing.cos(), unit.facing.sin()) * 0.12;
-            let drum = Prism(rect(back - Vec2::splat(0.07), Vec2::splat(0.14)), height * 0.3, height * 0.85, building_color(BuildingKind::Barrel));
-            things.push((back.x + back.y, Thing::Body(drum)));
+            carried_barrel(view.sprites, unit, p, height, &mut things);
         }
-        if let Some(sprite) = view.sprites.get(unit.stats().sprite.as_deref()) {
+        // A unit's skin by its number – it never changes.
+        if let Some(sprite) = view.sprites.unit(unit.kind, unit.id) {
             let pose = if unit.is_aiming() {
                 Pose::Attack(None)
             } else if unit.is_walking() {
@@ -441,12 +541,22 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         match thing {
             Thing::Body(Prism(ground, bottom, top, color)) => draw_prism(camera, *ground, *bottom, *top, *color),
             Thing::Figure(f) => f.sprite.draw(camera, f.at, f.facing, f.pose, f.clock, f.color),
+            Thing::Decor(landscape, decor, color) => landscape.draw_decor(camera, decor, *color),
+            Thing::Picture(p) => p.sprite.draw(camera, p.looks, p.state, p.clock, p.aim, p.at, p.width, p.color),
+            Thing::Shadow(sprite, picture, feet, width) => {
+                let feet = camera.world_to_screen(*feet);
+                sprite.draw_squashed(*picture, feet, sprite.scale(camera, *width), 0.45, Color::new(0.0, 0.0, 0.0, 0.3));
+            }
         }
     }
 
-    // --- Shots and medic beams of this tick ---
+    // --- TAB's effects (`effects.rs`): flashes, arrows, blood, blasts – over everything, like TAB's. Without them:
+    // shots as lines, a barrel's blast as a growing fireball ---
+    let effects = &view.looks.effects;
+    effects.draw(camera, now, shows);
+    let pictured = effects.shows_shots();
     let lift = vec2(0.0, -0.3 * TILE_W * camera.zoom);
-    for (from, to) in &world.shots {
+    for (from, to) in world.shots.iter().filter(|_| !pictured) {
         let a = camera.world_to_screen(*from) + lift;
         let b = camera.world_to_screen(*to) + lift * 0.6;
         draw_line(a.x, a.y, b.x, b.y, 1.5, SHOT);
@@ -457,7 +567,6 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         draw_line(a.x, a.y, b.x, b.y, 2.5, BEAM);
     }
     // The zombies' shots – only where you see them, like the zombies themselves.
-    let shows = |p: Vec2| !matches!(view.fog, Fog::Player) || world.vision.sees(p);
     for (from, to) in world.zombie_shots.iter().filter(|(from, _)| shows(*from)) {
         let a = camera.world_to_screen(*from) + lift * 0.8;
         let b = camera.world_to_screen(*to) + lift * 0.6;
@@ -465,7 +574,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
     // Barrels going off: a fireball that grows and fades (`sim/blast.rs`) – seen wherever it is, it's that loud.
     let blast_radius = data::get().buildings.blast.radius;
-    for blast in &world.blasts {
+    for blast in world.blasts.iter().filter(|_| !pictured) {
         let s = camera.world_to_screen(blast.at);
         let t = blast.left as f32 / 12.0; // 1 when it goes off, 0 when it's gone
         let r = blast_radius * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom * (1.2 - 0.5 * t);
@@ -521,12 +630,11 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         draw_life(bar, (building.hp, stats.hp), (building.shield, stats.max_shield()), BLACK, None);
     }
     // The same over shot houses of doom you can see.
-    let doom_hp = crate::data::get().doom.hp;
-    for house in world.doom.iter().filter(|d| d.hp < doom_hp && seen(world, &view.fog, d.center()) == Some(1.0)) {
+    for house in world.doom.iter().filter(|d| d.hp < d.full_hp() && seen(world, &view.fog, d.center()) == Some(1.0)) {
         let middle = camera.world_to_screen(house.center());
         let lift = ((house.size.0 + house.size.1) as f32 * TILE_H / 4.0 + (doom_height(house) + 0.3) * TILE_W) * camera.zoom;
         let w = house.size.0 as f32 * 0.5 * TILE_W * camera.zoom;
-        draw_life(Rect::new(middle.x - w / 2.0, middle.y - lift, w, 4.0), (house.hp, doom_hp), (0, 0), BLACK, None);
+        draw_life(Rect::new(middle.x - w / 2.0, middle.y - lift, w, 4.0), (house.hp, house.full_hp()), (0, 0), BLACK, None);
     }
 
     // Beyond the straight edge of the area there is nothing to see – the tiles sticking out over it, the zombies
@@ -651,6 +759,24 @@ struct Prism([Vec2; 4], f32, f32, Color);
 enum Thing<'a> {
     Body(Prism),
     Figure(Figure<'a>),
+    /// A tree or rock of TAB's landscape, in this colour.
+    Decor(&'a Landscape, Decor, Color),
+    /// A building, a piece of one or a house of doom as TAB's picture.
+    Picture(Picture<'a>),
+    /// A picture's shadow lying on the ground (a carried barrel's): picture number, its feet, how wide.
+    Shadow(&'a BuildingSprite, usize, Vec2, f32),
+}
+
+/// What `BuildingSprite::draw` needs: which picture in which look, its feet on `at`, for a building `width` tiles wide.
+struct Picture<'a> {
+    sprite: &'a BuildingSprite,
+    looks: &'a Appearance,
+    state: State,
+    clock: f32,
+    aim: Aim,
+    at: Vec2,
+    width: f32,
+    color: Color,
 }
 
 /// A zombie or unit as a picture – what `Sprite::draw` needs.
@@ -769,8 +895,7 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
                 part(rect(post - Vec2::splat(0.3), Vec2::splat(0.6)), 0.0, height + 0.25, color);
             }
             // The door: closed it's a wooden board between the posts, open it's gone (only the beam above stays).
-            let open = world.units.iter().any(|u| !u.is_inside() && u.pos.distance(door) < 1.3);
-            if !open {
+            if !gate_open(world, door) {
                 part(bar(door - step * 0.5, door + step * 0.5, 0.18), 0.0, height, DOOR_COLOR);
             }
             part(bar(first + step * 0.3, last - step * 0.3, 0.25), height, height + 0.15, color);
@@ -835,6 +960,164 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
             part(rect(building.corner(), building.far_corner() - building.corner()), 0.0, height, color);
         }
     }
+}
+
+/// A unit carrying a barrel (`sim/blast.rs`) – like TAB's `CCarriedObject`: the barrel's picture a quarter tile behind
+/// it, lifted off the ground and a bit smaller (0.8), sorted just behind the unit, with a faint shadow below. Without a
+/// picture: a red drum on its back.
+fn carried_barrel<'a>(sprites: &'a Sprites, unit: &sim::Unit, p: Vec2, height: f32, things: &mut Vec<(f32, Thing<'a>)>) {
+    let back = p - vec2(unit.facing.cos(), unit.facing.sin()) * 0.25;
+    let depth = p.x + p.y - 0.01;
+    let picture = sprites.building(BuildingKind::Barrel, unit.id).and_then(|s| Some((s, s.body()?)));
+    let Some((sprite, looks)) = picture else {
+        let drum = Prism(rect(back - Vec2::splat(0.07), Vec2::splat(0.14)), height * 0.3, height * 0.85, building_color(BuildingKind::Barrel));
+        things.push((depth, Thing::Body(drum)));
+        return;
+    };
+    // Its feet are the lowest corner of its (0.8 tiles big) square – that square's middle on `back`.
+    const SIZE: f32 = 0.8;
+    const LIFT: f32 = 0.25; // tile widths above the ground – on screen "up" is towards smaller x and y
+    let feet = back + Vec2::splat(SIZE / 2.0);
+    if let Some(i) = sprite.first_picture(looks, State::Working) {
+        things.push((depth - 0.001, Thing::Shadow(sprite, i, feet + vec2(0.1, 0.1), SIZE)));
+    }
+    let at = feet - Vec2::splat(2.0 * LIFT);
+    let picture = Picture { sprite, looks, state: State::Working, clock: 0.0, aim: Aim::default(), at, width: SIZE, color: WHITE };
+    things.push((depth, Thing::Picture(picture)));
+}
+
+/// Is the door of a gate (its middle at `door`) open – one of your units close to it?
+fn gate_open(world: &World, door: Vec2) -> bool {
+    world.units.iter().any(|u| !u.is_inside() && u.pos.distance(door) < 1.3)
+}
+
+/// Which of its skins a building or house of doom on this tile wears – the same every time, mixed by the tile like TAB's
+/// random clips (`RandomMode.GridTwoCells`).
+fn tile_look((x, y): (i32, i32)) -> u32 {
+    ((x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663)) >> 4
+}
+
+/// TAB's fishing hut looks towards its water (`FishermanCottage.cs`): skin 0 water above (smaller y), 1 left (smaller
+/// x), 2 below, 3 right. First a side with water all along it, then one with water and a corner, then any.
+fn water_side(world: &World, (x, y): (i32, i32)) -> u32 {
+    let water = |dx: i32, dy: i32| world.map.terrain(x + dx, y + dy) == Terrain::Water;
+    let (up, down, left, right) = (water(0, -1), water(0, 1), water(-1, 0), water(1, 0));
+    let (up_left, up_right, down_left, down_right) = (water(-1, -1), water(1, -1), water(-1, 1), water(1, 1));
+    let full = [up && up_left && up_right, left && up_left && down_left, down && down_left && down_right, right && up_right && down_right];
+    let corner = [up && (up_left || up_right), left && (up_left || down_left), down && (down_left || down_right), right && (up_right || down_right)];
+    let any = [up, left, down, right];
+    [full, corner, any].iter().find_map(|sides| sides.iter().position(|&w| w)).unwrap_or(0) as u32
+}
+
+/// Does a tile join TAB's wall pieces: a wall, or a pillar of a gate (not its door)? Towers don't, like in TAB (`CWall`).
+fn wall_at(world: &World, x: i32, y: i32) -> bool {
+    let at = world.building_at_point(vec2(x as f32 + 0.5, y as f32 + 0.5));
+    at.is_some_and(|b| world.buildings[b].kind.is_wall()) && !world.map.is_door(x, y)
+}
+
+/// A building as TAB's pictures (`building_sprites.rs`), sorted in with the rest – `false`: its type has none, it's
+/// drawn as blocks (`building_parts`).
+/// - Most are one picture, its feet on the far corner of the site: working, idle (switched off, infected, neutral) or
+///   being built – infected a bit green.
+/// - Walls like TAB's `CWall`: a pillar on the tile, and a piece towards a wall to the lower right (+x) and the lower left
+///   (+y), diagonally only where no straight one closes the corner. The stone wall's pillar is plainer in a straight
+///   line. A gate: its two pillars (joined like walls) and the door, gone while it's open.
+/// - A tower: its body, the units inside on it, its front wall in front of them.
+fn building_pictures<'a>(world: &World, building: &Building, view: &View<'a>, time: f32, things: &mut Vec<(f32, Thing<'a>)>) -> bool {
+    let sprites = view.sprites;
+    let look = match building.kind {
+        BuildingKind::FishingHut => water_side(world, building.tile),
+        _ => tile_look(building.tile),
+    };
+    let Some(sprite) = sprites.building(building.kind, look) else {
+        return false;
+    };
+    let state = match building.is_built() {
+        false => State::Building,
+        true if building.works() => State::Working,
+        true => State::Idle,
+    };
+    let color = if building.infected { mix(WHITE, INFECTED, 0.5) } else { WHITE };
+    let ticking = clock(time, building.id);
+    // A turning gun (ballista, machine gun): where it points, how far through its shot – from `effects.rs`. Before its
+    // first shot it looks down the screen.
+    let aim = |looks: &Appearance| match view.looks.effects.gun(building.id) {
+        Some((degrees, shot)) => {
+            let share = (time - shot) / looks.shot_seconds();
+            Aim { degrees, shot: (0.0..1.0).contains(&share).then_some(share) }
+        }
+        None => Aim { degrees: 45.0, shot: None },
+    };
+    let picture = |looks: &'a Appearance, at: Vec2, width: f32| {
+        Thing::Picture(Picture { sprite, looks, state, clock: ticking, aim: aim(looks), at, width, color })
+    };
+
+    if sprite.has_pieces() {
+        let (x, y) = building.tile;
+        let along = if building.turned { (0, 1) } else { (1, 0) };
+        let pillars = match building.kind {
+            BuildingKind::Gate => vec![(x, y), (x + 2 * along.0, y + 2 * along.1)],
+            _ => vec![(x, y)],
+        };
+        for (px, py) in pillars {
+            let at = vec2(px as f32 + 1.0, py as f32 + 1.0);
+            let depth = (px + py) as f32;
+            let w = |dx: i32, dy: i32| wall_at(world, px + dx, py + dy);
+            // TAB's `SetPillarOrnament`: a straight line along an axis or a diagonal.
+            let (n, s, e, west) = (w(0, -1), w(0, 1), w(1, 0), w(-1, 0));
+            let (ne, nw, se, sw) = (w(1, -1), w(-1, -1), w(1, 1), w(-1, 1));
+            let alone = !n && !s && !e && !west;
+            let straight = (n && s && !e && !west)
+                || (!n && !s && e && west)
+                || (alone && ne && sw && !nw && !se)
+                || (alone && nw && se && !ne && !sw);
+            let pillar = sprite.piece("pillar_straight").filter(|_| straight).or(sprite.piece("pillar"));
+            // The pieces, whether they're there, and how far in front of the tile they're sorted (TAB's `GetZ`).
+            let pieces = [
+                (pillar, true, 1.0),
+                (sprite.piece("left"), s, 1.75),
+                (sprite.piece("right"), e, 1.75),
+                (sprite.piece("horizontal"), ne && !n && !e, 1.2),
+                (sprite.piece("vertical"), se && !e && !s, 2.0),
+            ];
+            for (looks, shown, ahead) in pieces {
+                if let (true, Some(looks)) = (shown, looks) {
+                    things.push((depth + ahead, picture(looks, at, 1.0)));
+                }
+            }
+        }
+        if building.kind == BuildingKind::Gate {
+            let door = vec2(x as f32 + 0.5 + along.0 as f32, y as f32 + 0.5 + along.1 as f32);
+            let name = if building.turned { "door_y" } else { "door_x" };
+            if let (false, Some(looks)) = (gate_open(world, door), sprite.piece(name)) {
+                things.push((door.x + door.y, picture(looks, vec2(x as f32 + 1.0, y as f32 + 1.0), 1.0)));
+            }
+        }
+        return true;
+    }
+
+    let Some(body) = sprite.body() else {
+        return false;
+    };
+    let middle = building.center();
+    let depth = middle.x + middle.y;
+    let width = building.footprint().0 as f32;
+    things.push((depth, picture(body, building.far_corner(), width)));
+    if let Some(front) = sprite.front() {
+        let lift = Vec2::splat(2.0 * sprite.roof());
+        for (&i, spot) in world.garrison(building.id).iter().zip(TOWER_SPOTS) {
+            let unit = &world.units[i];
+            if let Some(figure) = sprites.unit(unit.kind, unit.id) {
+                let pose = if unit.is_aiming() { Pose::Attack(None) } else { Pose::Idle };
+                let color = if figure.tinted() { kind_color(unit.kind) } else { WHITE };
+                let at = middle + spot - lift;
+                let figure = Figure { sprite: figure, at, facing: unit.facing, pose, clock: clock(time, unit.id), color };
+                things.push((depth + 0.01 + (spot.x + spot.y) * 0.001, Thing::Figure(figure)));
+            }
+        }
+        things.push((depth + 0.02, picture(front, building.far_corner(), width)));
+    }
+    true
 }
 
 /// How something lying on the map (a house of doom, loot) is seen in this view: fully (1), darkened (0.5 – seen

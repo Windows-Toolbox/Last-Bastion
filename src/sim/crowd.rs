@@ -38,7 +38,7 @@ pub(super) const ROCK_SECONDS: f32 = 5.0;
 /// … this many times as heavy (TAB) – the others flow around it.
 const ROCK: f32 = 500.0;
 /// How heavy one of your units is, like a walker. A rock: `ROCK` times that.
-const UNIT_MASS: f32 = 1.0;
+pub(super) const UNIT_MASS: f32 = 1.0;
 /// Neighbours a zombie may get pushed into this tick are looked for this far beyond touching (tiles) – further than
 /// two of them get closer in one tick, both walking and pushed.
 const MARGIN: f32 = 0.3;

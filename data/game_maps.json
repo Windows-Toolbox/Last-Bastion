@@ -1,55 +1,64 @@
 {
-  "default": "TAB BR - Moorland",
+  "default": "TAB BR - The Dark Moorland",
   "maps": [
     {
-      "name": "TAB BR - Moorland",
-      "about": "TAB's generator, its first landscape: forests, meadows and dirt, a few lakes and rocks - the zombies get stronger further out",
+      "name": "TAB FA - The Deep Forest",
+      "about": "TAB's generator, its first landscape: deep forest everywhere, few zombies and only one small village of doom - the strongest stay away",
+      "score_percent": 80,
+      "modifiers": {"hunting_forest": 60, "hunting_grass": 30, "hunting_dirt": 20},
+      "setup": {
+        "generator": "tab",
+        "look": "FA",
+        "tab": {"land": 0.75, "land_dispersion": 0.5, "land_octaves": 6, "mountains": 0.36, "vegetation_octaves": 6, "grass": 0.62, "forest_on_grass": 0.35, "forest_on_dirt": 0.25, "villages_min": 1, "villages_max": 1, "village_size_min": 3, "village_size_max": 4, "ruins_min": 3, "ruins_max": 4, "stone": 0.14, "stone_from": 5, "iron": 0.11, "iron_from": 18, "coal": 0.11, "coal_from": 18, "gold": 0.09, "gold_from": 36, "oil_block": 48, "infected": 0.35, "infected_dispersion": 0.06, "weak_from": 34, "medium_from": 58, "strong_from": 82, "powerful_from": 200, "giants": 0, "nests": 0.5}
+      }
+    },
+    {
+      "name": "TAB BR - The Dark Moorland",
+      "about": "TAB's generator: gorges, small plains, rivers and pools - easy to defend, hard to grow",
       "score_percent": 100,
-      "setup": { "generator": "tab" }
+      "setup": {"generator": "tab", "look": "BR"}
     },
     {
-      "name": "TAB TM - Lowlands",
-      "about": "TAB's generator: wide green land for farms, hardly any mountains, the strong zombies far out - wide fronts",
-      "score_percent": 90,
+      "name": "TAB TM - The Peaceful Lowlands",
+      "about": "TAB's generator: wide open green land - but four villages of doom",
+      "score_percent": 115,
+      "modifiers": {"hunting_forest": 50, "hunting_grass": 30, "hunting_dirt": 10},
       "setup": {
         "generator": "tab",
-        "tab": { "land": 0.74, "mountains": 0.16, "grass": 0.66, "forest_on_grass": 0.32, "forest_on_dirt": 0.26, "villages_min": 3, "villages_max": 5, "village_size_min": 6, "village_size_max": 10, "infected": 0.6, "weak_from": 12, "medium_from": 30, "strong_from": 50, "powerful_from": 72, "giants": 1 }
+        "look": "TM",
+        "tab": {"land": 0.68, "land_dispersion": 0.2, "land_octaves": 2, "mountains": 0.2, "vegetation_octaves": 2, "grass": 0.45, "forest_on_grass": 0.04, "forest_on_dirt": 0.15, "villages_min": 4, "villages_max": 4, "village_size_min": 7, "village_size_max": 10, "ruins_min": 4, "ruins_max": 5, "stone": 0.12, "stone_from": 5, "iron": 0.09, "iron_from": 18, "coal": 0.09, "coal_from": 18, "gold": 0.07, "gold_from": 36, "oil_block": 48, "infected": 0.4, "infected_dispersion": 0.035, "weak_from": 32, "medium_from": 50, "strong_from": 68, "powerful_from": 88, "giants": 1, "nests": 1}
       }
     },
     {
-      "name": "TAB AL - Highlands",
-      "about": "TAB's generator: mountains and lakes leave little room - more villages, closer and bigger",
-      "score_percent": 120,
+      "name": "TAB AL - The Frozen Highlands",
+      "about": "TAB's generator: big mountain ranges, frozen valleys and lakes",
+      "score_percent": 135,
+      "modifiers": {"zombie_hearing": 50, "zombie_speed": 80, "unit_speed": 80, "building_energy": 130, "hunting_forest": 60, "hunting_grass": 40, "hunting_dirt": 0},
       "setup": {
         "generator": "tab",
-        "tab": { "land": 0.62, "mountains": 0.31, "land_dispersion": 0.6, "grass": 0.45, "forest_on_grass": 0.45, "forest_on_dirt": 0.36, "villages_min": 4, "villages_max": 6, "village_size_min": 8, "village_size_max": 14, "infected": 0.7, "medium_from": 22, "strong_from": 40, "powerful_from": 58, "giants": 3 }
+        "look": "AL",
+        "tab": {"land": 0.8, "land_dispersion": 0.3, "land_octaves": 1, "mountains": 0.3, "vegetation_octaves": 2, "grass": 0.26, "forest_on_grass": 0.035, "forest_on_dirt": 0.22, "villages_min": 2, "villages_max": 2, "village_size_min": 7, "village_size_max": 10, "ruins_min": 3, "ruins_max": 4, "stone": 0.12, "stone_from": 5, "iron": 0.08, "iron_from": 18, "coal": 0.08, "coal_from": 18, "gold": 0.06, "gold_from": 36, "oil_block": 52, "infected": 0.4, "infected_dispersion": 0.035, "weak_from": 30, "medium_from": 48, "strong_from": 66, "powerful_from": 86, "giants": 1, "nests": 1}
       }
     },
     {
-      "name": "TAB DS - Wasteland",
-      "about": "TAB's generator: dry dirt, little forest and grass, many rocks - few walls of forest to hide behind",
-      "score_percent": 140,
+      "name": "TAB DS - The Desolated Wasteland",
+      "about": "TAB's generator: open dry land, rich in ore and oil, little to hide behind",
+      "score_percent": 155,
+      "modifiers": {"zombie_hearing": 130, "zombie_sight": 110, "unit_sight": 110, "hunting_forest": 60, "hunting_grass": 30, "hunting_dirt": 0},
       "setup": {
         "generator": "tab",
-        "tab": { "land": 0.88, "mountains": 0.29, "grass": 0.22, "forest_on_grass": 0.4, "forest_on_dirt": 0.2, "stone": 0.16, "iron": 0.13, "coal": 0.13, "gold": 0.09, "villages_min": 5, "villages_max": 7, "village_size_min": 8, "village_size_max": 16, "infected": 0.75, "medium_from": 20, "strong_from": 35, "powerful_from": 50, "giants": 4 }
+        "look": "DS",
+        "tab": {"land": 0.75, "land_dispersion": 1, "land_octaves": 5, "mountains": 0.3, "vegetation_octaves": 4, "grass": 0.22, "forest_on_grass": 0.028, "forest_on_dirt": 0.29, "villages_min": 3, "villages_max": 3, "village_size_min": 8, "village_size_max": 10, "ruins_min": 5, "ruins_max": 6, "stone": 0.11, "stone_from": 5, "iron": 0.085, "iron_from": 18, "coal": 0.085, "coal_from": 18, "gold": 0.065, "gold_from": 36, "oil_block": 42, "infected": 0.42, "infected_dispersion": 0.035, "weak_from": 28, "medium_from": 46, "strong_from": 64, "powerful_from": 82, "giants": 1, "nests": 1}
       }
     },
     {
-      "name": "TAB FA - Caustic",
-      "about": "TAB's generator: swamp - water and forest everywhere, in small pieces, lots of zombies",
-      "score_percent": 160,
+      "name": "TAB VO - Caustic Lands",
+      "about": "TAB's generator: ash and caustic water, rich in ore, the strongest zombies close - and one huge doom colony",
+      "score_percent": 175,
       "setup": {
         "generator": "tab",
-        "tab": { "land": 0.63, "land_dispersion": 0.65, "mountains": 0.14, "grass": 0.5, "forest_on_grass": 0.55, "forest_on_dirt": 0.42, "villages_min": 5, "villages_max": 8, "village_size_min": 8, "village_size_max": 16, "infected": 0.8, "infected_dispersion": 0.1, "medium_from": 18, "strong_from": 30, "powerful_from": 45, "giants": 4 }
-      }
-    },
-    {
-      "name": "TAB VO - Volcanic",
-      "about": "TAB's generator: rock everywhere, narrow ways, the strongest zombies close - the hardest",
-      "score_percent": 180,
-      "setup": {
-        "generator": "tab",
-        "tab": { "land": 0.76, "mountains": 0.38, "grass": 0.3, "forest_on_grass": 0.45, "forest_on_dirt": 0.3, "villages_min": 6, "villages_max": 9, "village_size_min": 10, "village_size_max": 18, "infected": 0.85, "weak_from": 8, "medium_from": 16, "strong_from": 28, "powerful_from": 40, "giants": 5 }
+        "look": "VO",
+        "tab": {"land": 0.72, "land_dispersion": 0.3, "land_octaves": 6, "mountains": 0.38, "vegetation_octaves": 6, "grass": 0.5, "forest_on_grass": 0.28, "forest_on_dirt": 0.28, "villages_min": 1, "villages_max": 1, "village_size_min": 22, "village_size_max": 22, "ruins_min": 3, "ruins_max": 4, "stone": 0.12, "stone_from": 5, "iron": 0.08, "iron_from": 18, "coal": 0.08, "coal_from": 18, "gold": 0.12, "gold_from": 18, "oil_block": 48, "infected": 0.45, "infected_dispersion": 0.035, "weak_from": 24, "medium_from": 36, "strong_from": 52, "powerful_from": 70, "giants": 2, "nests": 1.5}
       }
     },
     {

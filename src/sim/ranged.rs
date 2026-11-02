@@ -9,6 +9,7 @@
 
 use macroquad::math::Vec2;
 
+use super::fx::Fx;
 use super::zombies::{Breed, Hit, Zombie};
 use super::{World, TICKS_PER_SECOND, UNIT_RADIUS};
 
@@ -78,6 +79,7 @@ impl World {
             return;
         }
         match target {
+            Hit::Unit(u) if stats.venom => self.units[u].take_venom(stats.damage, self.tick),
             Hit::Unit(u) => self.units[u].take_hit(stats.damage, self.tick),
             Hit::Building(b) => {
                 if self.buildings[b].take_damage(stats.damage) {
@@ -99,19 +101,24 @@ impl World {
             spit.left > 0
         });
         for (at, breed) in landed {
+            self.fx.push(Fx::Acid { at });
             self.splash(at, breed);
         }
     }
 
     /// A shot lands at `at`: every unit on the ground whose body is within `splash` of the spot takes the breed's damage
-    /// (minus its armor, at least 1), and every building that close (a broken shield infects it, like a hit). Units in a
-    /// tower can't be hit – the tower is. Without splash only what stands right on the spot.
+    /// (after its armor – venom: its `venom_factor` of it), and every building that close (a broken shield infects it,
+    /// like a hit). Units in a tower can't be hit – the tower is. Without splash only what stands right on the spot.
     fn splash(&mut self, at: Vec2, breed: Breed) {
         let stats = breed.stats();
         let radius = stats.splash.max(0.1);
         let tick = self.tick;
         for unit in self.units.iter_mut().filter(|u| !u.is_inside() && u.pos.distance(at) <= radius + UNIT_RADIUS) {
-            unit.take_hit(stats.damage, tick);
+            if stats.venom {
+                unit.take_venom(stats.damage, tick);
+            } else {
+                unit.take_hit(stats.damage, tick);
+            }
         }
         let mut infected = Vec::new();
         for (b, building) in self.buildings.iter_mut().enumerate() {

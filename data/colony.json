@@ -2,7 +2,7 @@
   "storage_gold": 2000,
   "storage_goods": 50,
   "storage_food": 100,
-  "economy_every_hours": 8,
+  "economy_every_seconds": 28,
   "debt_penalty_percent": 15,
   "deep_debt_payouts": 1,
   "deep_debt_penalty_percent": 30,

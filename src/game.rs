@@ -22,6 +22,7 @@ use crate::overlay::{self, Action, Overlay, Switch};
 use crate::picture::{Extras, MapPicture};
 use crate::settings::Settings;
 use crate::sim::{day_and_hour, Breed, Notice, Order, Outcome, World, TICK};
+use crate::ground::Landscape;
 use crate::sprites::Sprites;
 use crate::ui::Ui;
 use crate::undo::History;
@@ -76,6 +77,8 @@ pub struct Game {
     fog_picture: draw::FogPicture,
     /// The pictures of zombies and units – read again on "Restart" (`restart`).
     sprites: Sprites,
+    /// TAB's landscape pictures (`ground.rs`).
+    landscape: Landscape,
     /// The picture on the minimap – painted only when the map or the fog changed (`picture.rs`).
     minimap: MapPicture,
     /// The end screen was put away ("Look at the map") – the round stays over.
@@ -136,6 +139,7 @@ impl Game {
             looks: draw::Looks::default(),
             fog_picture: draw::FogPicture::new(),
             sprites: Sprites::default(),
+            landscape: Landscape::default(),
             minimap: MapPicture::new(),
             end_hidden: false,
             leaving: None,
@@ -276,6 +280,7 @@ impl Game {
             self.accumulator += dt.min(0.25) * self.ui.speed as f32;
             while self.accumulator >= TICK && ticks < MAX_TICKS_PER_FRAME {
                 self.world.step(&self.orders);
+                self.looks.effects.take(&self.world); // what only the picture shows (`effects.rs`)
                 self.orders.clear();
                 self.accumulator -= TICK;
                 ticks += 1;
@@ -361,6 +366,7 @@ impl Game {
     fn restart(&mut self) {
         data::reload();
         self.sprites = Sprites::default(); // changed pictures count too
+        self.landscape = Landscape::default();
         if let Some(file) = self.path.as_ref().and_then(|path| MapFile::load(path).ok()) {
             self.file = file;
         }
@@ -618,8 +624,10 @@ impl Game {
         let draw_start = Instant::now();
         clear_background(draw::BACKGROUND);
         let alpha = (self.accumulator / TICK).min(1.0);
-        self.looks.update(world, dt);
+        // Game time in seconds, like the animations in `draw.rs` count it.
+        self.looks.update(world, dt, (world.tick as f32 + alpha) * TICK);
         self.sprites.load_missing();
+        let pictures = self.landscape.refresh(&world.map, &world.look);
         let fog = match self.ui.sight() {
             Sight::All => Fog::Off,
             Sight::Player => Fog::Player,
@@ -646,6 +654,7 @@ impl Game {
             fog_picture: &self.fog_picture,
             looks: &self.looks,
             sprites: &self.sprites,
+            landscape: pictures.then_some(&self.landscape),
             spawners: self.ui.spawner_shapes(world, &self.camera),
         };
         draw::draw_world(world, &self.camera, &view, &self.ui.selected, alpha);
@@ -663,6 +672,8 @@ impl Game {
         let problems = [
             data::problem().map(|p| format!("data\\ not loaded, old values in use - {p}")),
             self.sprites.problem().map(|p| format!("Picture not loaded, drawn as a box - {p}")),
+            self.landscape.problem().map(|p| format!("Landscape pictures not loaded - {p}")),
+            self.looks.effects.problem().map(|p| format!("Effect not loaded - {p}")),
         ];
         for (row, text) in problems.into_iter().flatten().enumerate() {
             let y = 40.0 + row as f32 * 30.0;

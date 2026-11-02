@@ -12,9 +12,10 @@
 
 use macroquad::math::Vec2;
 
+use super::fx::Fx;
 use super::units::Intent;
 use super::zombies::{self, Breed};
-use super::{slide, World, TICKS_PER_SECOND};
+use super::{after_armor, slide, World, TICKS_PER_SECOND};
 
 /// The noise of one shot (`noise` in `data\units.json`), as a whole number for the sound grid.
 fn shot_noise(noise: f32) -> u32 {
@@ -92,10 +93,11 @@ impl World {
             match intent.target {
                 Some(Target::Zombie(z)) => {
                     self.shots.push((unit.pos, to));
+                    self.fx.push(Fx::UnitShot { from: unit.pos, to, kind: unit.kind, zombie: true });
                     let zombie = &mut self.zombies[z];
                     // The same as `shot_damage` – here `self` is already borrowed through `unit` and `zombie`.
-                    let damage = damage.saturating_sub(zombie.breed.stats().armor).max(1);
-                    zombie.hp = zombie.hp.saturating_sub(damage);
+                    let damage = after_armor(damage, zombie.breed.stats().armor);
+                    zombie.hurt(damage, self.tick);
                     if !zombie.is_alive() {
                         unit.kills += 1;
                     } else if stats.knockback > 0.0 {
@@ -122,6 +124,7 @@ impl World {
                 // A house of doom: hit – a batch comes out of it (`doom.rs`) – and the shot makes noise like any other.
                 Some(Target::Doom(d)) => {
                     self.shots.push((unit.pos, to));
+                    self.fx.push(Fx::UnitShot { from: unit.pos, to, kind: unit.kind, zombie: false });
                     let from = unit.pos;
                     self.hit_house(d, damage);
                     self.make_colony_sound(from, shot_noise(stats.noise));
@@ -232,10 +235,10 @@ impl World {
         best.map(|(_, d)| d)
     }
 
-    /// What one shot of unit `i` does to zombie `z`: the damage (a veteran's more, less in debt) minus the zombie's
+    /// What one shot of unit `i` does to zombie `z`: the damage (a veteran's more, less in debt) after the zombie's
     /// armor, at least 1.
     fn shot_damage(&self, i: usize, z: usize) -> u32 {
-        self.army_damage(self.units[i].damage()).saturating_sub(self.zombies[z].breed.stats().armor).max(1)
+        after_armor(self.army_damage(self.units[i].damage()), self.zombies[z].breed.stats().armor)
     }
 
     /// The nearest living zombie within `range` that's in sight and that `accept` takes (by its index).

@@ -11,8 +11,9 @@
 
 use macroquad::math::Vec2;
 
+use super::fx::Fx;
 use super::buildings::{Product, MAX_PRODUCTION};
-use super::World;
+use super::{after_armor, World};
 use crate::data;
 use crate::kinds::{BuildingKind, Resource};
 
@@ -115,10 +116,10 @@ impl World {
         let (damage, radius) = (blast.damage, blast.radius);
         // Whoever sleeps there wakes – and gets hit (`sleep.rs`).
         self.wake_area(at, radius);
-        for zombie in self.zombies.iter_mut().filter(|z| z.is_alive() && z.pos.distance(at) <= radius) {
-            zombie.hp = zombie.hp.saturating_sub(damage.saturating_sub(zombie.breed.stats().armor).max(1));
-        }
         let tick = self.tick;
+        for zombie in self.zombies.iter_mut().filter(|z| z.is_alive() && z.pos.distance(at) <= radius) {
+            zombie.hurt(after_armor(damage, zombie.breed.stats().armor), tick);
+        }
         for unit in self.units.iter_mut().filter(|u| !u.is_inside() && u.hp > 0 && u.pos.distance(at) <= radius) {
             unit.take_hit(damage, tick);
         }
@@ -139,5 +140,6 @@ impl World {
         }
         self.make_colony_sound(at, blast.noise);
         self.blasts.push(Blast { at, left: SHOWN });
+        self.fx.push(Fx::Blast { at });
     }
 }

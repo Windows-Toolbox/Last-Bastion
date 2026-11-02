@@ -1,7 +1,7 @@
 //! TAB's map generator (DESIGN.md 9.1, `docs\tab-nachbau.md` step 6), rebuilt from its code
-//! (`--zyl_NPjjlA7DRfVtsRJCX1kN4BxSr.cs`, `z_Ezgd90E`). TAB has one generator; its six landscapes (BR, TM, AL, DS, FA,
-//! VO) are only other numbers (`Params`, the maps in `data\game_maps.json`) and other pictures. Its numbers lie in a
-//! file that stays closed (`ZXRules.dat`) – ours are estimated.
+//! (`ZX.GameSystems\ZXLevelGenerator.cs`). TAB has one generator; its six landscapes (FA, BR, TM, AL, DS, VO) are only
+//! other numbers (`Params`, the maps in `data\game_maps.json`) and other pictures. The numbers are TAB's own (its
+//! table `MapThemes` in `ZXRules.dat`), only coal is ours.
 //!
 //! It's built of noise layers (`layer.rs`) – one number per tile, cut at thresholds:
 //! 1. **Land:** noise, plus the ring outside the world border ("Rand") – above `land` it's land, else water. The ring is
@@ -113,41 +113,40 @@ pub struct Params {
 }
 
 impl Default for Params {
-    /// BR's numbers, estimated – about 8 % water, 6 % mountains, 30 % forest and a third each of grass and dirt
-    /// (measured on TAB's noise, `noise_quantiles`).
+    /// BR's numbers (The Dark Moorland) – TAB's own, from its `MapThemes` table. Coal isn't TAB's: like iron.
     fn default() -> Params {
         Params {
-            land_dispersion: 0.5,
-            land_octaves: 3.0,
-            land: 0.7,
-            mountains: 0.27,
-            vegetation_octaves: 3.0,
-            grass: 0.53,
-            forest_on_grass: 0.43,
-            forest_on_dirt: 0.34,
-            villages_min: 3.0,
-            villages_max: 5.0,
-            village_size_min: 6.0,
-            village_size_max: 12.0,
-            ruins_min: 8.0,
-            ruins_max: 12.0,
-            stone: 0.13,
-            stone_from: 6.0,
-            iron: 0.11,
-            iron_from: 15.0,
-            coal: 0.11,
-            coal_from: 15.0,
-            gold: 0.075,
-            gold_from: 30.0,
+            land_dispersion: 0.6,
+            land_octaves: 1.0,
+            land: 0.75,
+            mountains: 0.24,
+            vegetation_octaves: 2.0,
+            grass: 0.37,
+            forest_on_grass: 0.06,
+            forest_on_dirt: 0.15,
+            villages_min: 1.0,
+            villages_max: 1.0,
+            village_size_min: 5.0,
+            village_size_max: 7.0,
+            ruins_min: 3.0,
+            ruins_max: 4.0,
+            stone: 0.12,
+            stone_from: 5.0,
+            iron: 0.09,
+            iron_from: 18.0,
+            coal: 0.09,
+            coal_from: 18.0,
+            gold: 0.07,
+            gold_from: 36.0,
             oil_block: 48.0,
-            infected: 0.65,
-            infected_dispersion: 0.08,
-            weak_from: 10.0,
-            medium_from: 25.0,
-            strong_from: 45.0,
-            powerful_from: 65.0,
-            giants: 2.0,
-            nests: 1.0,
+            infected: 0.38,
+            infected_dispersion: 0.035,
+            weak_from: 34.0,
+            medium_from: 52.0,
+            strong_from: 70.0,
+            powerful_from: 92.0,
+            giants: 1.0,
+            nests: 0.8,
             population: 1.0,
         }
     }

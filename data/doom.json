@@ -1,10 +1,10 @@
 {
-  "hp": 1500,
-  "armor": 2,
-  "max_units": { "small": 50, "medium": 100, "big": 250 },
+  "hp": { "small": 400, "medium": 1500, "big": 4000 },
+  "armor": 0.0,
+  "max_units": { "small": 40, "medium": 150, "big": 500 },
   "batch_every_seconds": 1.0,
-  "hearing": 24.0,
-  "awareness": 2.0,
+  "hearing": { "small": 20.0, "medium": 24.0, "big": 32.0 },
+  "awareness": 5.0,
   "heard_batch": 0.5,
   "guard_every_hours": 12,
   "guards_per_size": 2,
@@ -26,5 +26,11 @@
     ]
   },
   "loot_gold": 1000,
-  "loot_goods": 20
+  "loot_goods": 20,
+  "explosion": { "small": ["wood_big"], "medium": ["stone_big"], "big": ["wood_big", "stone_big"] },
+  "skins": {
+    "small": ["buildings/doom_small_1", "buildings/doom_small_2", "buildings/doom_small_3", "buildings/doom_small_4"],
+    "medium": ["buildings/doom_medium_1", "buildings/doom_medium_2", "buildings/doom_medium_3", "buildings/doom_medium_4"],
+    "big": ["buildings/doom_big_1", "buildings/doom_big_2", "buildings/doom_big_3", "buildings/doom_big_4"]
+  }
 }

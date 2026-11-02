@@ -26,7 +26,8 @@
 
 use macroquad::math::{vec2, Vec2};
 
-use super::zombies::{values, Breed, Idle, Lure};
+use super::regen::regen_amount;
+use super::zombies::{look_from, values, Breed, Idle, Lure};
 use super::{clear_line, World, DAY_TICKS, TICKS_PER_SECOND};
 use crate::data;
 
@@ -51,8 +52,12 @@ pub struct Sleeper {
     pub pos: Vec2,
     pub breed: Breed,
     hp: u32,
+    /// The tick it fell asleep – it heals itself asleep too, added when it wakes (`regen.rs`).
+    since: u64,
     speed: f32,
     next: u64,
+    /// The skin it wears (`Zombie::look`) – it keeps it when it wakes.
+    pub look: u8,
 }
 
 /// The sleepers, block by block.
@@ -164,8 +169,8 @@ enum Waking {
     Strolling(Vec2, u32),
     /// Goes where it heard something.
     Lured(Lure),
-    /// Joins the wave walking over it – this swarm.
-    Joins(u32),
+    /// Joins the wave walking over it – this swarm; `true`: the final wave, then it's one of it too.
+    Joins(u32, bool),
     /// Heads for the command center with the final wave.
     Final,
 }
@@ -175,15 +180,18 @@ impl World {
     /// stands and growls before its first trip, like one awake (`idle_wait`).
     pub(super) fn lay_to_sleep(&mut self, pos: Vec2, breed: Breed) {
         let stats = breed.stats();
-        let speed = stats.speed * (0.8 + 0.4 * self.rng.unit_f32());
-        let next = self.tick + self.idle_wait();
-        self.sleep.push(Sleeper { pos, breed, hp: stats.hp, speed, next });
+        let speed = stats.speed * (0.8 + 0.4 * self.rng.unit_f32()) * self.zombie_pace();
+        let next = self.tick + self.idle_wait(breed);
+        // Its skin from where it lies (it has no number yet): the bits of its position mixed, no dice – the dice stay
+        // as they were, so the map is the same as without skins.
+        let look = look_from(pos.x.to_bits() ^ pos.y.to_bits().rotate_left(16));
+        self.sleep.push(Sleeper { pos, breed, hp: stats.hp, since: self.tick, speed, next, look });
     }
 
     /// How long an idle zombie stands and growls before it roams next – TAB's dice of the zombies awake (`next_idle`),
     /// rolled ahead for a sleeper: stand, growl, again and again until it comes up roam. No weight on roaming: a day.
-    fn idle_wait(&mut self) -> u64 {
-        let (z, w) = (values(), &values().idle);
+    fn idle_wait(&mut self, breed: Breed) -> u64 {
+        let w = &values().idle;
         if w.roam == 0 {
             return DAY_TICKS;
         }
@@ -191,9 +199,9 @@ impl World {
         loop {
             let roll = self.rng.below(w.stand + w.growl + w.roam);
             if roll < w.stand {
-                wait += z.stand as u64;
+                wait += breed.stand_ticks() as u64;
             } else if roll < w.stand + w.growl {
-                wait += z.growl as u64;
+                wait += breed.growl_ticks() as u64;
             } else {
                 return wait;
             }
@@ -229,10 +237,14 @@ impl World {
         if due.is_empty() {
             return;
         }
-        // The wave zombies by tile – (tile row and column, rank, swarm), in order.
+        // The wave zombies by tile – (tile row and column, rank, swarm, final wave), in order.
         let tile = |p: Vec2| (p.y.floor() as i32, p.x.floor() as i32);
-        let mut waves: Vec<((i32, i32), u32, u32)> =
-            self.zombies.iter().filter(|z| z.siege && z.is_alive()).map(|z| (tile(z.pos), z.breed.stats().level, z.swarm)).collect();
+        let mut waves: Vec<((i32, i32), u32, u32, bool)> = self
+            .zombies
+            .iter()
+            .filter(|z| z.siege && z.is_alive())
+            .map(|z| (tile(z.pos), z.breed.stats().level, z.swarm, z.final_wave))
+            .collect();
         if waves.is_empty() {
             return;
         }
@@ -244,7 +256,7 @@ impl World {
                 let (at, level) = (tile(sleeper.pos), sleeper.breed.stats().level);
                 let from = waves.partition_point(|w| w.0 < at);
                 let mut here = waves[from..].iter().take_while(|w| w.0 == at).filter(|w| w.1 >= level);
-                let swarm = here.next().map(|w| w.2);
+                let swarm = here.next().map(|w| (w.2, w.3));
                 match swarm.filter(|_| !sleeper.breed.roars() && 1 + here.count() >= count) {
                     Some(swarm) => joining.push((sleeper, swarm)),
                     None => stay.push(sleeper),
@@ -252,8 +264,8 @@ impl World {
             }
             self.sleep.count += stay.len();
             self.sleep.blocks[b] = stay;
-            for (sleeper, swarm) in joining {
-                self.wake(sleeper, Waking::Joins(swarm));
+            for (sleeper, (swarm, last)) in joining {
+                self.wake(sleeper, Waking::Joins(swarm, last));
             }
         }
     }
@@ -279,7 +291,6 @@ impl World {
             return;
         }
         let awake = self.near_eyes(WAKE_MARGIN);
-        let share = values().wander_pace;
         let tick = self.tick;
         let mut moved = Vec::new();
         let mut waking = Vec::new();
@@ -294,10 +305,10 @@ impl World {
                     continue;
                 }
                 let spot = self.roam_spot(sleeper.pos, sleeper.breed);
-                let standing = self.idle_wait();
+                let standing = self.idle_wait(sleeper.breed);
                 match spot.filter(|&to| clear_line(&self.map, sleeper.pos, to)) {
                     Some(to) => {
-                        let pace = (sleeper.speed * share).max(0.05);
+                        let pace = (sleeper.speed * sleeper.breed.walk_share()).max(0.05);
                         let walk = sleeper.pos.distance(to) / pace * TICKS_PER_SECOND;
                         if awake[self.sleep.block_of(to)] {
                             // Like `next_idle`: the time it needs at its pace, half as much again for detours.
@@ -328,8 +339,8 @@ impl World {
 
     /// Your eyes – units (in a tower they see further) and buildings that aren't infected: where, and how far they see.
     fn eyes(&self) -> Vec<(Vec2, f32)> {
-        let units = self.units.iter().map(|u| (u.pos, u.sight()));
-        let buildings = self.buildings.iter().filter(|b| !b.infected).map(|b| (b.center(), b.stats().sight));
+        let units = self.units.iter().map(|u| (u.pos, self.eye_range(u.sight())));
+        let buildings = self.buildings.iter().filter(|b| !b.infected).map(|b| (b.center(), self.eye_range(b.stats().sight)));
         units.chain(buildings).collect()
     }
 
@@ -370,7 +381,7 @@ impl World {
             let mut stay = Vec::new();
             let mut woken = Vec::new();
             for sleeper in self.sleep.take(b) {
-                let best = self.sound.best(sleeper.pos, sleeper.breed.hearing_range(), sleeper.breed.hear_factor());
+                let best = self.sound.best(sleeper.pos, self.hearing_range(sleeper.breed), self.hear_factor(sleeper.breed));
                 match best.filter(|&(_, chance)| self.rng.below(100) < chance) {
                     Some((c, _)) => woken.push((sleeper, c)),
                     None => stay.push(sleeper),
@@ -413,21 +424,28 @@ impl World {
         }
     }
 
-    /// A sleeper wakes: a zombie in the list again, where it lay, with its hit points and its pace.
+    /// A sleeper wakes: a zombie in the list again, where it lay, with its hit points – and what it healed asleep,
+    /// once every `regen_every_seconds` it slept (`regen.rs`) – and its pace.
     fn wake(&mut self, sleeper: Sleeper, waking: Waking) {
+        let every = data::get().units.regen_every.max(1) as u64;
+        let stats = sleeper.breed.stats();
+        let healed = (self.tick.saturating_sub(sleeper.since) / every).min(u32::MAX as u64) as u32;
+        let hp = sleeper.hp.saturating_add(healed.saturating_mul(regen_amount(stats.hp, stats.regen))).min(stats.hp);
         self.spawn_zombie_as(sleeper.pos, sleeper.breed, true);
         let Some(zombie) = self.zombies.last_mut() else {
             return;
         };
-        zombie.hp = sleeper.hp;
+        zombie.hp = hp;
         zombie.speed = sleeper.speed;
+        zombie.look = sleeper.look;
         match waking {
             Waking::Calm => {}
             Waking::Strolling(goal, timer) => zombie.idle = Idle::roaming(goal, timer),
             Waking::Lured(lure) => zombie.lure = Some(lure),
-            Waking::Joins(swarm) => {
+            Waking::Joins(swarm, last) => {
                 zombie.siege = true;
                 zombie.swarm = swarm;
+                zombie.final_wave = last;
             }
             Waking::Final => {
                 zombie.siege = true;
@@ -447,16 +465,17 @@ impl World {
         let calm_long = (SLEEP_AFTER * TICKS_PER_SECOND) as u32;
         let mut sleepers = Vec::new();
         let sleep = &self.sleep;
+        let tick = self.tick;
         self.zombies.retain(|z| {
             let sleepy = z.is_alive() && z.calm_for >= calm_long && !kept[sleep.block_of(z.pos)];
             if sleepy {
-                sleepers.push(Sleeper { pos: z.pos, breed: z.breed, hp: z.hp, speed: z.speed, next: 0 });
+                sleepers.push(Sleeper { pos: z.pos, breed: z.breed, hp: z.hp, since: tick, speed: z.speed, next: 0, look: z.look });
             }
             !sleepy
         });
         // Asleep it idles on – first it stands and growls (`idle_wait`).
         for mut sleeper in sleepers {
-            sleeper.next = self.tick + self.idle_wait();
+            sleeper.next = self.tick + self.idle_wait(sleeper.breed);
             self.sleep.push(sleeper);
         }
     }

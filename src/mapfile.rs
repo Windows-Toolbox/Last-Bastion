@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::data;
+use crate::data::{self, Modifiers};
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
@@ -61,6 +61,13 @@ pub struct MapFile {
     pub play_area: Option<PlayArea>,
     #[serde(default)]
     pub round: RoundData,
+    /// What the landscape does to the round (`data::Modifiers`, from `game_maps.json`) – not written when nothing
+    /// changes. Also with `regenerate`: the file's, not the setup's.
+    #[serde(default, skip_serializing_if = "Modifiers::is_default")]
+    pub modifiers: Modifiers,
+    /// Which of TAB's landscapes it's drawn as (`MapSetup::look`) – not written when it's BR's (`""`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub look: String,
     /// The events of this map (`sim/events.rs`).
     #[serde(default)]
     pub events: Vec<Event>,
@@ -371,6 +378,8 @@ impl MapFile {
                 PlayArea { min, size }
             }),
             round: RoundData { days: world.days, gold: world.gold, wood: world.stock.get(Resource::Wood), difficulty: world.difficulty.clone() },
+            modifiers: world.modifiers,
+            look: world.look.clone(),
             events: world.events.clone(),
             waves: Vec::new(),
             story: world.story.clone(),
@@ -431,6 +440,9 @@ impl MapFile {
     pub fn to_world(&self) -> Result<World, String> {
         let mut world = World::empty(self.seed, self.map()?);
         world.set_difficulty(data::get().difficulty(&self.round.difficulty));
+        // Before the zombies: their speed is rolled with it.
+        world.modifiers = self.modifiers;
+        world.look = self.look.clone();
         world.days = self.round.days;
         world.gold = self.round.gold;
         world.stock.set(Resource::Wood, self.round.wood);
@@ -494,6 +506,8 @@ impl MapFile {
         let mut setup = setup.clone();
         setup.round.days = self.round.days as f32;
         setup.round.difficulty = self.round.difficulty.clone();
+        setup.modifiers = self.modifiers;
+        setup.look = self.look.clone();
         let mut world = World::generate(seed, &setup);
         world.gold = self.round.gold;
         world.stock.set(Resource::Wood, self.round.wood);
@@ -672,7 +686,7 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "events", "story", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "deposits", "terrain"] {
+    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "modifiers", "look", "events", "story", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "deposits", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
     // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units

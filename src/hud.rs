@@ -1015,7 +1015,7 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
     let mut cells = vec![
         ("HP", format!("{}/{}", unit.hp, unit.max_hp())),
         ("Damage", world.army_damage(unit.damage()).to_string()),
-        ("Armor", stats.armor.to_string()),
+        ("Armor", percent(stats.armor)),
         ("Upkeep", format!("-{}", stats.upkeep)),
     ];
     if stats.food > 0 {
@@ -1070,7 +1070,7 @@ fn draw_zombie(layout: &Layout, world: &World, zombie: &Zombie) {
     let mut cells = vec![
         ("HP", format!("{}/{}", zombie.hp(), stats.hp)),
         ("Damage", stats.damage.to_string()),
-        ("Armor", stats.armor.to_string()),
+        ("Armor", percent(stats.armor)),
         ("Hits", format!("{:.1} s", seconds(zombie.breed.attack_ticks()))),
     ];
     if zombie.breed.is_ranged() {
@@ -1100,7 +1100,7 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
             let house = &world.doom[d];
             let doom = &data::get().doom;
             draw_portrait(layout, DOOM_MINIMAP, "!", RED);
-            let y = draw_title(layout, "Village of doom", (house.hp, doom.hp), (0, 0));
+            let y = draw_title(layout, "Village of doom", (house.hp, house.full_hp()), (0, 0));
             let about = if house.is_stirring(world.tick) {
                 "STIRRING - its zombies are coming out.".to_owned()
             } else if house.inside > 0 {
@@ -1116,9 +1116,9 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
             draw_cells(
                 layout,
                 &[
-                    ("HP", format!("{}/{}", house.hp, doom.hp)),
+                    ("HP", format!("{}/{}", house.hp, house.full_hp())),
                     ("Left", house.inside.to_string()),
-                    ("Armor", doom.armor.to_string()),
+                    ("Armor", percent(doom.armor)),
                     ("House", house.nest().name().to_owned()),
                     ("Size", format!("{w} x {h}")),
                 ],
@@ -1161,7 +1161,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     if stats.max_shield() > 0 {
         cells.push(("Shield", format!("{} %", building.shield * 100 / stats.max_shield())));
     }
-    // Every + and - in these boxes is per payout (`economy_every_hours`).
+    // Every + and - in these boxes is per payout (`economy_every_seconds`).
     if stats.colonists > 0 {
         cells.push(("Colonists", stats.colonists.to_string()));
     }
@@ -1174,8 +1174,8 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     if stats.food_made > 0 {
         cells.push(("Food", format!("+{}", stats.food_made)));
     }
-    if stats.armor > 0 {
-        cells.push(("Armor", stats.armor.to_string()));
+    if stats.armor > 0.0 {
+        cells.push(("Armor", percent(stats.armor)));
     }
     // What it gathers per payout, right now.
     let rate = world.gather_rate(building.kind, building.tile, b, power.share(world, b));
@@ -1373,6 +1373,7 @@ fn building_text(world: &World, power: &Power, b: usize) -> String {
         let tiles = world.worked_tiles(building.kind, building.tile, b).len();
         let what = match source {
             Source::Forest => "forest",
+            Source::Hunting => "forest, grass and dirt",
             Source::Water => "water",
             Source::Ore => "ore",
             Source::Fertile => "grass",
@@ -1512,7 +1513,7 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
         // minerals or supply). Planned: everything dim – the button only shows where it will be.
         let cost = shown_cost(button, world, ui);
         let goods = button.places().is_none_or(|kind| world.can_afford_goods(kind) && world.unlocked(kind))
-            && button.trains().is_none_or(|kind| world.unit_unlocked(kind));
+            && button.trains().is_none_or(|kind| world.unit_unlocked(kind) && world.can_afford_unit_goods(kind));
         let affordable = cost.is_none_or(|cost| cost <= world.gold) && button.workers() <= free_workers && goods;
         // Repair with nothing to repair: dim like a planned button.
         let idle = button == Button::Repair && cost.is_none();
@@ -1577,6 +1578,15 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
         }
         if s.cost_coal > 0 {
             parts.push(format!("{} coal", s.cost_coal));
+        }
+        if s.cost_iron > 0 {
+            parts.push(format!("{} iron", s.cost_iron));
+        }
+    }
+    if let Some(kind) = button.trains() {
+        let s = kind.stats();
+        if s.cost_wood > 0 {
+            parts.push(format!("{} wood", s.cost_wood));
         }
         if s.cost_iron > 0 {
             parts.push(format!("{} iron", s.cost_iron));
@@ -1723,8 +1733,8 @@ fn draw_stock(layout: &Layout, world: &World) {
         draw_text(label, right_x, y + 12.0, 13.0, DIM);
         if per_hour != 0 {
             let color = if per_hour < 0 { TOO_DEAR } else { GLOW };
-            let every = data::get().colony.economy_every_hours;
-            draw_right(&format!("{}/{every}h", signed(per_hour)), right_x + right_w, y + 12.0, 13.0, color);
+            let every = (crate::sim::payout_ticks() as f32 / TICKS_PER_SECOND).round();
+            draw_right(&format!("{}/{every}s", signed(per_hour)), right_x + right_w, y + 12.0, 13.0, color);
         }
         let bar = Rect::new(right_x, y + 15.0, right_w, (goods_h - 16.0).min(16.0));
         draw_rectangle(bar.x, bar.y, bar.w, bar.h, BOX_BG);
@@ -1902,3 +1912,7 @@ mod tests {
     }
 }
 
+/// Armor like TAB's (a share of every hit) as the panel shows it: "40 %".
+fn percent(share: f32) -> String {
+    format!("{} %", (share * 100.0).round())
+}

@@ -29,3 +29,11 @@ desktop.ini
 CLAUDE.md
 .claude/
 .aider*
+
+# --- TAB's pictures, converted on this PC (tools/tab_*.py) – copyrighted, never into git ---
+/assets/units/
+/assets/zombies/
+/assets/buildings/
+/assets/terrain/
+/assets/effects/
+/assets/projectiles/

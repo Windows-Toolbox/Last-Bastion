@@ -28,6 +28,10 @@
 //! - `scan.rs`: the command center's scan – a circle of the map shown for a while.
 //! - `terrain.rs`: when the map changes – recompute what depends on it, push everyone off new terrain.
 //! - `story.rs`: the map's story like TAB's – scripts of actions, goals, counters, the command center's own button.
+//! - `regen.rs`: units and zombies healing themselves, like TAB's.
+//! - `fallen.rs`: the dead – zombies dying, units lying there, and how a giant's blow throws them.
+//! - `fx.rs`: what happened in a tick that only the picture shows (shots, deaths, explosions).
+//! - `landscape.rs`: what the map's landscape does to the round – hearing, sight, speed (`data::Modifiers`).
 //! - `round.rs`: the round as a whole – how it ends (won, lost), what happened in it.
 //!
 //! This file: the `World` itself, the order of a tick (`step`) and small helpers that all of them use.
@@ -41,10 +45,14 @@ mod debt;
 mod doom;
 mod economy;
 mod events;
+mod fallen;
+mod fx;
+mod landscape;
 mod market;
 mod neutral;
 mod orders;
 mod ranged;
+mod regen;
 mod round;
 mod scan;
 mod sleep;
@@ -62,7 +70,7 @@ mod tests;
 use macroquad::math::{vec2, Vec2};
 
 use crate::aggro::AggroMap;
-use crate::data::{self, Difficulty, KeepOut};
+use crate::data::{self, Difficulty, KeepOut, Modifiers};
 use crate::flow::FlowField;
 use crate::grid::SpatialGrid;
 use crate::hunt::HuntMap;
@@ -78,9 +86,11 @@ pub use blast::Blast;
 pub use buildings::{Building, Product, Rally, RepairPlan, SwitchBlock, MAX_PRODUCTION};
 pub use commands::{Command, Mark};
 pub use debt::DebtStage;
-pub use doom::{DoomHouse, Loot, LootKind};
+pub use doom::{DoomHouse, Loot, LootKind, Nest};
 pub use economy::{Power, Stock};
 pub use events::{plan_events, Event, Notice};
+pub use fallen::Dying;
+pub use fx::{Fallen, Fx};
 pub use neutral::{Neutral, Owner, Tag, Thing, ThingRef};
 pub use story::{Action, Choice, Condition, CustomCommand, Goal, Script, Story};
 pub use ranged::Spit;
@@ -103,15 +113,27 @@ pub const DAY_TICKS: u64 = 60 * 20;
 /// One hour of such a day (a day has 24, like in TAB's "32d 12h").
 pub const HOUR_TICKS: u64 = DAY_TICKS / 24;
 
-/// Ticks from one payout of the economy to the next (`economy_every_hours` in `data\colony.json`, like TAB's 8-hour
-/// tick): then houses pay, gatherers deliver, burners burn and the upkeep is due (`economy.rs`).
+/// Ticks from one payout of the economy to the next (`economy_every_seconds` in `data\colony.json`, 28 s like TAB's
+/// `CResourceGenerator`): then houses pay, gatherers deliver, burners burn and the upkeep is due (`economy.rs`).
 pub fn payout_ticks() -> u64 {
-    HOUR_TICKS * data::get().colony.economy_every_hours.max(1)
+    data::get().colony.economy_every.max(1) as u64
+}
+
+/// The time between two payouts as the screen shows it, e.g. "28 s".
+pub fn payout_text() -> String {
+    format!("{} s", (payout_ticks() as f32 / TICKS_PER_SECOND).round())
 }
 
 /// How big units are (radius in tiles) – here, because the zombies need it too. Zombies: per breed (`radius` in
-/// `data\zombies.json`).
-pub const UNIT_RADIUS: f32 = 0.175;
+/// `data\zombies.json`). TAB's soldier: a body 0.5 wide (its ranger 0.45, its sniper 0.6).
+pub const UNIT_RADIUS: f32 = 0.25;
+
+/// What's left of a hit of `damage` against `armor` – like TAB (`CLife.AddDamage`): armor is a share (0.1 = a tenth
+/// less), the rest rounded to the nearest whole point, at least 1. `round_ties_even`: a half goes to the even number,
+/// like C#'s `Math.Round` – so 6 against 0.25 is 4 here too, not 5. Only `*` and `-` on `f32`: the same on every PC.
+pub fn after_armor(damage: u32, armor: f32) -> u32 {
+    ((damage as f32 * (1.0 - armor)).round_ties_even() as u32).max(1)
+}
 
 #[derive(Clone)]
 pub struct World {
@@ -124,6 +146,8 @@ pub struct World {
     pub buildings: Vec<Building>,
     /// Your fallen units – they rise as walkers (`spawning.rs`).
     pub corpses: Vec<Corpse>,
+    /// Killed zombies playing their death – only for the picture (`fallen.rs`).
+    pub dying: Vec<Dying>,
     /// The houses of the villages of doom, and the loot lying around (`doom.rs`).
     pub doom: Vec<DoomHouse>,
     /// Neutral buildings and units (`neutral.rs`) – nobody's, until a joinable one joins the colony.
@@ -181,6 +205,10 @@ pub struct World {
     pub difficulty: String,
     /// Per breed: no zombie of it lies closer to the command center than this when the round is made (tiles).
     pub keep_out: KeepOut,
+    /// What the map's landscape does to the whole round (`data::Modifiers`) – kept in the map file.
+    pub modifiers: Modifiers,
+    /// Which of TAB's landscapes the map is drawn as (`MapSetup::look`) – the simulation never looks at it.
+    pub look: String,
     /// How the round ended (`round.rs`) – `None` while it's still going.
     pub outcome: Option<Outcome>,
     /// What happened in the round so far – for the end screen.
@@ -200,6 +228,8 @@ pub struct World {
     pub vision: Vision,
     /// Shots of this tick (from, to) – only for drawing.
     pub shots: Vec<(Vec2, Vec2)>,
+    /// What happened this tick that only the picture shows (`fx.rs`) – the game takes it after every tick.
+    pub fx: Vec<Fx>,
     /// Medic beams of this tick (from, to) – only for drawing.
     pub beams: Vec<(Vec2, Vec2)>,
     /// Shots of the infested this tick (from, to) – only for drawing.
@@ -270,6 +300,9 @@ impl World {
         // The base where the generator put it – TAB's moves it off the middle to the nearest free spot.
         world.base = vec2(generated.base.0 as f32 + 0.5, generated.base.1 as f32 + 0.5);
         world.set_difficulty(difficulty);
+        // Before the first zombie: their speed is rolled with it.
+        world.modifiers = setup.modifiers;
+        world.look = setup.look.clone();
         world.days = setup.round.days.round() as u32;
         world.gold = difficulty.start_gold;
         world.stock.set(Resource::Wood, difficulty.start_wood);
@@ -380,6 +413,7 @@ impl World {
             units: Vec::new(),
             buildings: Vec::new(),
             corpses: Vec::new(),
+            dying: Vec::new(),
             doom: Vec::new(),
             neutral: Vec::new(),
             loot: Vec::new(),
@@ -415,6 +449,8 @@ impl World {
             days: 0,
             difficulty: difficulty.name.clone(),
             keep_out: difficulty.keep_out,
+            modifiers: Modifiers::default(),
+            look: String::new(),
             outcome: None,
             score: Score::default(),
             spawners: Vec::new(),
@@ -423,6 +459,7 @@ impl World {
             lures: Vec::new(),
             revealed: false,
             shots: Vec::new(),
+            fx: Vec::new(),
             beams: Vec::new(),
             zombie_shots: Vec::new(),
             tick: 0,
@@ -499,8 +536,10 @@ impl World {
             self.vision.reveal_all();
             return;
         }
-        let units = self.units.iter().map(|u| (u.pos, u.sight()));
-        let buildings = self.buildings.iter().map(|b| (b.center(), b.stats().sight));
+        // How far everyone sees on this map (`eye_range`) – worked out first, `vision` is changed with it.
+        let reach = Modifiers::factor(self.modifiers.unit_sight);
+        let units = self.units.iter().map(|u| (u.pos, u.sight() * reach));
+        let buildings = self.buildings.iter().map(|b| (b.center(), b.stats().sight * reach));
         self.vision.update(&self.map, units.chain(buildings));
         // The scans on top – they see over forests too, like StarCraft's.
         let radius = data::get().buildings.scan.radius;
@@ -512,6 +551,7 @@ impl World {
     /// One tick: first the orders, then time passes. The order is fixed – the same on every PC.
     pub fn step(&mut self, orders: &[Order]) {
         self.shots.clear();
+        self.fx.clear();
         self.beams.clear();
         self.zombie_shots.clear();
         if self.tick == 0 {
@@ -521,6 +561,7 @@ impl World {
         self.update_events(); // events.rs
         self.update_spawners(); // spawning.rs
         self.wake_sleepers(); // sleep.rs – near your eyes, and after the final wave's call
+        self.move_fallen(); // fallen.rs – the thrown dead slide on, the dying zombies' death ends
         self.raise_corpses(); // spawning.rs
         self.update_doom(); // doom.rs
         self.listen(); // sound.rs – zombies, houses of doom, guards of loot hear the noise
@@ -533,6 +574,7 @@ impl World {
         self.update_buildings(); // buildings.rs, gold too
         self.update_scan(); // scan.rs
         self.update_debt(); // debt.rs
+        self.regenerate(); // regen.rs – units and zombies heal themselves
         let command_center_fell = self.remove_dead();
         self.fade_sound(); // sound.rs
         self.check_outcome(command_center_fell); // round.rs
@@ -551,6 +593,7 @@ impl World {
             self.refresh_map();
         }
         self.share_experience(); // veterans.rs – the units around the fallen learn
+        self.start_dying(); // fallen.rs
         self.score.zombies_killed += self.zombies.iter().filter(|z| !z.is_alive()).count() as u32;
         self.zombies.retain(|z| z.is_alive());
         // Now and then: the calm ones far from everything fall asleep (`sleep.rs`), and the rest are put in order of
@@ -596,6 +639,10 @@ impl World {
             mix(c.pos.x.to_bits());
             mix(c.pos.y.to_bits());
             mix(c.rise_in);
+        }
+        for d in &self.dying {
+            mix(d.pos.x.to_bits());
+            mix(d.pos.y.to_bits());
         }
         for d in &self.doom {
             mix(d.hp);

@@ -5,6 +5,8 @@
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
+use super::fx::Fx;
+use super::fallen::Fling;
 use super::terrain::free_point_near;
 use super::zombies::{values, Breed};
 use super::{World, TICKS_PER_SECOND};
@@ -183,14 +185,22 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
-/// One of your units has fallen: it lies there and rises as a walker when `rise_in` runs out.
+/// One of your units has fallen: it lies there and rises as a walker when `rise_in` runs out. A blow that threw it
+/// (`fallen.rs`): it slides on a bit first.
 #[derive(Clone)]
 pub struct Corpse {
     pub pos: Vec2,
-    /// What it was – only for drawing.
+    /// Where it was the tick before – drawn in between.
+    pub prev: Vec2,
+    /// What it was, its number and which way it faced – only for drawing (its skin, its death).
     pub kind: UnitKind,
+    pub id: u32,
+    pub facing: f32,
+    /// The tick it fell.
+    pub died: u64,
     /// Ticks until it gets up.
     pub(super) rise_in: u32,
+    pub(super) fling: Fling,
 }
 
 impl World {
@@ -312,8 +322,10 @@ impl World {
         for i in 0..self.units.len() {
             if self.units[i].hp == 0 {
                 let rise_in = min + self.rng.below(max.saturating_sub(min) + 1);
-                let pos = self.units[i].pos;
-                self.corpses.push(Corpse { pos, kind: self.units[i].kind, rise_in });
+                let unit = &self.units[i];
+                let (pos, kind, id, facing, fling) = (unit.pos, unit.kind, unit.id, unit.facing, unit.fling);
+                self.corpses.push(Corpse { pos, prev: pos, kind, id, facing, died: self.tick, rise_in, fling });
+                self.fx.push(Fx::UnitDied { at: pos });
                 self.score.units_lost += 1;
                 // Dying is loud (`sound.rs`).
                 self.make_sound(pos, data::get().sound.unit_dies);

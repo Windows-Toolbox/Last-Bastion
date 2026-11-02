@@ -2,8 +2,9 @@
 # dist\LastBastionEditor.exe ab – das Spiel dort, wo die Windows-Toolbox es erwartet (DESIGN.md 12.7).
 #
 $ErrorActionPreference = 'Stop' # sorgt dafür, dass das Skript bei einem Fehler sofort abbricht.
-Set-Location $PSScriptRoot # wechselt in den Ordner, in dem das Skript liegt, egal von wo aus es gestartet wird.
-
+# Wechselt in den Ordner, in dem das Skript liegt, egal von wo aus es gestartet wird. $PSScriptRoot ist leer, wenn die
+# Zeilen eingefügt statt als Datei ausgeführt werden – dann bleibt es beim aktuellen Ordner (sonst ginge es ins Home).
+if ($PSScriptRoot) { Set-Location $PSScriptRoot }
 cargo build --release # baut beide Programme (src\main.rs und src\bin\editor.rs).
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } # hält an, wenn der Build fehlschlägt, damit keine alte Exe kopiert wird.
 

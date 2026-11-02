@@ -1,4 +1,5 @@
-//! The round as a whole (DESIGN.md 4): how it ends – lost when the last command center falls, won like TAB when its
+//! The round as a whole (DESIGN.md 4): how it ends – lost when the last command center falls or is infected (like
+//! TAB's: its shield broken, half its life), won like TAB when its
 //! victory event comes, or when the final wave is dead – or as the story says: its goals, a script that wins or loses
 //! (`check_outcome`, `story.rs`) – and what happened in it along the way (`Score`, for the end screen). Its events are
 //! in `events.rs`.
@@ -13,7 +14,7 @@ use crate::kinds::BuildingKind;
 pub enum Outcome {
     /// The victory event came, or the final wave is dead – while a command center still stands.
     Won { tick: u64 },
-    /// The last command center fell.
+    /// The last command center fell or was infected.
     Lost { tick: u64 },
 }
 
@@ -46,7 +47,8 @@ pub struct Score {
 
 impl World {
     /// The end of the round, checked at the end of every tick. Lost: the last command center fell this tick
-    /// (`command_center_fell` – a map without one from the start can't be lost that way). Won: an event that wins
+    /// (`command_center_fell` – a map without one from the start can't be lost that way) or none is left that isn't
+    /// infected (TAB's `EndGameIfInfected`). Won: an event that wins
     /// (`Event::won`, TAB's victory at the end of the last day) came – or every event that wins once its swarm is dead
     /// (`won_when_dead`) has come every time and none of the final wave is alive or still to come out. Decided once –
     /// then it stays.
@@ -57,7 +59,9 @@ impl World {
         let tick = self.tick;
         let goals = 0..self.story.goals.len();
         let lost_goal = goals.clone().any(|g| self.story.goals[g].defeat && self.goal_reached(g));
-        let fell = command_center_fell && !self.buildings.iter().any(|b| b.kind == BuildingKind::CommandCenter);
+        let cc = |b: &&super::Building| b.kind == BuildingKind::CommandCenter;
+        let lost_one = command_center_fell || self.buildings.iter().filter(cc).any(|b| b.infected);
+        let fell = lost_one && !self.buildings.iter().filter(cc).any(|b| !b.infected);
         if fell || lost_goal || self.ending == Some(Ending::Lost) {
             self.decide(Outcome::Lost { tick });
             return;

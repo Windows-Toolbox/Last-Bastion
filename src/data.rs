@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, RwLock};
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::kinds::{BuildingKind, BuildingStats, Stats, UnitKind};
 use crate::mapgen::MapSetup;
@@ -58,6 +58,16 @@ pub struct Units {
     pub merc_sniper: Stats,
     /// Veterans (DESIGN.md 7.3, `sim/veterans.rs`).
     pub veterans: Veterans,
+    /// Healing themselves (every unit's and zombie's `regen`), like TAB's `TimeForLifeRegeneration` and
+    /// `MinTimeIdleForLifeRegeneration`: every this long (read in seconds, kept in ticks) …
+    #[serde(rename = "regen_every_seconds", deserialize_with = "seconds")]
+    pub regen_every: u32,
+    /// … once it hasn't been hit for this long – units and zombies alike.
+    #[serde(rename = "regen_after_seconds", deserialize_with = "seconds")]
+    pub regen_after: u32,
+    /// Dismissed (`Order::Dismiss`), a unit gives this many percent of its goods back – wood and iron, not its gold –
+    /// rounded up: half of 3 wood is 2.
+    pub dismiss_refund_percent: u32,
 }
 
 /// How a unit becomes a veteran: every killed zombie gives its `xp` (`data\zombies.json`), split among your units
@@ -195,11 +205,10 @@ pub struct Zombies {
     /// … standing this long (TAB: as long as its standing animation) …
     #[serde(rename = "stand_seconds", deserialize_with = "seconds")]
     pub stand: u32,
-    /// … growling this long (its special animation) – a giant roars as long.
+    /// … growling this long (its special animation) – a giant roars as long. Both only for a breed without its own
+    /// `stand_seconds` / `growl_seconds`.
     #[serde(rename = "growl_seconds", deserialize_with = "seconds")]
     pub growl: u32,
-    /// Roaming, it walks at this share of its speed (how far per trip: per breed, `stroll`).
-    pub wander_pace: f32,
     /// Every this long every zombie that isn't with a wave looks around its tile (TAB: 238 frames, a little under 4 s):
     /// at least `contagion_count` wave zombies of its `level` or higher there – it joins them.
     #[serde(rename = "contagion_seconds", deserialize_with = "seconds")]
@@ -218,6 +227,13 @@ pub struct Zombies {
     pub rise_min: u32,
     #[serde(rename = "rise_max_seconds", deserialize_with = "seconds")]
     pub rise_max: u32,
+    /// A body thrown by a blow (`push` of a breed) slides this long until it lies still (read in seconds, kept in
+    /// ticks). TAB's damping is in its physics library – estimated.
+    #[serde(rename = "push_seconds", deserialize_with = "seconds")]
+    pub push: u32,
+    /// A killed zombie plays its death this long, then it's gone (TAB's `TimeAniDie`: 1 s for every zombie).
+    #[serde(rename = "die_seconds", deserialize_with = "seconds")]
+    pub die: u32,
 }
 
 /// The weights of what an idle zombie does next (`Zombies::idle`).
@@ -296,17 +312,17 @@ pub struct Mix {
 /// batches when something happens – `sim/doom.rs` says when and how many.
 #[derive(Deserialize)]
 pub struct Doom {
-    pub hp: u32,
-    /// Subtracted from every shot, like a zombie's.
-    pub armor: u32,
+    pub hp: PerNest<u32>,
+    /// This share of every shot doesn't get through, like a zombie's armor (TAB's houses: none).
+    pub armor: f32,
     /// How many a house lets out in all (TAB's `InfectionNestMaxUnits`), times the difficulty's population.
     pub max_units: PerNest<u32>,
     /// At most one batch every this long per house.
     #[serde(rename = "batch_every_seconds", deserialize_with = "seconds")]
     pub batch_every: u32,
-    /// It hears sounds within `hearing` tiles, as surely as a zombie with this `awareness` (`sim/sound.rs`). Heard: a
-    /// batch × `heard_batch` goes there.
-    pub hearing: f32,
+    /// It hears sounds within `hearing` tiles (by its size – TAB: 4 × its `WatchRange`), as surely as a zombie with
+    /// this `awareness` (`sim/sound.rs`). Heard: a batch × `heard_batch` goes there.
+    pub hearing: PerNest<f32>,
     pub awareness: f32,
     pub heard_batch: f32,
     /// Every `guard_every_hours` (each house at its own hour): fewer than `guards_per_size` × its size of zombies
@@ -331,6 +347,13 @@ pub struct Doom {
     /// A destroyed house drops loot: this much gold – or this much wood, stone, iron ore or coal.
     pub loot_gold: u32,
     pub loot_goods: u32,
+    /// Their looks by size, like the buildings' `skins` (`building_sprites.rs`): each house wears one of them. Left
+    /// out, or none of them there: drawn as a block.
+    #[serde(default)]
+    pub skins: Option<PerNest<Vec<String>>>,
+    /// What a house looks like when it falls, by size – like the buildings' `explosion`.
+    #[serde(default)]
+    pub explosion: Option<PerNest<Vec<String>>>,
 }
 
 /// One value for each size of house of doom (TAB's `ZXInfectionNestSize`).
@@ -371,11 +394,23 @@ pub struct BreedStats {
     /// How easily it hears a sound – TAB's `ActivityAwarenessFactor`: how sure it is to come grows with it
     /// (`per_awareness` of `SoundValues`, `sim/sound.rs`).
     pub awareness: f32,
-    /// Tiles per second.
+    /// Tiles per second when it runs – charging, with a wave, to a sound (TAB's `RunSpeed`).
     pub speed: f32,
+    /// Tiles per second when it walks – roaming about, idle (TAB's `WalkSpeed`).
+    pub walk_speed: f32,
+    /// How long it stands and how long it growls when it idles (TAB: as long as its animations, `TimeAniNormal` and
+    /// `TimeAniSpecial`; read in seconds, kept in ticks). Left out: `stand_seconds` / `growl_seconds` of all zombies.
+    #[serde(default, rename = "stand_seconds", deserialize_with = "some_seconds")]
+    pub stand: Option<u32>,
+    #[serde(default, rename = "growl_seconds", deserialize_with = "some_seconds")]
+    pub growl: Option<u32>,
     pub hp: u32,
-    /// Subtracted from every shot that hits it (at least 1 damage always gets through) – like the units' armor.
-    pub armor: u32,
+    /// Armor like TAB's: this share of every shot doesn't get through (`after_armor`, at least 1 always does).
+    pub armor: f32,
+    /// It heals itself like TAB's zombies (`LifeRegenFactor`): this share of its full hit points (rounded up) every
+    /// `regen_every_seconds` of `data\units.json`, once it hasn't been hit for `regen_after_seconds` – a zombie shot at
+    /// and then let go is whole again soon.
+    pub regen: f32,
     /// Per hit – a spitter: on everyone in its splash.
     pub damage: u32,
     /// How far it sees your units and the buildings with people in them (tiles) – not through forest.
@@ -404,12 +439,30 @@ pub struct BreedStats {
     /// How heavy it is (a walker: 1) – in the crowd the lighter one gives way (`sim/crowd.rs`): a giant walks through
     /// walkers, they hardly move it. TAB's `Mass` (unknown, estimated).
     pub mass: f32,
+    /// Its hits are venom, like TAB's venom (the spitter): armor doesn't stop them, a unit takes its `venom_factor` of
+    /// them (`data\units.json`). Left out: `false` – armor counts.
+    #[serde(default)]
+    pub venom: bool,
     /// A ranged zombie: it attacks from this far (tiles). Left out: 0 – it has to touch you.
     #[serde(default)]
     pub range: f32,
     /// Its shot hits everyone within this many tiles of where it lands (spitter). Left out: 0 – only its target.
     #[serde(default)]
     pub splash: f32,
+    /// Its blow sweeps (TAB's giant: `Arc120`, radius 3.5): every hit lands on everyone in front of it – your units on
+    /// the ground, your buildings – within `sweep_radius` tiles and `sweep_degrees` wide, aimed at its target, which
+    /// it always hits. Left out: 0 – only its target.
+    #[serde(default)]
+    pub sweep_radius: f32,
+    #[serde(default)]
+    pub sweep_degrees: f32,
+    /// … and other zombies in it too (TAB's `FriendlyDamage`). Left out: `false`.
+    #[serde(default)]
+    pub sweep_hits_zombies: bool,
+    /// A hit of it that kills throws the body away (TAB's `FactorPush`, giant 150): `push / mass / 12` tiles per
+    /// second, slowing down over `push_seconds` (`sim/fallen.rs`). Left out: 0 – the dead fall where they stand.
+    #[serde(default)]
+    pub push: f32,
     /// Time between two attacks (read in seconds, kept in ticks). Left out: `hit_every_seconds` of all zombies.
     #[serde(default, rename = "attack_seconds", deserialize_with = "some_seconds")]
     pub attack: Option<u32>,
@@ -427,7 +480,10 @@ pub struct BreedStats {
     /// in the unrest. Left out: `zombie_hit` of `data\sound.json`.
     #[serde(default)]
     pub hit_noise: Option<u32>,
-    /// Its picture: a sprite in `assets\` (`sprites.rs`), e.g. `"test/figure"`. Missing: a box.
+    /// Its looks, like the units' `skins`: TAB's walker has three (Weak A, B, C) – every zombie wears one of them.
+    #[serde(default)]
+    pub skins: Vec<String>,
+    /// Its picture if none of its `skins` is there, e.g. `"test/figure"`. Missing too: a box.
     pub sprite: Option<String>,
 }
 
@@ -440,9 +496,11 @@ pub struct Colony {
     pub storage_goods: u32,
     /// … and this much food (TAB doesn't store food, here it piles up between payouts).
     pub storage_food: u32,
-    /// The economy pays out every this many hours of the round, like TAB's 8-hour tick (`sim/economy.rs`): houses
-    /// pay, gatherers deliver, burners burn, upkeep is due – every value "per payout" in `data\` means this.
-    pub economy_every_hours: u64,
+    /// The economy pays out every this many ticks – in the file seconds, 28 like TAB's `CResourceGenerator`
+    /// (`sim/economy.rs`): houses pay, gatherers deliver, burners burn, upkeep is due – every value "per payout" in
+    /// `data\` means this.
+    #[serde(rename = "economy_every_seconds", deserialize_with = "seconds")]
+    pub economy_every: u32,
     /// Debt (DESIGN.md 7.2, `sim/debt.rs`): in debt at all, your units do this many percent less damage and shoot
     /// that much slower …
     pub debt_penalty_percent: u32,
@@ -586,7 +644,7 @@ pub struct GameDuration {
 }
 
 /// `data\game_maps.json`: the maps to pick before a round, like TAB's. For now a map is one of the generators with
-/// its values – it looks no different.
+/// its values – and its landscape's look (`MapSetup::look`).
 #[derive(Deserialize)]
 pub struct GameMaps {
     pub default: String,
@@ -602,6 +660,84 @@ pub struct GameMap {
     /// How it's generated: everything the setup page has (`mapgen::MapSetup` – generator, map size, ways in, ore …).
     /// What's left out keeps its default; the round (difficulty, days) is picked apart.
     pub setup: MapSetup,
+    /// What the landscape does to the whole round (`Modifiers`) – left out: nothing, and the food of TAB's BR.
+    #[serde(default)]
+    pub modifiers: Modifiers,
+}
+
+/// What a map's landscape does to the whole round, like TAB's six landscapes (their `Mods` and food factors in
+/// `MapThemes`): the Frozen Highlands need more power and slow everyone down, in the Desolated Wasteland the zombies
+/// are livelier. For now one set for the whole map – later maybe per region. A new round takes them from
+/// `game_maps.json` into its setup and its map file (`MapFile::modifiers`); the simulation reads them from
+/// `World::modifiers`. In percent of the normal value: 100 = unchanged.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub struct Modifiers {
+    /// How easily the zombies hear a sound – their `awareness` (TAB's `Zombie ActivityAwarenessFactor`).
+    pub zombie_hearing: u32,
+    /// How far the zombies see – and so how far they hear, `hearing` times their sight (`sim/sound.rs`).
+    pub zombie_sight: u32,
+    /// How fast the zombies walk and run (TAB's `Unit RunSpeed` counts for them too).
+    pub zombie_speed: u32,
+    /// How fast your units walk.
+    pub unit_speed: u32,
+    /// How far your units and buildings see (TAB's `ZXEntity WatchRange`; the zombies' is `zombie_sight`).
+    pub unit_sight: u32,
+    /// How much power every building that takes some needs (TAB's `Building EnergyNeeded`) – rounded like TAB:
+    /// `+ round(need × (percent − 100) / 100)`, a half to the even number. A tent's 1 stays 1 at 130 %, 4 become 5.
+    pub building_energy: u32,
+    /// What a hunter cottage gets from a tile, in percent of its `gather_per_tile` – forest, grass, dirt (TAB's
+    /// `TreesFoodFactor`, `GrassFoodFactor`, `EarthFoodFactor`). Left out: TAB's BR (60, 30, 15).
+    pub hunting_forest: u32,
+    pub hunting_grass: u32,
+    pub hunting_dirt: u32,
+}
+
+impl Default for Modifiers {
+    fn default() -> Modifiers {
+        Modifiers {
+            zombie_hearing: 100,
+            zombie_sight: 100,
+            zombie_speed: 100,
+            unit_speed: 100,
+            unit_sight: 100,
+            building_energy: 100,
+            hunting_forest: 60,
+            hunting_grass: 30,
+            hunting_dirt: 15,
+        }
+    }
+}
+
+impl Modifiers {
+    /// Nothing changed – the map file leaves them out.
+    pub fn is_default(&self) -> bool {
+        *self == Modifiers::default()
+    }
+
+    /// A percent as a factor: 80 → 0.8.
+    pub fn factor(percent: u32) -> f32 {
+        percent as f32 / 100.0
+    }
+
+    /// The power a building takes with `building_energy` – like TAB's mods on a whole number.
+    pub fn energy(&self, need: u32) -> u32 {
+        let change = (need as f32 * (self.building_energy as f32 - 100.0) / 100.0).round_ties_even();
+        (need as f32 + change).max(0.0) as u32
+    }
+
+    /// The ones that aren't 100 %, for the map's info: "Zombies hear: 50 %".
+    pub fn changed(&self) -> Vec<String> {
+        let all = [
+            ("Zombies hear", self.zombie_hearing),
+            ("Zombies see", self.zombie_sight),
+            ("Zombie speed", self.zombie_speed),
+            ("Unit speed", self.unit_speed),
+            ("Your sight", self.unit_sight),
+            ("Power needed", self.building_energy),
+        ];
+        all.iter().filter(|(_, p)| *p != 100).map(|(name, p)| format!("{name}: {p} %")).collect()
+    }
 }
 
 impl GameData {
@@ -828,7 +964,7 @@ mod tests {
     #[test]
     fn built_in_data_parses() {
         let data = GameData::built_in();
-        assert_eq!(data.units.soldier.cooldown, 8, "0.4 s should be 8 ticks");
+        assert_eq!(data.units.soldier.cooldown, 6, "0.3 s should be 6 ticks");
         assert!(data.spawning.events.iter().any(|e| e.event.won), "no victory in the plan");
         assert!(data.spawning.events.iter().any(|e| e.event.final_wave), "no final wave in the plan");
         // Every map's setup is read – a typo in a generator's name would be an error, a missing one the default.

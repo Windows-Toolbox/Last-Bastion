@@ -165,9 +165,9 @@ impl World {
             .buildings
             .iter()
             .filter(|b| self.is_replaceable(kind, site, b.kind, b.tile, b.turned))
-            .map(|b| b.stats().energy_use)
+            .map(|b| self.energy_use(b.kind))
             .sum();
-        kind.stats().energy_use.saturating_sub(freed)
+        self.energy_use(kind).saturating_sub(freed)
     }
 
     /// Does the grid where the building would stand have the power it needs to spare (`build_energy`)? Like in TAB:

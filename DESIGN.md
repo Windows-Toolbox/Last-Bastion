@@ -135,7 +135,7 @@ would pull the focus away from the army.
 | Raw | **Stone** | Mine on a stone patch (question 28) | Barracks, walls, towers |
 | Raw | **Iron ore** | Mine on an iron patch | → Iron |
 | Raw | **Coal** | Mine on a coal patch | Power plant, smelter fuel |
-| Raw | **Food** | Hunter cottage (forest), fishing hut (water), farm (grass – nothing grows on dirt) | Houses |
+| Raw | **Food** | Hunter cottage (forest, grass, dirt – like TAB's, each its own share by the map), fishing hut (water), farm (grass – nothing grows on dirt) | Houses |
 | Raw | **Oil** | Oil pump on an oil node (2 × 2, 2026-10-18) | Oil burning generator, later more ❓ |
 | 1 | **Iron** | Foundry (ore + coal, decision 32) | Buildings (the machine gun tower first), tools |
 | 1 | **Energy** | Command center (a little), charcoal burner (early, burns wood), windmill (big, costs upkeep), coal plant / solar later | Machines, houses, towers |
@@ -253,14 +253,14 @@ Costs and stats live in `data\buildings.json` (12.4).
 
 | Category | Building | Notes |
 |---|---|---|
-| **Core** | Command center | Start building, small storage, losing it = losing the game. Builds everything, trains nothing |
+| **Core** | Command center | Start building, small storage, losing it = losing the game – infected (shield broken, half its life, like TAB's) or destroyed. Builds everything, trains nothing |
 | **Housing** | Tent → stone house → apartment | Upgrade when the materials and the next tier's goods are there (5.3) |
 | **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – no quarry – and TAB's gold: 20 times as much, straight into the gold), oil pump, farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where ore lies in rock. A later stone mine can simply get a bigger range |
 | **Production** | Foundry (smelter), wood workshop, stone workshop, lab | Take inputs from the colony stock (5.4). The workshops make nothing yet: like TAB's, they unlock buildings (wood → stone → munitions) |
 | **Logistics and trade** | Warehouse, market, bank, road | Warehouse = storage; market = houses around it pay more, sells the surplus (5.3); bank = gold storage + credit (Dispo, 7.2); road = **units and zombies** faster |
 | **Power** | Tesla tower (pole), charcoal burner (wood), windmill, oil burning generator, coal plant, solar, battery | Charcoal burner early, eats wood; windmill big but with upkeep; solar quieter but weaker |
 | **Military** | Barracks, munitions factory, inn, siege factory (vehicles), tech lab | Barracks from the start. The munitions factory is a tech gate for firearms (question 26) and makes explosive barrels; the inn hires mercenaries (7.2); the foundry later the second weapon tier (MG tower, vehicles) |
-| **Defence** | Wall, gate, tower (4 units inside), stone wall, stone tower, stake trap, explosive barrel, ballista tower, MG tower, flame tower | Stone ones go on the wooden ones (upgrade). Stake trap like TAB's: walked over, hurts zombies, wears out. Barrel (instead of mines, 2026-10-21): any damage sets it off, blasts chain, hurt everyone, loud; set like a trap or carried by units |
+| **Defence** | Wall, gate, tower (4 units inside), stone wall, stone tower, stake trap, explosive barrel, ballista tower, MG tower, flame tower | Stone ones go on the wooden ones (upgrade). Stake trap like TAB's: walked over, hurts zombies, wears out, everyone on it walks half as fast. Barrel (instead of mines, 2026-10-21): any damage sets it off, blasts chain, hurt everyone, loud; set like a trap or carried by units |
 | **Special** | Radar, sound dampener, cleanser (removes creep/noise) | No menu yet. The command center scans like StarCraft's (2026-10-21). The beacon is out: a free, endless lure into the kill zone is too strong – a barrel lures once and costs |
 | **Wonders** | ❓ (29) | Most expensive, very strong buffs |
 
@@ -278,8 +278,8 @@ Costs and stats live in `data\buildings.json` (12.4).
   gold: cheapest first, as many as it pays for. Not with a zombie in the build zone (`can_repair` in
   `placement.rs`), later not on creep (8.4).
 - **Demolish** (Del): any selected building but the command center, gone at once – part of its price comes back
-  (`demolish_refund_percent` 25 %, still being built `demolish_unfinished_refund_percent` 75 %, `data\buildings.json`;
-  as far as I know TAB gives nothing back). Not an infected one – it belongs to the zombies. In the editor: removed,
+  (`demolish_refund_percent` 50 %, still being built `demolish_unfinished_refund_percent` 50 %, `data\buildings.json`;
+  like TAB's `FactorResourcesReturn`). Not an infected one – it belongs to the zombies. In the editor: removed,
   nothing back.
 - **Roads:** units **and zombies** are faster on them – a road into the base is also a fast lane for the horde.
 - **Build menus (2026-10-18):** one per key on the command center, like TAB's categories – **Q** colonists,
@@ -296,14 +296,15 @@ nothing; makes barrels), **foundry** (2026-10-24: unlocks the machine gun tower,
 up to 3 per payout), stone house, stone wall, stone tower, stake trap, market, bank, inn (mercenaries), explosive barrel,
 the command center's scan (`src/sim/market.rs`, `debt.rs`, `blast.rs`, `scan.rs`), and the towers that shoot by
 themselves (2026-10-24, `src/sim/towers.rs`, a `weapon` block each): **ballista** (a heavy bolt at the toughest zombie in
-range, no power, no iron) and **machine gun tower** (fast fire at the nearest, power, 20 iron). Start (2026-10-20,
-different from TAB): 4 rangers, 1 soldier, 100 gold, 20 wood. Prices in gold plus wood/stone (barracks 150 + 20 wood + 20 stone,
-wood workshop 40 wood). Every full hour: burners take wood, gatherers deliver, tents eat 4 food, soldiers 1 – fed, they pay gold
-(× power share), hungry, nothing. Placement rules all in `src/placement.rs`:
+range, no iron) and **machine gun tower** (fast fire at the nearest, power, 10 iron). Start (2026-10-20,
+different from TAB): 4 rangers, 1 soldier, 100 gold, 20 wood. Prices, hit points, build times like TAB's `Entities`
+(barracks 450 + 20 wood + 20 stone, wood workshop 500 + 40 wood); units cost goods like TAB too (ranger 2 wood,
+soldier 2 smelted iron). Every payout (28 s, like TAB's `CResourceGenerator`): burners take wood, gatherers deliver,
+tents eat 4 food, soldiers 1 – fed, they pay gold (× power share), hungry, nothing. Placement rules all in `src/placement.rs`:
 drag a line (walls diagonal, 1 wide like TAB), gate over walls (walls refund 50 %, never a saving), 1 free tile between
 towers, no zombie within 4 tiles. Your own units may stand on the site – they're pushed off to the nearest free
 spot (like StarCraft). Costs gold and workers (5.6). **Build time** like TAB (2026-10-24, `build_seconds` per building):
-short, longer the bigger and the higher in the tech tree; it starts at 10 % of its hit points and grows, gets its shield
+short, longer the bigger and the higher in the tech tree; it starts at 20 % of its hit points and grows, gets its shield
 when finished, does nothing until then (no workers given, no gold, power or training) but takes its workers already and
 can be hit. Repair (F) on every building, cures infected
 ones.
@@ -362,7 +363,8 @@ nothing.
   size = income. **Dismiss** stops the upkeep. Running buildings cost upkeep too (TAB's values); **switched off (Y)**
   they cost nothing – no upkeep, workers or power – and do nothing.
 - **In the prototype:** upkeep per payout (`upkeep` in `data\`), debt and desertion as below (`src/sim/debt.rs`, values
-  in `data\colony.json`). **Dismiss** (Del, 2026-10-24): the units leave – no gold back.
+  in `data\colony.json`). **Dismiss** (Del): the units leave – half their wood and iron back (rounded up: 3 wood →
+  2), no gold.
 - **Debt** (open question 12): gold can go below 0. 0 = nothing new; debt > 0 = −15 % damage and attack speed;
   > 1 min of upkeep = −30 % and slower; > 2 min = every ≈ 10 s one unit **deserts**, weighted
   `upkeep × (3 if not a veteran, else 1)`. Paying it off removes the penalties; deserters don't come back.
@@ -408,18 +410,23 @@ nothing.
 | **Infested** (StarCraft 2's infested marine) | Shoots back, just under a soldier's range | Your line takes fire too – no free kills from behind a wall. |
 | **Harpy** (like TAB's) | Fast, hears much further than the others, leaps over thin walls; every hit it lands is loud and it adds up | First at every fight – kill it before its noise brings the rest. |
 | **Swarm** | Tiny, fast, many, explodes on contact | Counters clumped armies. |
-| **Giant** (like TAB's) | Rare, huge, slow, smashes through walls and buildings | Late waves and the final wave. No other bosses. |
+| **Giant** (like TAB's) | Rare, huge, slow, smashes through walls and buildings; every blow sweeps a 120° arc, 3.5 tiles – units, buildings and zombies | Late waves and the final wave. No other bosses. |
 
-**In the prototype:** walker, runner, **fat** (TAB's "chubby": big, 600 HP), armored runner ("Riot", armor 3),
-spitter (acid 3.5 tiles, flies, splashes 1 tile – units and buildings, never zombies), infested (shoots 4.5 tiles, the
+**In the prototype:** TAB's values (its `Entities` table) – walker, runner, **fat** (TAB's "chubby": big, 500 HP),
+armored runner ("Riot", armor 0.1), spitter (venom 4 tiles, flies, splashes 0.75 tiles – units and buildings, never
+zombies; armor doesn't help, a unit takes its `venom_factor`, the soldier half), infested (shoots 4.5 tiles, the
 soldier 5), **harpy** (alertness 8: noise 2–4× quieter than
-the others need brings it, from 32 tiles – it comes first; each hit noise 200 every 0.75 s – faster than noise fades, so it adds up; zombies' noise, no
+the others need brings it, from 32 tiles – it comes first; hits every 0.3 s, noise 10 each – faster than noise fades, so it adds up; zombies' noise, no
 unrest; leaps over walls and gates up to 3 tiles thick when its goal lies behind them, hits thicker ones), **giant**
-(TAB's a bit smaller: 3,000 HP, armor 6, a wall in 3 hits – only a few per map, far out; how many is up to the map
+(like TAB's: 10,000 HP, armor 0.3, runs 4 tiles/s, a wall in 3 hits – only a few per map, far out; how many is up to the map
 (`giants`, default 4 on 256 tiles), the difficulty scales it 50–225 %; not in the waves, but the final wave calls
 them)
-– values in `data\zombies.json`, the names too. The harder breeds lie further out (`mix` in `data\roaming.json`)
-and roam further per trip (`stroll` per breed: walker 2–8 tiles … fat 4–30) – without a home they keep to (8.5).
+– values in `data\zombies.json`, the names too. **Healing themselves** like TAB's: every second, 2 s after the last
+hit, units and zombies get their `regen` share of their full HP back (walker 8 %, giant 0.5 %, soldier 4 %), asleep
+too. Armor is a share like TAB's: damage × (1 − armor), rounded, at
+least 1. The harder breeds lie further out (`mix` in `data\roaming.json`); per trip they roam as little as TAB's (`stroll`:
+almost all 0–1 plus TAB's 1, harpy 1–2, giant 2–3) – without a home they keep to (8.5). Every unit and zombie wears a
+skin of its kind (TAB's pictures, converted locally; walker 3, runner 4).
 TAB's breeds are ours like this: WeakA/B/C → walker, WorkerA/B and MediumA/B → runner, DressedA → riot, Chubby → fat,
 Venom → spitter, Harpy, Giant; the infested is ours (StarCraft 2).
 
@@ -518,7 +525,7 @@ factory down before the final wave undoes nothing.
 ### 8.4 Creep (like StarCraft's, but for the zombies)
 
 - **Nests** spread creep around them, growing over the round.
-- On creep: no building, your units slowed, zombies regenerate.
+- On creep: no building, your units slowed, zombies 20 % faster.
 - Burning it (flamethrowers, cleanser) removes it; destroying the nest stops it.
 - Gives the army an offensive job.
 
@@ -542,9 +549,8 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
   until it comes up roam, then a trip to a spot found the same way. Nobody sees them, so they arrive at once and then
   wait as long as the walk would have taken, plus the standing and growling. Something in the straight way (water, a
   mountain): it stays. A trip that would end near your eyes wakes it where it starts, and it
-  walks the rest awake – into sight from outside, fading in. **So the zombies never run out where you are:** a place you
-  emptied (a loud border lured everything around) fills up again as the sleepers around drift in – holding it stays
-  work until the region around is thinned out.
+  walks the rest awake – into sight from outside, fading in. With TAB's short trips (decided 2026-11-01, TAB's
+  values over the earlier "fill up again") a place you emptied fills up again only slowly.
 - **Waking** (whole blocks, or one by one for noise):
   1. **Your eyes:** every 0.5 s every unit and building wakes all blocks within its sight **plus 8 tiles** – so they're
      awake before you can see them.
@@ -556,9 +562,10 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
   5. **A wave walking over them:** the contagion (8.1) wakes a sleeper and takes it along.
 - **Seen:** in the picture a zombie fades in over 0.6 s when it comes into sight and fades out over 0.8 s when it
   leaves it – nobody pops up at the edge of sight (like TAB).
-- **Idle, without a radius (TAB):** stand 2 s, growl 2 s or roam – rolled 1300 / 150 / 150. A roam goes on each axis
-  on its own `stroll` tiles away (walker 2–8 … fat 4–30, either way – a square, not a circle), 20 tries for free
-  ground on the playing field, at its walking pace. **No home it keeps to:** trip after trip it can get anywhere.
+- **Idle, without a radius (TAB):** stand or growl as long as its animations (walker 2.35 / 2 s) or roam – rolled
+  1300 / 150 / 150. A roam goes on each axis on its own `stroll` + 1 tiles away (TAB: under 2 for almost all, either
+  way – a square, not a circle), 20 tries for free ground on the playing field, at its walking speed (`walk_speed`).
+  **No home it keeps to.**
 - **Calm is cheap:** an idle one thinks only every 8th tick (it still looks around on its own beat) – calm crowds may overlap a little
   while they stroll. Only with a busy zombie on its tile or the tiles around does it move every tick: then it can be
   walked into and pushed (8.1).
@@ -588,10 +595,11 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 
 - **Generators:** **TAB** (the default), Wild (Factorio-like noise), Regions (TAB-like, walls with passes), Rings,
   Canyons, Blank – each with its own sliders. Same seed + same values = same map. The maps of `data\game_maps.json`
-  are presets of them, like Factorio's: TAB's six landscapes (BR, TM, AL, DS, FA, VO), then ours – **Peaceful
+  are presets of them, like Factorio's: TAB's six landscapes (FA, BR, TM, AL, DS, VO – TAB's names and score
+  factors 80–175 %), then ours – **Peaceful
   Lowlands** (2026-10-24, after TAB's) is Wild with small groves, smooth lakes and lots of dry land.
 - **TAB's generator** (`mapgen/tab.rs`, rebuilt from its code, `docs\tab-nachbau.md` step 6): one generator, the
-  landscapes only other numbers – estimated, `ZXRules.dat` stays closed. Noise layers like TAB's (`mapgen/layer.rs`,
+  landscapes only other numbers – TAB's own (its `MapThemes` table). Noise layers like TAB's (`mapgen/layer.rs`,
   TAB's simplex noise in `noise.rs`) cut at thresholds: land/water, mountains in 2 × 2 blocks, grass, forest on grass
   and on dirt. The command center on the free spot nearest the middle; a new seed if fewer than 18 forest tiles lie
   within 11, if there's too little stone (4 within ±10) or iron (10 within ±25), or – ours – if less than 30 % of the
@@ -603,6 +611,10 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   at least 70 tiles out, 40 apart. The difficulty is TAB's **population** (`population`: how many, half the villages
   below 0.5, the giants) – not `roaming_zombies`/`keep_out`. None of the shared steps (start area, ways in, safety
   net): what the base can't reach stays empty. Not taken over: old towers, ravens, supplies, mutants, decorations.
+- **Landscape modifiers** (`modifiers` of a map in `data\game_maps.json`, kept in its map file): for now one set for
+  the whole map – zombies' hearing, sight, speed; your units' speed, your sight; power buildings need; the hunters'
+  game on forest/grass/dirt. TAB's strengths: AL hearing 50 %, everyone 80 % speed, power 130 %; DS hearing 130 %,
+  all sight 110 %. The home screen shows them under the preview. Later maybe per region; no editor page yet.
 - **Wild like Factorio (2026-10-24):** one moisture noise decides – wet = forest ("Forest size": big forests or many
   groves), next to it green meadow, the driest open ground dirt. Lakes from a height noise ("Shore detail": smooth to
   frayed).
@@ -642,7 +654,7 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 |---|---|---|
 | Small | 128 × 128 | ~2,500 |
 | Medium | 192 × 192 | ~7,000 |
-| Large | 256 × 256 | ~73,000 (like TAB's Caustic Lands): ≈ 65,000 roaming almost everywhere in packs of 1–3 per tile, never more than 3 – near the base only walkers, further out the harder breeds; ≈ 8,000 asleep in villages and around loot |
+| Large | 256 × 256 | Our maps ~73,000: ≈ 65,000 roaming almost everywhere in packs of 1–3 per tile, never more than 3 – near the base only walkers, further out the harder breeds; ≈ 8,000 asleep in villages and around loot. TAB's landscapes with TAB's numbers: ≈ 13,000–25,000 |
 
 - **Fog of war:** unexplored (black) / explored (dark, no zombies shown) / visible. Sight per unit and building,
   blocked by forest, computed in the simulation (co-op players share it).
@@ -807,7 +819,8 @@ of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: no
 - **The hard part is the art:** animations × directions per unit, usually Blender + a render script. Where the
   pictures come from is open (question 22). Placeholder shapes until then.
 - *In the prototype:* sprite sheets in `assets\` (one row per direction, idle/walk/attack side by side, feet as
-  anchor, mipmaps), named per kind in `data\`; a generated grey test figure. Buildings, corpses, deaths: still shapes.
+  anchor, mipmaps), named per kind in `data\`; a generated grey test figure. Buildings: TAB's clips put together
+  (`tools\tab_buildings.py`) – working, idle and being-built look, walls of pieces like TAB's.
 - Performance is decided by the horde, not by units or colonists.
 
 ### 12.4 Data-driven from the start

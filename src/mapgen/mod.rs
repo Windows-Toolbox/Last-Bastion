@@ -37,6 +37,7 @@ mod wild;
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
+use crate::data::Modifiers;
 use crate::kinds::BuildingKind;
 use crate::map::{Map, Terrain, BORDER};
 use crate::noise::Noise;
@@ -413,6 +414,12 @@ pub struct MapSetup {
     pub blank: BlankParams,
     /// `default` (from the `#[serde(default)]` above): setups saved before 2026-10-17 have no round yet.
     pub round: RoundSetup,
+    /// What the landscape does to the round (`data::Modifiers`) – from the map of `game_maps.json` it was picked as.
+    /// It doesn't change the map, only the round on it (`World::modifiers`).
+    pub modifiers: Modifiers,
+    /// Which of TAB's landscapes it's drawn as (`"BR"`, `"FA"` …, its pictures in `assets	errain\`) – only the
+    /// picture, the simulation never looks at it. `""`: BR's.
+    pub look: String,
 }
 
 impl Default for MapSetup {
@@ -428,6 +435,8 @@ impl Default for MapSetup {
             canyons: canyons::Params::default(),
             blank: BlankParams::default(),
             round: RoundSetup::default(),
+            modifiers: Modifiers::default(),
+            look: String::new(),
         }
     }
 }

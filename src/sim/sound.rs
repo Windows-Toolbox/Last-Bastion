@@ -242,7 +242,7 @@ impl World {
             .filter(|&i| (tick + self.zombies[i].id as u64).is_multiple_of(every) && self.listens(&self.zombies[i]))
             .map(|i| {
                 let zombie = &self.zombies[i];
-                (i, self.sound.best(zombie.pos, zombie.breed.hearing_range(), zombie.breed.hear_factor()))
+                (i, self.sound.best(zombie.pos, self.hearing_range(zombie.breed), self.hear_factor(zombie.breed)))
             })
             .collect();
         for (i, best) in heard {

@@ -33,6 +33,12 @@ pub struct Stats {
     pub letter: String,
     /// Gold, paid when it goes into the production queue – back in full if it's cancelled (like in StarCraft).
     pub cost: u32,
+    /// The rest of the price, like TAB's units (ranger 2 wood, soldier 2 iron): wood and iron from the foundry
+    /// (`Resource::Iron`) out of the stock, paid and given back with the gold. Left out: 0.
+    #[serde(default)]
+    pub cost_wood: u32,
+    #[serde(default)]
+    pub cost_iron: u32,
     /// Workers it takes from the colony (`World::workers`) – like its gold when it goes into the production queue, but
     /// they come back when it dies (or is cancelled). DESIGN.md 5.6.
     pub worker_cost: u32,
@@ -45,8 +51,9 @@ pub struct Stats {
     #[serde(default)]
     pub food: u32,
     pub hp: u32,
-    /// Subtracted from every hit (at least 1 damage always gets through).
-    pub armor: u32,
+    /// Armor like TAB's: this share of every zombie's hit doesn't get through (`after_armor`; 0.4 = 40 % less, at
+    /// least 1 always does).
+    pub armor: f32,
     pub damage: u32,
     /// Range in tiles.
     pub range: f32,
@@ -96,7 +103,19 @@ pub struct Stats {
     /// Melee (the spearman): every hit pushes the zombie back this many tiles – a big one less (`combat.rs`). 0: none.
     #[serde(default)]
     pub knockback: f32,
-    /// Its picture: a sprite in `assets\` (`sprites.rs`), e.g. `"test/figure"`. Missing: a box.
+    /// How much of venom (the spitter's acid) hurts it – its own resistance, TAB's `VenomDamageFactor`: 1 = all of it,
+    /// 0.5 = half. Armor doesn't count against venom (`Unit::take_venom`). Every type has its own, so it's in every
+    /// block of `data\units.json` – no default.
+    pub venom_factor: f32,
+    /// It heals itself like TAB's units (`LifeRegenFactor`): every `regen_every_seconds` this share of its full hit
+    /// points (rounded up), once it hasn't been hit for `regen_after_seconds` (`data\units.json`, `sim/units.rs`). In
+    /// every block – no default.
+    pub regen: f32,
+    /// Its looks: sprites in `assets\` (`sprites.rs`), e.g. `"units/ranger"` – every unit wears one of them, for life.
+    /// Those that aren't there are left out (TAB's pictures only exist where they were converted). Left out: none.
+    #[serde(default)]
+    pub skins: Vec<String>,
+    /// Its picture if none of its `skins` is there, e.g. `"test/figure"`. Missing too: a box.
     pub sprite: Option<String>,
 }
 
@@ -190,6 +209,40 @@ pub enum BuildingKind {
     Barrel,
 }
 
+impl BuildingKind {
+    /// Every type, in the order above – `kind as usize` is its place in this list.
+    pub const ALL: [BuildingKind; 28] = [
+        BuildingKind::CommandCenter,
+        BuildingKind::Barracks,
+        BuildingKind::Tent,
+        BuildingKind::Wall,
+        BuildingKind::Gate,
+        BuildingKind::Tower,
+        BuildingKind::Sawmill,
+        BuildingKind::Mine,
+        BuildingKind::HunterCottage,
+        BuildingKind::FishingHut,
+        BuildingKind::Farm,
+        BuildingKind::Windmill,
+        BuildingKind::CharcoalBurner,
+        BuildingKind::WoodWorkshop,
+        BuildingKind::TeslaTower,
+        BuildingKind::StoneWorkshop,
+        BuildingKind::MunitionsFactory,
+        BuildingKind::Foundry,
+        BuildingKind::StoneHouse,
+        BuildingKind::StoneWall,
+        BuildingKind::StoneTower,
+        BuildingKind::Ballista,
+        BuildingKind::MachineGunTower,
+        BuildingKind::Stakes,
+        BuildingKind::Market,
+        BuildingKind::Bank,
+        BuildingKind::Inn,
+        BuildingKind::Barrel,
+    ];
+}
+
 /// The goods in the colony's stock (DESIGN.md 5.1) – gold is kept apart (`World::gold`). Oil comes with the oil pump.
 /// `Serialize, Deserialize`: a script names them in the map file (`sim/story.rs`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -251,6 +304,8 @@ pub fn in_area(((x0, y0), (x1, y1)): Area, (x, y): (i32, i32)) -> bool {
 pub enum Source {
     /// Forest – a single tile of it too.
     Forest,
+    /// Game, like TAB's hunter: forest, grass and dirt, each giving its own share (the map's `hunting_*`).
+    Hunting,
     Water,
     /// Grass without ore on it – the fields of a farm (`Terrain::is_fertile`).
     Fertile,
@@ -266,14 +321,14 @@ pub struct BuildingStats {
     /// Width (along x) and depth (along y) in tiles, not turned.
     pub size: (i32, i32),
     pub hp: u32,
-    /// Subtracted from every zombie hit (at least 1 gets through) – the command center's 10, like in TAB.
+    /// This share of every zombie hit doesn't get through (`after_armor`). TAB's buildings have none – left out: 0.
     #[serde(default)]
-    pub armor: u32,
+    pub armor: f32,
     /// Infection like in TAB (DESIGN.md 6): zombies first hit the shield. When it breaks, the building is infected –
-    /// its people come out as zombies (`World::infect`) – and only then do the hit points go down. Given in percent of `hp`
-    /// (`max_shield`). 0: no shield. Without colonists – and on the command center – a shield is just extra life:
-    /// nobody can get infected.
-    pub shield_percent: u32,
+    /// its people come out as zombies (`World::infect`) – and only then do the hit points go down. In points, on top of
+    /// `hp`: TAB's `DeffensesLife` – TAB's `Life` is `hp` + `shield`. 0: no shield. Without colonists a shield is just
+    /// extra life: nobody can get infected. The command center's broken shield loses the round (`round.rs`).
+    pub shield: u32,
     /// How many colonists live in it. They pay `gold` – until the building is infected, then they come out as zombies.
     pub colonists: u32,
     /// Infected, this many zombies come out on top of its people (TAB's `ExtraUnitsWhenInfected`, `World::infect`).
@@ -317,7 +372,7 @@ pub struct BuildingStats {
     /// Food its colonists eat every payout – without it, they pay no gold (houses).
     #[serde(default)]
     pub food: u32,
-    /// Gold it pays every payout (`economy_every_hours`) at full power – houses only when their colonists are fed
+    /// Gold it pays every payout (`economy_every_seconds`) at full power – houses only when their colonists are fed
     /// (TAB: tent 8, stone house 40, command center 200 for nothing).
     #[serde(default)]
     pub gold: u32,
@@ -335,7 +390,8 @@ pub struct BuildingStats {
     /// … whether they work the tiles they stand on too (the mine: the ore under it) …
     #[serde(default)]
     pub gather_below: bool,
-    /// … and how much each fitting tile gives per payout (at full power).
+    /// … and how much each fitting tile gives per payout (at full power). The hunter cottage: times the map's
+    /// `hunting_forest` / `_grass` / `_dirt` (`data::Modifiers`).
     #[serde(default)]
     pub gather_per_tile: f32,
     /// The mine: gold per payout for every tile of gold it works (at full power) – TAB's mine digs 20 times as much
@@ -380,6 +436,10 @@ pub struct BuildingStats {
     /// … and how many of its hit points every such hit costs it.
     #[serde(default)]
     pub trap_wear: u32,
+    /// Everyone on its tiles – zombies and your units – walks this many percent slower (TAB's stakes:
+    /// `TerrainSpeedPercentage` −50). Left out: 0.
+    #[serde(default)]
+    pub slow_percent: u32,
     /// Ticks from placing it until it's finished – it builds itself, like in TAB (`World::start_construction`). In the
     /// file in seconds (`build_seconds`): short, longer the bigger it is and the higher in the tech tree. Left out: 0,
     /// it stands at once.
@@ -395,6 +455,15 @@ pub struct BuildingStats {
     pub height: f32,
     /// Walls, gates and towers join up into one line on screen (only the look – `draw.rs`).
     pub joins: bool,
+    /// Its looks, like the units' `skins`: TAB's pictures in `assets\` (`building_sprites.rs`), e.g.
+    /// `"buildings/tent_1"` – every building wears one of them, for life (the fishing hut: the one facing its
+    /// water). Those that aren't there are left out; none there or left out: drawn as a block.
+    #[serde(default)]
+    pub skins: Vec<String>,
+    /// What it looks like when it falls: effects in `assets\effects\` (`effects.rs`), like TAB's `ExplosionOnDestroy`
+    /// – with two, every other one. Only the look.
+    #[serde(default)]
+    pub explosion: Vec<String>,
 }
 
 /// The gun of a tower that shoots by itself – one block `weapon` in `data\buildings.json`.
@@ -416,9 +485,9 @@ pub struct Weapon {
 }
 
 impl BuildingStats {
-    /// The full shield in points: `shield_percent` of the hit points.
+    /// The full shield in points (`shield`).
     pub fn max_shield(&self) -> u32 {
-        self.hp * self.shield_percent / 100
+        self.shield
     }
 }
 
@@ -464,7 +533,7 @@ impl BuildingKind {
     pub fn gathers(self) -> Option<(Source, Option<Resource>)> {
         match self {
             BuildingKind::Sawmill => Some((Source::Forest, Some(Resource::Wood))),
-            BuildingKind::HunterCottage => Some((Source::Forest, Some(Resource::Food))),
+            BuildingKind::HunterCottage => Some((Source::Hunting, Some(Resource::Food))),
             BuildingKind::FishingHut => Some((Source::Water, Some(Resource::Food))),
             BuildingKind::Farm => Some((Source::Fertile, Some(Resource::Food))),
             BuildingKind::Mine => Some((Source::Ore, None)),

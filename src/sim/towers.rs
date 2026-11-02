@@ -10,7 +10,7 @@
 use macroquad::math::Vec2;
 
 use super::zombies::Aim;
-use super::World;
+use super::{after_armor, Fx, World};
 
 impl World {
     /// Every tick: towers reload – and shoot when they're ready and something is in range.
@@ -45,10 +45,12 @@ impl World {
                 continue;
             };
             let zombie = &mut self.zombies[z];
-            let damage = weapon.damage.saturating_sub(zombie.breed.stats().armor).max(1);
-            zombie.hp = zombie.hp.saturating_sub(damage);
+            let damage = after_armor(weapon.damage, zombie.breed.stats().armor);
+            zombie.hurt(damage, self.tick);
             let to = zombie.pos;
             self.shots.push((from, to));
+            let (building, kind) = (self.buildings[b].id, self.buildings[b].kind);
+            self.fx.push(Fx::TowerShot { building, kind, from, to });
             let by = Aim::Building(self.buildings[b].id);
             self.zombie_hit_by(z, by);
             self.make_colony_sound(from, weapon.noise);

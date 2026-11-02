@@ -6,11 +6,12 @@ use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
 use macroquad::math::{vec2, Vec2};
 
+use super::fallen::Fling;
 use super::neutral::Tag;
 use super::combat::{Aim, Target};
 use super::crowd;
 use super::commands::{Task, Waypoint};
-use super::{clear_line, push_apart, slide, World, TICK, UNIT_RADIUS};
+use super::{after_armor, clear_line, push_apart, slide, World, TICK, UNIT_RADIUS};
 use crate::data;
 use crate::kinds::{Stats, UnitKind};
 
@@ -66,6 +67,8 @@ pub struct Unit {
     /// What the editor gave it: a name for the scripts, a name and text for the player, a mark on the minimap
     /// (`neutral.rs`). `Box`: most units have none, and then it costs only the room of a pointer.
     pub tag: Option<Box<Tag>>,
+    /// Killed by a blow that throws (a giant's, `fallen.rs`): how its body flies. Default: it doesn't.
+    pub(super) fling: Fling,
 }
 
 impl Unit {
@@ -98,9 +101,17 @@ impl Unit {
         self.stats().damage * (100 + bonus) / 100
     }
 
-    /// A hit of `damage` – minus its armor, at least 1 always gets through – at `tick` (a medic waits a while after it).
+    /// A hit of `damage` – after its armor, at least 1 always gets through – at `tick` (a medic waits a while after it).
     pub(super) fn take_hit(&mut self, damage: u32, tick: u64) {
-        self.hp = self.hp.saturating_sub(damage.saturating_sub(self.stats().armor).max(1));
+        self.hp = self.hp.saturating_sub(after_armor(damage, self.stats().armor));
+        self.hurt_at = tick;
+    }
+
+    /// A hit of venom (the spitter's acid) at `tick`: armor doesn't stop it, its type takes its own share of it
+    /// (`venom_factor`) – like TAB's `CLife.AddDamage`. Rounded like there, a half to the even number.
+    pub(super) fn take_venom(&mut self, damage: u32, tick: u64) {
+        let damage = (damage as f32 * self.stats().venom_factor).round_ties_even() as u32;
+        self.hp = self.hp.saturating_sub(damage);
         self.hurt_at = tick;
     }
 
@@ -235,6 +246,7 @@ impl World {
             hurt_at: 0,
             heal: 0,
             tag: None,
+            fling: Fling::default(),
         });
     }
 
@@ -372,7 +384,8 @@ impl World {
         let target = if unit.barrel { None } else { target };
         // Deep in debt they drag their feet (`debt.rs`) – and a barrel is heavy.
         let carrying = if unit.barrel { (100 - data::get().buildings.blast.carry_slow_percent.min(100)) as f32 / 100.0 } else { 1.0 };
-        let step = stats.speed * TICK * (self.army_pace as f32 / 1000.0) * carrying;
+        // The landscape (`landscape.rs`) and stakes underfoot (`ground_pace`) slow them too.
+        let step = stats.speed * TICK * (self.army_pace as f32 / 1000.0) * carrying * self.unit_pace() * self.ground_pace(unit.pos);
         let mut velocity = match walk_to {
             Some(to) => {
                 let to_goal = to.point - unit.pos;

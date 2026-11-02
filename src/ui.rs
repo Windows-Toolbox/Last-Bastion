@@ -550,9 +550,9 @@ impl Ui {
             }
             let stats = kind.stats();
             let bonus: u32 = houses.iter().map(|&h| world.buildings[h].stats().gold * stats.house_bonus_percent / 100).sum();
-            let every = data::get().colony.economy_every_hours;
+            let every = crate::sim::payout_text();
             let text = format!(
-                "{} houses: +{bonus} gold, sells up to {} goods per payout ({every} h)",
+                "{} houses: +{bonus} gold, sells up to {} goods per payout ({every})",
                 houses.len(),
                 world.sell_limit(&houses)
             );
@@ -577,8 +577,8 @@ impl Ui {
         if gold > 0 {
             parts.push(format!("+{} gold", gold / 1000));
         }
-        let every = data::get().colony.economy_every_hours;
-        let text = if parts.is_empty() { "Nothing to gather here".to_owned() } else { parts.join(", ") + &format!(" per payout ({every} h)") };
+        let every = crate::sim::payout_text();
+        let text = if parts.is_empty() { "Nothing to gather here".to_owned() } else { parts.join(", ") + &format!(" per payout ({every})") };
         draw_text(&text, mouse.x + 14.0, mouse.y + 14.0, 18.0, Color::new(1.0, 1.0, 0.7, 1.0));
     }
 

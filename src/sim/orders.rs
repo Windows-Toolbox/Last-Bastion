@@ -36,7 +36,8 @@ pub enum Order {
     /// Cancel everything (S).
     Stop { units: Vec<u32> },
     /// Send these units away (Del, DESIGN.md 7.2): they leave the colony – no more upkeep, their workers are free
-    /// again. No corpse, no gold back; a barrel one of them carries is put down first.
+    /// again. No corpse, no gold back, but half their goods (`dismiss_refund_percent`, rounded up); a barrel one of
+    /// them carries is put down first.
     Dismiss { units: Vec<u32> },
 
     // --- Developer tools (DESIGN.md 12.6) – these are orders too, so it stays deterministic ---
@@ -190,6 +191,7 @@ impl World {
             }
             Order::Dismiss { units } => {
                 self.drop_barrels(units);
+                self.refund_dismissed(units);
                 // `retain`, not `swap_remove`: the order of the list stays the same on every PC.
                 let before = self.units.len();
                 self.units.retain(|u| !units.contains(&u.id));
@@ -396,7 +398,7 @@ impl World {
                     let cost = kind.stats().cost;
                     // Before `&mut self.buildings[b]`: while that borrow lives, `self` can't be read as a whole.
                     let workers = kind.stats().worker_cost <= self.free_workers() && self.unit_unlocked(*kind);
-                    let gold = self.spendable() >= cost;
+                    let gold = self.spendable() >= cost && self.can_afford_unit_goods(*kind);
                     let building = &mut self.buildings[b];
                     // Only where it's trained: soldiers in the barracks, mercenaries in the inn (`trained_in`) – once
                     // it's finished.
@@ -405,6 +407,8 @@ impl World {
                         building.production.push_back(Product::Unit(*kind));
                         self.score.gold_spent += cost;
                         self.pay_gold(cost);
+                        self.stock.take(Resource::Wood, kind.stats().cost_wood);
+                        self.stock.take(Resource::Iron, kind.stats().cost_iron);
                     }
                 }
             }
@@ -450,13 +454,16 @@ impl World {
                             building.progress = 0; // the front one had been started – from the beginning
                         }
                         // The gold comes back in full, like in StarCraft – the worker too (`workers` counts the
-                        // queue, so it's free again by itself), and the coal of a barrel.
+                        // queue, so it's free again by itself), the wood and iron of a unit and the coal of a barrel.
                         let cost = product.cost();
                         self.gold += cost;
                         self.score.gold_spent = self.score.gold_spent.saturating_sub(cost);
-                        if product == Product::Barrel {
-                            let coal = data::get().buildings.blast.cost_coal;
-                            self.stock.add(Resource::Coal, coal, self.storage(Resource::Coal));
+                        let goods = match product {
+                            Product::Unit(kind) => vec![(Resource::Wood, kind.stats().cost_wood), (Resource::Iron, kind.stats().cost_iron)],
+                            Product::Barrel => vec![(Resource::Coal, data::get().buildings.blast.cost_coal)],
+                        };
+                        for (r, n) in goods {
+                            self.stock.add(r, n, self.storage(r));
                         }
                     }
                 }
@@ -503,6 +510,7 @@ impl World {
         self.sleep.remove(on);
         self.loot.retain(|l| !on(l.pos));
         self.corpses.retain(|c| !on(c.pos));
+        self.dying.retain(|d| !on(d.pos));
         self.remove_neutral_at(on_tile);
     }
 

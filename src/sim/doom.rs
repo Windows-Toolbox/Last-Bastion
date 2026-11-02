@@ -22,8 +22,9 @@
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
+use super::fx::{Fallen, Fx};
 use super::zombies::{Breed, Lure};
-use super::{World, DAY_TICKS, HOUR_TICKS};
+use super::{after_armor, World, DAY_TICKS, HOUR_TICKS};
 use crate::data;
 use crate::kinds::{BuildingKind, Resource};
 
@@ -120,6 +121,11 @@ impl DoomHouse {
     /// How big it is (`Nest::of` its tiles).
     pub fn nest(&self) -> Nest {
         Nest::of(self.size)
+    }
+
+    /// Its hit points when whole – by its size, like TAB's three houses (`hp` in `data\doom.json`).
+    pub fn full_hp(&self) -> u32 {
+        *self.nest().pick(&data::get().doom.hp)
     }
 
     /// The top left corner in world coordinates.
@@ -231,7 +237,7 @@ impl World {
     /// / `settle` when a map is made.
     pub fn add_doom(&mut self, tile: (i32, i32), size: (i32, i32), zombies: u32, factor: f32) {
         self.next_doom_id += 1;
-        let hp = data::get().doom.hp;
+        let hp = *Nest::of(size).pick(&data::get().doom.hp);
         self.doom.push(DoomHouse {
             id: self.next_doom_id,
             tile,
@@ -384,7 +390,7 @@ impl World {
             if !(tick + house.id as u64).is_multiple_of(every) || house.inside == 0 || house.final_call {
                 continue;
             }
-            let best = self.sound.best(house.center(), doom.hearing, factor);
+            let best = self.sound.best(house.center(), *house.nest().pick(&doom.hearing), factor);
             if let Some((c, _)) = best.filter(|&(_, chance)| self.rng.below(100) < chance) {
                 let to = self.sound.middle(c);
                 let count = self.batch(d, doom.heard_batch);
@@ -424,7 +430,7 @@ impl World {
     pub(super) fn hit_house(&mut self, d: usize, damage: u32) {
         let doom = &data::get().doom;
         let house = &mut self.doom[d];
-        house.hp = house.hp.saturating_sub(damage.saturating_sub(doom.armor).max(1));
+        house.hp = house.hp.saturating_sub(after_armor(damage, doom.armor));
         let count = self.batch(d, doom.hit_batch);
         if count == 0 {
             return;
@@ -558,6 +564,8 @@ impl World {
             self.add_loot(self.doom[d].center(), kind, amount, 0);
             let house = &self.doom[d];
             self.map.set_doom(house.tile.0, house.tile.1, house.size, false);
+            let fell = Fx::Fell { what: Fallen::Doom(house.nest()), tile: house.tile, size: house.size };
+            self.fx.push(fell);
             self.score.doom_razed += 1;
         }
         self.doom.retain(|d| d.hp > 0);

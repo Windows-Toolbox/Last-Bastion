@@ -1,7 +1,7 @@
 //! The colony's economy (DESIGN.md 5): the stock of goods, the power grids, what the gathering buildings bring in,
 //! what the charcoal burners burn and what the houses eat.
 //!
-//! Every payout (every `economy_every_hours` hours of the round, like TAB's 8-hour tick), in this order
+//! Every payout (every `economy_every_seconds`, 28 s like TAB's `CResourceGenerator`), in this order
 //! (`economy_payout`): the burners take their wood, the gathering buildings and the command center put what they got
 //! into the stock, the units eat, the houses eat and pay their gold (the command center pays without eating), the
 //! upkeep is paid (`debt.rs`). Every "per payout" value in `data\` counts for one of them. A building
@@ -87,7 +87,7 @@ impl Power {
     /// How much of the power it needs building `b` gets, in thousandths (1000 = all). A building that needs none
     /// always gets all; one outside every grid gets nothing.
     pub fn share(&self, world: &World, b: usize) -> u32 {
-        if world.buildings[b].stats().energy_use == 0 {
+        if world.energy_use(world.buildings[b].kind) == 0 {
             return 1000;
         }
         match self.grid_of[b] {
@@ -171,7 +171,7 @@ impl World {
                 if building.kind == BuildingKind::CommandCenter {
                     power.made[g] += self.extra_power;
                 }
-                power.used[g] += stats.energy_use;
+                power.used[g] += self.energy_use(building.kind);
                 // A scan charging takes the command center's grid a lot of power (`scan.rs`).
                 if self.scan_charger() == Some(b) {
                     power.used[g] += data::get().buildings.scan.power;
@@ -179,6 +179,11 @@ impl World {
             }
         }
         power
+    }
+
+    /// The power a building of `kind` takes: its `energy_use`, changed by the map (`Modifiers::building_energy`).
+    pub fn energy_use(&self, kind: BuildingKind) -> u32 {
+        self.modifiers.energy(kind.stats().energy_use)
     }
 
     /// Does any grid reach this point – may a building that makes, takes or carries power stand here?
@@ -247,6 +252,7 @@ impl World {
                 }
                 let fits = match source {
                     Source::Forest => self.map.terrain(x, y) == Terrain::Forest,
+                    Source::Hunting => self.hunting_percent(x, y) > 0,
                     Source::Water => self.map.terrain(x, y) == Terrain::Water,
                     Source::Ore => self.map.deposit(x, y).is_some_and(|d| Resource::from_ore(d.ore).is_some() || d.ore == Ore::Gold),
                     Source::Fertile => self.map.terrain(x, y).is_fertile() && self.map.deposit(x, y).is_none(),
@@ -268,13 +274,31 @@ impl World {
         };
         // Rounded once from the file's number – the same on every PC.
         let per_tile = (kind.stats().gather_per_tile * 1000.0).round() as u64;
+        let hunts = matches!(kind.gathers(), Some((Source::Hunting, _)));
         for (x, y) in self.worked_tiles(kind, tile, before) {
             let resource = gives.or_else(|| self.map.deposit(x, y).and_then(|d| Resource::from_ore(d.ore)));
+            // The hunter: each tile its own share by what grows there.
+            let of_tile = if hunts { per_tile * self.hunting_percent(x, y) as u64 / 100 } else { per_tile };
             if let Some(r) = resource {
-                rate[r.index()] += per_tile * share as u64 / 1000;
+                rate[r.index()] += of_tile * share as u64 / 1000;
             }
         }
         rate
+    }
+
+    /// How much game a tile has for a hunter cottage, in percent of its `gather_per_tile` – like TAB's: forest, grass
+    /// and dirt each the map's own share (`Modifiers::hunting_*`), nothing on an ore patch, water or rock.
+    fn hunting_percent(&self, x: i32, y: i32) -> u32 {
+        if self.map.deposit(x, y).is_some() {
+            return 0;
+        }
+        let m = &self.modifiers;
+        match self.map.terrain(x, y) {
+            Terrain::Forest => m.hunting_forest,
+            Terrain::Grass => m.hunting_grass,
+            Terrain::Dirt => m.hunting_dirt,
+            Terrain::Water | Terrain::Mountain => 0,
+        }
     }
 
     /// The gold a gathering building of `kind` at `tile` digs per payout, in thousandths – like TAB's mine: every tile of
@@ -337,6 +361,12 @@ impl World {
         goods && enough(Resource::Coal, s.cost_coal) && enough(Resource::Iron, s.cost_iron) && barrel
     }
 
+    /// Are wood and iron in the stock enough to train `kind` (its gold and workers are checked on their own)?
+    pub fn can_afford_unit_goods(&self, kind: UnitKind) -> bool {
+        let s = kind.stats();
+        self.stock.get(Resource::Wood) >= s.cost_wood && self.stock.get(Resource::Iron) >= s.cost_iron
+    }
+
     /// Pays the wood, stone, coal and iron of `kind` – a barrel comes out of the store (checked before with
     /// `can_afford_goods`).
     pub(super) fn pay_goods(&mut self, kind: BuildingKind) {
@@ -348,6 +378,21 @@ impl World {
         if kind == BuildingKind::Barrel {
             self.barrels = self.barrels.saturating_sub(1);
         }
+    }
+
+    /// These units are dismissed (`Order::Dismiss`): `dismiss_refund_percent` of their wood and iron comes back,
+    /// rounded up – half of 3 wood is 2 – up to what fits in the stock. Their gold doesn't.
+    pub(super) fn refund_dismissed(&mut self, ids: &[u32]) {
+        let percent = data::get().units.dismiss_refund_percent;
+        let back = |cost: u32| (cost * percent).div_ceil(100);
+        let (mut wood, mut iron) = (0, 0);
+        for unit in self.units.iter().filter(|u| ids.contains(&u.id)) {
+            let s = unit.stats();
+            wood += back(s.cost_wood);
+            iron += back(s.cost_iron);
+        }
+        self.stock.add(Resource::Wood, wood, self.storage(Resource::Wood));
+        self.stock.add(Resource::Iron, iron, self.storage(Resource::Iron));
     }
 
     /// A charcoal burner takes the wood until the next payout – without it, it makes no power until then.

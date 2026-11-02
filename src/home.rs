@@ -346,7 +346,12 @@ impl Home {
 
         // Right side: the preview, what was picked and its score factor, the buttons.
         let right = Rect::new(left.right() + 16.0, 16.0, screen_width() - left.right() - 32.0, h - 32.0);
-        self.draw_preview(Rect::new(right.x, right.y, right.w, right.h - 130.0));
+        self.draw_preview(Rect::new(right.x, right.y, right.w, right.h - 156.0));
+        // What its landscape does to the round (`data::Modifiers`), if anything – one line above what was picked.
+        let effects = self.setup.modifiers.changed();
+        if !effects.is_empty() {
+            draw_text(&format!("Landscape: {}", effects.join(", ")), right.x, right.bottom() - 126.0, 19.0, DIM);
+        }
         let map = data.game_map(&self.setup.map);
         let difficulty = data.difficulty(&self.setup.round.difficulty);
         let duration = data.duration(self.setup.round.days.round() as u32);
@@ -718,7 +723,7 @@ impl Home {
 /// with. `..`: every other field from the map's setup.
 fn picked_setup(map: &str, round: &RoundSetup) -> MapSetup {
     let picked = data::get().game_map(map);
-    MapSetup { map: picked.name.clone(), round: round.clone(), ..picked.setup.clone() }
+    MapSetup { map: picked.name.clone(), round: round.clone(), modifiers: picked.modifiers, ..picked.setup.clone() }
 }
 
 /// How long a round of `days` days takes at speed x1: "30 min", "2 h", "1 h 30 min".
