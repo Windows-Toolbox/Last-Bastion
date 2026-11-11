@@ -40,24 +40,27 @@ offen ist nur noch der Einbau von Schritt 12 (Töne) und 13 (Züge).
 | 12 | **Töne:** ~300 Geräusche, Musik, Umgebung, Stimmen, Meldungen (`_assets\Sounds\`) – das Spiel hat noch gar keinen Ton | Töne da (`assets\sounds\`) |
 | 13 | **Züge:** Lok, drei Wagen, Räder (`tools\tab_trains.py` → `assets\trains\`), Schienen, Prellböcke, Bahnbrücke, Lampe, Loren (`decor\rail_*`), Icons `IconFTrain`, `EventTrainArrival`, Töne `Train_*` – fahren wie TABs `Locomotive.cs` (auf Schienen, hält an Stopps, überfährt Einheiten), in Kampagnen per Skript (`ZXAction_SendTrain`) | Bilder da |
 
-## Abweichungen von TAB (Schritte 3–11)
+## Abweichungen von TAB (Schritte 3–11) – entschieden
 
-Beim Einbau bewusst anders oder vereinfacht – zum Entscheiden beim Feinschliff:
-- **Kein Forschen:** TAB schaltet viele späte Sachen erst per Forschung frei (`Tech…` in `Commands`); bei uns reicht das
-  Gebäude, das sie voraussetzt (`requires`).
-- **Feuer breitet sich nicht aus:** nur wen Lucifer trifft, brennt (TAB: alles im Feuer heizt sich auf und fängt Feuer,
-  auch eigene Einheiten).
+- **Forschung wie TAB** (`Tech…` in `Commands`, wo und was sie kostet) – **zu bauen**, statt nur `requires`.
+- **Feuer breitet sich vorerst nicht aus:** nur wen Lucifer trifft, brennt (TAB: alles im Feuer fängt Feuer).
 - **Akademie:** wer Veteran wurde, bleibt es, wenn sie fällt (TAB: nur solange sie steht).
-- **Brand an beschädigten Gebäuden** ist unsere Idee (TABs Gebäude brennen nur durch Feuerschaden).
-- **Kraftwerk** verbrennt Kohle statt TABs Holz (DESIGN.md 5.2: Kohlekraftwerk).
+- **Brand an Gebäuden** (unsere Idee) erst, wenn der **Schild weg ist und sie Leben verloren haben** – **zu bauen**.
+- **Kraftwerk wie TAB** (Werte und was es verbrennt) – **zu bauen**.
 - **Shocking Tower:** lädt 4,5 s (TABs 4 s Laden + 0,5 s Schuss); kein Ladebalken, seine Bild-Lichter laufen fest.
-- **Ratten** sitzen an Ruinen und Dorfhäusern (TAB hat sie nur in der Kampagne); Raben und Ratten nur im Bild.
-- **Mine** ohne TABs einstellbare Verzögerung (0–3 × 0,5 s, `DelayActivation`) – sie geht sofort hoch; TAB hat kein
-  Porträt für sie (Knopf mit Buchstaben).
+- **Ratten** wie TABs `RootRat`: stehen, putzen sich, laufen umher, rennen vor Einheiten weg (Ton `RatRun`) – sie sitzen
+  an Ruinen und Dorfhäusern (TAB hat sie nur in der Kampagne); Raben und Ratten nur im Bild.
+- **Mine** bekommt TABs Verzögerung (`DelayActivation`): 1, 2 oder 3 – **zu bauen**.
+
+## Gleich danach (Wunsch des Nutzers)
+
+- **Töne genau wie TAB** (Schritt 12).
+- **Veteranen kommen zu schnell** – Erfahrung neu abstimmen.
+- **Testspieler weg:** der „einfache Spieler“ der Balance-Runde (`balance_mini_round`) fliegt raus.
 
 ## Danach
 
-- **Feinschliff und Logik:** Balance (der einfache Spieler verliert an Tag 2–3), geschätzte Werte prüfen.
+- **Feinschliff und Logik:** Balance, geschätzte Werte prüfen.
 - **Features:** Entscheidung über die alten Kartengeneratoren; Editor wie SC2 (Regionen, Trigger als Sätze, KI-Spieler –
   `docs\trigger-und-28yl.md`); Konsole/Chat wie Factorio mit Pings; Koop; Fähigkeiten der Einheiten; Leute, die
   herumlaufen (DESIGN 5.6, TABs Arbeiter-Bilder liegen bereit); Creep (DESIGN 8.4).

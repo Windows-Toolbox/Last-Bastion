@@ -45,6 +45,22 @@ Every feature has to serve at least one pillar. If it serves none, it goes to th
 **If only one could stay (open question 13, 2026-10-15):** the **TAB side** – the horde against a base built on a
 grid, seen **isometrically**. That's the heart of the game; the StarCraft control and the Factorio chains serve it.
 
+### Setting (question 21)
+
+- **Story:** a modern, hugely overpopulated world gets infected and falls apart. You rebuild in its ruins – the
+  knowledge is still there, the infrastructure isn't (no factories, no power, no ammo). In the campaign you claim more
+  and more land and trade with other outposts.
+- **Era: a patched-together military after the collapse** (near future, so the StarCraft-like units of 7.2 fit). Not
+  medieval, no magic: area damage comes from flamethrowers, mortars, grenades, gas and barrels.
+- **The tech tree tells the rebuilding:**
+  1. **Scavenging** (early, quiet): palisade, crossbow, scrap ballista, stake traps, tents – rough and improvised.
+  2. **Industry** (mid): smelting, foundry, first firearms, sandbags and concrete walls – from here on it gets loud.
+  3. **Restored military** (late / campaign): vehicles, radar, MG towers, mortars, maybe helicopters.
+- **Noise makes the era a choice:** firearms are strong but lure the horde, the early weapons are weak but quiet.
+- **Ruins as gameplay:** car wrecks, high-rises, highways as obstacles and loot; old bunkers and depots unlock tech
+  you rebuild rather than invent.
+- **Look:** the same military style in every stage, worn and patched; clean, intact gear only in stage 3.
+
 ### Who is it for?
 
 - People who love StarCraft's control but don't want PvP stress or 300 APM.
@@ -392,7 +408,7 @@ nothing.
 - **Noise per unit** links the army to 8.3: rangers can go out quietly, snipers and tanks give themselves away.
 - **Area damage hits everyone:** the player's splash/fire/mines hurt your own units and buildings; zombie area damage
   hurts other zombies (exceptions ❓).
-- **Look:** TAB's roles with a StarCraft-*like* look of our own (era: open question 21) – ranger like a Reaper without
+- **Look:** TAB's roles with a StarCraft-*like* look of our own (era: patched-together military, 1) – ranger like a Reaper without
   jetpack, soldier like a makeshift marine, sniper like a Ghost, flamethrower like a Firebat, medic in white, machine
   gunner a small two-legged walker, siege tank patched together. Swappable PNGs in an `images` folder.
   Until then the medic wears TAB's soldier in polished steel, the spearman TAB's Lucifer suit as a marine (both stand
@@ -709,6 +725,11 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   weaker early versions of buildings that research makes into the full ones (e.g. a small windmill first). The
   survival mode (what's being built now) has none of it: everything comes at its **standard strength**, which keeps
   development simple.
+  - **Story arc (setting, 1):** opening mission like SC2's *Legacy of the Void*: you're handed a big modern army and
+    live through the collapse. Then rebuilding from the ruins, claiming land, trade with other outposts.
+  - **Twist for the final missions:** the virus is man-made and can be steered, e.g. by radio waves. The player learns
+    it and gets to **control zombies** – a late ability that comes from the story instead of magic. Inspiration:
+    *28 Years Later* / its sequel.
 - No daily challenge.
 
 ---
@@ -1041,7 +1062,6 @@ before step 6.
 |---|---|---|
 | 14 | Does the economy work over 40–80 days? | Check by a small calculation over `data\` – still to do |
 | 17 | Library? | macroquad in use and fast enough; the feel of the controls still to judge |
-| 21 | Which era / technology? | Open – decides the look, towers, air units |
 | 22 | Where do the pictures come from? | Open – Blender / packs / artist / AI |
 
 **Decided** (number = question, referenced elsewhere):
@@ -1059,7 +1079,7 @@ before step 6.
   foundry is both: a tech building like TAB's (it unlocks the iron tier) that smelts iron ore + coal into iron while it
   runs, like the charcoal burner burns wood – no extra building, the Factorio chain stays · **33** new towers
   (ballista, MG tower) shoot by themselves; the ballista is early game like TAB's – unlocked by the wood workshop, no
-  iron (both 2026-10-24).
+  iron (both 2026-10-24) · **21** a patched-together military after the collapse, three tech stages (setting, 1).
 
 ---
 
@@ -1073,7 +1093,7 @@ Ideas that don't serve a pillar yet, or are too big for now.
 - **Refugees** mid-round – maybe infected. 😈
 - **Mutations:** a random horde modifier per round.
 - **Mod support** via the JSON files. **Replays** (seed + orders, almost free with lockstep).
-- **Air units** (until the era is clear – a hot-air balloon would fit low tech).
+- **Air units:** helicopters at most in stage 3 or the campaign – they make walls worth less.
 - **Rally point into a control group.**
 - **Several maps in one round** – regions or Factorio's planets, travelled by train or plane. On **one grid** (regions
   the playing field moves between, like SC2's missions in parts) it comes almost free with the playing field and
