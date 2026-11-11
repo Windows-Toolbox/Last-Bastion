@@ -166,6 +166,11 @@ impl BuildingSprite {
         Ok(Some(BuildingSprite { sheet, texture }))
     }
 
+    /// How many tiles wide its pictures are made for (`size` in the JSON).
+    pub fn size(&self) -> f32 {
+        self.sheet.size
+    }
+
     pub fn body(&self) -> Option<&Appearance> {
         self.sheet.body.as_ref()
     }

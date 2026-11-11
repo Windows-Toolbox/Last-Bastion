@@ -154,6 +154,8 @@ pub struct Zombie {
     /// Which of its breed's skins it wears (`skins` in `data\zombies.json`, `sprites.rs`) – only for the picture, the
     /// simulation never looks at it. Fixed for life, also while it sleeps (`Sleeper`).
     pub look: u8,
+    /// Ticks it still burns – Lucifer's fire set it alight (`fire.rs`). 0: it doesn't.
+    pub burning: u32,
     /// Killed by a blow that throws (`push`, `fallen.rs`): how its body flies. Default: it doesn't.
     pub(super) fling: Fling,
 }
@@ -478,6 +480,7 @@ impl World {
             roar: 0,
             look: look_from(id),
             fling: Fling::default(),
+            burning: 0,
         });
     }
 

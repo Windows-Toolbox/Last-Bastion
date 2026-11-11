@@ -69,6 +69,8 @@ pub enum Nest {
 }
 
 impl Nest {
+    pub const ALL: [Nest; 3] = [Nest::Small, Nest::Medium, Nest::Big];
+
     pub fn of(size: (i32, i32)) -> Nest {
         match size.0.max(size.1) {
             ..=2 => Nest::Small,
@@ -100,6 +102,16 @@ impl Nest {
             Nest::Small => "Small",
             Nest::Medium => "Medium",
             Nest::Big => "Big",
+        }
+    }
+
+    /// How many tiles each way the generator makes it – TAB's 2 × 2, 3 × 3 and 5 × 5 (`mapgen/tab.rs`). The editor
+    /// places them that big.
+    pub fn side(self) -> i32 {
+        match self {
+            Nest::Small => 2,
+            Nest::Medium => 3,
+            Nest::Big => 5,
         }
     }
 }
@@ -292,6 +304,12 @@ impl World {
         let mean = near as f32 + (far as f32 - near as f32) * out;
         let random = 0.8 + 0.4 * self.rng.unit_f32();
         (mean * random + 0.5).floor().max(0.0) as u32
+    }
+
+    /// May a house of doom stand here (top left tile, width and depth)? Inside the world border, on open ground that
+    /// nothing else takes – the editor's houses (`Order::PlaceDoom`, paste) and the one on the mouse.
+    pub fn doom_fits(&self, tile: (i32, i32), size: (i32, i32)) -> bool {
+        (tile.1..tile.1 + size.1).all(|y| (tile.0..tile.0 + size.0).all(|x| self.map.in_play(x, y) && !self.map.is_solid(x, y) && !self.map.is_built(x, y)))
     }
 
     /// Where is the house with this `id` in the list? `None` if it's destroyed.

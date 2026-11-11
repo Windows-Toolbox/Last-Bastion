@@ -18,7 +18,14 @@ What TAB does and what we take from it (`ZX\\VisualEffects.cs`, `DXComponentAtla
 2. Stains (`Blood_Stain_A`, `PoolGreenA`) are single pictures lying flat on the ground - the game grows and fades them.
 3. The flashes at a gun's muzzle (`CShotEffect`) aren't templates: the sprite with its frame time and size from the
    code (`SHOTS` below).
-4. Arrows (`Images\\Proyectiles`) are single pictures, pointing up - the game turns them the way they fly.
+4. Arrows (`Images\\Proyectiles`) are single pictures, pointing up - the game turns them the way they fly. So is
+   Thanatos' rocket (`Missile_A`, `Proyectile.cs`).
+5. What TAB's code draws itself, without a template (`SPRITES`): the tesla's and shocking tower's spheres, the falling
+   leaves of the forests (`ZXMapThemeFA.AddLeave`) ... - their frames at TAB's 30 ms each.
+6. Weather and animated water (`Animations\\`, TAB's GIFs: `Rain_A`, `RainA`, `Snow_A`, `SnowB`, `Water_*`): square
+   pictures on black, added to the screen (`BlendMode.Add`) - as lights, with TAB's `FrameTime`.
+7. More single pictures (`PICTURES`): the range circle (`AttackRange`), lights, smoke puffs (`SmokeParticle1..9`,
+   `VisualEffects.cs`), the lava pool, the blast wave ...
 """
 
 import json
@@ -52,6 +59,69 @@ EFFECTS = {
     "stone_medium": ("Explosion_Stone_A", 2.4),
     "stone_big": ("Explosion_Stone_B", 5.2),
     "crystal": ("Explosion_Crystal_A", 3.0),
+    # Used by the lasting effects and TAB's late buildings and units (src\effects\lasting.rs, docs\tab-assets.md
+    # steps 3-7): fire and smoke on damaged buildings, the shocking tower's ray, water, the infection's green smoke.
+    # Not used yet: the transmutator's cosmic blast, snow flakes.
+    "fire": ("Fire", 1.5),
+    "fire_ornament": ("FireOrnamentA", 1.0),
+    "fire_burst": ("FireBurst_A", 1.5),
+    "fire_smoke_small": ("ExplosionFireSmokeSmall_A", 1.3),
+    "smoke_a": ("Smoke_A", 2.0),
+    "smoke_b": ("Smoke_B", 1.0),
+    "smoke_c": ("Smoke_C", 1.5),
+    "smoke_fast": ("SmokeFast_B", 1.0),
+    "infection": ("Infection_A", 1.5),
+    "light_flare": ("LightFlare_A", 1.5),
+    "shock_ray": ("ShockRay_A", 2.0),
+    "cosmic": ("Explosion_Cosmic_A", 3.0),
+    "capsule_blast": ("Explosion_InfectedCapsule", 2.4),
+    "water_fall": ("Water_Fall_A", 1.5),
+    "water_splash": ("WaterSplash_A", 1.0),
+    "green_splash": ("GreenLiquidSplash_A", 1.0),
+    "snow_flake": ("Snow_A", 0.5),
+}
+# Sprites TAB's code draws without a template: sprite in Effects_A, how wide it's mostly drawn (tile widths), loops.
+# Added (glowing) if the sprite has no see-through pixels (TAB draws those with `BlendMode.Add`).
+SPRITES = {
+    "tesla_sphere": ("TeslaSphere_A", 1.0, True),
+    "electric_sphere": ("ElectricSphere", 2.0, True),
+    "electric_halo": ("ElectricHalo_A", 1.5, True),
+    "bubbles": ("BubblesA", 0.5, True),
+    "flow_blood": ("FlowBlood_A", 1.0, False),
+    "leaf": ("Leaf", 0.8, True),
+    "flash_thanatos": ("ShotSingle_B", 1.0, False),
+}
+# TAB's GIFs (`Animations\`): ours -> its folder, how many tiles one picture covers (TAB's `Size` of the entity that
+# shows it: rain 12, snow 10, water 5 / 10), FrameTime in ms. All on black, added.
+ANIMATIONS = {
+    "rain_a": ("Rain_A", 12, 33),
+    "rain_b": ("RainA", 12, 25),
+    "snow_a": ("Snow_A", 10, 33),
+    "snow_b": ("SnowB", 10, 33),
+    "water_a": ("Water_A", 5, 33),
+    "water_b": ("Water_B", 10, 33),
+    "water_shine": ("Water_Animated_A", 10, 33),
+    "explosion_a": ("Explosion_A", 3, 33),
+}
+# More single pictures in Images\Effects: ours -> (TAB's name, tile widths, meta). `ground`: lies flat.
+PICTURES = {
+    # TAB's `CVisualAttackRange`: added, contrast 0.5, its hue turned 120 degrees (red -> green).
+    "range_circle": ("AttackRange", 2.0, {"ground": True, "add": True, "look": (1, 0.5, 1, 120)}),
+    "blast_wave": ("BlastWaveA", 4.0, {"ground": True, "add": True}),
+    "bright_flare": ("BrightFlareA", 2.0, {"add": True}),
+    "flame": ("Flame_A", 1.0, {"add": True}),
+    "light": ("Light_A", 3.0, {"add": True}),
+    "light_white_a": ("LightWhite_A", 3.0, {"add": True}),
+    "light_white_b": ("LightWhiteB", 3.0, {"add": True}),
+    "light_white_c": ("LightWhiteC", 3.0, {"add": True}),
+    "black_circle": ("BlackGradientCircle", 3.0, {}),
+    "splat": ("SplatA", 1.0, {"ground": True}),
+    "trail": ("TrailWhiteA", 1.0, {"add": True}),
+    "venom_pool_b": ("PoolGreenB", 1.0, {"ground": True}),
+    "venom_pool_c": ("PoolGreenC", 1.0, {"ground": True}),
+    "venom_pool_d": ("PoolGreenD", 1.0, {"ground": True}),
+    **{f"smoke_puff_{n}": (f"SmokeParticle{n}", 1.0, {}) for n in range(1, 10)},
+    **{f"lava_pool_{n}": (f"Lavapool/Lavapool_0{n}", 2.0, {"ground": True}) for n in range(1, 5)},
 }
 # The muzzle flashes (`CShotEffect`): sprite, milliseconds per frame, how long it shows (None: all its frames once),
 # size (tile widths: length, thickness), contrast, how far in front of the shooter and how high (TAB's `_Distance`,
@@ -67,7 +137,7 @@ STAINS = {
     "venom_pool": ("PoolGreenA", (1, 1, 1, 0)),
 }
 # Arrows: picture in Images\Proyectiles, how long it's drawn (tile widths).
-ARROWS = {"arrow": ("Arrow_A", 0.55), "big_arrow": ("BigArrow", 1.2)}
+ARROWS = {"arrow": ("Arrow_A", 0.55), "big_arrow": ("BigArrow", 1.2), "missile": ("Missile_A", 0.8)}
 
 # Pixels per tile width at most (like the figures) - big explosions get fewer, so their frames fit.
 PIXELS_PER_TILE = 80
@@ -206,6 +276,37 @@ def picture(tab, folder, key, category, stem, look, tiles, meta):
     save(folder, key, [image], (w / 2, h / 2), {"typical_tiles": tiles, **meta}, tiles)
 
 
+def code_sprite(tab, folder, key, sprite, typical, loop):
+    """A sprite TAB's code draws itself (SPRITES): its frames at 30 ms each, standing on its bottom middle."""
+    paths, step = sprite_frames(tab, "Effects_A", sprite)
+    if not paths:
+        print(f"  {key}: no frames of {sprite} - left out")
+        return
+    first = Image.open(paths[0]).convert("RGBA")
+    add = first.getchannel("A").getextrema()[0] == 255
+    frames = [Image.open(p).convert("RGBA") for p in thin(paths, MAX_FRAMES)]
+    if add:
+        frames = [as_light(f) for f in frames]
+    w, h = frames[0].size
+    meta = {"typical_tiles": typical, "duration": round(len(paths) * step * 0.03, 3), "loop": loop}
+    if add:
+        meta["add"] = True
+    save(folder, key, frames, (w / 2, h), meta, typical)
+
+
+def animation(tab, folder, key, name, tiles, frame_ms):
+    """A GIF of TAB's (`Animations\\<name>\\`): pictures on black, added - `tiles` wide, standing on their middle."""
+    path = os.path.join(tab, "Animations", name)
+    if not os.path.isdir(path):
+        print(f"  {key}: no Animations\\{name} - left out")
+        return
+    files = sorted(os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith(".png"))
+    frames = [as_light(Image.open(f).convert("RGBA")) for f in thin(files, MAX_FRAMES)]
+    w, h = frames[0].size
+    meta = {"typical_tiles": tiles, "duration": round(len(files) * frame_ms / 1000, 3), "loop": True, "add": True}
+    save(folder, key, frames, (w / 2, h / 2), meta, tiles)
+
+
 def main():
     tab = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TAB
     game = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_GAME
@@ -224,6 +325,15 @@ def main():
         shot(tab, effects, key, *params)
     for key, (stem, look) in STAINS.items():
         picture(tab, effects, key, "Effects", stem, look, 1.0, {"duration": 0, "loop": False, "ground": True})
+    for key, (sprite, typical, loop) in SPRITES.items():
+        code_sprite(tab, effects, key, sprite, typical, loop)
+    for key, (name, tiles, frame_ms) in ANIMATIONS.items():
+        animation(tab, effects, key, name, tiles, frame_ms)
+    for key, (stem, tiles, meta) in PICTURES.items():
+        # `look` (saturation, contrast, brightness, hue) is for the colouring, not for the JSON.
+        meta = dict(meta)
+        look = meta.pop("look", (1, 1, 1, 0))
+        picture(tab, effects, key, "Effects", stem, look, tiles, {"duration": 0, "loop": False, **meta})
     for key, (stem, length) in ARROWS.items():
         picture(tab, arrows, key, "Proyectiles", stem, (1, 1, 1, 0), length, {"duration": 0, "loop": False, "turns": True})
 

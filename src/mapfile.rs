@@ -18,10 +18,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::data::{self, Modifiers};
 use crate::kinds::{BuildingKind, Resource, UnitKind};
-use crate::map::{Deposit, Map, Ore, Terrain};
+use crate::map::{BigRock, Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
-use crate::sim::{Axes, Breed, Event, LootKind, Script, SpawnMode, Story, Tag, Thing, ThingRef, WaveFrom, WaveGroup, World};
+use crate::sim::{
+    Axes, Breed, Building, DoomHouse, Event, Loot, LootKind, Neutral, Ornament, Script, Sleeper, SpawnMode, Spawner, Story, Tag,
+    Thing, ThingRef, Unit, WaveFrom, WaveGroup, World, Zombie,
+};
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
 /// 2 (2026-10-17): the round, the constant spawn, the setup, and waves with breed and final wave.
@@ -94,9 +97,17 @@ pub struct MapFile {
     pub doom: Vec<DoomData>,
     #[serde(default)]
     pub loot: Vec<LootData>,
+    /// Treasure ruins and power line towers (`sim/ornaments.rs`) – only the look. Not written when there are none;
+    /// an older game skips the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ornaments: Vec<Ornament>,
     /// Every tile with ore on it. `default`: files from before 2026-10-17 have none.
     #[serde(default)]
     pub deposits: Vec<DepositData>,
+    /// The big rocks put down in the editor (`Map::place_big_rock`) – their tiles are `M` in `terrain` as well. Not
+    /// written when there are none; an older game skips the field and draws small pieces there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub big_rocks: Vec<BigRock>,
     /// One string per row, one letter per tile (`letter`).
     pub terrain: Vec<String>,
 }
@@ -129,8 +140,8 @@ impl Default for RoundData {
 /// when the map is loaded. In order of where they stand, row by row: the same file whoever was awake or asleep when it
 /// was saved.
 fn zombie_data(world: &World) -> Vec<ZombieData> {
-    let awake = world.zombies.iter().map(|z| ZombieData { pos: (z.pos.x, z.pos.y), breed: z.breed, wander: world.is_wanderer(z) });
-    let asleep = world.sleep.iter().map(|s| ZombieData { pos: (s.pos.x, s.pos.y), breed: s.breed, wander: true });
+    let awake = world.zombies.iter().map(|z| ZombieData::awake(world, z));
+    let asleep = world.sleep.iter().map(ZombieData::asleep);
     let mut zombies: Vec<ZombieData> = awake.chain(asleep).collect();
     zombies.sort_by(|a, b| a.pos.1.total_cmp(&b.pos.1).then(a.pos.0.total_cmp(&b.pos.0)));
     zombies
@@ -334,6 +345,119 @@ pub struct LootData {
     pub guards: u32,
 }
 
+// Every thing of the map as the file keeps it (`of`), and back onto a world (`add_to`). `from_world` and `to_world` go
+// through these – and so do the editor's copy and paste (`sim/clipboard.rs`): whatever the file keeps of a thing, a copy
+// keeps too.
+
+impl SpawnerData {
+    pub fn of(s: &Spawner) -> SpawnerData {
+        SpawnerData { name: s.name.clone(), id: s.id, min: s.min, size: s.size, axes: s.axes, mode: s.mode }
+    }
+
+    /// With its number – or, if that's 0 or taken, the next free one (`World::add_spawner`).
+    pub fn add_to(&self, world: &mut World) {
+        world.add_spawner(self.id, self.name.clone(), self.min, self.size, self.axes, self.mode);
+    }
+}
+
+impl BuildingData {
+    pub fn of(b: &Building) -> BuildingData {
+        BuildingData {
+            kind: b.kind,
+            tile: b.tile,
+            turned: b.turned,
+            hp_percent: percent(b.hp, b.stats().hp),
+            infected: b.infected,
+            tag: b.tag.as_deref().cloned(),
+        }
+    }
+
+    /// Only where it fits – `add_building_anywhere` leaves out one that doesn't.
+    pub fn add_to(&self, world: &mut World) {
+        let before = world.buildings.len();
+        world.add_building_anywhere(self.kind, self.tile, self.turned);
+        // What the editor gave it – if it's there.
+        if let Some(id) = world.buildings.get(before).map(|built| built.id) {
+            world.edit_thing(ThingRef::Building(id), self.hp_percent, self.infected, self.tag.as_ref());
+        }
+    }
+}
+
+impl UnitData {
+    pub fn of(u: &Unit) -> UnitData {
+        UnitData { kind: u.kind, pos: (u.pos.x, u.pos.y), hp_percent: percent(u.hp, u.max_hp()), veteran: u.veteran, tag: u.tag.as_deref().cloned() }
+    }
+
+    pub fn add_to(&self, world: &mut World) {
+        world.add_unit(self.kind, vec2(self.pos.0, self.pos.1));
+        let id = world.units.last().map_or(0, |unit| unit.id);
+        world.edit_thing(ThingRef::Unit(id), self.hp_percent, self.veteran, self.tag.as_ref());
+    }
+}
+
+impl NeutralData {
+    pub fn of(n: &Neutral) -> NeutralData {
+        NeutralData {
+            thing: n.thing,
+            joinable: n.joinable,
+            hp_percent: n.hp_percent,
+            veteran: n.veteran,
+            tag: n.tag.as_deref().cloned(),
+            on_join: n.on_join.clone(),
+        }
+    }
+
+    /// A building only where it fits (`World::add_neutral`).
+    pub fn add_to(&self, world: &mut World) {
+        let before = world.neutral.len();
+        world.add_neutral(self.thing, self.joinable, self.hp_percent, self.veteran, self.tag.clone().map(Box::new));
+        if let Some(added) = world.neutral.get_mut(before) {
+            added.on_join = self.on_join.clone();
+        }
+    }
+}
+
+impl ZombieData {
+    pub fn awake(world: &World, z: &Zombie) -> ZombieData {
+        ZombieData { pos: (z.pos.x, z.pos.y), breed: z.breed, wander: world.is_wanderer(z) }
+    }
+
+    /// A sleeper is a wanderer – put on a world, it lies down asleep again.
+    pub fn asleep(s: &Sleeper) -> ZombieData {
+        ZombieData { pos: (s.pos.x, s.pos.y), breed: s.breed, wander: true }
+    }
+
+    /// Wanderers lie down asleep, the others storm.
+    pub fn add_to(&self, world: &mut World) {
+        let pos = vec2(self.pos.0, self.pos.1);
+        if self.wander {
+            world.add_sleeper(pos, self.breed);
+        } else {
+            world.add_zombie(pos, self.breed, false);
+        }
+    }
+}
+
+impl DoomData {
+    pub fn of(d: &DoomHouse) -> DoomData {
+        DoomData { house: d.tile, size: d.size, zombies: d.inside, factor: d.factor }
+    }
+
+    pub fn add_to(&self, world: &mut World) {
+        world.add_doom(self.house, self.size, self.zombies, self.factor);
+    }
+}
+
+impl LootData {
+    pub fn of(l: &Loot) -> LootData {
+        LootData { loot: l.kind, pos: (l.pos.x, l.pos.y), amount: l.amount, guards: l.guards }
+    }
+
+    pub fn add_to(&self, world: &mut World) {
+        world.add_loot(vec2(self.pos.0, self.pos.1), self.loot, self.amount, self.guards);
+    }
+}
+
 /// The letter of a terrain in the file.
 fn letter(terrain: Terrain) -> char {
     match terrain {
@@ -384,54 +508,16 @@ impl MapFile {
             waves: Vec::new(),
             story: world.story.clone(),
             setup: None,
-            spawners: world
-                .spawners
-                .iter()
-                .map(|s| SpawnerData { name: s.name.clone(), id: s.id, min: s.min, size: s.size, axes: s.axes, mode: s.mode })
-                .collect(),
-            buildings: world
-                .buildings
-                .iter()
-                .map(|b| BuildingData {
-                    kind: b.kind,
-                    tile: b.tile,
-                    turned: b.turned,
-                    hp_percent: percent(b.hp, b.stats().hp),
-                    infected: b.infected,
-                    tag: b.tag.as_deref().cloned(),
-                })
-                .collect(),
-            units: world
-                .units
-                .iter()
-                .map(|u| UnitData {
-                    kind: u.kind,
-                    pos: (u.pos.x, u.pos.y),
-                    hp_percent: percent(u.hp, u.max_hp()),
-                    veteran: u.veteran,
-                    tag: u.tag.as_deref().cloned(),
-                })
-                .collect(),
-            neutral: world
-                .neutral
-                .iter()
-                .map(|n| NeutralData {
-                    thing: n.thing,
-                    joinable: n.joinable,
-                    hp_percent: n.hp_percent,
-                    veteran: n.veteran,
-                    tag: n.tag.as_deref().cloned(),
-                    on_join: n.on_join.clone(),
-                })
-                .collect(),
+            spawners: world.spawners.iter().map(SpawnerData::of).collect(),
+            buildings: world.buildings.iter().map(BuildingData::of).collect(),
+            units: world.units.iter().map(UnitData::of).collect(),
+            neutral: world.neutral.iter().map(NeutralData::of).collect(),
             zombies: zombie_data(world),
-            doom: world.doom.iter().map(|d| DoomData { house: d.tile, size: d.size, zombies: d.inside, factor: d.factor }).collect(),
-            loot: world
-                .loot
-                .iter()
-                .map(|l| LootData { loot: l.kind, pos: (l.pos.x, l.pos.y), amount: l.amount, guards: l.guards })
-                .collect(),
+            doom: world.doom.iter().map(DoomData::of).collect(),
+            loot: world.loot.iter().map(LootData::of).collect(),
+            ornaments: world.ornaments.clone(),
             deposits: world.map.all_deposits().map(|(x, y, d)| DepositData { tile: (x, y), ore: d.ore, amount: d.amount }).collect(),
+            big_rocks: world.map.big_rocks().to_vec(),
             terrain,
         }
     }
@@ -447,15 +533,10 @@ impl MapFile {
         world.gold = self.round.gold;
         world.stock.set(Resource::Wood, self.round.wood);
         for s in &self.spawners {
-            world.add_spawner(s.id, s.name.clone(), s.min, s.size, s.axes, s.mode);
+            s.add_to(&mut world);
         }
         for b in &self.buildings {
-            let before = world.buildings.len();
-            world.add_building_anywhere(b.kind, b.tile, b.turned);
-            // What the editor gave it – if it fit (`add_building_anywhere` leaves out one that doesn't).
-            if let Some(id) = world.buildings.get(before).map(|built| built.id) {
-                world.edit_thing(ThingRef::Building(id), b.hp_percent, b.infected, b.tag.as_ref());
-            }
+            b.add_to(&mut world);
         }
         // The base is where the command center stands – on a map made in the editor it may stand anywhere, a new map has
         // it in the middle (`World::empty`, the same point). What the zombies keep away from (`keep_out`) and where waves
@@ -464,33 +545,23 @@ impl MapFile {
             world.base = cc.center();
         }
         for u in &self.units {
-            world.add_unit(u.kind, vec2(u.pos.0, u.pos.1));
-            let id = world.units.last().map_or(0, |unit| unit.id);
-            world.edit_thing(ThingRef::Unit(id), u.hp_percent, u.veteran, u.tag.as_ref());
+            u.add_to(&mut world);
         }
         for n in &self.neutral {
-            let before = world.neutral.len();
-            world.add_neutral(n.thing, n.joinable, n.hp_percent, n.veteran, n.tag.clone().map(Box::new));
-            if let Some(added) = world.neutral.get_mut(before) {
-                added.on_join = n.on_join.clone();
-            }
+            n.add_to(&mut world);
         }
         world.story = self.story.clone();
         // Wanderers lie down asleep – the ones near your eyes wake when the world settles (`World::settle`).
         for z in &self.zombies {
-            let pos = vec2(z.pos.0, z.pos.1);
-            if z.wander {
-                world.add_sleeper(pos, z.breed);
-            } else {
-                world.add_zombie(pos, z.breed, false);
-            }
+            z.add_to(&mut world);
         }
         for d in &self.doom {
-            world.add_doom(d.house, d.size, d.zombies, d.factor);
+            d.add_to(&mut world);
         }
         for l in &self.loot {
-            world.add_loot(vec2(l.pos.0, l.pos.1), l.loot, l.amount, l.guards);
+            l.add_to(&mut world);
         }
+        world.ornaments = self.ornaments.clone();
         world.events = if self.version < 5 && self.events.is_empty() { old_events(&self.waves) } else { self.events.clone() };
         world.roll_events();
         world.settle();
@@ -540,6 +611,9 @@ impl MapFile {
         }
         for d in &self.deposits {
             map.set_deposit(d.tile.0, d.tile.1, Some(Deposit { ore: d.ore, amount: d.amount }));
+        }
+        for &rock in &self.big_rocks {
+            map.place_big_rock(rock);
         }
         Ok(map)
     }
@@ -609,6 +683,12 @@ impl MapFile {
                 all_on_map(b.tile, w, h)
             })
             .collect();
+        file.big_rocks = self
+            .big_rocks
+            .iter()
+            .map(|r| BigRock { tile: shift(r.tile), ..*r })
+            .filter(|r| all_on_map(r.tile, r.size, r.size))
+            .collect();
         file.doom = self.doom.iter().map(|h| DoomData { house: shift(h.house), ..h.clone() }).filter(|h| all_on_map(h.house, h.size.0, h.size.1)).collect();
         file.units = self.units.iter().map(|u| UnitData { pos: moved(u.pos), ..u.clone() }).filter(|u| point_on_map(u.pos)).collect();
         file.neutral = self
@@ -631,6 +711,7 @@ impl MapFile {
             .collect();
         file.zombies = self.zombies.iter().map(|z| ZombieData { pos: moved(z.pos), ..z.clone() }).filter(|z| point_on_map(z.pos)).collect();
         file.loot = self.loot.iter().map(|l| LootData { pos: moved(l.pos), ..l.clone() }).filter(|l| point_on_map(l.pos)).collect();
+        file.ornaments = self.ornaments.iter().map(|o| Ornament { tile: shift(o.tile), ..*o }).filter(|o| all_on_map(o.tile, 1, 1)).collect();
         // In the screen axes (`map::to_frame`: across x − y, down x + y) d tiles both ways are 0 across and 2 · d down.
         let down = |min: (i32, i32)| (min.0, min.1 + 2 * d);
         file.spawners = self
@@ -686,7 +767,7 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "modifiers", "look", "events", "story", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "deposits", "terrain"] {
+    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "modifiers", "look", "events", "story", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "ornaments", "deposits", "big_rocks", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
     // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units
@@ -985,5 +1066,27 @@ mod tests {
         file.write(&path).unwrap();
         assert_eq!(MapFile::load(&path).unwrap(), file);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The big rocks are saved, come back, and move with the rest when the grid grows.
+    #[test]
+    fn big_rocks_are_saved_and_move_with_the_grid() {
+        let mut world = World::new(4);
+        let c = world.map.size as i32 / 2;
+        let rock = BigRock { tile: (c + 10, c - 12), size: 5, variant: 2 };
+        world.step(&[Order::PlaceBigRock(rock)]);
+        let file = MapFile::from_world(&world, "Rocks");
+        assert_eq!(file.big_rocks, vec![rock]);
+        let text = pretty(&serde_json::to_string(&file).unwrap());
+        assert!(text.contains("
+\"big_rocks\""), "not in a line of its own");
+        let back: MapFile = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.to_world().unwrap().map.big_rocks(), &[rock]);
+        // Two tiles more on every side: it moves along.
+        let grown = file.resized(file.size + 4);
+        let moved = BigRock { tile: (rock.tile.0 + 2, rock.tile.1 + 2), ..rock };
+        assert_eq!(grown.to_world().unwrap().map.big_rocks(), &[moved]);
+        // A file without big rocks doesn't get the field.
+        assert!(!serde_json::to_string(&MapFile::from_world(&World::new(4), "None")).unwrap().contains("big_rocks"));
     }
 }

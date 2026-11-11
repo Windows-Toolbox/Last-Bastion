@@ -38,7 +38,7 @@ use super::{spawner_spots, Common, Field, Generated, LootSpot, Show, ZombieSpot}
 use crate::kinds::BuildingKind;
 use crate::map::{Deposit, Map, Ore, Terrain, BORDER};
 use crate::rng::Rng;
-use crate::sim::{Breed, LootKind};
+use crate::sim::{Breed, LootKind, Ornament, OrnamentKind};
 
 /// Tiles inside the border of TAB's 256 map (its playing field is a square on its screen, about 0.485 · 256²). Its
 /// counts are for this many.
@@ -417,6 +417,7 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
     let mut ruins = Layer::new(n);
     let mut taken: Vec<(i32, i32)> = Vec::new();
     let mut loot = Vec::new();
+    let mut ornaments = Vec::new();
     let ruin_count = scaled(range(rng, p.ruins_min as i32, p.ruins_max as i32 + 1));
     for _ in 0..ruin_count {
         if spots.is_empty() {
@@ -429,6 +430,7 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
             }
             taken.push(at);
             ruins.set_rect((at.0, at.1, 4, 4), 1.0);
+            ornaments.push(Ornament { kind: OrnamentKind::Ruin, tile: at });
             // 2 to 4 piles: gold in 35 of 100, else a good – the further out and the fewer piles, the better.
             let piles = range(rng, 2, 5);
             let mut used: Vec<(i32, i32)> = Vec::new();
@@ -637,9 +639,10 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
             map.set_deposit(x + ox, y + oy, Some(Deposit { ore: Ore::Oil, amount: oil_amount }));
         }
     }
+    ornaments.extend(power_towers(&map, &mut rng.clone()));
     let spawners = spawner_spots(size, common.spawners_per_side.round() as i32);
     let middles = villages.iter().map(|&(x, y)| vec2(x as f32 + 0.5, y as f32 + 0.5)).collect();
-    Some((Generated { map, spawners, houses, loot, base, zombies: Some(zombies) }, middles))
+    Some((Generated { map, spawners, houses, loot, ornaments, base, zombies: Some(zombies) }, middles))
 }
 
 /// How many on a tile by its level (TAB: 1, 2, and 3 for everything else – a 0 too, TAB's quirk).
@@ -888,4 +891,33 @@ mod tests {
             println!("{name}: {}", line.join(", "));
         }
     }
+}
+
+/// TAB's two high power line towers (`ZXMapTheme.Decorate`): each in the middle of a 5 × 5 forest, 20 tiles apart,
+/// mirrored or not by chance. With a copy of the dice – so the rest of the map (and a new try) stays as it was.
+fn power_towers(map: &Map, rng: &mut Rng) -> Vec<Ornament> {
+    const BLOCK: i32 = 5;
+    let n = map.size as i32;
+    let forest = |x: i32, y: i32| map.terrain(x, y) == Terrain::Forest;
+    let blocks: Vec<(i32, i32)> = (0..n - BLOCK)
+        .flat_map(|y| (0..n - BLOCK).map(move |x| (x, y)))
+        .filter(|&(x, y)| (0..BLOCK).all(|dy| (0..BLOCK).all(|dx| forest(x + dx, y + dy))))
+        .collect();
+    let mut towers: Vec<Ornament> = Vec::new();
+    for _ in 0..2 {
+        for _ in 0..100 {
+            if blocks.is_empty() {
+                return towers;
+            }
+            let (x, y) = blocks[rng.below(blocks.len() as u32) as usize];
+            let tile = (x + BLOCK / 2, y + BLOCK / 2);
+            if towers.iter().any(|t| (t.tile.0 - tile.0).pow(2) + (t.tile.1 - tile.1).pow(2) <= 400) {
+                continue;
+            }
+            let kind = if rng.below(2) == 0 { OrnamentKind::PowerTower } else { OrnamentKind::PowerTowerFlip };
+            towers.push(Ornament { kind, tile });
+            break;
+        }
+    }
+    towers
 }

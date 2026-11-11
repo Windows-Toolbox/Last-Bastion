@@ -56,6 +56,9 @@ pub struct Units {
     pub merc_soldier: Stats,
     pub merc_ranger: Stats,
     pub merc_sniper: Stats,
+    pub lucifer: Stats,
+    pub thanatos: Stats,
+    pub titan: Stats,
     /// Veterans (DESIGN.md 7.3, `sim/veterans.rs`).
     pub veterans: Veterans,
     /// Healing themselves (every unit's and zombie's `regen`), like TAB's `TimeForLifeRegeneration` and
@@ -68,6 +71,10 @@ pub struct Units {
     /// Dismissed (`Order::Dismiss`), a unit gives this many percent of its goods back – wood and iron, not its gold –
     /// rounded up: half of 3 wood is 2.
     pub dismiss_refund_percent: u32,
+    /// A unit without a target looks for a new one only this often (read in seconds, kept in ticks) – like TAB's
+    /// `EntityWatchInterval` (20 frames, every 2nd counts: 1/3 s). After a kill it stands a moment, weapon up.
+    #[serde(rename = "search_seconds", deserialize_with = "seconds")]
+    pub search: u32,
 }
 
 /// How a unit becomes a veteran: every killed zombie gives its `xp` (`data\zombies.json`), split among your units
@@ -112,6 +119,26 @@ pub struct Buildings {
     pub foundry: BuildingStats,
     pub ballista: BuildingStats,
     pub machine_gun_tower: BuildingStats,
+    pub wood_house: BuildingStats,
+    pub power_plant: BuildingStats,
+    pub oil_platform: BuildingStats,
+    pub quarry: BuildingStats,
+    pub big_quarry: BuildingStats,
+    pub big_farm: BuildingStats,
+    pub big_mill: BuildingStats,
+    pub warehouse: BuildingStats,
+    pub engineering_center: BuildingStats,
+    pub shocking_tower: BuildingStats,
+    pub executor: BuildingStats,
+    pub blade_trap: BuildingStats,
+    pub mine_trap: BuildingStats,
+    pub radar: BuildingStats,
+    pub lookout_tower: BuildingStats,
+    pub spire: BuildingStats,
+    pub academy: BuildingStats,
+    pub victorious: BuildingStats,
+    pub transmutator: BuildingStats,
+    pub crystal_palace: BuildingStats,
     /// Markets sell only what lies above this many percent of the storage (`sim/market.rs`) …
     pub sell_from_percent: u32,
     /// … at these prices (gold per unit).
@@ -152,6 +179,8 @@ pub struct Prices {
     pub food: u32,
     /// Iron from the foundry – worth more than the ore and coal in it.
     pub iron: u32,
+    /// Oil from the oil platform – as much as iron.
+    pub oil: u32,
 }
 
 /// Explosive barrels (`sim/blast.rs`): what one costs in the munitions factory and how long it takes …
@@ -411,6 +440,12 @@ pub struct BreedStats {
     /// `regen_every_seconds` of `data\units.json`, once it hasn't been hit for `regen_after_seconds` – a zombie shot at
     /// and then let go is whole again soon.
     pub regen: f32,
+    /// How much fire hurts it (TAB's `FireDamageFactor` – the spitter 1.5) …
+    pub fire_factor: f32,
+    /// … and how long it burns once it's set on fire (TAB's `BurningTime`; the giant: 0, it doesn't catch fire). Read in
+    /// seconds, kept in ticks (`sim/fire.rs`).
+    #[serde(rename = "burn_seconds", deserialize_with = "seconds")]
+    pub burn: u32,
     /// Per hit – a spitter: on everyone in its splash.
     pub damage: u32,
     /// How far it sees your units and the buildings with people in them (tiles) – not through forest.
@@ -753,6 +788,9 @@ impl GameData {
             UnitKind::MercSoldier => &self.units.merc_soldier,
             UnitKind::MercRanger => &self.units.merc_ranger,
             UnitKind::MercSniper => &self.units.merc_sniper,
+            UnitKind::Lucifer => &self.units.lucifer,
+            UnitKind::Thanatos => &self.units.thanatos,
+            UnitKind::Titan => &self.units.titan,
         }
     }
 
@@ -786,6 +824,26 @@ impl GameData {
             BuildingKind::Foundry => &self.buildings.foundry,
             BuildingKind::Ballista => &self.buildings.ballista,
             BuildingKind::MachineGunTower => &self.buildings.machine_gun_tower,
+            BuildingKind::WoodHouse => &self.buildings.wood_house,
+            BuildingKind::PowerPlant => &self.buildings.power_plant,
+            BuildingKind::OilPlatform => &self.buildings.oil_platform,
+            BuildingKind::Quarry => &self.buildings.quarry,
+            BuildingKind::BigQuarry => &self.buildings.big_quarry,
+            BuildingKind::BigFarm => &self.buildings.big_farm,
+            BuildingKind::BigMill => &self.buildings.big_mill,
+            BuildingKind::Warehouse => &self.buildings.warehouse,
+            BuildingKind::EngineeringCenter => &self.buildings.engineering_center,
+            BuildingKind::ShockingTower => &self.buildings.shocking_tower,
+            BuildingKind::Executor => &self.buildings.executor,
+            BuildingKind::BladeTrap => &self.buildings.blade_trap,
+            BuildingKind::MineTrap => &self.buildings.mine_trap,
+            BuildingKind::Radar => &self.buildings.radar,
+            BuildingKind::LookoutTower => &self.buildings.lookout_tower,
+            BuildingKind::Spire => &self.buildings.spire,
+            BuildingKind::Academy => &self.buildings.academy,
+            BuildingKind::Victorious => &self.buildings.victorious,
+            BuildingKind::Transmutator => &self.buildings.transmutator,
+            BuildingKind::CrystalPalace => &self.buildings.crystal_palace,
         }
     }
 

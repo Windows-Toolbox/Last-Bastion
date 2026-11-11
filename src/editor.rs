@@ -1,49 +1,73 @@
-//! The map editor's panel on the right (only in `LastBastionEditor.exe` – the game has none, `available`). At the top
-//! two buttons, **Edit** and **Test** (F10 switches): in Edit no time passes, you change the map; in Test the round
-//! runs from the map as it is, with all tools still at hand – back in Edit the map is as it was before the test.
-//! Either way you see the whole map, including the ring outside the border where the zombies come from.
+//! The map editor (only in `LastBastionEditor.exe` – the game has none, `available`), laid out like StarCraft 2's
+//! editor (`docs\editor.md`):
+//! - At the top the **menu bar** (File, Edit, View, Map, Test, Help – and the file's name, with • while there are
+//!   changes not saved yet), below it the **module bar**: Terrain · Objects · Zombies | Triggers · Events · Map, and on
+//!   the right Undo, Redo, Save and **Test (F10)**.
+//! - **Left** the module's tools, **right** the properties of what's selected, in the **middle** the map – with small
+//!   bars floating over it (whose eyes, grid, zoom; at the bottom left what the mouse does right now).
+//! - At the bottom a **status line**: the tile under the mouse, its ground, the selection, what's in hand, undo, the
+//!   day and hour.
 //!
-//! The panel has tabs like TAB's map editor (DESIGN.md 12.6):
-//! - **Map** – name, save, close, a new map – the round: how many days, the gold and wood at the start (TAB's
-//!   "Info") – and where the playing field lies in the whole map (SC2's map bounds and map size).
-//! - **Terrain** – paint mountains, forest, water, erase, ore (TAB's painter).
-//! - **Entities** – units, buildings (without the rules of the game), zombies, spawners, the eraser.
-//! - **Story** – TAB's "Game Narrative": scripts at the start, victory and defeat, goals, the command center's own
+//! The map only gets the room between the panels (`view.rs`): the camera looks at its middle, TAB's bar with the
+//! minimap sits at its bottom, clicks beside it go to the panels.
+//!
+//! In **Edit** no time passes, you change the map; in **Test** the round runs from the map as it is, with all tools
+//! still at hand – back in Edit the map is as it was before the test. Either way you see the whole map, including the
+//! ring outside the border where the zombies come from.
+//!
+//! The modules (what TAB's editor has, DESIGN.md 12.6, sorted SC2's way):
+//! - **Terrain** – paint mountains, forest, water, erase, ore, big rocks (TAB's painter).
+//! - **Objects** – units, buildings (without the rules of the game), loot, the eraser, and the list of everything
+//!   placed (TAB's entity list).
+//! - **Zombies** – brush, drop, giant, spawners, the houses of a village of doom (TAB's three sizes).
+//! - **Triggers** – TAB's "Game Narrative": scripts at the start, victory and defeat, goals, the command center's own
 //!   button, counters (`story_panel.rs`).
-//! - **Events** – send waves now, and the map's **events** like TAB's: each comes by itself at its day and hour (plus a
-//!   random offset), maybe again and again growing each time, announced or silent, with groups of several breeds from
-//!   sides or chosen spawners – the stragglers, the swarms, the final wave and the victory are all events.
+//! - **Events** – the map's **events** like TAB's: each comes by itself at its day and hour (plus a random offset),
+//!   maybe again and again growing each time, announced or silent, with groups of several breeds from sides or chosen
+//!   spawners – the stragglers, the swarms, the final wave and the victory are all events. On the right: send waves now.
+//! - **Map** – name, TAB's "Info", the round (days, gold and wood at the start) and where the playing field lies in the
+//!   whole map (SC2's map bounds and map size).
 //!
 //! A right click on a spawner opens its properties in a small window of their own (`properties_window`).
 //!
-//! It's made with **egui** (DESIGN.md 12.9, step 1): fields to type numbers and names into (or drag them), drop-down
-//! lists, sections that fold, a list that scrolls. egui works like macroquad's drawing – *immediate mode*: every frame
-//! `show` describes the whole panel anew, and what was clicked or typed comes back right there. The panel only reads
-//! the world; whatever it changes goes out as an order (`Order`), so it stays deterministic. What the left mouse button
-//! does on the map with a tool in hand is decided by `ui.rs`, because that's where the mouse is read anyway. Saving,
-//! closing and switching between Edit and Test only `game.rs` can do – the panel asks for it (`request`).
+//! Whatever is selected – buildings, units, zombies, houses, loot, spawners, decoration; a box in Edit takes all of it –
+//! can be copied, cut and pasted (Ctrl+C, Ctrl+X, Ctrl+V – `picking.rs`, `sim/clipboard.rs`), with everything it has.
+//! Zoomed out, the zombies show as coloured tiles, one colour per breed (`ZombieLook`).
+//!
+//! It's made with **egui** (DESIGN.md 12.9): fields to type numbers and names into (or drag them), drop-down lists,
+//! menus, sections that fold, lists that scroll, panels at the edges of the window. egui works like macroquad's
+//! drawing – *immediate mode*: every frame `show` describes the whole editor anew, and what was clicked or typed comes
+//! back right there. The editor only reads the world; whatever it changes goes out as an order (`Order`), so it stays
+//! deterministic. What the left mouse button does on the map with a tool in hand is decided by `ui.rs`, because that's
+//! where the mouse is read anyway. Saving, closing and switching between Edit and Test only `game.rs` can do – the
+//! editor asks for it (`request`).
 
 use egui_macroquad::egui::{
-    self, Align2, CollapsingHeader, Color32, ComboBox, DragValue, FontId, Frame, RichText, ScrollArea, Slider, TextEdit,
-    TextStyle, Ui,
+    self, text::LayoutJob, Align, Align2, CollapsingHeader, Color32, ComboBox, DragValue, FontId, Frame, RichText,
+    ScrollArea, Slider, TextEdit, TextFormat, TextStyle, Ui,
 };
 use macroquad::math::Vec2;
 
+use crate::draw::{breed_tile_color, ZOMBIE_TILES_BELOW};
 use crate::hud::Layout;
+use crate::iso::{Camera, START_ZOOM};
 use crate::kinds::{BuildingKind, Resource, UnitKind};
-use crate::map::{Ore, Terrain};
+use crate::map::{BigRock, Ore, Terrain, BIG_ROCK_SIZES};
 use crate::map::BORDER;
 use crate::sim::{
-    Axes, Breed, BreedCount, Event, Order, Owner, SpawnMode, Spawner, Tag, Thing, ThingRef, WaveFrom, WaveGroup, World,
-    MAP_SIZES, MOST_PER_TILE,
+    Axes, Breed, BreedCount, Clip, Event, Nest, Order, Owner, SpawnMode, Spawner, Tag, Thing, ThingRef, WaveFrom, WaveGroup,
+    World, MAP_SIZES, MOST_PER_TILE,
 };
 
-/// Width of the panel. egui counts in points – here the same as macroquad's pixels.
-const WIDTH: f32 = 320.0;
-/// Room between the panel and the edge of the window or the bottom panel.
-const PAD: f32 = 8.0;
-/// Room for the hint at the bottom of the panel and the panel's own edge.
-const HINT_H: f32 = 44.0;
+/// How wide the panel on the left starts – for the modules with tools, and the wider one for those with pages of
+/// fields (Triggers, Events, Map). Both can be dragged wider or narrower at their edge; egui remembers it.
+/// egui counts in points – here the same as macroquad's pixels.
+const TOOLS_W: f32 = 290.0;
+const PAGES_W: f32 = 380.0;
+/// How wide the properties on the right start.
+const PROPERTIES_W: f32 = 300.0;
+/// The floating bars keep this far from the edges of the map.
+const FLOAT_PAD: f32 = 8.0;
 /// A spawner name and a map name have at most this many letters.
 const MAX_NAME: usize = 24;
 /// The round lasts at most this many days.
@@ -52,6 +76,9 @@ const MAX_DAYS: u32 = 200;
 pub(crate) const MAX_AMOUNT: u32 = 10_000_000;
 /// The final wave stands out among the events – and so does a group with no spawner ticked.
 const FINAL: Color32 = Color32::from_rgb(242, 115, 89);
+/// The Test button: green while you can start a test, orange while one runs.
+const TEST_FILL: Color32 = Color32::from_rgb(53, 90, 39);
+const TESTING_FILL: Color32 = Color32::from_rgb(122, 72, 24);
 /// Where a group of a wave can come from at random (besides chosen spawners).
 const WAVE_FROM: [WaveFrom; 5] = [WaveFrom::OneSpawner, WaveFrom::Sides(1), WaveFrom::Sides(2), WaveFrom::Sides(3), WaveFrom::Sides(4)];
 /// What the zombie brush and drop can place: every breed but the giant – it has a tool of its own (`Tool::Giant`),
@@ -59,7 +86,7 @@ const WAVE_FROM: [WaveFrom; 5] = [WaveFrom::OneSpawner, WaveFrom::Sides(1), Wave
 fn small_breeds() -> Vec<Breed> {
     Breed::ALL.into_iter().filter(|&b| b != Breed::Giant).collect()
 }
-/// The buildings of the "Entities" tab, in this order.
+/// The buildings of the "Objects" module, in this order.
 pub(crate) const BUILDINGS: &[BuildingKind] = &[
     BuildingKind::CommandCenter,
     BuildingKind::Tent,
@@ -98,14 +125,66 @@ pub enum Mode {
     Test,
 }
 
-/// The tabs of the panel (like TAB's map editor: Info, Painter, Entities, Events).
+/// The modules of the module bar, like SC2's (Terrain, Units, Regions … Triggers, Data). Regions and Data come with
+/// the steps that build them (`docs\editor.md`) – a button that does nothing yet isn't shown.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Tab {
-    Map,
+pub enum Module {
     Terrain,
-    Entities,
+    Objects,
+    Zombies,
+    Triggers,
     Events,
-    Story,
+    Map,
+}
+
+impl Module {
+    /// The ones that work on the map, then – after a line – the ones with pages of fields.
+    const ON_MAP: [Module; 3] = [Module::Terrain, Module::Objects, Module::Zombies];
+    const PAGES: [Module; 3] = [Module::Triggers, Module::Events, Module::Map];
+
+    fn name(self) -> &'static str {
+        match self {
+            Module::Terrain => "Terrain",
+            Module::Objects => "Objects",
+            Module::Zombies => "Zombies",
+            Module::Triggers => "Triggers",
+            Module::Events => "Events",
+            Module::Map => "Map",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Module::Terrain => "Ground, forest, water, ore, big rocks",
+            Module::Objects => "Units, buildings, loot - and the list of all placed",
+            Module::Zombies => "Zombies by brush or by the crowd, spawners, villages of doom",
+            Module::Triggers => "TAB's game narrative: scripts, goals, counters",
+            Module::Events => "Waves, the final wave, victory - at their day and hour",
+            Module::Map => "Name, info, the round, playing field and grid",
+        }
+    }
+}
+
+/// Where a part of the editor comes from – a small badge on its heading, like on the drawings in `docs\editor.md`.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Origin {
+    /// From TAB's editor (yellow).
+    Tab,
+    /// The way SC2's editor does it (blue).
+    Sc2,
+    /// Neither – our own (green).
+    New,
+}
+
+impl Origin {
+    /// The badge's text, its letters' colour and its background.
+    fn look(self) -> (&'static str, Color32, Color32) {
+        match self {
+            Origin::Tab => ("TAB", Color32::from_rgb(240, 207, 122), Color32::from_rgb(74, 58, 20)),
+            Origin::Sc2 => ("SC2", Color32::from_rgb(156, 198, 245), Color32::from_rgb(29, 58, 92)),
+            Origin::New => ("new", Color32::from_rgb(159, 224, 166), Color32::from_rgb(36, 70, 42)),
+        }
+    }
 }
 
 /// Whose eyes the editor looks through. In the game it's always the player's.
@@ -143,10 +222,14 @@ pub enum Tool {
     Unit(UnitKind),
     /// A new spawner at the click.
     Spawner,
-    /// A house of a village of doom (3 × 3) at the click – with as many zombies inside as the generator would put there.
-    Doom,
+    /// A house of a village of doom at the click – small, medium or big like TAB's (2 × 2, 3 × 3, 5 × 5 tiles,
+    /// `Nest::side`), with as many zombies inside as the generator would put there.
+    Doom(Nest),
     /// A pile of loot at the click – what lies in it and its hidden guards rolled like the generator does.
     Loot,
+    /// One of TAB's big rocks of this many tiles each way (`map::BIG_ROCK_SIZES`) at the click – its middle under the
+    /// mouse. Its tiles become mountain; painting other ground over it takes it away.
+    BigRock(i32),
     /// A building, without the rules of the game. Not really held by the editor: `ui.rs` hangs it on the mouse
     /// like a building of the command center (`placing`), so dragging lines and turning (R) work the same.
     Building(BuildingKind),
@@ -166,8 +249,13 @@ impl Tool {
             Tool::PlayArea => "Drag the border",
             Tool::Unit(kind) => &kind.stats().name,
             Tool::Spawner => "+ Spawner",
-            Tool::Doom => "Doom house",
+            Tool::Doom(Nest::Small) => "Small house 2 x 2",
+            Tool::Doom(Nest::Medium) => "Medium house 3 x 3",
+            Tool::Doom(Nest::Big) => "Big house 5 x 5",
             Tool::Loot => "Loot",
+            Tool::BigRock(3) => "3 x 3",
+            Tool::BigRock(4) => "4 x 4",
+            Tool::BigRock(_) => "5 x 5",
             Tool::Building(BuildingKind::CommandCenter) => "CC",
             Tool::Building(kind) => &kind.stats().name,
         }
@@ -188,13 +276,31 @@ pub enum EditorRequest {
     Save,
     /// "Close": back to the editor's home screen.
     Close,
-    /// Edit ↔ Test (the two buttons at the top, F10).
+    /// Edit ↔ Test (the Test button, the Test menu, F10).
     Mode(Mode),
     /// "Undo" (Ctrl+Z) and "Redo" (Ctrl+Y).
     Undo,
     Redo,
     /// "Locate": the camera to this point (TAB's "Locate on map").
     Locate(Vec2),
+}
+
+/// The clipboard's commands from the Edit menu – `picking.rs` carries them out, like the keys.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ClipAction {
+    Cut,
+    Copy,
+    Paste,
+    Delete,
+}
+
+/// How the zombies are drawn: as figures, or as tiles in the colour of their breed (TAB's editor paints its zombies
+/// as cells) – by itself when zoomed out, always or never.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ZombieLook {
+    Auto,
+    Tiles,
+    Figures,
 }
 
 /// Which placed things the list shows (TAB: "Filter by selected Template", "Show All").
@@ -228,12 +334,23 @@ impl Wave {
     }
 }
 
+/// What the editor may change besides sending orders – lent to `show` by `game.rs` for one frame: the camera (zoom,
+/// the floating bar) and whether the grid is shown (a setting of the game, `Settings::show_grid`).
+pub struct Around<'a> {
+    pub world: &'a World,
+    pub orders: &'a mut Vec<Order>,
+    pub camera: &'a mut Camera,
+    pub grid: &'a mut bool,
+    /// `false` while the menu or a question is in front – then the editor is only shown, greyed out.
+    pub enabled: bool,
+}
+
 pub struct Editor {
     /// Is there an editor at all? Only in `LastBastionEditor.exe` – in the game nothing of it is drawn or clickable,
     /// and the whole map is never shown.
     pub available: bool,
     pub mode: Mode,
-    pub tab: Tab,
+    pub module: Module,
     /// The tool in hand – `None`: the left mouse button selects as usual.
     pub tool: Option<Tool>,
     /// Brush size in tiles (edge length, odd).
@@ -244,6 +361,8 @@ pub struct Editor {
     /// when it's shown next (screen, once: then it stays where it's dragged to).
     properties: bool,
     properties_at: Option<Vec2>,
+    /// "Help → Keys" is open.
+    keys_open: bool,
     /// "Grid" while it's being changed – until "Apply" (`None`: the size the map has).
     grid_size: Option<usize>,
     /// While the selected spawner's name field has the keyboard: the text so far (`ui.rs` shows it on the map).
@@ -254,11 +373,13 @@ pub struct Editor {
     pub map_name: String,
     /// TAB's "Info" of the map, and whether the game makes it anew every start – kept here until it's saved (`game.rs`).
     pub info: MapInfo,
-    /// The tile under the mouse – shown at the bottom of the panel (TAB's "X 50 Y 60").
+    /// The tile under the mouse – shown in the status line (TAB's "X 50 Y 60").
     mouse_tile: Option<(i32, i32)>,
+    /// How many units and buildings are selected on the map – for the status line.
+    selected: (usize, usize),
     /// The brush round (big ones a rough circle) or square, like TAB's pencil shape.
     pub square_brush: bool,
-    /// The placed thing whose properties the "Entities" tab shows (TAB's "Edit") – picked in the list, or the one
+    /// The placed thing whose properties the panel on the right shows (TAB's "Edit") – picked in the list, or the one
     /// selected on the map; and that selection when it last changed, so a pick in the list stays until it changes.
     object: Option<ThingRef>,
     seen_selection: Option<ThingRef>,
@@ -268,6 +389,9 @@ pub struct Editor {
     pub map_info: String,
     /// What came of the last "Save" – set by `game.rs`.
     pub status: Option<String>,
+    /// The map file's name in the menu bar, and whether there are changes that aren't in it – set by `game.rs`.
+    pub file_name: String,
+    pub unsaved: bool,
     /// For `game.rs`: something only it can do (`EditorRequest`).
     pub request: Option<EditorRequest>,
     /// How many steps undo and redo can go – set by `game.rs` (`undo.rs`).
@@ -286,7 +410,20 @@ pub struct Editor {
     /// The drop: which breed, how many.
     pub breed: Breed,
     pub drop: u32,
-    /// Is the mouse on the panel, or is one of its fields being dragged? Then the map doesn't get it (`show`).
+    /// Which picture a big rock gets (0–2: TAB's A, B, C) – `None`: mixed, picked by the tile (`big_rock`).
+    pub rock_variant: Option<u8>,
+    /// The zombies as figures or as tiles (View menu, the bar over the map).
+    zombie_look: ZombieLook,
+    /// What Ctrl+C or Ctrl+X copied last – Ctrl+V puts it down again (`picking.rs`).
+    pub clip: Option<Clip>,
+    /// An entry of the Edit menu clicked: cut, copy, paste, delete – `picking.rs` takes it.
+    pub clip_request: Option<ClipAction>,
+    /// How many pieces are selected, and what they are when it's more than units and buildings ("40 zombies") – set
+    /// by `picking.rs` every frame, for the Edit menu and the status line.
+    pub pieces: usize,
+    pub picked_text: Option<String>,
+    /// Is the mouse on a panel or a floating bar, or is one of their fields being dragged? Then the map doesn't get it
+    /// (`show`).
     on_panel: bool,
     /// Does a field of the panel have the keyboard – now, or until the end of the last frame (`show`)?
     typing: bool,
@@ -302,24 +439,29 @@ impl Editor {
         Editor {
             available,
             mode: Mode::Edit,
-            tab: Tab::Map,
+            // Like SC2's editor, which opens in its terrain module.
+            module: Module::Terrain,
             tool: None,
             brush: 3,
             spawner: None,
             properties: false,
             properties_at: None,
+            keys_open: false,
             grid_size: None,
             name_edit: None,
             map_name_edit: None,
             map_name: "Untitled".to_owned(),
             info: MapInfo::default(),
             mouse_tile: None,
+            selected: (0, 0),
             square_brush: false,
             object: None,
             seen_selection: None,
             filter: Filter::All,
             map_info: String::new(),
             status: None,
+            file_name: String::new(),
+            unsaved: false,
             request: None,
             steps: (0, 0),
             place: None,
@@ -331,6 +473,12 @@ impl Editor {
             per_tile: small_breeds().into_iter().map(|b| (b, u32::from(b == Breed::Walker))).collect(),
             breed: Breed::Walker,
             drop: 100,
+            rock_variant: None,
+            zombie_look: ZombieLook::Auto,
+            clip: None,
+            clip_request: None,
+            pieces: 0,
+            picked_text: None,
             on_panel: false,
             typing: false,
             typed_before: false,
@@ -338,11 +486,13 @@ impl Editor {
         }
     }
 
-    /// Every frame: the building `ui.rs` has on the mouse – its button is lit –, the tile under the mouse, and the one
-    /// building or unit selected on the map (if it's one): a new selection shows its properties.
-    pub fn sync(&mut self, placing: Option<BuildingKind>, mouse_tile: (i32, i32), selected: Option<ThingRef>) {
+    /// Every frame: the building `ui.rs` has on the mouse – its button is lit –, the tile under the mouse, the one
+    /// building or unit selected on the map (if it's one): a new selection shows its properties – and how many units
+    /// and buildings are selected.
+    pub fn sync(&mut self, placing: Option<BuildingKind>, mouse_tile: (i32, i32), selected: Option<ThingRef>, counts: (usize, usize)) {
         self.placing = placing;
         self.mouse_tile = Some(mouse_tile);
+        self.selected = counts;
         if selected != self.seen_selection {
             self.seen_selection = selected;
             if selected.is_some() {
@@ -372,6 +522,16 @@ impl Editor {
     pub fn brush_text(&self) -> String {
         let parts: Vec<String> = self.per_tile.iter().filter(|&&(_, n)| n > 0).map(|&(b, n)| format!("{n} {}", b.name())).collect();
         if parts.is_empty() { "nothing - push a slider".to_owned() } else { parts.join(", ") + " per tile" }
+    }
+
+    /// Are the zombies drawn as tiles at this zoom? Only in the editor – the game always has its figures.
+    pub fn zombie_tiles(&self, zoom: f32) -> bool {
+        self.available
+            && match self.zombie_look {
+                ZombieLook::Auto => zoom < ZOMBIE_TILES_BELOW,
+                ZombieLook::Tiles => true,
+                ZombieLook::Figures => false,
+            }
     }
 
     /// The editor's tools and the whole map – only in the editor program, in both modes.
@@ -421,7 +581,7 @@ impl Editor {
         self.typing
     }
 
-    /// Is the mouse on the panel (or dragging one of its fields)? Then clicks and the wheel don't go to the map.
+    /// Is the mouse on a panel (or dragging one of its fields)? Then clicks and the wheel don't go to the map.
     pub fn has_mouse(&self) -> bool {
         self.available && self.on_panel
     }
@@ -429,9 +589,12 @@ impl Editor {
     /// F10: the other mode – asked for, `game.rs` switches.
     pub fn toggle(&mut self) {
         if self.available {
-            let other = if self.mode == Mode::Edit { Mode::Test } else { Mode::Edit };
-            self.request = Some(EditorRequest::Mode(other));
+            self.request = Some(EditorRequest::Mode(self.other_mode()));
         }
+    }
+
+    fn other_mode(&self) -> Mode {
+        if self.mode == Mode::Edit { Mode::Test } else { Mode::Edit }
     }
 
     /// The tiles the brush covers around `center`: a square for small brushes, a rough circle for big ones – or a
@@ -450,46 +613,59 @@ impl Editor {
         tiles
     }
 
-    /// Every frame in the editor, before `ui.rs` reads the mouse and the keys: the whole panel, built anew. `ctx` is
-    /// egui's context – it remembers between frames what egui needs (which section is folded, how far the list is
-    /// scrolled, which field has the keyboard). `enabled`: `false` while the menu or a question is in front – then the
-    /// panel is only shown, greyed out.
-    pub fn show(&mut self, ctx: &egui::Context, world: &World, enabled: bool, orders: &mut Vec<Order>) {
+    /// Every frame in the editor, before `ui.rs` reads the mouse and the keys: the whole editor, built anew. `ctx` is
+    /// egui's context – it remembers between frames what egui needs (which section is folded, how far a list is
+    /// scrolled, how wide a panel was dragged, which field has the keyboard).
+    ///
+    /// egui's panels take their room from the edges of the window in the order they're added: the two bars at the top
+    /// first (as wide as the window), then the status line at the bottom, then the panels left and right between them.
+    /// What's left over in the middle (`available_rect`) is the map's – `view.rs` hands it to the camera and the bar.
+    pub fn show(&mut self, ctx: &egui::Context, around: Around<'_>) {
         if !self.styled {
             style(ctx);
             self.styled = true;
         }
-        // From the top down to the bottom panel (`hud.rs`) – the command card and the stock stay free.
-        let height = Layout::new().panel.y - 2.0 * PAD;
-        egui::Window::new("Map editor")
-            .title_bar(false)
-            .resizable(false)
-            .anchor(Align2::RIGHT_TOP, [-PAD, PAD])
-            .min_width(WIDTH)
-            .max_width(WIDTH)
-            .show(ctx, |ui| {
-                if !enabled {
-                    ui.disable();
-                }
-                self.top(ui);
+        let Around { world, orders, camera, grid, enabled } = around;
+        egui::TopBottomPanel::top("menu bar").show(ctx, |ui| {
+            // `add_enabled_ui`: everything inside greyed out and not clickable if `enabled` is false.
+            ui.add_enabled_ui(enabled, |ui| self.menu_bar(ui, world, orders, camera, grid));
+        });
+        egui::TopBottomPanel::top("module bar").show(ctx, |ui| {
+            ui.add_enabled_ui(enabled, |ui| self.module_bar(ui));
+        });
+        egui::TopBottomPanel::bottom("status line").show(ctx, |ui| self.status_line(ui, world));
+        // Two left panels with names of their own, so each keeps its own width: the narrow one for tools, the wide one
+        // for pages of fields.
+        let pages = Module::PAGES.contains(&self.module);
+        let left = if pages { egui::SidePanel::left("pages").default_width(PAGES_W) } else { egui::SidePanel::left("tools").default_width(TOOLS_W) };
+        left.width_range(220.0..=700.0).show(ctx, |ui| {
+            ui.add_enabled_ui(enabled, |ui| {
+                ui.label(RichText::new(self.module.hint()).small().weak());
                 ui.separator();
-                // `min_rect`: what the panel has used so far. The tab gets the rest – more scrolls.
-                let room = (height - ui.min_rect().height() - HINT_H).max(60.0);
-                ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| match self.tab {
-                    Tab::Map => self.map_tab(ui, world, orders),
-                    Tab::Terrain => self.terrain_tab(ui),
-                    Tab::Entities => self.entities_tab(ui, world, orders),
-                    Tab::Events => events_tab(ui, world, orders),
-                    Tab::Story => crate::story_panel::story_tab(ui, world, orders),
+                // `id_salt`: one scroll position per module.
+                let id = self.module.name();
+                ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show(ui, |ui| match self.module {
+                    Module::Terrain => self.terrain_module(ui),
+                    Module::Objects => self.objects_module(ui, world),
+                    Module::Zombies => self.zombies_module(ui, world),
+                    Module::Triggers => crate::story_panel::story_tab(ui, world, orders),
+                    Module::Events => events_module(ui, world, orders),
+                    Module::Map => self.map_module(ui, world, orders),
                 });
-                ui.separator();
-                let hint = match self.mouse_tile {
-                    Some((x, y)) => format!("{}   (tile {x}, {y})", self.hint()),
-                    None => self.hint().to_owned(),
-                };
-                ui.label(RichText::new(hint).small().weak());
             });
+        });
+        egui::SidePanel::right("properties").default_width(PROPERTIES_W).width_range(220.0..=600.0).show(ctx, |ui| {
+            ui.add_enabled_ui(enabled, |ui| {
+                ScrollArea::vertical().id_salt("properties").auto_shrink([false, false]).show(ui, |ui| self.properties_panel(ui, world, orders));
+            });
+        });
+        // The middle: the map. egui's points → the screen's pixels (the same unless Windows scales the window).
+        let map = ctx.available_rect();
+        let k = ctx.pixels_per_point();
+        crate::view::set(Some(macroquad::math::Rect::new(map.min.x * k, map.min.y * k, map.width() * k, map.height() * k)));
+        self.floating_bars(ctx, map, enabled, camera, grid);
         self.properties_window(ctx, world, enabled, orders);
+        self.keys_window(ctx);
         keep_focus_for_text(ctx);
         // Esc and Enter take the keyboard away from a field before `show` even starts – but in that frame the key
         // was still meant for the field (not for the menu or the selection). So "typing" lasts one frame longer.
@@ -500,55 +676,336 @@ impl Editor {
         self.on_panel = ctx.wants_pointer_input() || ctx.is_pointer_over_area();
     }
 
-    /// What's always there: Edit / Test, the tabs, whose view.
-    fn top(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            let w = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(0.0);
-            for (mode, text) in [(Mode::Edit, "Edit"), (Mode::Test, "Test (F10)")] {
-                let button = egui::Button::new(RichText::new(text).strong()).selected(self.mode == mode);
-                if ui.add_sized([w, 28.0], button).clicked() && mode != self.mode {
-                    self.request = Some(EditorRequest::Mode(mode));
+    /// File, Edit, View, Map, Test, Help – and on the right the file's name, with ● while there are unsaved changes.
+    /// `ui.close_menu()`: a click on an entry closes the menu, like everywhere.
+    fn menu_bar(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>, camera: &mut Camera, grid: &mut bool) {
+        let edit = self.mode == Mode::Edit;
+        let (back, forward) = self.steps;
+        // `menu::bar`: a row of menus that open with a click.
+        egui::menu::bar(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                self.menu_entry(ui, "New map...", "", EditorRequest::NewMap, true);
+                self.menu_entry(ui, "Save", "Ctrl+S", EditorRequest::Save, true);
+                ui.separator();
+                self.menu_entry(ui, "Close", "", EditorRequest::Close, true);
+            });
+            ui.menu_button("Edit", |ui| {
+                self.menu_entry(ui, &format!("Undo ({back})"), "Ctrl+Z", EditorRequest::Undo, edit && back > 0);
+                self.menu_entry(ui, &format!("Redo ({forward})"), "Ctrl+Y", EditorRequest::Redo, edit && forward > 0);
+                ui.separator();
+                let some = edit && self.pieces > 0;
+                let pastes = edit && self.clip.is_some();
+                for (action, text, key, on) in [
+                    (ClipAction::Cut, "Cut", "Ctrl+X", some),
+                    (ClipAction::Copy, "Copy", "Ctrl+C", some),
+                    (ClipAction::Paste, "Paste", "Ctrl+V", pastes),
+                    (ClipAction::Delete, "Delete", "Del", some),
+                ] {
+                    if ui.add_enabled(on, egui::Button::new(text).shortcut_text(key)).clicked() {
+                        self.clip_request = Some(action);
+                        ui.close_menu();
+                    }
                 }
-            }
-        });
-        // Undo and redo only in Edit – a test runs on a copy of the map anyway. `add_enabled`: greyed out if not.
-        ui.horizontal(|ui| {
-            let (back, forward) = self.steps;
-            let edit = self.mode == Mode::Edit;
-            if ui.add_enabled(edit && back > 0, egui::Button::new(format!("Undo ({back})"))).on_hover_text("Ctrl+Z").clicked() {
-                self.request = Some(EditorRequest::Undo);
-            }
-            if ui.add_enabled(edit && forward > 0, egui::Button::new(format!("Redo ({forward})"))).on_hover_text("Ctrl+Y").clicked() {
-                self.request = Some(EditorRequest::Redo);
-            }
-        });
-        ui.horizontal(|ui| {
-            for (tab, text) in [(Tab::Map, "Map"), (Tab::Terrain, "Terrain"), (Tab::Entities, "Entities"), (Tab::Events, "Events"), (Tab::Story, "Story")] {
-                ui.selectable_value(&mut self.tab, tab, text);
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("View:");
-            for (sight, text) in [(Sight::All, "All"), (Sight::Player, "Player"), (Sight::Zombies, "Zombies")] {
-                ui.selectable_value(&mut self.sight, sight, text);
-            }
+                ui.separator();
+                let clear = ui.add_enabled(edit, egui::Button::new("Clear map"));
+                if clear.on_hover_text("Everything off the map, all of it grass - spawners, events and the round stay. Undo brings it back").clicked() {
+                    clear_map(world, orders);
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("View", |ui| {
+                for (sight, text) in [(Sight::All, "Everything (no fog)"), (Sight::Player, "What the player sees"), (Sight::Zombies, "What the zombies see")] {
+                    if ui.radio_value(&mut self.sight, sight, text).clicked() {
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                if ui.checkbox(grid, "Grid").clicked() {
+                    ui.close_menu();
+                }
+                ui.label(RichText::new("Zombies").weak());
+                for (look, text) in [(ZombieLook::Auto, "As tiles when zoomed out"), (ZombieLook::Tiles, "Always as tiles"), (ZombieLook::Figures, "Always as figures")] {
+                    if ui.radio_value(&mut self.zombie_look, look, text).clicked() {
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                if ui.add(egui::Button::new("Zoom in").shortcut_text("Wheel")).clicked() {
+                    camera.zoom_by(1.15);
+                }
+                if ui.button("Zoom out").clicked() {
+                    camera.zoom_by(1.0 / 1.15);
+                }
+                if ui.button("Zoom 100 %").clicked() {
+                    camera.zoom = START_ZOOM;
+                    ui.close_menu();
+                }
+                self.menu_entry(ui, "Camera to the base", "", EditorRequest::Locate(world.base), true);
+            });
+            ui.menu_button("Map", |ui| {
+                for (module, text) in [(Module::Map, "Name, info and the round"), (Module::Events, "Events"), (Module::Triggers, "Triggers")] {
+                    if ui.button(text).clicked() {
+                        self.module = module;
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                if ui.button("Drag the border").on_hover_text("The playing field - grab its edges on the map").clicked() {
+                    self.module = Module::Map;
+                    self.take(Tool::PlayArea);
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("Test", |ui| {
+                let text = if edit { "Test the map" } else { "Back to editing" };
+                self.menu_entry(ui, text, "F10", EditorRequest::Mode(self.other_mode()), true);
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("Keys").clicked() {
+                    self.keys_open = true;
+                    ui.close_menu();
+                }
+            });
+            // `right_to_left`: from the right edge leftwards – the name at the far right.
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                // "•": egui's own font has no "●".
+                let dot = if self.unsaved { " •" } else { "" };
+                ui.label(RichText::new(format!("{}{dot} - Last Bastion Editor", self.file_name)).weak())
+                    .on_hover_text(if self.unsaved { "Changes not saved yet" } else { "Everything saved" });
+            });
         });
     }
 
-    /// The line at the bottom of the panel.
-    fn hint(&self) -> &'static str {
-        if self.testing() {
-            "Test - Edit (F10): the map as before the test"
-        } else {
-            match self.tab {
-                _ if self.tool == Some(Tool::PlayArea) => "Grab an edge of the border - inside: move it",
-                Tab::Map | Tab::Events | Tab::Story => "Numbers: drag them, or click and type",
-                _ => "Right click or Esc: put the tool away",
-            }
+    /// An entry of a menu that asks `game.rs` for something – with its key on the right, greyed out if `on` is false.
+    fn menu_entry(&mut self, ui: &mut Ui, text: &str, key: &str, request: EditorRequest, on: bool) {
+        if ui.add_enabled(on, egui::Button::new(text).shortcut_text(key)).clicked() {
+            self.request = Some(request);
+            ui.close_menu();
         }
     }
 
-    fn map_tab(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+    /// The modules, and on the right undo, redo, save and the Test button.
+    fn module_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (k, group) in [Module::ON_MAP, Module::PAGES].into_iter().enumerate() {
+                if k > 0 {
+                    ui.separator();
+                }
+                for module in group {
+                    let button = egui::Button::new(RichText::new(module.name()).size(16.0)).selected(self.module == module).min_size(egui::vec2(0.0, 32.0));
+                    if ui.add(button).on_hover_text(module.hint()).clicked() {
+                        self.module = module;
+                    }
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                let edit = self.mode == Mode::Edit;
+                let (text, fill) = if edit { ("▶ Test (F10)", TEST_FILL) } else { ("Back to Edit (F10)", TESTING_FILL) };
+                let hint = if edit { "Play the map as it is now - back in Edit it's as before" } else { "Stop the test - the map as it was before it" };
+                let test = egui::Button::new(RichText::new(text).strong().size(16.0).color(Color32::WHITE)).fill(fill).min_size(egui::vec2(0.0, 32.0));
+                if ui.add(test).on_hover_text(hint).clicked() {
+                    self.request = Some(EditorRequest::Mode(self.other_mode()));
+                }
+                ui.separator();
+                // Right to left: Save comes first, so it stands rightmost.
+                if ui.add(egui::Button::new("Save").min_size(egui::vec2(0.0, 28.0))).on_hover_text("Ctrl+S").clicked() {
+                    self.request = Some(EditorRequest::Save);
+                }
+                let (back, forward) = self.steps;
+                if ui.add_enabled(edit && forward > 0, egui::Button::new(format!("Redo ({forward})")).min_size(egui::vec2(0.0, 28.0))).on_hover_text("Ctrl+Y").clicked() {
+                    self.request = Some(EditorRequest::Redo);
+                }
+                if ui.add_enabled(edit && back > 0, egui::Button::new(format!("Undo ({back})")).min_size(egui::vec2(0.0, 28.0))).on_hover_text("Ctrl+Z").clicked() {
+                    self.request = Some(EditorRequest::Undo);
+                }
+            });
+        });
+    }
+
+    /// The line at the very bottom: the tile under the mouse and its ground, the selection, what's in hand – on the
+    /// right undo and the clock.
+    fn status_line(&self, ui: &mut Ui, world: &World) {
+        ui.horizontal(|ui| {
+            if self.testing() {
+                ui.label(RichText::new("TEST").strong().color(Color32::from_rgb(242, 170, 90)));
+                ui.separator();
+            }
+            match self.mouse_tile.filter(|&(x, y)| !self.on_panel && x >= 0 && y >= 0 && x < world.map.size as i32 && y < world.map.size as i32) {
+                Some((x, y)) => {
+                    ui.label(format!("Tile {x}, {y}"));
+                    ui.separator();
+                    ui.label(world.map.terrain(x, y).name());
+                }
+                None => {
+                    ui.label(RichText::new("Tile -").weak());
+                }
+            }
+            ui.separator();
+            ui.label(format!("Selected: {}", self.selection_text(world)));
+            ui.separator();
+            ui.label(format!("In hand: {}", self.hand_text()));
+            if let Some(clip) = &self.clip {
+                ui.separator();
+                ui.label(format!("Clipboard: {}", clip.describe())).on_hover_text("Ctrl+V puts it down at the mouse");
+            }
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                let (day, hour) = world.clock();
+                ui.label(format!("Day {day}, {hour:02}:00"));
+                ui.separator();
+                let (back, forward) = self.steps;
+                ui.label(format!("Undo {back} - redo {forward}"));
+                if let Some(status) = &self.status {
+                    ui.separator();
+                    ui.label(RichText::new(status).weak());
+                }
+            });
+        });
+    }
+
+    /// "Tent", "3 units, 2 buildings", "spawner North" or "nothing".
+    fn selection_text(&self, world: &World) -> String {
+        if let Some(s) = self.spawner.and_then(|id| world.find_spawner(id)) {
+            return format!("spawner {}", world.spawners[s].name);
+        }
+        if let Some(text) = &self.picked_text {
+            return text.clone();
+        }
+        match self.selected {
+            (0, 0) => "nothing".to_owned(),
+            (1, 0) | (0, 1) => self.seen_selection.filter(|&t| world.thing_center(t).is_some()).map_or("1".to_owned(), |t| describe(world, t).0.to_owned()),
+            (units, 0) => format!("{units} units"),
+            (0, buildings) => format!("{buildings} buildings"),
+            (units, buildings) => format!("{units} units, {buildings} buildings"),
+        }
+    }
+
+    /// The tool or the building on the mouse.
+    fn hand_text(&self) -> String {
+        match (self.tool, self.placing) {
+            (Some(tool), _) => tool.name().to_owned(),
+            (None, Some(kind)) => kind.stats().name.clone(),
+            (None, None) => "-".to_owned(),
+        }
+    }
+
+    /// The bars that float over the map: whose eyes (top left), grid and zoom (top right), and what the mouse does
+    /// (bottom left, above TAB's bar). `map`: the map's room in egui's points. An `Area` is a piece of egui that lies
+    /// anywhere, not at an edge like a panel; `constrain_to` + `anchor`: in that corner of the map, this far in.
+    fn floating_bars(&mut self, ctx: &egui::Context, map: egui::Rect, enabled: bool, camera: &mut Camera, grid: &mut bool) {
+        let float = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
+            Frame::popup(ui.style()).inner_margin(5.0).show(ui, |ui| {
+                ui.add_enabled_ui(enabled, |ui| ui.horizontal(|ui| add(ui)));
+            });
+        };
+        egui::Area::new(egui::Id::new("sight bar")).constrain_to(map).anchor(Align2::LEFT_TOP, [FLOAT_PAD, FLOAT_PAD]).show(ctx, |ui| {
+            float(ui, &mut |ui| {
+                ui.label(RichText::new("Sight").weak());
+                for (sight, text, hint) in [
+                    (Sight::All, "All", "Everything, no fog"),
+                    (Sight::Player, "Player", "The fog of war like in the game"),
+                    (Sight::Zombies, "Zombies", "Lit where a zombie looks"),
+                ] {
+                    ui.selectable_value(&mut self.sight, sight, text).on_hover_text(hint);
+                }
+            });
+        });
+        egui::Area::new(egui::Id::new("view bar")).constrain_to(map).anchor(Align2::RIGHT_TOP, [-FLOAT_PAD, FLOAT_PAD]).show(ctx, |ui| {
+            float(ui, &mut |ui| {
+                ui.toggle_value(grid, "Grid").on_hover_text("TAB's grid view: the tiles, and where nothing can be built");
+                // Lit while the zombies are tiles – also when zooming out did it. A click: always tiles, or back to
+                // "by itself".
+                let tiles = self.zombie_tiles(camera.zoom);
+                let hint = "The zombies as tiles, one colour per breed (colours: Zombies module) - by itself when zoomed out";
+                if ui.selectable_label(tiles, "Zombie tiles").on_hover_text(hint).clicked() {
+                    self.zombie_look = if self.zombie_look == ZombieLook::Tiles { ZombieLook::Auto } else { ZombieLook::Tiles };
+                }
+                ui.separator();
+                if ui.small_button("-").on_hover_text("Zoom out (wheel)").clicked() {
+                    camera.zoom_by(1.0 / 1.15);
+                }
+                let percent = (camera.zoom / START_ZOOM * 100.0).round();
+                if ui.small_button(format!("{percent} %")).on_hover_text("Back to 100 %").clicked() {
+                    camera.zoom = START_ZOOM;
+                }
+                if ui.small_button("+").on_hover_text("Zoom in (wheel)").clicked() {
+                    camera.zoom_by(1.15);
+                }
+            });
+        });
+        // Above the top of TAB's bar – `Layout` knows it now that `view.rs` has the map's room.
+        let bar_top = (Layout::new().panel.y / ctx.pixels_per_point()).clamp(map.min.y, map.max.y);
+        let above_bar = egui::Rect::from_min_max(map.min, egui::pos2(map.max.x, bar_top));
+        // `interactable(false)`: only a text – a click on it still goes to the map.
+        egui::Area::new(egui::Id::new("hint bar")).constrain_to(above_bar).anchor(Align2::LEFT_BOTTOM, [FLOAT_PAD, -FLOAT_PAD]).interactable(false).show(ctx, |ui| {
+            Frame::popup(ui.style()).inner_margin(5.0).show(ui, |ui| {
+                // `extend`: on one line, never wrapped.
+                ui.add(egui::Label::new(self.hint()).extend());
+            });
+        });
+    }
+
+    /// What the mouse does on the map right now.
+    fn hint(&self) -> String {
+        let away = "right click or Esc: put it away";
+        match (self.tool, self.placing) {
+            (Some(Tool::PlayArea), _) => format!("Drag the border - grab an edge, inside: move it - {away}"),
+            (Some(tool), _) if tool.paints() => format!("{} - hold and drag - {away}", tool.name()),
+            (Some(tool), _) => format!("{} - click - {away}", tool.name()),
+            (None, Some(kind)) => format!("{} - click, drag: a line, R turns - {away}", kind.stats().name),
+            (None, None) if self.testing() => "Test - the round runs. Edit (F10): the map as before the test".to_owned(),
+            (None, None) => "Click or box: select - Ctrl+C / X / V: copy, cut, paste - Del: remove".to_owned(),
+        }
+    }
+
+    /// "Help → Keys": the editor's keys in a window of their own.
+    fn keys_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.keys_open;
+        egui::Window::new("Keys").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Grid::new("keys").num_columns(2).striped(true).show(ui, |ui| {
+                for (key, what) in [
+                    ("F10", "Edit / Test"),
+                    ("Ctrl+S", "Save"),
+                    ("Ctrl+Z", "Undo"),
+                    ("Ctrl+Y, Ctrl+Shift+Z", "Redo"),
+                    ("Esc", "Put the tool away - then the selection - then the menu"),
+                    ("Right click", "Put the tool away - on a spawner: its window"),
+                    ("Drag a box", "Select everything in it (in Edit)"),
+                    ("Shift+click, Shift+box", "Add to the selection"),
+                    ("Ctrl+C", "Copy the selected, with all it has"),
+                    ("Ctrl+X", "Cut: copy it and take it off the map"),
+                    ("Ctrl+V", "Paste at the mouse (again and again)"),
+                    ("Del", "Remove the selected"),
+                    ("R", "Turn the building on the mouse"),
+                    ("Drag with a building", "A line of them"),
+                    ("Wheel", "Zoom"),
+                    ("Middle mouse, arrows", "Move the map"),
+                    ("Space", "Pause (in a test)"),
+                ] {
+                    ui.label(RichText::new(key).strong());
+                    ui.label(what);
+                    ui.end_row();
+                }
+            });
+        });
+        self.keys_open = open;
+    }
+
+    /// The panel on the right: what's selected – a spawner, a placed thing –, in "Events" first the waves to send now.
+    fn properties_panel(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+        if self.module == Module::Events {
+            send_now(ui, orders);
+        }
+        self.spawner_section(ui, world, orders);
+        self.object_section(ui, world, orders);
+        if self.spawner.and_then(|id| world.find_spawner(id)).is_none() && self.object.is_none() {
+            section(ui, "Selection", "", |ui| {
+                ui.label(RichText::new("Nothing selected. Click a building, unit or spawner on the map - or one in Objects, \"Placed\".").weak());
+            });
+        }
+    }
+
+    fn map_module(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
         section(ui, "Map", "", |ui| {
             ui.horizontal(|ui| {
                 ui.label("Name");
@@ -558,23 +1015,12 @@ impl Editor {
                 }
             });
             ui.label(RichText::new(&self.map_info).weak());
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Save (Ctrl+S)").clicked() {
-                    self.request = Some(EditorRequest::Save);
-                }
-                if ui.button("Close").clicked() {
-                    self.request = Some(EditorRequest::Close);
-                }
-                if ui.button("New map...").clicked() {
-                    self.request = Some(EditorRequest::NewMap);
-                }
-            });
             if let Some(status) = &self.status {
                 ui.label(RichText::new(status).weak());
             }
         });
-        self.info_section(ui, world, orders);
-        section(ui, "Round", "", |ui| {
+        self.info_section(ui);
+        section_from(ui, "Round", Some(Origin::Tab), "", |ui| {
             // `Grid`: a table – the names in one column, the fields in the next, `end_row` starts a new line.
             egui::Grid::new("round").num_columns(2).show(ui, |ui| {
                 ui.label("Days");
@@ -603,10 +1049,9 @@ impl Editor {
 
     /// TAB's "Info": author, description, a picture for the list of custom levels (a PNG next to the map file) – and
     /// TAB's "random generation": the game makes the map anew every start. Not part of the world – no undo, saved with
-    /// the file. "Clear map": everything off the map, all grass – spawners, events and the round stay (undo brings it
-    /// back).
-    fn info_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
-        section(ui, "Info", "shown with the custom levels", |ui| {
+    /// the file. ("Clear map" moved to the Edit menu.)
+    fn info_section(&mut self, ui: &mut Ui) {
+        section_from(ui, "Info", Some(Origin::Tab), "shown with the custom levels", |ui| {
             egui::Grid::new("info").num_columns(2).show(ui, |ui| {
                 ui.label("Author");
                 ui.add(TextEdit::singleline(&mut self.info.author).char_limit(MAX_NAME).desired_width(f32::INFINITY));
@@ -619,14 +1064,6 @@ impl Editor {
             ui.add(TextEdit::multiline(&mut self.info.description).char_limit(600).desired_rows(3).desired_width(f32::INFINITY));
             ui.checkbox(&mut self.info.regenerate, "New map every start")
                 .on_hover_text("Like TAB's random generation: the game makes the map anew from its setup at every start - the round and the events stay. Only for maps made by a generator.");
-            if ui.button("Clear map").on_hover_text("Everything off the map, all of it grass - spawners, events and the round stay").clicked() {
-                // The eraser, the grass and "no ore" over every tile – three orders, so undo takes them back as one step.
-                let n = world.map.size as i32;
-                let all: Vec<(i32, i32)> = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).collect();
-                orders.push(Order::RemoveAt { tiles: all.clone() });
-                orders.push(Order::PaintOre { ore: None, tiles: all.clone() });
-                orders.push(Order::PaintTerrain { terrain: Terrain::Grass, tiles: all });
-            }
         });
     }
 
@@ -634,7 +1071,7 @@ impl Editor {
     /// (`Tool::PlayArea`, `ui.rs`) or type its size: across and down in steps of the screen axes (a step across is
     /// half a tile wide), around the same middle. Nothing on the map moves.
     fn play_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
-        section(ui, "Playing field", "the world border - units stay inside, zombies come from outside", |ui| {
+        section_from(ui, "Playing field", Some(Origin::Sc2), "the world border - units stay inside, zombies come from outside", |ui| {
             let (min, size) = world.map.play_steps();
             ui.horizontal(|ui| {
                 self.tool_button(ui, Tool::PlayArea);
@@ -668,7 +1105,7 @@ impl Editor {
     /// with "Apply": the map is loaded anew then (`World::resize`), and smaller, what lies outside is gone (undo brings
     /// it back). Not during a test.
     fn grid_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
-        section(ui, "Grid", "the whole map - grows or shrinks on every side", |ui| {
+        section_from(ui, "Grid", Some(Origin::Sc2), "the whole map - grows or shrinks on every side", |ui| {
             let now = world.map.size;
             let mut size = self.grid_size.unwrap_or(now);
             ui.horizontal(|ui| {
@@ -687,15 +1124,29 @@ impl Editor {
         });
     }
 
-    fn terrain_tab(&mut self, ui: &mut Ui) {
-        section(ui, "Paint", "hold and drag", |ui| {
+    fn terrain_module(&mut self, ui: &mut Ui) {
+        section_from(ui, "Paint", Some(Origin::Tab), "hold and drag", |ui| {
             ui.horizontal_wrapped(|ui| {
                 for terrain in [Terrain::Mountain, Terrain::Forest, Terrain::Water, Terrain::Dirt, Terrain::Grass] {
                     self.tool_button(ui, Tool::Paint(terrain));
                 }
             });
         });
-        section(ui, "Ore", "only on open ground - oil: one 2 x 2 node", |ui| {
+        section_from(ui, "Big rocks", Some(Origin::Tab), "click - its tiles become mountain, paint other ground over it to take it away", |ui| {
+            ui.horizontal(|ui| {
+                for size in BIG_ROCK_SIZES {
+                    self.tool_button(ui, Tool::BigRock(size));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Picture");
+                ui.radio_value(&mut self.rock_variant, None, "mixed");
+                for (variant, name) in [(0, "A"), (1, "B"), (2, "C")] {
+                    ui.radio_value(&mut self.rock_variant, Some(variant), name);
+                }
+            });
+        });
+        section_from(ui, "Ore", Some(Origin::Tab), "only on open ground - oil: one 2 x 2 node", |ui| {
             ui.horizontal_wrapped(|ui| {
                 for ore in [Some(Ore::Iron), Some(Ore::Coal), Some(Ore::Stone), Some(Ore::Gold), Some(Ore::Oil), None] {
                     self.tool_button(ui, Tool::Ore(ore));
@@ -705,69 +1156,89 @@ impl Editor {
         self.brush_size(ui);
     }
 
-    fn entities_tab(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
-        self.placed_section(ui, world);
-        self.object_section(ui, world, orders);
-        section(ui, "Units", "click inside the border", |ui| {
+    /// Units, buildings, loot and the eraser – and below them the list of everything placed.
+    fn objects_module(&mut self, ui: &mut Ui, world: &World) {
+        section_from(ui, "Units", Some(Origin::Tab), "click inside the border", |ui| {
             ui.horizontal_wrapped(|ui| {
                 for kind in UnitKind::ALL {
                     self.tool_button(ui, Tool::Unit(kind));
                 }
             });
         });
-        section(ui, "Buildings", "free, R turns", |ui| {
+        section_from(ui, "Buildings", Some(Origin::Tab), "free, R turns, drag: a line", |ui| {
             ui.horizontal_wrapped(|ui| {
                 for &kind in BUILDINGS {
                     self.tool_button(ui, Tool::Building(kind));
                 }
             });
         });
+        section_from(ui, "Loot", Some(Origin::Tab), "click - what lies in it and its guards rolled like the generator does", |ui| self.tool_button(ui, Tool::Loot));
         section(ui, "Remove", "hold and drag (brush)", |ui| self.tool_button(ui, Tool::Remove));
-        section(ui, "Zombies", "brush: per tile, hold and drag - drop: a crowd - giant: one", |ui| {
+        self.brush_size(ui);
+        self.placed_section(ui, world);
+    }
+
+    /// Zombies by the tile (brush), by the crowd (drop), one giant; spawners; the houses of a village of doom.
+    fn zombies_module(&mut self, ui: &mut Ui, world: &World) {
+        section_from(ui, "Brush", Some(Origin::Tab), "on every tile of the brush - hold and drag", |ui| {
+            self.tool_button(ui, Tool::ZombieBrush);
+            ui.label(format!("On every tile, at most {MOST_PER_TILE} of each (like TAB):"));
+            // `&mut (breed, n)`: each pair of the list lent to change `n` – the breed stays. In front of each its
+            // colour as a tile – the legend of the zombie tiles.
+            for (breed, n) in &mut self.per_tile {
+                ui.horizontal(|ui| {
+                    swatch(ui, *breed);
+                    ui.add(Slider::new(n, 0..=MOST_PER_TILE).text(breed.name()));
+                });
+            }
             ui.horizontal(|ui| {
-                self.tool_button(ui, Tool::ZombieBrush);
+                swatch(ui, Breed::Giant);
+                ui.label("Giant");
+            });
+            // Below, not beside the square: a label in a row never wraps and would make the panel wider.
+            ui.label(RichText::new("Zoomed out, the zombies are tiles in these colours: the breed most on a tile, the more the more solid, a light spot where one storms.").small().weak());
+        });
+        section_from(ui, "Drop and giant", Some(Origin::New), "a crowd at the click - or one giant", |ui| {
+            ui.horizontal(|ui| {
                 self.tool_button(ui, Tool::ZombieDrop);
                 self.tool_button(ui, Tool::Giant);
             });
             ui.horizontal(|ui| {
-                ui.label("They");
-                ui.radio_value(&mut self.wander, true, "sleep and wander");
-                ui.radio_value(&mut self.wander, false, "storm the CC");
-            });
-            ui.label(format!("Brush - on every tile, at most {MOST_PER_TILE} of each (like TAB):"));
-            // `&mut (breed, n)`: each pair of the list lent to change `n` – the breed stays.
-            for (breed, n) in &mut self.per_tile {
-                ui.add(Slider::new(n, 0..=MOST_PER_TILE).text(breed.name()));
-            }
-            ui.horizontal(|ui| {
-                ui.label("Drop");
                 ui.add(DragValue::new(&mut self.drop).range(1..=10_000).suffix(" zombies"));
                 breed_list_box(ui, "drop breed", &mut self.breed, &small_breeds());
             });
         });
-        section(ui, "Villages of doom and loot", "click", |ui| {
-            ui.horizontal(|ui| {
-                self.tool_button(ui, Tool::Doom);
-                self.tool_button(ui, Tool::Loot);
-            });
+        section(ui, "They", "brush, drop and giant", |ui| {
+            ui.radio_value(&mut self.wander, true, "sleep and wander");
+            ui.radio_value(&mut self.wander, false, "storm the CC");
         });
         self.brush_size(ui);
-        section(ui, "Spawners", "click to place or select", |ui| self.tool_button(ui, Tool::Spawner));
-        self.spawner_section(ui, world, orders);
+        section_from(ui, "Spawners", Some(Origin::New), "click to place - click one to select it, drag its edge", |ui| self.tool_button(ui, Tool::Spawner));
+        section_from(ui, "Villages of doom", Some(Origin::Tab), "TAB's three houses - zombies inside as the generator puts them", |ui| {
+            let population = crate::data::get().difficulty(&world.difficulty).population;
+            for nest in Nest::ALL {
+                ui.horizontal(|ui| {
+                    self.tool_button(ui, Tool::Doom(nest));
+                    let side = nest.side();
+                    let inside = World::doom_zombies((side, side), population);
+                    ui.label(RichText::new(format!("{inside} zombies inside")).weak());
+                });
+            }
+        });
     }
 
     /// TAB's list of the entities created: every building, unit and neutral thing on the map (filtered), a click picks
-    /// one – its properties show below (`object_section`). At most `MAX_LISTED` rows, the rest only counted.
+    /// one – its properties show on the right (`object_section`). At most `MAX_LISTED` rows, the rest only counted.
     fn placed_section(&mut self, ui: &mut Ui, world: &World) {
         const MAX_LISTED: usize = 300;
-        section(ui, "Placed", "click one - its properties below", |ui| {
+        section_from(ui, "Placed", Some(Origin::Tab), "click one - its properties on the right", |ui| {
             ui.horizontal_wrapped(|ui| {
                 for (filter, text) in [(Filter::All, "All"), (Filter::Buildings, "Buildings"), (Filter::Units, "Units"), (Filter::Neutral, "Neutral"), (Filter::Tagged, "Tagged")] {
                     ui.selectable_value(&mut self.filter, filter, text);
                 }
             });
             let rows = placed(world, self.filter);
-            ScrollArea::vertical().id_salt("placed").max_height(150.0).show(ui, |ui| {
+            ScrollArea::vertical().id_salt("placed").max_height(220.0).show(ui, |ui| {
                 for (thing, label) in rows.iter().take(MAX_LISTED) {
                     if ui.selectable_label(self.object == Some(*thing), label).clicked() {
                         self.object = Some(*thing);
@@ -792,7 +1263,7 @@ impl Editor {
             return;
         };
         let (kind_name, owner, percent, mark, clone) = describe(world, thing);
-        section(ui, "Object", kind_name, |ui| {
+        section_from(ui, "Object", Some(Origin::Tab), kind_name, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Locate").clicked() {
                     self.request = Some(EditorRequest::Locate(at));
@@ -890,7 +1361,7 @@ impl Editor {
         let Some(s) = self.spawner.and_then(|id| world.find_spawner(id)) else {
             return;
         };
-        section(ui, "Selected spawner", "drag its edge - right click: its window", |ui| {
+        section_from(ui, "Selected spawner", Some(Origin::New), "drag its edge - right click: its window", |ui| {
             if self.properties {
                 ui.label(RichText::new("Its properties are open in their own window.").weak());
             } else {
@@ -1000,6 +1471,14 @@ impl Editor {
         });
     }
 
+    /// The big rock the tool would put down with its middle on `tile`. Mixed pictures: picked by the tile, so the
+    /// preview and the rock put down are the same.
+    pub fn big_rock(&self, size: i32, tile: (i32, i32)) -> BigRock {
+        let corner = (tile.0 - size / 2, tile.1 - size / 2);
+        let mixed = (corner.0 * 7 + corner.1 * 13).rem_euclid(3) as u8;
+        BigRock { tile: corner, size, variant: self.rock_variant.unwrap_or(mixed) }
+    }
+
     /// A tool's button: lit while it's in hand – clicked: take it, clicked again: put it away. A building isn't held
     /// by the editor: `ui.rs` hangs it on the mouse (`place`).
     fn tool_button(&mut self, ui: &mut Ui, tool: Tool) {
@@ -1015,19 +1494,32 @@ impl Editor {
                 self.tool = None;
                 self.place = Some(if held { None } else { Some(kind) });
             }
-            _ => {
-                self.tool = if held { None } else { Some(tool) };
-                // Whatever else is on the mouse comes off it: a building, a command waiting for its target.
-                self.place = Some(None);
-            }
+            _ if held => self.tool = None,
+            _ => self.take(tool),
         }
+    }
+
+    /// Takes a tool in hand – whatever else is on the mouse comes off it: a building, a command waiting for its target.
+    fn take(&mut self, tool: Tool) {
+        self.tool = Some(tool);
+        self.place = Some(None);
     }
 }
 
-/// The "Events" tab: send waves now, the map's events. Only reads the world – a free function, not a method, because it
-/// needs nothing of the editor.
-fn events_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
-    section(ui, "Send now", "from the spawners", |ui| {
+/// Everything off the map, all of it grass – spawners, events and the round stay (undo brings it back). The eraser,
+/// the grass and "no ore" over every tile – three orders, so undo takes them back as one step.
+fn clear_map(world: &World, orders: &mut Vec<Order>) {
+    let n = world.map.size as i32;
+    let all: Vec<(i32, i32)> = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).collect();
+    orders.push(Order::RemoveAt { tiles: all.clone() });
+    orders.push(Order::PaintOre { ore: None, tiles: all.clone() });
+    orders.push(Order::PaintTerrain { terrain: Terrain::Grass, tiles: all });
+}
+
+/// In "Events" on the right: send waves now – to try how the defence holds (it works in Edit too: they stand where
+/// they came out until the test starts).
+fn send_now(ui: &mut Ui, orders: &mut Vec<Order>) {
+    section_from(ui, "Send now", Some(Origin::New), "from the spawners", |ui| {
         // `horizontal_wrapped`: side by side, and on to the next line where the panel ends.
         ui.horizontal_wrapped(|ui| {
             for (wave, text) in [(Wave::Small, "Small"), (Wave::Side, "One side"), (Wave::TwoSides, "Two sides")] {
@@ -1043,7 +1535,12 @@ fn events_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
             }
         });
     });
-    section(ui, "Events", "come by themselves, like TAB's - hours from the start", |ui| {
+}
+
+/// The "Events" module: the map's events. Only reads the world – a free function, not a method, because it needs
+/// nothing of the editor.
+fn events_module(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
+    section_from(ui, "Events", Some(Origin::Tab), "come by themselves, like TAB's - hours from the start", |ui| {
         let (day, hour) = world.clock();
         ui.label(format!("Now: day {day}, {hour:02}:00"));
         for (i, event) in world.events.iter().enumerate() {
@@ -1236,7 +1733,23 @@ fn spawner_checks(ui: &mut Ui, ids: &mut Vec<u32>, spawners: &[Spawner]) {
 /// `add`: what's in it – a *closure*, like a `lambda` in Python, only that it may have many lines. `impl FnOnce(&mut
 /// Ui)`: any closure that takes the section's `Ui` and is called once.
 pub(crate) fn section(ui: &mut Ui, title: &str, hint: &str, add: impl FnOnce(&mut Ui)) {
-    CollapsingHeader::new(RichText::new(title).strong()).default_open(true).show(ui, |ui| {
+    section_from(ui, title, None, hint, add);
+}
+
+/// A section like `section`, with a badge after its heading that says where it comes from (`Origin`). The heading is
+/// a `LayoutJob`: a text put together from pieces in different looks – here the title, then the badge in small
+/// letters on its own background.
+pub(crate) fn section_from(ui: &mut Ui, title: &str, origin: Option<Origin>, hint: &str, add: impl FnOnce(&mut Ui)) {
+    let mut heading = LayoutJob::default();
+    let strong = TextFormat { font_id: TextStyle::Body.resolve(ui.style()), color: ui.visuals().strong_text_color(), ..Default::default() };
+    heading.append(title, 0.0, strong);
+    if let Some(origin) = origin {
+        let (text, color, background) = origin.look();
+        // The spaces around it widen the background a little; 8.0: the room before it.
+        heading.append(&format!(" {text} "), 8.0, TextFormat { font_id: FontId::proportional(11.0), color, background, ..Default::default() });
+    }
+    // `id_salt`: egui remembers whether it's folded by the title alone, not by the badge.
+    CollapsingHeader::new(heading).id_salt(title).default_open(true).show(ui, |ui| {
         if !hint.is_empty() {
             ui.label(RichText::new(hint).small().weak());
         }
@@ -1390,6 +1903,15 @@ fn breed_box(ui: &mut Ui, id: impl std::hash::Hash, breed: &mut Breed) {
 }
 
 /// A drop-down list of these breeds.
+/// A small square in a breed's colour as a tile on the map (`draw::breed_tile_color`).
+fn swatch(ui: &mut Ui, breed: Breed) {
+    let c = breed_tile_color(breed);
+    let color = Color32::from_rgb((c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8);
+    // `allocate_exact_size`: room for it in the row; the painter then draws into that room.
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, color);
+}
+
 fn breed_list_box(ui: &mut Ui, id: impl std::hash::Hash, breed: &mut Breed, breeds: &[Breed]) {
     ComboBox::from_id_salt(id).width(90.0).selected_text(breed.name()).show_ui(ui, |ui| {
         for &b in breeds {

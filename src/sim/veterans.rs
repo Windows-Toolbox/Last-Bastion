@@ -44,4 +44,15 @@ impl World {
             }
         }
     }
+
+    /// The Academy (TAB's `MakeSoldiersVeteran`): while one works, every unit is a veteran – the new ones as they come
+    /// out. Not the mercenaries: they are better than veterans already. Not like TAB: one that's a veteran stays one
+    /// when the Academy falls (TAB's lose it again).
+    pub(super) fn academy(&mut self) {
+        if self.buildings.iter().any(|b| b.works() && b.stats().veteran_units) {
+            for unit in self.units.iter_mut().filter(|u| !u.veteran && !u.stats().mercenary) {
+                unit.make_veteran();
+            }
+        }
+    }
 }

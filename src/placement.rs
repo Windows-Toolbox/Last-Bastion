@@ -9,6 +9,7 @@ use macroquad::math::{vec2, Vec2};
 
 use crate::data;
 use crate::kinds::BuildingKind;
+use crate::map::Ore;
 use crate::sim::World;
 
 /// No zombie may be this many tiles around a building site (plus the site itself) – you can't build
@@ -41,7 +42,18 @@ pub fn replaces(kind: BuildingKind, existing: BuildingKind) -> bool {
     use BuildingKind::*;
     matches!(
         (kind, existing),
-        (Gate, Wall) | (Gate, StoneWall) | (StoneWall, Wall) | (StoneTower, Tower) | (StoneHouse, Tent)
+        (Gate, Wall)
+            | (Gate, StoneWall)
+            | (StoneWall, Wall)
+            | (StoneTower, Tower)
+            | (WoodHouse, Tent)
+            | (StoneHouse, Tent)
+            | (StoneHouse, WoodHouse)
+            // TAB's better ones on their first ones: the advanced quarry on the quarry, the iron mill on the windmill,
+            // the blades on the stakes.
+            | (BigQuarry, Quarry)
+            | (BigMill, Windmill)
+            | (BladeTrap, Stakes)
     )
 }
 
@@ -94,6 +106,7 @@ impl World {
     /// - every tile inside the world border, on open ground, and free – or under a building it may replace
     ///   (`replaces`),
     /// - a farm: every tile on grass – nothing grows on dirt (`BuildingKind::needs_fertile`),
+    /// - the oil platform: every tile on oil (`BuildingKind::needs_oil`); a wonder: none of it stands yet (`only_one`),
     /// - far enough from other buildings (`gap`),
     /// - no zombie on the site or within `build_clearance` tiles around it (`build_zone`),
     /// - a building that makes, takes or carries power (`BuildingKind::on_grid`): its middle inside a grid
@@ -108,8 +121,13 @@ impl World {
                 || (self.map.in_play(x, y) && !self.map.is_solid(x, y) && self.replaceable_at(kind, site, (x, y)))
         });
         let fertile = !kind.needs_fertile() || site.tiles().all(|(x, y)| self.map.terrain(x, y).is_fertile());
+        // The oil platform right on an oil node – every tile of it oil (TAB's `OilSource`).
+        let oil = !kind.needs_oil() || site.tiles().all(|(x, y)| self.map.deposit(x, y).is_some_and(|d| d.ore == Ore::Oil));
+        // A wonder only once (TAB's `MaxInstances`).
+        let first = !kind.stats().only_one || !self.buildings.iter().any(|b| b.kind == kind);
         let powered = !kind.on_grid() || self.in_grid(site.center());
-        ground && fertile && powered && self.far_enough(kind, site) && !self.zombies_in_build_zone(kind, tile, turned)
+        let rules = ground && fertile && oil && first && powered;
+        rules && self.far_enough(kind, site) && !self.zombies_in_build_zone(kind, tile, turned)
     }
 
     /// Editor: can a building go here without the rules of the game? Only on the map and not onto another building
@@ -247,6 +265,8 @@ pub fn placement_line(kind: BuildingKind, start: (i32, i32), end: (i32, i32)) ->
         | BuildingKind::Tower
         | BuildingKind::StoneTower
         | BuildingKind::Stakes
+        | BuildingKind::BladeTrap
+        | BuildingKind::MineTrap
         | BuildingKind::Barrel
         | BuildingKind::MachineGunTower => {
             // Keep only pieces that are far enough from the last kept one (counted like `gap`: in all 8 directions).
@@ -277,8 +297,25 @@ pub fn placement_line(kind: BuildingKind, start: (i32, i32), end: (i32, i32)) ->
         | BuildingKind::Bank
         | BuildingKind::Inn
         | BuildingKind::Foundry
-        | BuildingKind::Ballista => vec![end],
-        BuildingKind::Tent | BuildingKind::StoneHouse => {
+        | BuildingKind::Ballista
+        | BuildingKind::PowerPlant
+        | BuildingKind::OilPlatform
+        | BuildingKind::Quarry
+        | BuildingKind::BigQuarry
+        | BuildingKind::BigFarm
+        | BuildingKind::BigMill
+        | BuildingKind::Warehouse
+        | BuildingKind::EngineeringCenter
+        | BuildingKind::ShockingTower
+        | BuildingKind::Executor
+        | BuildingKind::Radar
+        | BuildingKind::LookoutTower
+        | BuildingKind::Spire
+        | BuildingKind::Academy
+        | BuildingKind::Victorious
+        | BuildingKind::Transmutator
+        | BuildingKind::CrystalPalace => vec![end],
+        BuildingKind::Tent | BuildingKind::WoodHouse | BuildingKind::StoneHouse => {
             // Computed in "building steps": a tent (2 × 2) needs 2 tiles per step, plus the gap.
             let size = kind.stats().size.0 + spacing;
             let steps = |delta: i32| (delta as f32 / size as f32).round() as i32;

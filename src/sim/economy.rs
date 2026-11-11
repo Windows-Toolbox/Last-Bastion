@@ -98,10 +98,16 @@ impl Power {
 }
 
 impl World {
-    /// How much of `r` fits in the stock (`colony.json`, later more with warehouses).
+    /// How much of `r` fits in the stock (`colony.json`) – every finished warehouse that isn't infected adds its
+    /// `goods_storage` to every good but food (TAB's `ResourcesStorage`).
     pub fn storage(&self, r: Resource) -> u32 {
         let colony = &data::get().colony;
-        let limit = if r == Resource::Food { colony.storage_food } else { colony.storage_goods };
+        let limit = if r == Resource::Food {
+            colony.storage_food
+        } else {
+            let more: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().goods_storage).sum();
+            colony.storage_goods + more
+        };
         #[cfg(test)]
         let limit = limit.saturating_add(self.extra_storage);
         limit
@@ -164,7 +170,7 @@ impl World {
             if let Some(g) = grid {
                 power.grid_of[b] = Some(g);
                 let stats = building.stats();
-                if stats.burns_wood == 0 || building.fuelled {
+                if (stats.burns_wood == 0 && stats.burns_coal == 0) || building.fuelled {
                     power.made[g] += stats.energy;
                 }
                 #[cfg(test)]
@@ -256,6 +262,8 @@ impl World {
                     Source::Water => self.map.terrain(x, y) == Terrain::Water,
                     Source::Ore => self.map.deposit(x, y).is_some_and(|d| Resource::from_ore(d.ore).is_some() || d.ore == Ore::Gold),
                     Source::Fertile => self.map.terrain(x, y).is_fertile() && self.map.deposit(x, y).is_none(),
+                    Source::Stone => self.map.deposit(x, y).is_some_and(|d| d.ore == Ore::Stone),
+                    Source::Oil => self.map.deposit(x, y).is_some_and(|d| d.ore == Ore::Oil),
                 };
                 if fits && (own || !earlier.iter().any(|&area| in_area(area, (x, y)))) {
                     tiles.push((x, y));
@@ -275,15 +283,34 @@ impl World {
         // Rounded once from the file's number – the same on every PC.
         let per_tile = (kind.stats().gather_per_tile * 1000.0).round() as u64;
         let hunts = matches!(kind.gathers(), Some((Source::Hunting, _)));
+        // A warehouse near it: more (TAB's `FactorProductionNearBuildings`).
+        let boost = 100 + self.boost(kind, tile, |s| s.gather_boost_percent) as u64;
         for (x, y) in self.worked_tiles(kind, tile, before) {
             let resource = gives.or_else(|| self.map.deposit(x, y).and_then(|d| Resource::from_ore(d.ore)));
             // The hunter: each tile its own share by what grows there.
             let of_tile = if hunts { per_tile * self.hunting_percent(x, y) as u64 / 100 } else { per_tile };
             if let Some(r) = resource {
-                rate[r.index()] += of_tile * share as u64 / 1000;
+                rate[r.index()] += of_tile * share as u64 / 1000 * boost / 100;
             }
         }
         rate
+    }
+
+    /// TAB's buildings that help their neighbours (`CBuildingEnhanced`): the percent that every one that works adds
+    /// (`percent` picks which of its values: `gather_boost_percent` or `gold_boost_percent`) to a `kind` standing at
+    /// `tile` – if its whole site lies within the helper's site plus its `boost_range`.
+    pub fn boost(&self, kind: BuildingKind, tile: (i32, i32), percent: impl Fn(&crate::kinds::BuildingStats) -> u32) -> u32 {
+        let (w, h) = kind.footprint(false);
+        let corners = [tile, (tile.0 + w - 1, tile.1 + h - 1)];
+        self.buildings
+            .iter()
+            .filter(|b| b.works() && percent(b.stats()) > 0)
+            .filter(|b| {
+                let area = b.kind.around(b.tile, b.stats().boost_range);
+                corners.iter().all(|&c| in_area(area, c))
+            })
+            .map(|b| percent(b.stats()))
+            .sum()
     }
 
     /// How much game a tile has for a hunter cottage, in percent of its `gather_per_tile` – like TAB's: forest, grass
@@ -323,16 +350,32 @@ impl World {
             for r in Resource::ALL {
                 flow[r.index()] += rate[r.index()] as i64;
             }
-            flow[Resource::Wood.index()] -= building.stats().burns_wood as i64 * 1000;
-            flow[Resource::Food.index()] += (building.stats().food_made as i64 - building.stats().food as i64) * 1000;
+            let stats = building.stats();
+            flow[Resource::Wood.index()] -= stats.burns_wood as i64 * 1000;
+            flow[Resource::Coal.index()] -= stats.burns_coal as i64 * 1000;
+            flow[Resource::Food.index()] += (stats.food_made as i64 - stats.food as i64) * 1000;
+            if let Some(convert) = &stats.converts {
+                for &(r, n) in &convert.takes {
+                    flow[r.index()] -= n as i64 * 1000;
+                }
+                for &(r, n) in &convert.makes {
+                    flow[r.index()] += n as i64 * 1000;
+                }
+            }
         }
         flow[Resource::Food.index()] -= self.units_food() as i64 * 1000;
+        flow[Resource::Oil.index()] -= self.units_oil() as i64 * 1000;
         flow
     }
 
     /// Food per payout for every living unit (not the ones in a production queue) – like their upkeep.
     fn units_food(&self) -> u32 {
         self.units.iter().map(|u| u.stats().food).sum()
+    }
+
+    /// Oil per payout for every living unit – TAB's engineering-center units burn it (`oil` in `data\units.json`).
+    fn units_oil(&self) -> u32 {
+        self.units.iter().map(|u| u.stats().oil).sum()
     }
 
     /// Does a building of this kind stand – or is nothing `needed`? What `requires` asks for (like TAB's workshops).
@@ -358,13 +401,23 @@ impl World {
         let enough = |r: Resource, n: u32| self.stock.get(r) >= n;
         let barrel = kind != BuildingKind::Barrel || self.barrels > 0;
         let goods = enough(Resource::Wood, s.cost_wood) && enough(Resource::Stone, s.cost_stone);
-        goods && enough(Resource::Coal, s.cost_coal) && enough(Resource::Iron, s.cost_iron) && barrel
+        let metal = enough(Resource::Coal, s.cost_coal) && enough(Resource::Iron, s.cost_iron) && enough(Resource::Oil, s.cost_oil);
+        goods && metal && barrel
     }
 
-    /// Are wood and iron in the stock enough to train `kind` (its gold and workers are checked on their own)?
+    /// Are wood, iron and oil in the stock enough to train `kind` (its gold and workers are checked on their own)?
     pub fn can_afford_unit_goods(&self, kind: UnitKind) -> bool {
         let s = kind.stats();
-        self.stock.get(Resource::Wood) >= s.cost_wood && self.stock.get(Resource::Iron) >= s.cost_iron
+        let enough = |r: Resource, n: u32| self.stock.get(r) >= n;
+        enough(Resource::Wood, s.cost_wood) && enough(Resource::Iron, s.cost_iron) && enough(Resource::Oil, s.cost_oil)
+    }
+
+    /// Pays the wood, iron and oil of a unit of `kind` going into a production queue.
+    pub(super) fn pay_unit_goods(&mut self, kind: UnitKind) {
+        let s = kind.stats();
+        self.stock.take(Resource::Wood, s.cost_wood);
+        self.stock.take(Resource::Iron, s.cost_iron);
+        self.stock.take(Resource::Oil, s.cost_oil);
     }
 
     /// Pays the wood, stone, coal and iron of `kind` – a barrel comes out of the store (checked before with
@@ -375,6 +428,7 @@ impl World {
         self.stock.take(Resource::Stone, s.cost_stone);
         self.stock.take(Resource::Coal, s.cost_coal);
         self.stock.take(Resource::Iron, s.cost_iron);
+        self.stock.take(Resource::Oil, s.cost_oil);
         if kind == BuildingKind::Barrel {
             self.barrels = self.barrels.saturating_sub(1);
         }
@@ -395,14 +449,47 @@ impl World {
         self.stock.add(Resource::Iron, iron, self.storage(Resource::Iron));
     }
 
-    /// A charcoal burner takes the wood until the next payout – without it, it makes no power until then.
-    /// Switched off or not finished it takes none.
+    /// A charcoal burner takes the wood until the next payout, a power plant its coal – without it, it makes no power
+    /// until then. Switched off or not finished it takes none.
     pub(super) fn fuel(&mut self, b: usize) {
         let building = &self.buildings[b];
-        let burns = building.stats().burns_wood;
-        if burns > 0 {
-            let runs = building.works();
-            self.buildings[b].fuelled = runs && self.stock.take(Resource::Wood, burns);
+        let (wood, coal) = (building.stats().burns_wood, building.stats().burns_coal);
+        if wood > 0 || coal > 0 {
+            let enough = self.stock.get(Resource::Wood) >= wood && self.stock.get(Resource::Coal) >= coal;
+            let fuelled = building.works() && enough;
+            if fuelled {
+                self.stock.take(Resource::Wood, wood);
+                self.stock.take(Resource::Coal, coal);
+            }
+            self.buildings[b].fuelled = fuelled;
+        }
+    }
+
+    /// The buildings that turn goods into others (`converts` – the Transmutator, the Victorious eating oil): as many
+    /// whole times as the power allows (`share` of 1000 – less power, less of it) and the stock has, what fits in.
+    fn convert(&mut self, power: &Power) {
+        for b in 0..self.buildings.len() {
+            let building = &self.buildings[b];
+            let Some(convert) = building.stats().converts.as_ref().filter(|_| building.works()) else {
+                continue;
+            };
+            let share = power.share(self, b);
+            let takes: Vec<(Resource, u32)> = convert.takes.iter().map(|&(r, n)| (r, n * share / 1000)).collect();
+            if takes.iter().any(|&(r, n)| self.stock.get(r) < n) {
+                // Not enough for all of it: whatever there is, of what it eats – nothing comes out (TAB's oil sink).
+                if convert.makes.is_empty() {
+                    for (r, n) in takes {
+                        self.stock.take_up_to(r, n);
+                    }
+                }
+                continue;
+            }
+            for (r, n) in takes {
+                self.stock.take(r, n);
+            }
+            for &(r, n) in &convert.makes {
+                self.stock.add(r, n * share / 1000, self.storage(r));
+            }
         }
     }
 
@@ -457,14 +544,16 @@ impl World {
             self.buildings[b].paid = dug;
             self.earn(dug);
         }
-        // The foundries smelt what came in – before the markets could sell the ore.
+        // The foundries smelt what came in – before the markets could sell the ore. Then the Transmutator.
         self.smelt(&power);
+        self.convert(&power);
         // The command center's food, out of nothing.
         let made: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().food_made).sum();
         self.stock.add(Resource::Food, made, self.storage(Resource::Food));
         // The units eat first – what they eat the houses don't get. Not enough: they eat what there is, nothing else
         // happens to them.
         self.stock.take_up_to(Resource::Food, self.units_food());
+        self.stock.take_up_to(Resource::Oil, self.units_oil());
         // Whoever pays gold: houses – their colonists eat first – and the command center, which eats nothing. Fed, they
         // pay their gold, as much of it as the power is enough for – a house around a market more (`market_bonus`).
         for b in 0..self.buildings.len() {
@@ -492,7 +581,10 @@ impl World {
     /// The gold building `b` pays when it's fed: its `gold`, as much of it as the power is enough for (`share`,
     /// thousandths) – a house around a market more (`market_bonus`).
     fn gold_paid(&self, b: usize, share: u32) -> u32 {
-        self.buildings[b].full_income() * share / 1000 * (100 + self.market_bonus(b)) / 100
+        let building = &self.buildings[b];
+        // The Victorious: houses around it pay more (TAB's `FactorGoldNearBuildings`).
+        let near = if building.stats().colonists > 0 { self.boost(building.kind, building.tile, |s| s.gold_boost_percent) } else { 0 };
+        building.full_income() * share / 1000 * (100 + self.market_bonus(b) + near) / 100
     }
 
     /// When the round starts nobody has paid yet – the HUD (gold of the last payout minus the upkeep) would show only

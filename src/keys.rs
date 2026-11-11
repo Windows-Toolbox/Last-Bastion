@@ -8,17 +8,74 @@
 //!
 //! macroquad reports a key by its place on the keyboard (that of a US one), not by its letter: `KeyCode::Z` is the key
 //! left of X – on a German keyboard Y. The names shown (`name`) are those of a German keyboard.
+//!
+//! Mice with many buttons: the side buttons 4 and 5 can go on an action themselves (`Key::Mouse4`, asked from Windows
+//! in `cursor.rs`). Every further button only reaches a game through the mouse's own software, which sends a key for
+//! it – F13 to F24 are made for that (no keyboard has them, so they never clash), and they can all be put on actions.
+//! A key macroquad doesn't know (some media keys) arrives as nothing at all; the page "Key mapping" says so.
 
 use std::collections::{BTreeMap, HashMap};
 
 use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::cursor;
 use crate::hud::{self, Button};
 use crate::kinds::UnitKind;
 
 /// The keys of one action: the first and the second. `None`: no key in that place.
-pub type Keys = [Option<KeyCode>; 2];
+pub type Keys = [Option<Key>; 2];
+
+/// What can go on an action: a key of the keyboard, or one of the mouse's side buttons.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Key {
+    Board(KeyCode),
+    /// The side buttons, usually "back" (4) and "forward" (5) – Windows' X buttons.
+    Mouse4,
+    Mouse5,
+}
+
+impl From<KeyCode> for Key {
+    fn from(key: KeyCode) -> Key {
+        Key::Board(key)
+    }
+}
+
+impl Key {
+    /// Pressed in this frame (the first press – holding doesn't repeat it)?
+    pub fn pressed(self) -> bool {
+        match self {
+            Key::Board(key) => is_key_pressed(key),
+            Key::Mouse4 => cursor::side_pressed(0),
+            Key::Mouse5 => cursor::side_pressed(1),
+        }
+    }
+
+    /// Held right now?
+    pub fn down(self) -> bool {
+        match self {
+            Key::Board(key) => is_key_down(key),
+            Key::Mouse4 => cursor::side_down(0),
+            Key::Mouse5 => cursor::side_down(1),
+        }
+    }
+}
+
+/// The first key pressed in this frame that can be put on an action – for the page "Key mapping". `Err(())`: only a key
+/// macroquad doesn't know came (`KeyCode::Unknown` – some media keys, odd buttons of a mouse). Shift, Ctrl and the like
+/// are left out without a word.
+pub fn caught() -> Option<Result<Key, ()>> {
+    let pressed = get_keys_pressed();
+    if let Some(&key) = pressed.iter().find(|&&key| bindable(key)) {
+        return Some(Ok(Key::Board(key)));
+    }
+    for side in [Key::Mouse4, Key::Mouse5] {
+        if side.pressed() {
+            return Some(Ok(side));
+        }
+    }
+    pressed.contains(&KeyCode::Unknown).then_some(Err(()))
+}
 
 /// Everything a key can do. The buttons of the command card are one action each (`Card`) – their keys are their
 /// letters there.
@@ -69,18 +126,19 @@ impl Action {
 
     /// The keys it has until you change them.
     pub fn defaults(self) -> Keys {
-        let one = |key| [Some(key), None];
+        let one = |key: KeyCode| [Some(key.into()), None];
+        let two = |first: KeyCode, second: KeyCode| [Some(first.into()), Some(second.into())];
         match self {
-            CameraUp => [Some(KeyCode::W), Some(KeyCode::Up)],
-            CameraLeft => [Some(KeyCode::A), Some(KeyCode::Left)],
-            CameraDown => [Some(KeyCode::S), Some(KeyCode::Down)],
-            CameraRight => [Some(KeyCode::D), Some(KeyCode::Right)],
+            CameraUp => two(KeyCode::W, KeyCode::Up),
+            CameraLeft => two(KeyCode::A, KeyCode::Left),
+            CameraDown => two(KeyCode::S, KeyCode::Down),
+            CameraRight => two(KeyCode::D, KeyCode::Right),
             Base => one(KeyCode::Backspace),
             Bookmark(b) => one([KeyCode::F5, KeyCode::F6, KeyCode::F7, KeyCode::F8][b]),
             Pause => one(KeyCode::Space),
             // On a German keyboard "+" is where a US one has "]", and "-" where it has "/".
-            Faster => [Some(KeyCode::RightBracket), Some(KeyCode::KpAdd)],
-            Slower => [Some(KeyCode::Slash), Some(KeyCode::KpSubtract)],
+            Faster => two(KeyCode::RightBracket, KeyCode::KpAdd),
+            Slower => two(KeyCode::Slash, KeyCode::KpSubtract),
             Overlay => one(KeyCode::F3),
             // TAB's own key for its view with the grid (flat mode).
             GridView => one(KeyCode::F4),
@@ -192,7 +250,7 @@ fn snake(name: &str) -> String {
 
 /// The keys that can be put on an action, and their names – those of a German keyboard (see the top of the file).
 /// Not in it: Shift, Ctrl, Alt and the Windows key (modifiers), Esc.
-const NAMES: [(KeyCode, &str); 97] = [
+const NAMES: &[(KeyCode, &str)] = &[
     (KeyCode::A, "A"), (KeyCode::B, "B"), (KeyCode::C, "C"), (KeyCode::D, "D"), (KeyCode::E, "E"),
     (KeyCode::F, "F"), (KeyCode::G, "G"), (KeyCode::H, "H"), (KeyCode::I, "I"), (KeyCode::J, "J"),
     (KeyCode::K, "K"), (KeyCode::L, "L"), (KeyCode::M, "M"), (KeyCode::N, "N"), (KeyCode::O, "O"),
@@ -214,6 +272,10 @@ const NAMES: [(KeyCode, &str); 97] = [
     (KeyCode::F1, "F1"), (KeyCode::F2, "F2"), (KeyCode::F3, "F3"), (KeyCode::F4, "F4"), (KeyCode::F5, "F5"),
     (KeyCode::F6, "F6"), (KeyCode::F7, "F7"), (KeyCode::F8, "F8"), (KeyCode::F9, "F9"), (KeyCode::F10, "F10"),
     (KeyCode::F11, "F11"), (KeyCode::F12, "F12"),
+    // No keyboard has these – the software of mice with many buttons sends them (top of the file).
+    (KeyCode::F13, "F13"), (KeyCode::F14, "F14"), (KeyCode::F15, "F15"), (KeyCode::F16, "F16"), (KeyCode::F17, "F17"),
+    (KeyCode::F18, "F18"), (KeyCode::F19, "F19"), (KeyCode::F20, "F20"), (KeyCode::F21, "F21"), (KeyCode::F22, "F22"),
+    (KeyCode::F23, "F23"), (KeyCode::F24, "F24"),
     (KeyCode::Kp0, "Num 0"), (KeyCode::Kp1, "Num 1"), (KeyCode::Kp2, "Num 2"), (KeyCode::Kp3, "Num 3"),
     (KeyCode::Kp4, "Num 4"), (KeyCode::Kp5, "Num 5"), (KeyCode::Kp6, "Num 6"), (KeyCode::Kp7, "Num 7"),
     (KeyCode::Kp8, "Num 8"), (KeyCode::Kp9, "Num 9"), (KeyCode::KpDecimal, "Num ,"), (KeyCode::KpDivide, "Num /"),
@@ -222,23 +284,31 @@ const NAMES: [(KeyCode, &str); 97] = [
 ];
 
 /// The name of a key as it's written on a German keyboard. `"?"`: one that can't be put on an action.
-pub fn name(key: KeyCode) -> &'static str {
-    NAMES.iter().find(|(k, _)| *k == key).map_or("?", |(_, name)| name)
+pub fn name(key: Key) -> &'static str {
+    match key {
+        Key::Board(key) => NAMES.iter().find(|(k, _)| *k == key).map_or("?", |(_, name)| name),
+        Key::Mouse4 => "Mouse 4",
+        Key::Mouse5 => "Mouse 5",
+    }
 }
 
 /// Can this key be put on an action (not Shift, Ctrl, Esc …)?
-pub fn bindable(key: KeyCode) -> bool {
+fn bindable(key: KeyCode) -> bool {
     NAMES.iter().any(|(k, _)| *k == key)
 }
 
 /// A key as it's written in `settings.json`: macroquad's name for it (`"Z"`, `"Key1"`, `"RightBracket"`) – by its place
-/// on a US keyboard, like macroquad reads it.
-fn file_name(key: KeyCode) -> String {
-    format!("{key:?}")
+/// on a US keyboard, like macroquad reads it – or `"Mouse4"` / `"Mouse5"`.
+fn file_name(key: Key) -> String {
+    match key {
+        Key::Board(key) => format!("{key:?}"),
+        other => format!("{other:?}"),
+    }
 }
 
-fn from_file_name(name: &str) -> Option<KeyCode> {
-    NAMES.iter().map(|&(key, _)| key).find(|&key| file_name(key) == name)
+fn from_file_name(name: &str) -> Option<Key> {
+    let mut all = NAMES.iter().map(|&(key, _)| Key::Board(key)).chain([Key::Mouse4, Key::Mouse5]);
+    all.find(|&key| file_name(key) == name)
 }
 
 /// All keys: only the actions whose keys differ from the defaults are kept – that's also exactly what goes into the
@@ -258,11 +328,11 @@ impl Bindings {
 
     /// Was one of its keys pressed in this frame?
     pub fn pressed(&self, action: Action) -> bool {
-        self.keys(action).into_iter().flatten().any(is_key_pressed)
+        self.keys(action).into_iter().flatten().any(Key::pressed)
     }
 
     /// Does `action` have this key (first or second)?
-    pub fn has(&self, action: Action, key: KeyCode) -> bool {
+    pub fn has(&self, action: Action, key: Key) -> bool {
         self.keys(action).contains(&Some(key))
     }
 
@@ -279,7 +349,7 @@ impl Bindings {
     }
 
     /// Puts `key` in place `slot` (0 or 1) of `action` – `None` empties it.
-    pub fn set(&mut self, action: Action, slot: usize, key: Option<KeyCode>) {
+    pub fn set(&mut self, action: Action, slot: usize, key: Option<Key>) {
         let mut keys = self.keys(action);
         keys[slot] = key;
         self.set_keys(action, keys);
@@ -301,7 +371,7 @@ impl Bindings {
 
     /// Is the key on any button of any card? Then it moves the camera only while nothing is selected (`ui.rs`) – a key
     /// that moves the camera with one selection and does something else with another one is a trap.
-    pub fn on_any_card(&self, key: KeyCode) -> bool {
+    pub fn on_any_card(&self, key: Key) -> bool {
         Action::all().into_iter().any(|a| matches!(a, Card(_)) && self.has(a, key))
     }
 
@@ -313,7 +383,7 @@ impl Bindings {
         for card in hud::all_cards() {
             groups.push(card.into_iter().filter(|b| !matches!(b, Button::Planned(_))).map(Action::of).collect());
         }
-        let mine: Vec<KeyCode> = self.keys(action).into_iter().flatten().collect();
+        let mine: Vec<Key> = self.keys(action).into_iter().flatten().collect();
         let mut clashes = Vec::new();
         for group in groups.iter().filter(|g| g.contains(&action)) {
             for &other in group {
@@ -380,9 +450,9 @@ mod tests {
     #[test]
     fn file_round_trip() {
         let mut bindings = Bindings::default();
-        bindings.set(Card(Button::Stop), 0, Some(KeyCode::Q));
+        bindings.set(Card(Button::Stop), 0, Some(KeyCode::Q.into()));
         bindings.set(CameraUp, 1, None);
-        bindings.set(Pause, 0, Some(KeyCode::Space)); // the default: not kept
+        bindings.set(Pause, 0, Some(KeyCode::Space.into())); // the default: not kept
         let text = serde_json::to_string(&bindings).unwrap();
         assert_eq!(text, r#"{"camera_up":["W",""],"stop":["Q",""]}"#);
         let back: Bindings = serde_json::from_str(&text).unwrap();
@@ -394,15 +464,32 @@ mod tests {
     #[test]
     fn unknown_names_are_skipped() {
         let back: Bindings = serde_json::from_str(r#"{"no_such_action":["Q"],"pause":["NoSuchKey","P"]}"#).unwrap();
-        assert_eq!(back.keys(Pause), [None, Some(KeyCode::P)]);
+        assert_eq!(back.keys(Pause), [None, Some(KeyCode::P.into())]);
+    }
+
+    /// The side buttons of the mouse and F13–F24 (what a mouse's software sends for its other buttons) go into the
+    /// file and come back.
+    #[test]
+    fn mouse_buttons_round_trip() {
+        let mut bindings = Bindings::default();
+        bindings.set(Base, 0, Some(Key::Mouse4));
+        bindings.set(Base, 1, Some(Key::Mouse5));
+        bindings.set(Pause, 0, Some(KeyCode::F13.into()));
+        bindings.set(Pause, 1, Some(KeyCode::F24.into()));
+        let text = serde_json::to_string(&bindings).unwrap();
+        assert_eq!(text, r#"{"base":["Mouse4","Mouse5"],"pause":["F13","F24"]}"#);
+        let back: Bindings = serde_json::from_str(&text).unwrap();
+        assert!(back == bindings);
+        assert_eq!(back.label(Base), "Mouse 4 / Mouse 5");
+        assert_eq!(back.label(Pause), "F13 / F24");
     }
 
     /// A mercenary is trained with the key of its kind in the barracks.
     #[test]
     fn mercenaries_use_the_key_of_their_kind() {
         let mut bindings = Bindings::default();
-        bindings.set(Action::of(Button::Train(UnitKind::Soldier)), 0, Some(KeyCode::K));
-        assert!(bindings.has(Action::of(Button::Train(UnitKind::MercSoldier)), KeyCode::K));
+        bindings.set(Action::of(Button::Train(UnitKind::Soldier)), 0, Some(KeyCode::K.into()));
+        assert!(bindings.has(Action::of(Button::Train(UnitKind::MercSoldier)), KeyCode::K.into()));
     }
 
     /// Two buildings of one build menu on the same key: both are told.
@@ -410,7 +497,7 @@ mod tests {
     fn clash_on_one_card() {
         let mut bindings = Bindings::default();
         let (wall, gate) = (Card(Button::Place(BuildingKind::Wall)), Card(Button::Place(BuildingKind::Gate)));
-        bindings.set(gate, 0, Some(KeyCode::Q));
+        bindings.set(gate, 0, Some(KeyCode::Q.into()));
         assert_eq!(bindings.clashes(wall), vec![gate]);
         assert_eq!(bindings.clashes(gate), vec![wall]);
         // The tent's menu is another card: Q there is no clash.

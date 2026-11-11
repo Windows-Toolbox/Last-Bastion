@@ -51,11 +51,20 @@ struct Sheet {
     run: Option<Animation>,
     #[serde(default)]
     run_from: f32,
+    /// One attack: a unit's shot (TAB's `Attack` – starts and ends with the weapon up), a zombie's hit.
     attack: Option<Animation>,
+    /// Bringing the weapon up (TAB's `LoadAttack`; down again: backwards). Its last frame is the pose of a unit that
+    /// holds its weapon up between shots. Missing: the first frame of `attack` once it's all the way up.
+    load: Option<Animation>,
     /// Growling (TAB's "special" animation: an idle zombie shakes and growls, a giant roars). Missing: idle.
     special: Option<Animation>,
     /// Dying (TAB's "die"): played once at `fps`, then its last frame held – the body lying there. Missing: idle.
     die: Option<Animation>,
+    /// A second attack from close by (Thanatos hits with its launcher, TAB's "Fight"). Missing: `attack`.
+    fight: Option<Animation>,
+    /// Only the raven: taking off (TAB's "PrepareFly" – backwards: landing) and flying. Missing: idle.
+    take_off: Option<Animation>,
+    fly: Option<Animation>,
 }
 
 /// One animation: its frames side by side, its directions one below the other.
@@ -78,12 +87,21 @@ pub enum Pose {
     Idle,
     /// Walking at this speed (tiles per second).
     Walk(f32),
-    /// Attacking. `Some`: this far through one swing (0..1 – a zombie's hit). `None`: over and over (a unit aiming).
+    /// Attacking. `Some`: this far through one swing (0..1 – a zombie's hit). `None`: over and over (the medic's beam).
     Attack(Option<f32>),
+    /// A unit with its weapon, standing (`sim/combat.rs`): `up` how far it's up (0..1, `load`), `shot` seconds since
+    /// its shot's animation started (`attack`, played once at `fps`) – after that, the weapon held up.
+    Weapon { up: f32, shot: Option<f32> },
     /// Growling for this many seconds now – played once at `fps`, then its last frame held.
     Special(f32),
     /// Dead for this many seconds – like `Special`.
     Die(f32),
+    /// The close attack (`fight`), this far through one hit (0..1).
+    Fight(f32),
+    /// Taking off for this many seconds (played once), landing (the same backwards), flying (over and over).
+    TakeOff(f32),
+    Land(f32),
+    Fly,
 }
 
 pub struct Sprite {
@@ -166,6 +184,12 @@ impl Sprite {
     /// Which animation, and which of its frames. One the sheet doesn't have: idle instead.
     fn frame(&self, pose: Pose, clock: f32) -> (&Animation, u32) {
         let sheet = &self.sheet;
+        if let Pose::Weapon { up, shot } = pose {
+            if let Some(found) = self.weapon_frame(up, shot) {
+                return found;
+            }
+            return (&sheet.idle, sheet.idle.looping(clock));
+        }
         let wanted = match pose {
             Pose::Idle => None,
             // Fast enough to run, and there is a running animation: that one – otherwise walking, or running if it has
@@ -175,6 +199,10 @@ impl Sprite {
             Pose::Attack(_) => sheet.attack.as_ref(),
             Pose::Special(_) => sheet.special.as_ref(),
             Pose::Die(_) => sheet.die.as_ref(),
+            Pose::Fight(_) => sheet.fight.as_ref().or(sheet.attack.as_ref()),
+            Pose::TakeOff(_) | Pose::Land(_) => sheet.take_off.as_ref(),
+            Pose::Fly => sheet.fly.as_ref(),
+            Pose::Weapon { .. } => unreachable!("handled above"),
         };
         let Some(animation) = wanted else {
             return (&sheet.idle, sheet.idle.looping(clock));
@@ -182,10 +210,34 @@ impl Sprite {
         let frame = match pose {
             Pose::Walk(speed) if animation.tiles > 0.0 => animation.at_share(clock * speed / animation.tiles),
             Pose::Attack(Some(share)) => animation.at_share(share),
-            Pose::Special(seconds) | Pose::Die(seconds) => ((seconds.max(0.0) * animation.fps) as u32).min(animation.frames - 1),
+            Pose::Fight(share) => animation.at_share(share.min(0.999)),
+            Pose::Special(seconds) | Pose::Die(seconds) | Pose::TakeOff(seconds) => ((seconds.max(0.0) * animation.fps) as u32).min(animation.frames - 1),
+            Pose::Land(seconds) => animation.frames - 1 - ((seconds.max(0.0) * animation.fps) as u32).min(animation.frames - 1),
             _ => animation.looping(clock),
         };
         (animation, frame)
+    }
+
+    /// `Pose::Weapon`: the shot's animation while it plays, otherwise `load` at how far the weapon is up. `None`: the
+    /// weapon is down (or the sheet has neither) – standing idle.
+    fn weapon_frame(&self, up: f32, shot: Option<f32>) -> Option<(&Animation, u32)> {
+        let sheet = &self.sheet;
+        if let (Some(seconds), Some(attack)) = (shot, sheet.attack.as_ref()) {
+            let frame = (seconds.max(0.0) * attack.fps) as u32;
+            if frame < attack.frames {
+                return Some((attack, frame));
+            }
+        }
+        if up <= 0.0 {
+            return None;
+        }
+        match (sheet.load.as_ref(), sheet.attack.as_ref()) {
+            // Frame 0 is the weapon down, the last one up – a share of the way up is that share of the frames.
+            (Some(load), _) => Some((load, ((up * load.frames as f32) as u32).min(load.frames - 1))),
+            // No `load` (older sheets, the test figure): the first frame of the shot once it's up.
+            (None, Some(attack)) if up >= 1.0 => Some((attack, 0)),
+            _ => None,
+        }
     }
 }
 
@@ -200,8 +252,12 @@ impl Sheet {
             ("walk", self.walk.as_ref()),
             ("run", self.run.as_ref()),
             ("attack", self.attack.as_ref()),
+            ("load", self.load.as_ref()),
             ("special", self.special.as_ref()),
             ("die", self.die.as_ref()),
+            ("fight", self.fight.as_ref()),
+            ("take_off", self.take_off.as_ref()),
+            ("fly", self.fly.as_ref()),
         ];
         for (name, animation) in animations {
             let Some(animation) = animation else {
@@ -245,6 +301,31 @@ pub(crate) fn smooth(texture: &Texture2D) {
     gl.quad_context.texture_set_min_filter(id, FilterMode::Linear, MipmapFilterMode::Linear);
 }
 
+/// TAB's animals (`critters.rs`).
+const ANIMALS: [&str; 2] = ["animals/raven", "animals/rat"];
+
+/// The pictures of `assets\decor\` the game draws: wheat on a farm's fields, loot, the treasure ruins of every
+/// landscape, the power line towers.
+const DECOR: [&str; 17] = [
+    "wheat",
+    "loot_gold",
+    "loot_wood",
+    "loot_stone",
+    "loot_iron",
+    "loot_oil_1",
+    "loot_food",
+    "loot_energy",
+    "loot_science",
+    "treasure_ruin_br",
+    "treasure_ruin_tm",
+    "treasure_ruin_al",
+    "treasure_ruin_ds",
+    "treasure_ruin_vo",
+    "power_tower_high",
+    "power_tower_high_flip",
+    "loot_oil_2",
+];
+
 /// The sprites in use, each loaded once – by the name `data\` gives it – and which of them every kind wears.
 #[derive(Default)]
 pub struct Sprites {
@@ -274,6 +355,11 @@ impl Sprites {
         self.units = UnitKind::ALL.iter().map(|k| self.looks(&k.stats().skins, k.stats().sprite.as_deref())).collect();
         self.breeds = Breed::ALL.iter().map(|b| self.looks(&b.stats().skins, b.stats().sprite.as_deref())).collect();
         self.buildings = BuildingKind::ALL.iter().map(|k| self.building_looks(&k.stats().skins)).collect();
+        for name in ANIMALS {
+            self.try_load(name, false);
+        }
+        let decor: Vec<String> = DECOR.iter().map(|name| format!("decor/{name}")).collect();
+        self.building_looks(&decor);
         self.doom = match &data::get().doom.skins {
             Some(skins) => [&skins.small, &skins.medium, &skins.big].map(|s| self.building_looks(s)).to_vec(),
             None => vec![Vec::new(); 3],
@@ -301,6 +387,16 @@ impl Sprites {
     /// The picture of a building of this type, skin number `look`. `None`: it's drawn as blocks.
     pub fn building(&self, kind: BuildingKind, look: u32) -> Option<&BuildingSprite> {
         self.pick_building(&self.buildings, kind as usize, look)
+    }
+
+    /// A picture of `assets\decor\` (`DECOR`, same format as a building): `"wheat"`, `"loot_gold"` … `None`: not there.
+    pub fn decor(&self, name: &str) -> Option<&BuildingSprite> {
+        self.buildings_loaded.get(&format!("decor/{name}"))?.as_ref()
+    }
+
+    /// A sprite of `ANIMALS` by its name (`"animals/raven"`) – `None`: not there.
+    pub fn animal(&self, name: &str) -> Option<&Sprite> {
+        self.loaded.get(name)?.as_ref()
     }
 
     /// The picture of a house of doom of this size.

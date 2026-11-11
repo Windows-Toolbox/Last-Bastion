@@ -337,6 +337,15 @@ impl World {
         }
     }
 
+    /// Is a zombie or one of your units within `radius` tiles of `p`? Only for the look: ravens fly up, rats run
+    /// (`critters.rs`). The zombies from the grid of the last tick.
+    pub fn anyone_near(&self, p: Vec2, radius: f32) -> bool {
+        let (cx, cy) = (p.x.floor() as i32, p.y.floor() as i32);
+        let r = radius.ceil() as i32;
+        let zombie = (-r..=r).any(|dy| (-r..=r).any(|dx| self.grid.bodies(cx + dx, cy + dy).iter().any(|b| b.pos.distance(p) <= radius)));
+        zombie || self.units.iter().any(|u| !u.is_inside() && u.pos.distance(p) <= radius)
+    }
+
     /// Your eyes – units (in a tower they see further) and buildings that aren't infected: where, and how far they see.
     /// The picture puts a light on each of them (`draw.rs`).
     pub fn eyes(&self) -> Vec<(Vec2, f32)> {

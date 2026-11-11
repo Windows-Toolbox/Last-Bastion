@@ -184,18 +184,42 @@ impl Building {
         (y0..y0 + h).flat_map(|y| (x0..x0 + w).map(move |x| (x, y))).collect()
     }
 
-    /// A zombie hits it – minus its `armor`, at least 1: first the shield, once that is gone the hit points. `true` if this hit broke the shield –
-    /// then the building is infected now (`World::infect` lets the zombies out). What's left over of a hit that
-    /// breaks the shield is lost, like in TAB a hit only ever goes to one of the two.
-    pub fn take_damage(&mut self, damage: u32) -> bool {
+    /// One of your own units shoots it on purpose (`combat.rs`) – minus its `armor`, at least 1: like a zombie's hit
+    /// first the shield, then the hit points, but it never infects. Only: with its shield gone, the next zombie hit does
+    /// (`take_damage`).
+    pub fn take_friendly_fire(&mut self, damage: u32) {
         let damage = after_armor(damage, self.stats().armor);
         if self.shield == 0 {
             self.hp = self.hp.saturating_sub(damage);
-            return false;
+        } else {
+            self.shield = self.shield.saturating_sub(damage); // what's left over is lost, like a zombie's
+        }
+    }
+
+    /// The spot of its edge closest to `p` – where a shot at it lands.
+    pub fn closest_point(&self, p: Vec2) -> Vec2 {
+        p.clamp(self.corner(), self.far_corner())
+    }
+
+    /// A zombie hits it – minus its `armor`, at least 1: first the shield, once that is gone the hit points. `true` if this hit broke the shield –
+    /// then the building is infected now (`World::infect` lets the zombies out). What's left over of a hit that
+    /// breaks the shield is lost, like in TAB a hit only ever goes to one of the two. A finished building with
+    /// colonists whose shield is already gone – your own shot it down (`take_friendly_fire`) – is infected by the next
+    /// hit, and hurt by it too. Still being built, nobody lives or works in it yet: it can't be infected.
+    pub fn take_damage(&mut self, damage: u32) -> bool {
+        let damage = after_armor(damage, self.stats().armor);
+        let stats = self.stats();
+        // The command center too, like TAB's (`EndGameIfInfected`): infected, the round is lost (`round.rs`). Already
+        // infected: its people are out already.
+        let has_people = stats.colonists > 0 && self.is_built() && !self.infected;
+        if self.shield == 0 {
+            self.hp = self.hp.saturating_sub(damage);
+            let infects = has_people && stats.max_shield() > 0;
+            self.infected |= infects;
+            return infects;
         }
         self.shield = self.shield.saturating_sub(damage);
-        // The command center too, like TAB's (`EndGameIfInfected`): infected, the round is lost (`round.rs`).
-        let broke = self.shield == 0 && self.stats().colonists > 0;
+        let broke = self.shield == 0 && has_people;
         self.infected |= broke;
         broke
     }
@@ -215,9 +239,9 @@ impl Building {
         self.full().saturating_sub(self.hp + self.shield + self.repair_left)
     }
 
-    /// One tick of building: its hit points grow towards full – what was built up to now, minus what was built up to
-    /// the last tick, so the steps add up to exactly full and what a hit took stays missing. When it's finished the
-    /// shield is there. Returns `true` on the tick it's finished.
+    /// One tick of building: its life grows towards full – first the hit points, once they're full the shield. What
+    /// was built up to now, minus what was built up to the last tick, so the steps add up to exactly full and what a
+    /// hit took stays missing (a repair brings it back once it's finished). Returns `true` on the tick it's finished.
     fn build_step(&mut self) -> bool {
         if self.construction == 0 {
             return false;
@@ -225,16 +249,17 @@ impl Building {
         let stats = self.stats();
         let start = stats.hp * data::get().buildings.build_start_percent / 100;
         let total = stats.build_time.max(1);
-        // Hit points built when `left` ticks are left – a share of what's between the start and full.
-        let grown = |left: u32| stats.hp.saturating_sub(start) * total.saturating_sub(left) / total;
+        // Life built when `left` ticks are left – a share of what's between the start and full (hit points and shield).
+        // `u64`: life times ticks could get too big for a `u32`.
+        let life = self.full().saturating_sub(start) as u64;
+        let grown = |left: u32| (life * total.saturating_sub(left) as u64 / total as u64) as u32;
         let before = grown(self.construction);
         self.construction -= 1;
-        self.hp = (self.hp + grown(self.construction) - before).min(stats.hp);
-        if self.construction == 0 {
-            self.shield = stats.max_shield();
-            return true;
-        }
-        false
+        let step = grown(self.construction) - before;
+        let hp = step.min(stats.hp.saturating_sub(self.hp));
+        self.hp += hp;
+        self.shield = (self.shield + step - hp).min(stats.max_shield());
+        self.construction == 0
     }
 
     /// What repairing it costs right now: its share of `repair_cost`, rounded up – a scratch never costs nothing.
@@ -369,7 +394,8 @@ impl World {
 
     /// The building just placed (`b`, by a player – the editor's and the generator's stand at once) builds itself
     /// first, like in TAB: `build_seconds` long (`data\buildings.json`), from `build_start_percent` of its hit points
-    /// up, without a shield. Built every tick in `update_buildings`, power or not.
+    /// up, without a shield – that grows once the hit points are full (`build_step`). Built every tick in
+    /// `update_buildings`, power or not.
     pub(super) fn start_construction(&mut self, b: usize) {
         #[cfg(test)]
         if self.instant_build {
@@ -414,13 +440,14 @@ impl World {
     }
 
     /// What tearing building `b` down gives back: `demolish_refund_percent` of its price (`data\buildings.json`), of
-    /// one still being built `demolish_unfinished_refund_percent` – gold, then wood, stone, coal, iron (rounded down).
-    pub fn demolish_refund(&self, b: usize) -> [u32; 5] {
+    /// one still being built `demolish_unfinished_refund_percent` – gold, then wood, stone, coal, iron, oil (rounded
+    /// down).
+    pub fn demolish_refund(&self, b: usize) -> [u32; 6] {
         let building = &self.buildings[b];
         let data = &data::get().buildings;
         let percent = if building.is_built() { data.demolish_refund_percent } else { data.demolish_unfinished_refund_percent };
         let s = building.stats();
-        [s.cost, s.cost_wood, s.cost_stone, s.cost_coal, s.cost_iron].map(|n| n * percent / 100)
+        [s.cost, s.cost_wood, s.cost_stone, s.cost_coal, s.cost_iron, s.cost_oil].map(|n| n * percent / 100)
     }
 
     /// The player tears building `id` down (`Order::Demolish`, like TAB): it goes at once, part of its price comes back
@@ -431,9 +458,10 @@ impl World {
         let Some(b) = self.find_building(id).filter(|&b| self.can_demolish(b)) else {
             return;
         };
-        let [gold, wood, stone, coal, iron] = self.demolish_refund(b);
+        let [gold, wood, stone, coal, iron, oil] = self.demolish_refund(b);
         self.gold = (self.gold + gold).min(self.gold.max(self.gold_storage()));
-        for (r, n) in [(Resource::Wood, wood), (Resource::Stone, stone), (Resource::Coal, coal), (Resource::Iron, iron)] {
+        let goods = [(Resource::Wood, wood), (Resource::Stone, stone), (Resource::Coal, coal), (Resource::Iron, iron), (Resource::Oil, oil)];
+        for (r, n) in goods {
             self.stock.add(r, n, self.storage(r));
         }
         if self.buildings[b].kind == BuildingKind::Barrel && self.barrels < self.barrel_room() {
@@ -672,6 +700,11 @@ impl World {
             let trap = &mut self.buildings[b];
             let stats = trap.stats();
             if !trap.kind.is_trap() || trap.hp == 0 || !self.zombies[z].is_alive() {
+                continue;
+            }
+            // A mine doesn't hurt – it goes off (`blast.rs`).
+            if stats.mine.is_some() {
+                self.light_mine(b);
                 continue;
             }
             trap.hp = trap.hp.saturating_sub(stats.trap_wear);

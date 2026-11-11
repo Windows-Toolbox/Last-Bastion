@@ -10,6 +10,7 @@ use macroquad::prelude::*;
 use crate::settings::Settings;
 use crate::widgets::{mouse, ACCENT, DIM, HOVER};
 
+/// Its corner: this far in from the corner of the map's part of the window (`view.rs`).
 const LEFT: f32 = 8.0;
 const TOP: f32 = 8.0;
 const LINE: f32 = 20.0;
@@ -120,10 +121,11 @@ impl Overlay {
     fn rows(&self, settings: &Settings) -> Vec<(Rect, Line<'_>, String)> {
         let lines = self.lines(settings);
         let width = lines.iter().map(|(_, text)| measure_text(text, None, SIZE, 1.0).width).fold(0.0, f32::max) + 2.0 * PAD;
+        let corner = corner();
         lines
             .into_iter()
             .enumerate()
-            .map(|(i, (line, text))| (Rect::new(LEFT, TOP + PAD / 2.0 + i as f32 * LINE, width, LINE), line, text))
+            .map(|(i, (line, text))| (Rect::new(corner.x, corner.y + PAD / 2.0 + i as f32 * LINE, width, LINE), line, text))
             .collect()
     }
 
@@ -131,7 +133,8 @@ impl Overlay {
     pub fn area(&self, settings: &Settings) -> Rect {
         let rows = self.rows(settings);
         let width = rows.first().map_or(0.0, |(r, _, _)| r.w);
-        Rect::new(LEFT, TOP, width, rows.len() as f32 * LINE + PAD)
+        let corner = corner();
+        Rect::new(corner.x, corner.y, width, rows.len() as f32 * LINE + PAD)
     }
 
     /// What was clicked in this frame – `None` if nothing (or nothing that does something).
@@ -165,6 +168,14 @@ impl Overlay {
             draw_text(&text, r.x + PAD, r.y + LINE - 5.0, SIZE as f32, color);
         }
     }
+}
+
+/// The overlay's top left corner on the screen. In the editor (the map doesn't start at the window's top) a bit lower:
+/// the bar "Sight" floats in the map's corner there.
+fn corner() -> Vec2 {
+    let view = crate::view::rect();
+    let below_bar = if view.y > 0.0 { 40.0 } else { 0.0 };
+    view.point() + vec2(LEFT, TOP + below_bar)
 }
 
 fn is_folded(settings: &Settings, key: &str) -> bool {

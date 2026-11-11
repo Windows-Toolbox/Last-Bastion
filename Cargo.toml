@@ -25,6 +25,11 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
+# `.\build.ps1` builds release. Incremental like the debug build: after a small change only what changed is compiled
+# again – ~4 s instead of ~30 s. The exe may be a few percent slower; the numbers stay the same (no fast-math).
+[profile.release]
+incremental = true
+
 # Only for `examples\` (not built into the game): `test_sprites` writes a PNG. The same `image` that macroquad already
 # uses for loading pictures, so nothing new gets downloaded.
 [dev-dependencies]

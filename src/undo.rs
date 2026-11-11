@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     use crate::map::Terrain;
     use crate::mapfile::MapFile;
-    use crate::sim::Breed;
+    use crate::sim::{Breed, Piece};
 
     /// When two maps count as the same here: what their files hold, and where everything is (`checksum`).
     fn state(world: &World) -> (MapFile, u64) {
@@ -155,6 +155,25 @@ mod tests {
         history.undo(&mut world);
         history.apply(&mut world, &[Order::SetGold { gold: 5 }], false);
         assert_eq!(history.counts(), (STEPS, 0));
+    }
+
+    /// Paste and cut are orders like the others: undo takes the pasted things away again and gives the cut ones back.
+    #[test]
+    fn undo_takes_paste_and_cut_back() {
+        let mut world = World::new(4);
+        let mut history = History::new();
+        let before = state(&world);
+        let units: Vec<Piece> = world.units.iter().map(|u| Piece::Unit(u.id)).collect();
+        let clip = world.copy(&units);
+        let count = world.units.len();
+        history.apply(&mut world, &[Order::Paste { clip: Box::new(clip.clone()), to: (clip.middle.0 + 3, clip.middle.1 + 3) }], false);
+        assert!(world.units.len() > count, "nothing was pasted");
+        assert!(history.undo(&mut world));
+        assert!(state(&world) == before, "undo didn't take the paste back");
+        history.apply(&mut world, &[Order::RemovePieces { pieces: units }], false);
+        assert!(world.units.is_empty());
+        assert!(history.undo(&mut world));
+        assert!(state(&world) == before, "undo didn't give the cut ones back");
     }
 
     /// "Map size" is an order like any other: undo gives the map back as it was before, redo makes it as big again –

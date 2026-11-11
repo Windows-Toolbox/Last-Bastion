@@ -114,5 +114,6 @@ pub fn price(r: Resource) -> u32 {
         Resource::Coal => prices.coal,
         Resource::Food => prices.food,
         Resource::Iron => prices.iron,
+        Resource::Oil => prices.oil,
     }
 }

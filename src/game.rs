@@ -11,7 +11,7 @@ use macroquad::prelude::*;
 use crate::app::Program;
 use crate::data;
 use crate::draw::{self, Fog};
-use crate::editor::{EditorRequest, MapInfo, Mode, Sight};
+use crate::editor::{Around, EditorRequest, MapInfo, Mode, Sight};
 use crate::home;
 use crate::hud::{self, Button, Layout};
 use crate::iso::Camera;
@@ -20,6 +20,7 @@ use crate::mapgen::MapSetup;
 use crate::menu::{Menu, MenuAction};
 use crate::overlay::{self, Action, Overlay, Switch};
 use crate::picture::{Extras, MapPicture};
+use crate::post::Post;
 use crate::settings::Settings;
 use crate::sim::{day_and_hour, Breed, Notice, Order, Outcome, World, TICK};
 use crate::ground::Landscape;
@@ -61,6 +62,10 @@ pub struct Game {
     stash: Option<World>,
     /// Editor: undo and redo – the orders of the last steps in Edit mode (`undo.rs`).
     history: History,
+    /// Editor: the map was changed since it was loaded or saved – for the ● in the menu bar. (Leaving asks with the
+    /// exact comparison, `unsaved`; this is the cheap one for every frame. Undone back to how it was, it still counts
+    /// as changed, like in most editors.)
+    changed: bool,
     orders: Vec<Order>,
     accumulator: f32,
     checksum_at_check: Option<u64>,
@@ -75,6 +80,9 @@ pub struct Game {
     looks: draw::Looks,
     /// The fog of war as a picture, painted anew every frame (`draw.rs`).
     fog_picture: draw::FogPicture,
+    /// TAB's post-processing: the map drawn into a picture first, then onto the screen with glow and the landscape's
+    /// colours (`post.rs`).
+    post: Post,
     /// The pictures of zombies and units – read again on "Restart" (`restart`).
     sprites: Sprites,
     /// TAB's landscape pictures (`ground.rs`).
@@ -130,6 +138,7 @@ impl Game {
             file,
             stash: None,
             history: History::new(),
+            changed: false,
             orders: Vec::new(),
             accumulator: 0.0,
             checksum_at_check: None,
@@ -138,6 +147,7 @@ impl Game {
             zombie_view_tick: None,
             looks: draw::Looks::default(),
             fog_picture: draw::FogPicture::new(),
+            post: Post::default(),
             sprites: Sprites::default(),
             landscape: Landscape::default(),
             minimap: MapPicture::new(),
@@ -185,16 +195,38 @@ impl Game {
         // The editor's panel first (egui): what it takes – a click, a field being typed into – the map and the keys
         // below don't get. Greyed out while the menu or a question is in front.
         // Not while the window is minimized: it has no size then, so there's no room for the panel (egui would panic).
+        // The editor's panels also decide how much of the window is the map's (`view.rs`).
         if self.ui.editor.available && screen_width() >= 1.0 && screen_height() >= 1.0 {
             let enabled = !self.menu.open && !modal;
             self.ui.editor.steps = self.history.counts();
-            // Three fields of `self` lent apart: the closure gets the editor, the world and the orders – nothing else.
+            self.ui.editor.unsaved = self.path.is_none()
+                || self.changed
+                || self.ui.editor.map_name != self.file.name
+                || self.ui.editor.info != MapInfo::of(&self.file);
+            self.ui.editor.file_name = match &self.path {
+                Some(path) => path.file_name().map_or(String::new(), |f| f.to_string_lossy().into_owned()),
+                None => format!("{} (not saved yet)", self.ui.editor.map_name),
+            };
+            // Fields of `self` lent apart: the closure gets the editor, and in `Around` the world, the orders, the camera
+            // and the grid setting – nothing else. Two fields of `self.ui` at once is fine: they're different fields.
             let (editor, world, orders) = (&mut self.ui.editor, &self.world, &mut self.orders);
-            egui_macroquad::ui(|ctx| editor.show(ctx, world, enabled, orders));
+            let (camera, grid) = (&mut self.camera, &mut self.ui.settings.show_grid);
+            // egui may call the closure more than once (`FnMut`), so `Around` is made inside it: `&mut *orders` lends
+            // the orders again for this one call, instead of giving them away.
+            egui_macroquad::ui(|ctx| {
+                let around = Around { world, orders: &mut *orders, camera: &mut *camera, grid: &mut *grid, enabled };
+                editor.show(ctx, around);
+            });
+        } else {
+            crate::view::set(None);
         }
         // Esc first cancels a waiting command, placing or an editor tool, then clears the selection, otherwise it opens
         // the menu. An open menu it always closes.
         if !modal && is_key_pressed(KeyCode::Escape) && (self.menu.open || !self.ui.is_busy()) {
+            self.menu.escape();
+        }
+        // The menu button on the bar (`hud.rs`): like Esc with nothing to cancel. `take` reads it and sets it back.
+        if std::mem::take(&mut self.ui.open_menu) && !self.menu.open {
             self.menu.escape();
         }
         // While the menu is open, everything stands still in single player (DESIGN.md 7.1): no input, no ticks.
@@ -299,6 +331,7 @@ impl Game {
                 if editing {
                     // And remembered for undo: one step lasts as long as the left mouse button is held (`undo.rs`).
                     self.history.apply(&mut self.world, &self.orders, is_mouse_button_down(MouseButton::Left));
+                    self.changed = true;
                     self.zombie_view_tick = None;
                 } else {
                     self.world.apply_orders(&self.orders);
@@ -330,10 +363,16 @@ impl Game {
         self.ui.forget_selection();
     }
 
-    /// What the events had to say in the last ticks (`World::notices`): at the top of the screen, like TAB's – how many
-    /// (dozens, a horde, a swarm, billions) and from where, when it's announced; that it's here, when it comes.
+    /// What the events had to say in the last ticks (`World::notices`): in TAB's event list in the top left, each
+    /// with TAB's picture – how many (dozens, a horde, a swarm, billions) and from where, when it's announced; that it's
+    /// here, when it comes.
     fn announce_events(&mut self) {
         for notice in std::mem::take(&mut self.world.notices) {
+            let icon = match &notice {
+                Notice::Coming { .. } | Notice::Came { .. } => "EventSwarm",
+                Notice::Joined { .. } => "EventReward",
+                Notice::Message { .. } | Notice::Window { .. } => "EventInfo",
+            };
             let text = match notice {
                 Notice::Coming { at, zombies, sides, final_wave, .. } => {
                     let (day, hour) = day_and_hour(at);
@@ -358,7 +397,7 @@ impl Game {
                     continue;
                 }
             };
-            self.ui.alert(&text);
+            self.ui.event(icon, &text);
         }
     }
 
@@ -367,6 +406,7 @@ impl Game {
     fn restart(&mut self) {
         data::reload();
         self.sprites = Sprites::default(); // changed pictures count too
+        crate::ui_art::forget();
         self.landscape = Landscape::default();
         if let Some(file) = self.path.as_ref().and_then(|path| MapFile::load(path).ok()) {
             self.file = file;
@@ -403,6 +443,7 @@ impl Game {
         self.world = world;
         self.stash = None;
         self.history = History::new();
+        self.changed = false;
         self.orders.clear();
         self.accumulator = 0.0;
         self.checksum_at_check = None;
@@ -418,6 +459,7 @@ impl Game {
         }
         let done = if redo { self.history.redo(&mut self.world) } else { self.history.undo(&mut self.world) };
         if done {
+            self.changed = true;
             // A spawner placed in the step taken back is gone – and with it the selection.
             self.ui.editor.select_spawner(None);
             self.zombie_view_tick = None;
@@ -512,6 +554,7 @@ impl Game {
         self.path = Some(target);
         self.ui.editor.map_info = file.info();
         self.file = file;
+        self.changed = false;
         Ok(name)
     }
 
@@ -650,7 +693,8 @@ impl Game {
             full_plan: self.ui.settings.always_full_queue
                 || is_key_down(KeyCode::LeftShift)
                 || is_key_down(KeyCode::RightShift),
-            always_bars: self.ui.settings.always_health_bars,
+            bars: self.ui.settings.health_bars,
+            selected_buildings: &self.ui.selected_buildings,
             grid: self.ui.settings.show_grid,
             fog,
             fog_picture: &self.fog_picture,
@@ -658,9 +702,17 @@ impl Game {
             sprites: &self.sprites,
             landscape: pictures.then_some(&self.landscape),
             spawners: self.ui.spawner_shapes(world, &self.camera),
+            zombie_tiles: self.ui.editor.zombie_tiles(self.camera.zoom),
         };
+        // Into TAB's picture, then with its glow and colours onto the screen – only the map, not the panel. Only in the
+        // player's view: the editor's other views show the map without light, and through TAB's filter that glares
+        // (TAB's editor has none either).
+        let post = self.ui.sight() == Sight::Player && self.post.begin();
         draw::draw_world(world, &self.camera, &view, &self.ui.selected, alpha);
-        self.ui.draw(world, &self.camera);
+        if post {
+            self.post.finish(&world.look);
+        }
+        self.ui.draw(world, &self.camera, &self.looks.effects);
         // The minimap's picture: with fog only in the player's view – in the editor's other views it stays readable.
         let fog = (self.ui.sight() == Sight::Player).then_some(&world.vision);
         self.minimap.refresh(&world.map, &Extras { fog, spawners: &[], base: false, shade_ring: false }, dt);
@@ -677,21 +729,22 @@ impl Game {
             self.landscape.problem().map(|p| format!("Landscape pictures not loaded - {p}")),
             self.looks.effects.problem().map(|p| format!("Effect not loaded - {p}")),
         ];
+        let corner = crate::view::rect().point();
         for (row, text) in problems.into_iter().flatten().enumerate() {
-            let y = 40.0 + row as f32 * 30.0;
-            draw_rectangle(8.0, y, measure_text(&text, None, 18, 1.0).width + 16.0, 26.0, Color::new(0.4, 0.05, 0.05, 0.9));
-            draw_text(&text, 16.0, y + 18.0, 18.0, WHITE);
-        }
-        // The editor's panel over the map and the bottom panel – the menu and the questions come later, on top of it.
-        if self.ui.editor.available {
-            egui_macroquad::draw();
+            let (x, y) = (corner.x + 8.0, corner.y + 40.0 + row as f32 * 30.0);
+            draw_rectangle(x, y, measure_text(&text, None, 18, 1.0).width + 16.0, 26.0, Color::new(0.4, 0.05, 0.05, 0.9));
+            draw_text(&text, x + 8.0, y + 18.0, 18.0, WHITE);
         }
         self.draw_round_over();
-        self.avg_draw_ms = smooth(self.avg_draw_ms, draw_start.elapsed().as_secs_f64() * 1000.0);
-
         if self.ui.settings.dev_overlay {
             self.overlay(dt).draw(&self.ui.settings);
         }
+        // The editor's panels and floating bars over the map, the bar and the overlay – the menu and the questions come
+        // later, on top of it.
+        if self.ui.editor.available {
+            egui_macroquad::draw();
+        }
+        self.avg_draw_ms = smooth(self.avg_draw_ms, draw_start.elapsed().as_secs_f64() * 1000.0);
     }
 
     /// The round is over but the end screen isn't up: in the game after "Look at the map", in the editor's test.
@@ -709,7 +762,8 @@ impl Game {
             Program::Editor => format!("Test over - the colony {result} on day {day}, {hour:02}:00. Edit (F10): back to the map"),
         };
         let w = measure_text(&text, None, 22, 1.0).width + 32.0;
-        let (x, y) = ((screen_width() - w) / 2.0, 96.0);
+        let view = crate::view::rect();
+        let (x, y) = (view.center().x - w / 2.0, view.y + 96.0);
         draw_rectangle(x, y, w, 36.0, Color::new(0.08, 0.09, 0.11, 0.9));
         draw_rectangle_lines(x, y, w, 36.0, 1.0, Color::new(0.95, 0.62, 0.20, 1.0));
         draw_text(&text, x + 16.0, y + 25.0, 22.0, WHITE);
@@ -773,7 +827,7 @@ impl Game {
             .switch(&format!("Pause ({})", k(K::Pause)), ui.paused, Switch::Pause)
             .switch("Edge scrolling", ui.settings.edge_scroll, Switch::EdgeScroll)
             .switch(&format!("Keep the mouse in the window ({})", k(K::ConfineMouse)), ui.settings.confine_mouse, Switch::ConfineMouse)
-            .switch("Health bars on all units", ui.settings.always_health_bars, Switch::HealthBars)
+            .button(format!("Health bars: {}", ui.settings.health_bars.name()), Action::Switch(Switch::HealthBars))
             .switch("Whole command queue (else: hold Shift)", ui.settings.always_full_queue, Switch::FullQueue)
             .switch(&format!("Grid view ({})", k(K::GridView)), ui.settings.show_grid, Switch::Grid);
         o.section("select", "Select")
@@ -844,7 +898,7 @@ impl Game {
             Action::Switch(Switch::Pause) => self.ui.paused = !self.ui.paused,
             Action::Switch(Switch::EdgeScroll) => s.edge_scroll = !s.edge_scroll,
             Action::Switch(Switch::ConfineMouse) => s.confine_mouse = !s.confine_mouse,
-            Action::Switch(Switch::HealthBars) => s.always_health_bars = !s.always_health_bars,
+            Action::Switch(Switch::HealthBars) => s.health_bars = s.health_bars.next(),
             Action::Switch(Switch::FullQueue) => s.always_full_queue = !s.always_full_queue,
             Action::Switch(Switch::Grid) => s.show_grid = !s.show_grid,
             Action::CopySeed => {

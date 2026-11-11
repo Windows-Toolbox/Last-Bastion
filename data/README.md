@@ -27,18 +27,32 @@ Wert fehlt), läuft das Spiel mit den alten Werten weiter und zeigt oben links e
 ## `units.json` – Einheiten
 
 Ein Block pro Typ: `soldier`, `ranger`, `sniper`, `medic`, `spearman` (der Speerträger) – und die Söldner
-`merc_soldier`, `merc_ranger`, `merc_sniper` (aus dem Gasthaus). Ranger, Soldat und Scharfschütze haben TABs Werte
-(`Entities` in `ZXRules`), die Söldner unsere 2,5×-Regel, Medic und Speerträger sind unsere.
+`merc_soldier`, `merc_ranger`, `merc_sniper` (aus dem Gasthaus) – und TABs späte Einheiten `lucifer`, `thanatos`,
+`titan` (aus dem Ingenieurszentrum). Ranger, Soldat, Scharfschütze, Lucifer, Thanatos und Titan haben TABs Werte
+(`Entities` und `Commands` in `ZXRules`), die Söldner unsere 2,5×-Regel, Medic und Speerträger sind unsere.
 Dazu der Block `veterans` (unten) und für alle:
 
 - `regen_every_seconds` (1), `regen_after_seconds` (2): **Selbstheilung** wie TAB – so oft heilen sich Einheiten
   **und Zombies** um ihr `regen`, aber erst so lange nach dem letzten Treffer. Schlafende Zombies heilen auch.
 - `dismiss_refund_percent` (50): **Entlassen** (Entf) gibt so viel Prozent ihres Holzes und Eisens zurück,
   aufgerundet (halbe 3 Holz = 2) – kein Gold.
+- `search_seconds` (0,35): So oft sieht sich eine Einheit **ohne Ziel** nach einem neuen um – wie TAB (1/3 s). Nach
+  einem Kill steht sie also kurz still, die Waffe bleibt oben. Im Angriffsmarsch und auf Patrouille sucht sie jeden
+  Tick (sonst liefe sie bis zur nächsten Suche weiter).
 
-Ein Schuss geht wie in StarCraft: **drehen** (bis die Einheit zum Ziel schaut) → **nachladen** abwarten (zählt ab dem
-letzten Schuss) → **zielen** → Schuss. Ein Schuss dauert also `aim_seconds + cooldown_seconds` – so viel kleiner als
-TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
+Ein Schuss geht wie in TAB: **Waffe heben** (`raise_seconds`, nur wenn sie unten ist) und gleichzeitig **drehen** →
+**nachladen** abwarten (zählt ab dem letzten Schuss) → **zielen** (`aim_seconds`, nur der Scharfschütze) →
+**ausholen** (`windup_seconds`, die Schuss-Animation läuft) → Schuss. Ein Schuss dauert also
+`aim_seconds + windup_seconds + cooldown_seconds` – zusammen TABs Zeit zwischen zwei Schüssen.
+
+**Animation Cancelling:** Wer beim Ausholen losläuft, bricht den Schuss ab (kein Schaden, kein Nachladen). Wer gleich
+nach dem Schuss losläuft, verliert nichts: das Nachladen läuft beim Gehen weiter. Beim Gehen sinkt die Waffe
+(`lower_seconds`); nach einem kurzen Schritt ist sie nur halb unten und schneller wieder oben. Ein neuer Befehl –
+auch derselbe Angriff nochmal – fängt Zielen und Ausholen von vorn an.
+
+Die Zeiten von Ranger, Soldat und Scharfschütze sind TABs (`Commands.tsv`): heben = `TimeLoad`, senken = `TimeUnload`,
+zielen = `TimePreAction`, ausholen = `TimeAction × TimeFactorAction`, nachladen = der Rest von `TimeAction` +
+`TimePostAction`. Die Söldner haben TABs Veteranen-Zeiten.
 
 | Wert | Bedeutung |
 |---|---|
@@ -56,8 +70,12 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 | `range` | Reichweite |
 | `sight` | Sichtweite (mindestens so weit wie die Reichweite) |
 | `turn_around_seconds` | So lange braucht sie für eine halbe Drehung (180°). Erst wenn sie zum Ziel schaut, zielt sie |
-| `aim_seconds` | Ausholen vor jedem Schuss (Bogen spannen, Gewehr anlegen). Neues Ziel: das Zielen fängt von vorne an |
-| `cooldown_seconds` | Nachladen nach dem Schuss, bevor sie wieder zielen kann (Medic: 0 = Strahl ohne Pause) |
+| `raise_seconds` | Waffe heben, sobald sie steht und ein Ziel hat (Ranger 0,5, Soldat 0,2, Scharfschütze 0,5). Danach bleibt sie oben, solange sie schießt |
+| `lower_seconds` | Waffe senken beim Gehen (Ranger 0,25, Soldat 0,1) – das Gehen wartet nicht darauf |
+| `aim_seconds` | Zielen vor jedem Schuss, still auf dem Ziel (nur Scharfschütze 1,6). Neues Ziel: das Zielen fängt von vorne an |
+| `windup_seconds` | Ausholen: vom Start der Schuss-Animation bis zum Schuss (Ranger und Soldat 0,2). Losgehen bricht den Schuss ab |
+| `cooldown_seconds` | Nachladen nach dem Schuss, bevor sie wieder zielen kann – läuft auch beim Gehen (Medic: 0 = Strahl ohne Pause) |
+| `projectile_speed` | **Pfeil:** fliegt so viele Kacheln pro Sekunde (TABs `ProyectileSpeed`, Ranger 12) und trifft erst beim Ankommen – immer das Ziel, auf das er geschossen wurde, wenn es dann noch lebt. Gezielt wird wie in TAB dorthin, wo der Zombie sein wird. Weglassen = Kugel, trifft sofort |
 | `speed` | Laufgeschwindigkeit |
 | `build_seconds` | Ausbildungszeit in der Kaserne |
 | `requires` | Muss erst stehen, damit sie ausgebildet werden kann – Soldat und Scharfschütze: `"MunitionsFactory"`. Weglassen = nichts |
@@ -68,6 +86,12 @@ TABs Zeit zwischen zwei Schüssen ist `cooldown_seconds` gewählt.
 | `heal_per_second` | … und heilt so viele HP pro Sekunde … |
 | `heal_after_seconds` | … aber nur eine Einheit, die so lange nicht getroffen wurde – kein Heilen mitten im Kampf (nicht wie SC2) |
 | `knockback` | Nahkampf (Speerträger): jeder Treffer stößt den Zombie so viele Kacheln zurück – einen großen weniger (Walker-Größe ganz, Fat ≈ halb, Riese ≈ ein Viertel). Weglassen = 0 |
+| `cost_oil`, `oil` | **Öl**: so viel kostet sie (TAB: Lucifer 15, Thanatos 20, Titan 40) und so viel verbraucht sie pro Abrechnung, solange sie lebt (TABs `OilGen`: 1, Titan 2) – wie ihr Essen. Weglassen = 0 |
+| `fire_factor` | **Feuer-Empfindlichkeit** wie TABs `FireDamageFactor`: so viel vom Feuer kommt an (Soldat 0,5, Lucifer 0 – sein Anzug, alle anderen 1). Pflicht in jedem Block |
+| `splash`, `edge_factor` | **Flächenschaden** (TABs `EffectRadius`, `MinFactorDamageInArea`): der Schuss trifft jeden in so vielen Kacheln um den Einschlag, am Rand nur `edge_factor` davon (Titan 0,8 / 1, Thanatos' Rakete 1,8 / 0,2). Weglassen = nur das Ziel |
+| `min_range` | Nichts näher als so viele Kacheln (Thanatos' Rakete 3, TABs `MinTargetDistance`) – außer sein `melee` reicht hin. Weglassen = 0 |
+| `cone_degrees`, `friendly_fire`, `burn_chance` | **Feuerkegel** (Lucifer): trifft jeden in einem Kegel so breit (20°) und so lang wie `range`; `friendly_fire` = auch eigene Einheiten darin (TABs `FriendlyDamage`); so ein Anteil der getroffenen Zombies fängt Feuer (TABs `BurnFactor` 0,7) |
+| `melee` | **Zweiter Angriff aus der Nähe** (Thanatos schlägt mit dem Werfer): `damage`, `range`, `cone_degrees`, `edge_factor`, `windup_seconds`, `cooldown_seconds` – benutzt, wenn das Ziel so nah ist |
 | `skins` | Nur die Optik: ihre **Aussehen** in `assets\` (`"units/ranger"` = `assets\units\ranger.json`, siehe `assets\README.md`). Jede Einheit trägt eins davon ihr Leben lang. Fehlt die Datei, wird es übersprungen. Weglassen = keins |
 | `sprite` | Ihr Bild, wenn keins der `skins` da ist (`"test/figure"` = das graue Testbild). Weglassen = Kästchen |
 
@@ -121,7 +145,16 @@ Gießerei), `ballista` (die Balliste), `machine_gun_tower` (der MG-Turm).
 | `barrel_storage` | Munitionsfabrik: so viele Sprengfässer fasst ihr Lager |
 | `noise` | **Lärm pro Arbeitstakt** (`work_every_seconds` in `sound.json`), solange es arbeitet – mal Stromanteil, aus/infiziert/ohne Holz (Köhlerei) oder ohne Erz (Gießerei) still. Jägerhütte 50, Sägewerk und Munitionsfabrik 100, Mine, Köhlerei und Gießerei 150. Weglassen = 0 |
 | `smelts`, `smelt_ore`, `smelt_coal` | Gießerei: so viel **Eisen** schmilzt sie bei jeder Abrechnung höchstens (mal Stromanteil), aus je so viel Eisenerz und Kohle – nur so viel, wie im Vorrat ist |
-| `weapon` | Ein Turm, der **selbst schießt** (Balliste, MG-Turm): `damage` pro Schuss (minus Rüstung), `range` (Kacheln ab der Mitte), `reload_seconds` (bei wenig Strom länger), `noise` pro Schuss, `toughest`: `true` = auf den Zombie mit den meisten HP in Reichweite, sonst auf den nächsten. Weglassen = schießt nicht |
+| `weapon` | Ein Turm, der **selbst schießt** (Balliste, MG-Turm, Shocking Tower, Executor): `damage` pro Schuss (minus Rüstung), `range` (Kacheln ab der Mitte), `reload_seconds` (bei wenig Strom länger), `noise` pro Schuss, `toughest`: `true` = auf den Zombie mit den meisten HP in Reichweite, sonst auf den nächsten; `all_in_range`: `true` = auf **alle** in Reichweite auf einmal (Shocking Tower); `splash`: trifft jeden so viele Kacheln um sein Ziel (Executor 0,6). Weglassen = schießt nicht |
+| `cost_oil` | Dazu **Öl** aus dem Vorrat (TABs späte Gebäude). Weglassen = 0 |
+| `burns_coal` | Kohle pro Abrechnung – ohne Kohle kein Strom (Kraftwerk, wie `burns_wood`) |
+| `converts` | Wandelt bei jeder Abrechnung Waren um, solange es läuft (mal Stromanteil): `takes` und `makes`, je `[["Wood", 20], …]` – der Transmutator Holz, Stein und Eisen in Öl, der Victorious verbraucht Öl. Nur wenn alles da ist |
+| `goods_storage` | Lagerhaus: so viel mehr passt von jeder Ware ins Lager – nicht Essen, nicht Gold (TABs `ResourcesStorage` 50) |
+| `boost_range`, `gather_boost_percent`, `gold_boost_percent` | TABs Gebäude, die Nachbarn helfen: wessen ganzer Bauplatz in seinem Bauplatz plus `boost_range` Kacheln liegt, sammelt so viel Prozent mehr (Lagerhaus: 12 Kacheln, 20 %) bzw. zahlt als Haus so viel Prozent mehr Gold (Victorious: 24, 20 %) |
+| `sees_through_forest` | Sieht **über Wald** (TABs `WatchThroughOpaque`: Radar, Aussichtsturm, Wunder) |
+| `only_one` | Nur **eins** davon darf stehen (TABs `MaxInstances` 1 – die Wunder) |
+| `veteran_units` | Solange es läuft, ist **jede** deiner Einheiten ein Veteran (die Akademie, TABs `MakeSoldiersVeteran`) – Söldner nicht |
+| `mine` | Die **Mine** (Falle): tritt ein Zombie drauf, geht sie nach `delay_seconds` hoch – `damage` an allen bis `radius` Kacheln (Zombies, Einheiten, Gebäude, wie ein Fass) – und ist weg |
 | `gather_per_tile` | Sammler: so viel bringt jede passende Kachel pro Abrechnung (bei vollem Strom). Was passt, steht im Code: Sägewerk Wald, Jäger Wald, Gras und Erde (jede mit dem Anteil der Karte, `hunting_*` bei `game_maps.json` – TABs 0,8 × Landschaftsfaktor), Fischer Wasser, Mine Erz und Gold (auch unter sich), Farm Gras (nicht Erde, nicht Erz – und sie selbst steht nur auf Gras) |
 | `gold_per_tile` | Mine: so viel **Gold** bringt jede Goldkachel pro Abrechnung, direkt ins Gold (TAB: das 20-Fache einer Steinkachel – 10) |
 | `build_seconds` | **Bauzeit** wie TAB: so lange baut es sich selbst, nachdem es platziert ist – kurz, länger je größer und je höher im Techtree. Bis dahin tut es nichts (keine Arbeiter, kein Gold, kein Strom, keine Ausbildung), nimmt aber schon seine Arbeiter, und Zombies können es treffen. Weglassen oder 0 = steht sofort. Im Editor steht alles sofort |
@@ -141,9 +174,9 @@ Dazu für alle:
 | `demolish_refund_percent` | **Abreißen** (Entf): so viel Prozent des Preises kommen zurück – Gold, Holz, Stein, Kohle, Eisen, abgerundet (TABs `FactorResourcesReturn`: 50) |
 | `demolish_unfinished_refund_percent` | … eines Gebäudes, das **noch gebaut wird** (TAB: auch 50) |
 | `repair_seconds` | So viele Sekunden dauert eine volle Reparatur – eine kleinere entsprechend kürzer |
-| `build_start_percent` | Ein Gebäude im Bau fängt mit so viel Prozent seiner HP an und wächst bis voll; den Schild hat es erst fertig. Ein Treffer im Bau bleibt (später reparieren) |
+| `build_start_percent` | Ein Gebäude im Bau fängt mit so viel Prozent seiner HP an und wächst bis voll – erst die HP, dann der Schild. Infiziert werden kann es erst fertig. Ein Treffer im Bau bleibt (später reparieren) |
 | `trap_every_seconds` | So oft treffen Fallen die Zombies auf ihnen |
-| `sell_from_percent`, `sell_prices` | Märkte verkaufen nur, was über so viel Prozent des Lagers liegt, zu diesen Preisen (Gold pro Einheit: `wood`, `stone`, `iron_ore`, `coal`, `food` und `iron` – das Eisen der Gießerei) |
+| `sell_from_percent`, `sell_prices` | Märkte verkaufen nur, was über so viel Prozent des Lagers liegt, zu diesen Preisen (Gold pro Einheit: `wood`, `stone`, `iron_ore`, `coal`, `food`, `iron` – das Eisen der Gießerei – und `oil`) |
 | `blast` | Sprengfass: `cost` Gold + `cost_coal` Kohle und `build_seconds` in der Munitionsfabrik. Geht es hoch: `damage` an allen bis `radius` Kacheln (Zombies und Einheiten minus Rüstung, Gebäude wie ein Treffer, Häuser der Dörfer wie ein Schuss), so laut wie `noise`. Wer eins trägt, läuft `carry_slow_percent` langsamer und schießt nicht |
 | `scan` | Scan des Kommandozentrums: zeigt `seconds` lang einen Kreis von `radius` Kacheln (auch über Wald). Höchstens `charges` Ladungen, alle `every_seconds` eine neue – solange eine lädt, braucht das Kommandozentrum `power` Strom mehr |
 
@@ -162,6 +195,7 @@ etwas kleiner – wie viele: `giants` der Karte), je mit:
 | `hp` | Lebenspunkte |
 | `armor` | Rüstung gegen jeden Schuss, ein Anteil (Walker 0, Runner 0,05, Fat 0,15, Riese 0,3) |
 | `regen` | **Selbstheilung** wie TABs `LifeRegenFactor` (Takt: `regen_every_seconds` / `regen_after_seconds` in `units.json`): Walker, Runner, Riot, Spitter, Harpyie 0,08 (Walker: 3 HP/s), Fat 0,04, Riese 0,005 (50 HP/s); Infested 0,04 ist unserer. Pflicht in jedem Block |
+| `fire_factor`, `burn_seconds` | **Feuer** wie TAB: so viel vom Feuer kommt an (`FireDamageFactor`: Spitter 1,5, sonst 1) und so lange brennt er, wenn Lucifer ihn anzündet (`BurningTime` 3 s, der Riese fängt kein Feuer: 0) – brennend alle ½ s 5 × `fire_factor` Schaden, ohne Rüstung. Pflicht in jedem Block |
 | `damage` | Schaden pro Treffer – beim Spitter an jedem im Spritzer |
 | `sweep_radius`, `sweep_degrees`, `sweep_hits_zombies` | **Flächenschlag** (TABs Riese: Bogen 120°, Radius 3,5): jeder Treffer trifft sein Ziel und alle vor ihm in diesem Bogen – Einheiten am Boden, Gebäude, mit `sweep_hits_zombies` auch andere Zombies (TABs `FriendlyDamage`). Weglassen = nur das Ziel |
 | `push` | **Rückstoß** (TABs `FactorPush`, Riese 150): wen ein Schlag von ihm tötet, der fliegt weg – `push / mass / 12` Kacheln pro Sekunde (Einheiten: Masse 1), durch alles hindurch wie in TAB, bremst über `push_seconds`. Lebende schiebt er nicht. Weglassen = 0 |
@@ -288,7 +322,7 @@ Womit die Kolonie startet (Gold, Holz, Einheiten), sagt die Schwierigkeit (`game
 ## `spawning.json` – TABs Survival-Plan
 
 Die **Events** einer neuen Runde – TABs eigener Plan (aus dessen Code), für **100 Tage und Bevölkerung 1**. Eine neue
-Karte bekommt sie als Kopie in ihre Kartendatei, danach ändert man sie im **Editor** (Tab „Events“) oder in der
+Karte bekommt sie als Kopie in ihre Kartendatei, danach ändert man sie im **Editor** (Modul „Events“) oder in der
 Datei. Beim Anlegen: **Stunden × Tage / 100** (aufgerundet – nicht der Zufallsversatz, nicht die Vorwarnung),
 **Anzahlen × `population`** der Schwierigkeit (gerundet, mindestens 1; Riesen nicht).
 

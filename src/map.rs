@@ -180,8 +180,7 @@ impl Region {
         [min, vec2(max.x, min.y), max, vec2(min.x, max.y)].map(from_frame)
     }
 
-    /// The middle, as a world point. Only the tests still need it (`cfg(test)`: only built for them).
-    #[cfg(test)]
+    /// The middle, as a world point.
     pub fn center(&self) -> Vec2 {
         from_frame((self.min + self.max) / 2.0)
     }
@@ -236,6 +235,37 @@ impl Region {
     }
 }
 
+/// One of TAB's big rocks (`BRMountainC2/C3/C4`), put down in the editor: `size` × `size` tiles of mountain from
+/// `tile` (its corner with the smallest x and y), drawn as one big picture (`ground.rs`) instead of small pieces.
+/// `variant`: which of its pictures (0–2). TAB's generator never makes them, only its hand-made maps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct BigRock {
+    pub tile: (i32, i32),
+    pub size: i32,
+    pub variant: u8,
+}
+
+/// The sizes of the big rocks (tiles) – TAB's `BRMountainC2`, `C3`, `C4`.
+pub const BIG_ROCK_SIZES: [i32; 3] = [3, 4, 5];
+
+impl BigRock {
+    /// Does it lie on tile (x, y)?
+    pub fn covers(&self, x: i32, y: i32) -> bool {
+        (self.tile.0..self.tile.0 + self.size).contains(&x) && (self.tile.1..self.tile.1 + self.size).contains(&y)
+    }
+
+    /// All its tiles.
+    pub fn tiles(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        (0..self.size).flat_map(move |dy| (0..self.size).map(move |dx| (self.tile.0 + dx, self.tile.1 + dy)))
+    }
+
+    /// Do the two share a tile?
+    fn overlaps(&self, other: &BigRock) -> bool {
+        let apart = |a: i32, a_size: i32, b: i32, b_size: i32| a + a_size <= b || b + b_size <= a;
+        !apart(self.tile.0, self.size, other.tile.0, other.size) && !apart(self.tile.1, self.size, other.tile.1, other.size)
+    }
+}
+
 #[derive(Clone)]
 pub struct Map {
     pub size: usize,
@@ -254,6 +284,8 @@ pub struct Map {
     pub revision: u32,
     /// Per tile: an ore deposit lying on it (`None`: nothing). Only ever on open ground.
     deposits: Vec<Option<Deposit>>,
+    /// The big rocks put down in the editor – their tiles are mountain (`place_big_rock`).
+    big_rocks: Vec<BigRock>,
 }
 
 impl Map {
@@ -261,7 +293,16 @@ impl Map {
     pub fn from_terrain(size: usize, border: usize, terrain: Vec<Terrain>) -> Map {
         assert_eq!(terrain.len(), size * size, "terrain doesn't fit the size");
         let play = Map::play_area_of(size, border);
-        let mut map = Map { size, border, play, terrain, flags: vec![0; size * size], revision: 0, deposits: vec![None; size * size] };
+        let mut map = Map {
+            size,
+            border,
+            play,
+            terrain,
+            flags: vec![0; size * size],
+            revision: 0,
+            deposits: vec![None; size * size],
+            big_rocks: Vec::new(),
+        };
         for i in 0..size * size {
             let (x, y) = ((i % size) as i32, (i / size) as i32);
             let outside = if map.in_play(x, y) { 0 } else { OUTSIDE };
@@ -531,6 +572,10 @@ impl Map {
     pub fn set_terrain(&mut self, x: i32, y: i32, terrain: Terrain) -> bool {
         match self.index(x, y) {
             Some(i) if (self.flags[i] & (BUILT | DOOM)) == 0 && self.terrain[i] != terrain => {
+                // Other ground painted over a big rock: the rock goes – its other tiles stay mountain (small pieces then).
+                if terrain != Terrain::Mountain {
+                    self.big_rocks.retain(|r| !r.covers(x, y));
+                }
                 self.terrain[i] = terrain;
                 if terrain.is_solid() {
                     self.clear_oil_node(i);
@@ -543,6 +588,28 @@ impl Map {
             }
             _ => false,
         }
+    }
+
+    /// The big rocks on the map.
+    pub fn big_rocks(&self) -> &[BigRock] {
+        &self.big_rocks
+    }
+
+    /// Puts a big rock down: all its tiles become mountain, a big rock it overlaps goes. Not if a tile of it is off the
+    /// map, built on or a house of doom – `false` then, nothing changes.
+    pub fn place_big_rock(&mut self, rock: BigRock) -> bool {
+        let free = |(x, y): (i32, i32)| self.index(x, y).is_some_and(|i| self.flags[i] & (BUILT | DOOM) == 0);
+        if !BIG_ROCK_SIZES.contains(&rock.size) || !rock.tiles().all(free) {
+            return false;
+        }
+        self.big_rocks.retain(|r| !r.overlaps(&rock));
+        for (x, y) in rock.tiles() {
+            self.set_terrain(x, y, Terrain::Mountain);
+        }
+        self.big_rocks.push(rock);
+        // Even if every tile was mountain already: the picture changes (`ground.rs` looks at the revision).
+        self.revision += 1;
+        true
     }
 
     /// Marks a rectangle of tiles (width, depth) as built on – or free again, then a door there is gone too.
@@ -798,5 +865,32 @@ mod tests {
         map.set_terrain(c + 4, c, Terrain::Water);
         assert_eq!(oil_left(&map), 0, "water painted over it");
     }
-}
 
+    /// A big rock makes its tiles mountain; one it overlaps goes; other ground painted over it takes it away – and it
+    /// never goes on a building or off the map.
+    #[test]
+    fn big_rocks_are_mountain_and_can_be_painted_away() {
+        let mut map = Map::blank(160, BORDER);
+        let c = 80;
+        let rock = BigRock { tile: (c, c), size: 4, variant: 1 };
+        assert!(map.place_big_rock(rock));
+        assert!(rock.tiles().all(|(x, y)| map.terrain(x, y) == Terrain::Mountain));
+        assert_eq!(rock.tiles().count(), 16);
+        assert_eq!(map.big_rocks(), &[rock]);
+        // Overlapping: the new one wins, the old one's tiles stay mountain.
+        let other = BigRock { tile: (c + 2, c + 2), size: 3, variant: 0 };
+        assert!(map.place_big_rock(other));
+        assert_eq!(map.big_rocks(), &[other]);
+        assert_eq!(map.terrain(c, c), Terrain::Mountain);
+        // Grass on one of its tiles: gone.
+        map.set_terrain(c + 3, c + 3, Terrain::Grass);
+        assert!(map.big_rocks().is_empty());
+        // Not on a building, not off the map, not in a size TAB doesn't have.
+        map.set_occupied(c + 20, c, (2, 2), true);
+        assert!(!map.place_big_rock(BigRock { tile: (c + 19, c - 1), size: 3, variant: 0 }));
+        assert!(!map.place_big_rock(BigRock { tile: (-2, -2), size: 3, variant: 0 }));
+        assert!(!map.place_big_rock(BigRock { tile: (c - 20, c), size: 6, variant: 0 }));
+        assert_eq!(map.terrain(c + 19, c - 1), Terrain::Grass, "a refused rock changed the ground");
+        assert!(map.big_rocks().is_empty());
+    }
+}

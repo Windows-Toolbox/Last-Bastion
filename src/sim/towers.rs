@@ -9,6 +9,7 @@
 
 use macroquad::math::Vec2;
 
+use super::areas::Blow;
 use super::zombies::Aim;
 use super::{after_armor, Fx, World};
 
@@ -35,24 +36,39 @@ impl World {
                 continue;
             }
             let from = building.center();
-            let target = if weapon.toughest {
-                self.toughest_zombie(from, weapon.range)
+            let (id, kind) = (building.id, building.kind);
+            // The shocking tower: every zombie in range at once. The others: one.
+            let targets: Vec<usize> = if weapon.all_in_range {
+                self.zombies_in_shot(from, weapon.range)
+            } else if weapon.toughest {
+                self.toughest_zombie(from, weapon.range).into_iter().collect()
             } else {
-                self.nearest_zombie(from, weapon.range, |_| true)
+                self.nearest_zombie(from, weapon.range, |_| true).into_iter().collect()
             };
             // Nothing in range: it stays loaded and shoots the moment something comes.
-            let Some(z) = target else {
+            if targets.is_empty() {
                 continue;
-            };
-            let zombie = &mut self.zombies[z];
-            let damage = after_armor(weapon.damage, zombie.breed.stats().armor);
-            zombie.hurt(damage, self.tick);
-            let to = zombie.pos;
-            self.shots.push((from, to));
-            let (building, kind) = (self.buildings[b].id, self.buildings[b].kind);
-            self.fx.push(Fx::TowerShot { building, kind, from, to });
-            let by = Aim::Building(self.buildings[b].id);
-            self.zombie_hit_by(z, by);
+            }
+            let by = Aim::Building(id);
+            for z in targets {
+                let to = self.zombies[z].pos;
+                self.shots.push((from, to));
+                if weapon.all_in_range {
+                    self.fx.push(Fx::Shock { building: id, from, to });
+                } else {
+                    self.fx.push(Fx::TowerShot { building: id, kind, from, to });
+                }
+                if weapon.splash > 0.0 {
+                    // The executor: everyone round its target, all of it (`areas.rs`).
+                    let blow = Blow { damage: weapon.damage, edge: 1.0, shooter: 0, by, fire: false, burn_chance: 0.0, friendly: false };
+                    self.hit_splash(to, weapon.splash, &blow);
+                    continue;
+                }
+                let zombie = &mut self.zombies[z];
+                let damage = after_armor(weapon.damage, zombie.breed.stats().armor);
+                zombie.hurt(damage, self.tick);
+                self.zombie_hit_by(z, by);
+            }
             self.make_colony_sound(from, weapon.noise);
             self.buildings[b].reload = weapon.reload * 1000;
         }
@@ -87,6 +103,25 @@ impl World {
             }
         }
         best.map(|(_, _, z)| z)
+    }
+
+    /// Every living zombie within `range` of `from` and in sight – the shocking tower's targets, in the order of the
+    /// grid (the same on every PC).
+    fn zombies_in_shot(&self, from: Vec2, range: f32) -> Vec<usize> {
+        let r = range.ceil() as i32;
+        let (cx, cy) = (from.x.floor() as i32, from.y.floor() as i32);
+        let mut found = Vec::new();
+        for dy in -r..=r {
+            for dx in -r..=r {
+                for z in self.grid.cell(cx + dx, cy + dy) {
+                    let zombie = &self.zombies[z];
+                    if zombie.is_alive() && zombie.pos.distance(from) <= range && self.map.clear_sight(from, zombie.pos) {
+                        found.push(z);
+                    }
+                }
+            }
+        }
+        found
     }
 
     /// How much of its reload a tower still has to go, as a share (0 = ready) – for the panel.

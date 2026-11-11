@@ -7,28 +7,39 @@
 //! graphics card (a *shader*) mixes the three textures by the mask, pixel by pixel – for the whole visible area at once,
 //! two triangles.
 //!
-//! **On the ground** (`Decor`): a rock piece on every 2 × 2 block of mountain – bigger deep in a range; one tree per
+//! **On the ground** (`Decor`): a rock piece on every 2 × 2 block of mountain – bigger deep in a range, one big
+//! picture where the editor put a big rock (`map::BigRock`); one tree per
 //! forest tile – other trees on grass than on bare earth, bigger deep in a forest; herbs on the grass; four lumps per
 //! ore tile (coal too – TAB has none, ours is made of its stone). Where they stand and which picture, decided like TAB (`CreateEntities`), with a "random" number from the
 //! tile – the same every time the map is drawn.
+//!
+//! **The floor under the buildings** (`Floor`): TAB paves the ground around every building but the farm
+//! (`ZX.Components\CFloorUndeBuilding.cs`) – its stone pavement `Floor A`, a soft mask over it so the edge frays, one or
+//! two tiles further than the building, but never onto forest, rock, water or ore. Herbs under it don't grow.
 //!
 //! The pictures come from `tools\tab_terrain.py` (`assets\terrain\<look>\`, only on this PC). Not there: the map is
 //! drawn as before (`draw.rs`, coloured diamonds).
 
 use std::collections::{HashMap, VecDeque};
 
-use macroquad::miniquad::{MipmapFilterMode, TextureWrap};
+use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation, MipmapFilterMode, TextureWrap};
 use macroquad::prelude::*;
 use serde::Deserialize;
 
 use crate::data;
 use crate::iso::{Camera, TILE_W};
-use crate::map::{Map, Ore, Region, Terrain};
+use crate::map::{Map, Ore, Region, Terrain, BIG_ROCK_SIZES};
 
 /// The landscape a map without one is drawn as.
 const DEFAULT_LOOK: &str = "BR";
 /// The world is cut into squares of this many tiles – drawing only looks at the squares on screen.
 const CHUNK: i32 = 16;
+/// Deep in a mountain range a rock piece is drawn bigger (BR, TM, AL, DS) – the first row that fits: `(every, square,
+/// scale)`: on every `every`-th block (counted along x + y), if the `square` × `square` tiles around the block are all
+/// mountain. TAB's squares are one step bigger – 12, 10, 8, 6 (DESIGN.md 9): there only wide ranges got big rocks.
+const SCALES: [(i32, i32, f32); 4] = [(16, 10, 2.5), (8, 8, 2.25), (4, 6, 2.0), (1, 4, 1.5)];
+/// FA, VO: a taller piece instead – `(every, square, height)`. TAB's squares: 18, 14, 10, 6.
+const HEIGHTS: [(i32, i32, usize); 4] = [(12, 14, 5), (6, 10, 4), (1, 6, 3), (1, 4, 2)];
 
 /// `assets\terrain\<look>\terrain.json`: what `tools\tab_terrain.py` wrote.
 #[derive(Deserialize)]
@@ -55,10 +66,20 @@ struct Sheet {
     /// TAB's oil source (`OilSource`): one picture for a whole 2 × 2 node. Older files without it: none.
     #[serde(default)]
     oil: Vec<usize>,
-    /// Coal – TAB has none, ours: its stone lumps blackened and broken (`tools	ab_terrain.py`). Older files without
+    /// TAB's big rocks per size (3, 4, 5 tiles) – each a list of variants (`map::BigRock`). Older files without them:
+    /// none, their tiles get small pieces.
+    #[serde(default)]
+    big_rocks: Vec<Vec<usize>>,
+    /// Coal – TAB has none, ours: its stone lumps blackened and broken (`tools\tab_terrain.py`). Older files without
     /// it: none.
     #[serde(default)]
     coal: Vec<usize>,
+    /// The pavement under the buildings, and its masks side by side (small, medium, large – `Floor`). Older files
+    /// without them: no floor.
+    #[serde(default)]
+    floor: Option<Texture>,
+    #[serde(default)]
+    floor_masks: Option<String>,
 }
 
 /// A ground texture: its picture and how many tiles it covers before it repeats.
@@ -86,6 +107,8 @@ struct Look {
     grass: Texture2D,
     water: Texture2D,
     objects: Texture2D,
+    /// The pavement and its masks (`Sheet::floor`).
+    floor: Option<(Texture2D, Texture2D)>,
 }
 
 /// Something standing on the ground: picture `picture` with its feet at `at`, `scale` times its size.
@@ -96,6 +119,67 @@ pub struct Decor {
     scale: f32,
     /// Tall (trees, rocks): sorted in among the figures. Otherwise flat on the ground (herbs, ore) – drawn with it.
     pub tall: bool,
+    /// A herb: the tile it grows on – a building's floor hides it (TAB's `CInvisibleUnderBuilding`).
+    herb_on: Option<(i32, i32)>,
+}
+
+impl Decor {
+    /// A herb with a floor over it (`Floor`) – not drawn.
+    pub fn is_paved(&self, floors: &[Floor]) -> bool {
+        self.herb_on.is_some_and(|tile| floors.iter().any(|f| f.covers(tile)))
+    }
+}
+
+/// The paved ground under one building (TAB's `CFloorUndeBuilding`): `area` in tiles, `mask` which of the three.
+#[derive(Clone, Copy)]
+pub struct Floor {
+    area: Rect,
+    mask: usize,
+}
+
+impl Floor {
+    /// The floor under a building at `tile`, `size` tiles big – like TAB: a mask by its smaller side (1, 2, 3+ tiles),
+    /// one tile further on every side (two from 3 tiles on); but where the rings around the building meet forest, rock,
+    /// water or ore (anything but open ground), the floor stops before it on that side. Off the map it goes on.
+    pub fn under(map: &Map, tile: (i32, i32), size: (i32, i32)) -> Floor {
+        let (x, y, w, h) = (tile.0, tile.1, size.0, size.1);
+        let side = w.min(h);
+        let mask = (side.max(1) - 1).min(2) as usize;
+        let reach = if side > 2 { 2 } else { 1 };
+        let (mut left, mut top, mut right, mut bottom) = (x - reach, y - reach, x + w + reach, y + h + reach);
+        let n = map.size as i32;
+        let open = |cx: i32, cy: i32| {
+            !(0..n).contains(&cx)
+                || !(0..n).contains(&cy)
+                || (matches!(map.terrain(cx, cy), Terrain::Grass | Terrain::Dirt) && map.deposit(cx, cy).is_none())
+        };
+        // The rings around the building, each one tile further out, without their corners (TAB's `GetAdjacentCells`).
+        for i in 0..reach {
+            let (l, t, r, b) = (x - i, y - i, x + w + i, y + h + i);
+            for cy in t..b {
+                if !open(l - 1, cy) {
+                    left = left.max(l);
+                }
+                if !open(r, cy) {
+                    right = right.min(r);
+                }
+            }
+            for cx in l..r {
+                if !open(cx, t - 1) {
+                    top = top.max(t);
+                }
+                if !open(cx, b) {
+                    bottom = bottom.min(b);
+                }
+            }
+        }
+        let area = Rect::new(left as f32, top as f32, (right - left) as f32, (bottom - top) as f32);
+        Floor { area, mask }
+    }
+
+    fn covers(&self, (x, y): (i32, i32)) -> bool {
+        self.area.contains(vec2(x as f32 + 0.5, y as f32 + 0.5))
+    }
 }
 
 /// What lies under every tile – TAB's terrain layer: forests and mountains are things *on* the ground there.
@@ -115,6 +199,8 @@ pub struct Landscape {
     material: Option<Material>,
     /// The mask: one pixel per tile.
     mask: Option<Texture2D>,
+    /// The shader that draws the floor under a building – `None` until made, or if it couldn't be.
+    floor_material: Option<Material>,
     /// What the mask and the things on the ground were made for: the map's revision, its size and the look.
     made_for: Option<(u32, usize, String)>,
     /// The things on the ground, per square of `CHUNK` tiles, row after row.
@@ -150,6 +236,11 @@ impl Landscape {
                     self.looks.insert(look.to_string(), None);
                     return false;
                 }
+            }
+            // Without it there's just no floor.
+            match make_floor_material() {
+                Ok(m) => self.floor_material = Some(m),
+                Err(e) => self.problem = Some(e),
             }
         }
         let wanted = (map.revision, map.size, look.to_string());
@@ -248,6 +339,36 @@ impl Landscape {
     }
 
     /// The things on the ground in `area` – `tall` or flat ones. `each` gets every one that is in it.
+    /// The floors under the buildings: the pavement, as much as each one's mask lets through – on the ground, before
+    /// the herbs and the fog.
+    pub fn draw_floors(&self, camera: &Camera, floors: &[Floor]) {
+        let (Some(look), Some(material)) = (self.look(), &self.floor_material) else {
+            return;
+        };
+        let (Some((pavement, masks)), Some(sheet)) = (&look.floor, &look.sheet.floor) else {
+            return;
+        };
+        material.set_texture("Floor", pavement.clone());
+        material.set_texture("Masks", masks.clone());
+        gl_use_material(material);
+        for floor in floors {
+            let a = floor.area;
+            let corners = [vec2(a.x, a.y), vec2(a.right(), a.y), vec2(a.right(), a.bottom()), vec2(a.x, a.bottom())];
+            let screen = corners.map(|w| camera.world_to_screen(w));
+            let (lo, hi) = screen.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
+            if lo.x > screen_width() || lo.y > screen_height() || hi.x < 0.0 || hi.y < 0.0 {
+                continue;
+            }
+            // Per floor where it lies (its mask is stretched over it) and which mask – uniforms, so one draw each
+            // (macroquad starts a new batch when a uniform changes).
+            material.set_uniform("Area", [a.x, a.y, a.w, a.h]);
+            material.set_uniform("Pick", [floor.mask as f32, sheet.tiles]);
+            let vertices = corners.iter().zip(screen).map(|(w, s)| Vertex::new(s.x, s.y, 0.0, w.x, w.y, WHITE)).collect();
+            draw_mesh(&Mesh { vertices, indices: vec![0, 1, 2, 0, 2, 3], texture: None });
+        }
+        gl_use_default_material();
+    }
+
     pub fn decor_in(&self, area: Region, tall: bool, mut each: impl FnMut(&Decor)) {
         if self.chunks.is_empty() {
             return;
@@ -316,7 +437,16 @@ impl Look {
         }
         let objects = picture(&sheet.objects)?;
         smooth(&objects, false);
-        Ok(Some(Look { sheet, earth, grass, water, objects }))
+        let floor = match (&sheet.floor, &sheet.floor_masks) {
+            (Some(pavement), Some(masks)) => {
+                let (pavement, masks) = (picture(&pavement.image)?, picture(masks)?);
+                smooth(&pavement, true);
+                smooth(&masks, false);
+                Some((pavement, masks))
+            }
+            _ => None,
+        };
+        Ok(Some(Look { sheet, earth, grass, water, objects, floor }))
     }
 }
 
@@ -372,6 +502,41 @@ void main() {
         ..Default::default()
     };
     load_material(ShaderSource::Glsl { vertex, fragment }, params).map_err(|e| format!("ground shader: {e}"))
+}
+
+/// The program that draws a floor: the pavement repeating every `Pick.y` tiles (in world coordinates, so floors next
+/// to each other run on without a seam), seen as much as the mask says – mask `Pick.x` of the three side by side,
+/// stretched over the floor's `Area` (x, y, width, height in tiles).
+fn make_floor_material() -> Result<Material, String> {
+    let vertex = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+varying highp vec2 world;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1.0);
+    world = texcoord;
+}"#;
+    let fragment = r#"#version 100
+precision highp float;
+varying highp vec2 world;
+uniform sampler2D Floor;
+uniform sampler2D Masks;
+uniform vec4 Area;
+uniform vec2 Pick;
+void main() {
+    vec2 inside = clamp((world - Area.xy) / Area.zw, 0.0, 1.0);
+    float seen = texture2D(Masks, vec2((Pick.x + inside.x) / 3.0, inside.y)).r;
+    gl_FragColor = vec4(texture2D(Floor, world / Pick.y).rgb, seen);
+}"#;
+    let blend = BlendState::new(Equation::Add, BlendFactor::Value(BlendValue::SourceAlpha), BlendFactor::OneMinusValue(BlendValue::SourceAlpha));
+    let params = MaterialParams {
+        uniforms: vec![UniformDesc::new("Area", UniformType::Float4), UniformDesc::new("Pick", UniformType::Float2)],
+        textures: vec!["Floor".into(), "Masks".into()],
+        pipeline_params: PipelineParams { color_blend: Some(blend), ..Default::default() },
+    };
+    load_material(ShaderSource::Glsl { vertex, fragment }, params).map_err(|e| format!("floor shader: {e}"))
 }
 
 /// The ground under every tile: water and grass as they are, everything else bare earth – and under forest and
@@ -447,11 +612,31 @@ fn all(map: &Map, x: i32, y: i32, w: i32, h: i32, terrain: Terrain) -> bool {
 }
 
 /// A rock piece on every 2 × 2 block of mountain whose corner tile (even x and y) is mountain – TAB's. Deep inside a
-/// range bigger (BR, TM, AL, DS: the same piece up to 2.5 times; FA, VO: a taller piece). Single mountain tiles off
-/// that grid (painted in the editor) get a small piece of their own.
+/// range bigger (`SCALES`: the same piece up to 2.5 times; `HEIGHTS`: a taller piece). Single mountain tiles off that
+/// grid (painted in the editor) get a small piece of their own.
 fn mountains(map: &Map, sheet: &Sheet, out: &mut Vec<Decor>) {
     let n = map.size as i32;
+    // `covered`: tiles that have their picture already – no small piece there.
     let mut covered = vec![false; (n * n) as usize];
+    // First the big rocks: one picture each, standing on its front corner like the pieces. Only if the look has
+    // pictures for its size – otherwise its tiles stay uncovered and get small pieces like any mountain.
+    for rock in map.big_rocks() {
+        let Some(size_index) = BIG_ROCK_SIZES.iter().position(|&s| s == rock.size) else {
+            continue;
+        };
+        let Some(pics) = sheet.big_rocks.get(size_index).filter(|p| !p.is_empty()) else {
+            continue;
+        };
+        let picture = pics[rock.variant as usize % pics.len()] as u16;
+        let at = vec2((rock.tile.0 + rock.size) as f32, (rock.tile.1 + rock.size) as f32);
+        out.push(Decor { picture, at, scale: 1.0, tall: true, herb_on: None });
+        for (x, y) in rock.tiles() {
+            if (0..n).contains(&x) && (0..n).contains(&y) {
+                covered[(y * n + x) as usize] = true;
+            }
+        }
+    }
+    let is_covered = |x: i32, y: i32, covered: &[bool]| covered[(y * n + x) as usize];
     // A piece on the square of `size` tiles at `x`, `y`, `scale` times as big. The pictures are made for 2 × 2.
     let put = |pics: &[usize], x: i32, y: i32, size: f32, scale: f32, out: &mut Vec<Decor>| {
         if pics.is_empty() {
@@ -462,7 +647,7 @@ fn mountains(map: &Map, sheet: &Sheet, out: &mut Vec<Decor>) {
         // Its feet: the bottom corner of its square – scaled from the middle.
         let middle = vec2(x as f32, y as f32) + size / 2.0;
         let at = middle + Vec2::splat(size * scale / 2.0);
-        out.push(Decor { picture: pics[variant] as u16, at, scale: scale * size / 2.0, tall: true });
+        out.push(Decor { picture: pics[variant] as u16, at, scale: scale * size / 2.0, tall: true, herb_on: None });
     };
     // The pieces of a height (1–5); a landscape with only one: that one.
     let height = |level: usize| sheet.pieces.get(level - 1).or(sheet.pieces.first()).map(|p| p.as_slice()).unwrap_or(&[]);
@@ -472,36 +657,25 @@ fn mountains(map: &Map, sheet: &Sheet, out: &mut Vec<Decor>) {
             if map.terrain(x, y) != Terrain::Mountain || !full.contains_tile(x, y) {
                 continue;
             }
-            for (tx, ty) in [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)] {
+            // A block a big rock lies on (even partly): no piece – its tiles left over get small ones below.
+            let block = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)];
+            if block.iter().any(|&(tx, ty)| is_covered(tx, ty, &covered)) {
+                continue;
+            }
+            for (tx, ty) in block {
                 covered[(ty * n + tx) as usize] = true;
             }
-            let m = |d: i32, w: i32| all(map, x - d, y - d, w, w, Terrain::Mountain);
+            // Is this row of the table met here: its block, and the square around it (the block in its middle) all mountain?
+            let deep = |every: i32, square: i32| {
+                let d = (square - 2) / 2;
+                (x + y) % every == 0 && all(map, x - d, y - d, square, square, Terrain::Mountain)
+            };
             if sheet.scale_pieces {
-                let scale = if (x + y) % 16 == 0 && m(5, 12) {
-                    2.5
-                } else if (x + y) % 8 == 0 && m(4, 10) {
-                    2.25
-                } else if (x + y) % 4 == 0 && m(3, 8) {
-                    2.0
-                } else if m(2, 6) {
-                    1.5
-                } else {
-                    1.0
-                };
+                let scale = SCALES.iter().find(|&&(every, square, _)| deep(every, square)).map_or(1.0, |row| row.2);
                 put(height(1), x, y, 2.0, scale, out);
             } else {
                 // TAB: the tallest only every 12 tiles or so – here every block deep enough whose numbers fit.
-                let level = if (x + y) % 12 == 0 && m(8, 18) {
-                    5
-                } else if (x + y) % 6 == 0 && m(6, 14) {
-                    4
-                } else if m(4, 10) {
-                    3
-                } else if m(2, 6) {
-                    2
-                } else {
-                    1
-                };
+                let level = HEIGHTS.iter().find(|&&(every, square, _)| deep(every, square)).map_or(1, |row| row.2);
                 put(height(level), x, y, 2.0, 1.0, out);
             }
         }
@@ -548,7 +722,7 @@ fn trees(map: &Map, ground: &[Ground], sheet: &Sheet, out: &mut Vec<Decor>) {
                 None => (middle, 1.0),
             };
             // Its feet: the bottom corner of its tile-sized square, scaled from the middle.
-            out.push(Decor { picture: picture as u16, at: middle + Vec2::splat(scale / 2.0), scale, tall: true });
+            out.push(Decor { picture: picture as u16, at: middle + Vec2::splat(scale / 2.0), scale, tall: true, herb_on: None });
         }
     }
 }
@@ -583,7 +757,7 @@ fn herbs(map: &Map, ground: &[Ground], sheet: &Sheet, out: &mut Vec<Decor>) {
                 let middle = vec2(x as f32 + 0.5, y as f32 + 0.5) + vec2(roll(x, y, salt + 1) - 0.5, roll(x, y, salt + 2) - 0.5) * 0.6;
                 // 0.35 tiles big, give or take 0.1 – the picture is made for 0.3.
                 let size = 0.35 + (roll(x, y, salt + 3) - 0.5) * 0.2;
-                out.push(Decor { picture: picture as u16, at: middle + Vec2::splat(size / 2.0), scale: size / 0.3, tall: false });
+                out.push(Decor { picture: picture as u16, at: middle + Vec2::splat(size / 2.0), scale: size / 0.3, tall: false, herb_on: Some((x, y)) });
             }
         }
     }
@@ -608,7 +782,7 @@ fn ores(map: &Map, sheet: &Sheet, out: &mut Vec<Decor>) {
                 Ore::Oil => {
                     let is_oil = |x: i32, y: i32| map.deposit(x, y).is_some_and(|d| d.ore == Ore::Oil);
                     if let Some(&picture) = sheet.oil.first().filter(|_| !is_oil(x - 1, y) && !is_oil(x, y - 1)) {
-                        out.push(Decor { picture: picture as u16, at: vec2(x as f32 + 2.0, y as f32 + 2.0), scale: 1.0, tall: false });
+                        out.push(Decor { picture: picture as u16, at: vec2(x as f32 + 2.0, y as f32 + 2.0), scale: 1.0, tall: false, herb_on: None });
                     }
                     continue;
                 }
@@ -623,7 +797,7 @@ fn ores(map: &Map, sheet: &Sheet, out: &mut Vec<Decor>) {
                 let middle = vec2(x as f32, y as f32) + quarter + off;
                 let size = 0.6 + (roll(x, y, salt + 2) - 0.5) * 0.3;
                 let picture = pics[(roll(x, y, salt + 3) * pics.len() as f32) as usize % pics.len()];
-                out.push(Decor { picture: picture as u16, at: middle + Vec2::splat(size / 2.0), scale: size, tall: false });
+                out.push(Decor { picture: picture as u16, at: middle + Vec2::splat(size / 2.0), scale: size, tall: false, herb_on: None });
             }
         }
     }

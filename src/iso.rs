@@ -18,12 +18,15 @@ pub struct Camera {
     pub zoom: f32,
 }
 
+/// How far the camera is zoomed when a map starts – the editor shows the zoom as a share of it ("100 %").
+pub const START_ZOOM: f32 = 0.3;
+
 impl Camera {
     pub fn new(center: Vec2) -> Camera {
-        Camera { center, zoom: 0.3 }
+        Camera { center, zoom: START_ZOOM }
     }
 
-    /// World (tiles) → screen (pixels).
+    /// World (tiles) → screen (pixels). `center` lies in the middle of the map's part of the window (`view.rs`).
     pub fn world_to_screen(&self, p: Vec2) -> Vec2 {
         (iso(p) - iso(self.center)) * self.zoom + screen_center()
     }
@@ -50,7 +53,7 @@ impl Camera {
 }
 
 fn screen_center() -> Vec2 {
-    vec2(screen_width(), screen_height()) / 2.0
+    crate::view::center()
 }
 
 /// Straight grid → diamond: x goes to the lower right, y to the lower left.

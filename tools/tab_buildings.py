@@ -98,15 +98,65 @@ BUILDINGS = {
     "tower": "WatchTowerWood",
     "stone_tower": "WatchTowerStone",
 }
-# Pictures, not clips: one per random picture (`DXComponentRandomImage`).
-IMAGES = {"stakes": "TrapStakes", "barrel": "ExplosiveBarrel"}
+# TAB's buildings we don't have yet (docs\\tab-assets.md steps 5-7) - at TAB's size (its `Size`), since they aren't in
+# data\\buildings.json yet. The quarry looks like our mine (both TAB's `Quarry`); the power plant and the warehouse are
+# also our charcoal burner and munitions factory, but there 2 tiles wide - here at TAB's 3 and 4.
+TAB_BUILDINGS = {
+    "wood_house": ("CottageHouse", 2),
+    "power_plant": ("PowerPlant", 3),
+    "oil_platform": ("OilPlatform", 2),
+    "quarry": ("Quarry", 2),
+    "big_quarry": ("AdvancedQuarry", 2),
+    "big_farm": ("AdvancedFarm", 2),
+    "big_mill": ("MillIron", 2),
+    "warehouse": ("WareHouse", 4),
+    "engineering_center": ("AdvancedUnitCenter", 3),
+    "shocking_tower": ("ShockingTower", 2),
+    "executor": ("Executor", 2),
+    "radar": ("RadarTower", 1),
+    "lookout_tower": ("LookoutTower", 1),
+    "spire": ("TheSpire", 5),
+    "academy": ("TheAcademy", 4),
+    "victorious": ("TheVictorious", 4),
+    "transmutator": ("TheTransmutator", 5),
+    "crystal_palace": ("TheCrystalPalace", 6),
+}
+# Pictures, not clips: one per random picture (`DXComponentRandomImage`) - template, tiles wide.
+IMAGES = {"stakes": ("TrapStakes", 1), "barrel": ("ExplosiveBarrel", 1), "blade_trap": ("TrapBlades", 1),
+          "mine_trap": ("TrapMine", 1)}
+# Things on the map that aren't buildings (assets\\decor\\, same JSON): template, tiles wide. Wheat on the farm's
+# fields (`CFarmer`), loot (`Pickable*`), treasure ruins per landscape, TAB's power line towers in the forest
+# (`ZXMapTheme.Decorate`), ruins of tents and a well.
+DECOR = {
+    "wheat": ("Wheat_A", 1),
+    "loot_wood": ("PickableWood", 1), "loot_stone": ("PickableStone", 1), "loot_iron": ("PickableIron", 1),
+    "loot_oil": ("PickableOil", 1), "loot_gold": ("PickableGold", 1), "loot_food": ("PickableFood", 1),
+    "loot_energy": ("PickableEnergy", 1), "loot_science": ("PickableSciencePoint", 1),
+    **{f"treasure_ruin_{t.lower()}": (f"RuinTreasureA_{t}", 3) for t in ("BR", "TM", "AL", "DS", "VO")},
+    "power_tower_high": ("TensionTowerHigh", 2), "power_tower_high_flip": ("TensionTowerHighFlip", 2),
+    "power_tower_medium": ("TensionTowerMedium", 2), "power_tower_medium_flip": ("TensionTowerMediumFlip", 2),
+    "power_tower_low": ("TensionTowerLow", 2), "power_tower_low_flip": ("TensionTowerLowFlip", 2),
+    "tent_ruin_a": ("TentRuinA", 2), "tent_ruin_a_flip": ("TentRuinAFlip", 2), "tent_ruin_b": ("TentRuinB", 2),
+    "tent_ruin_c": ("TentRuinC", 2), "well_ruin": ("WellRuinA", 2),
+    # The railway (tab_trains.py makes the trains): pieces of track, buffer stops, curves of 6 x 6 tiles, the arches
+    # of a railway bridge (8 x 1, 1 x 8, 1 x 4), barriers, a level crossing, a trolley, mine wagons, a lamp.
+    "rail_x": ("RailWayCellH", 1), "rail_y": ("RailWayCellV", 1),
+    **{f"rail_end_{d.lower()}": (f"RailWayTerminator{d}", 1) for d in "NESW"},
+    **{f"rail_curve_{d.lower()}": (f"RailWayArc90{d}", 6) for d in ("NE", "NW", "SE", "SW")},
+    "rail_arch_a": ("RailwayArcA", (8, 1)), "rail_arch_b": ("RailwayArcB", (1, 8)), "rail_arch_c": ("RailwayArcC", (1, 4)),
+    "rail_barrier_a": ("RailwayBarrierA", 1), "rail_barrier_b": ("RailwayBarrierB", 1),
+    "rail_crossing": ("RailwayLevelA", 1), "rail_trolley": ("RailwayTrolleyAFlip", 1),
+    "mine_wagon_a": ("MineWagonA", 1), "mine_wagon_b": ("MineWagonB", 1), "train_lamp": ("TrainLampA", 1),
+}
+DECOR_OUT = os.path.join(os.path.dirname(OUT), "decor")
 # The fishing hut: TAB's four clips, in the order the game picks them (water above, left, below, right).
 FISHING = ["FishermanCottageA", "FishermanCottageB", "FishermanCottageC", "FishermanCottageD"]
 # The houses of the villages of doom (data\\doom.json, `skins`), at TAB's size.
 DOOM = {"doom_small": ("DoomBuildingSmall", 2), "doom_medium": ("DoomBuildingMedium", 3), "doom_big": ("DoomBuildingLarge", 4)}
 # Walls and gates: template, its clip of pieces, gate clip.
 WALLS = {"wall": ("WallWood", "WoodWalls"), "stone_wall": ("WallStone", "StoneWalls")}
-GATES = {"gate": ("Buildings/WoodPillar_B", "WoodWalls", "WoodGate")}
+GATES = {"gate": ("GateWood", "Buildings/WoodPillar_B", "WoodWalls", "WoodGate"),
+         "stone_gate": ("GateStone", "Buildings/StonePillar_B", "StoneWalls", "StoneGate")}
 # Layers TAB hides by itself: the command center's telescope (only with a mod), the ballista shooting (only while it
 # shoots - a part of its gun, see TURRETS).
 HIDDEN = ("Telescope", "@EngineAttack")
@@ -118,6 +168,7 @@ HIDDEN = ("Telescope", "@EngineAttack")
 TURRETS = {
     "ballista": ("@EngineNormal", "@EngineAttack", 90, 1, "BallistaAttack"),
     "machine_gun_tower": ("@Engine", None, 0, -1, None),
+    "executor": ("@Engine", None, 90, 1, None),
 }
 
 
@@ -399,7 +450,7 @@ class Sheet:
         self.pictures.append((image.crop(box), feet[0] - box[0], feet[1] - box[1]))
         return len(self.pictures) - 1
 
-    def save(self, key, meta):
+    def save(self, key, meta, out=OUT):
         blocks = [(p.width + 2 * PAD, p.height + 2 * PAD) for p, _, _ in self.pictures]
         order = sorted(range(len(blocks)), key=lambda i: -blocks[i][1])
         places, width, height = layout([blocks[i] for i in order])
@@ -409,9 +460,9 @@ class Sheet:
             p, fx, fy = self.pictures[i]
             sheet.paste(p, (x + PAD, y + PAD))
             rects[i] = [x + PAD, y + PAD, p.width, p.height, round(fx, 1), round(fy, 1)]
-        sheet.save(os.path.join(OUT, f"{key}.png"), optimize=True)
+        sheet.save(os.path.join(out, f"{key}.png"), optimize=True)
         meta = {"image": f"{key}.png", "pixels_per_tile": PIXELS_PER_TILE, **meta, "pictures": rects}
-        with open(os.path.join(OUT, f"{key}.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(out, f"{key}.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=1)
         print(f"  {key}: {len(rects)} pictures, {width} x {height} pixels")
 
@@ -624,15 +675,27 @@ def picture_on_site(path, width_tiles, off_x, off_y):
     return image, (w * (0.5 - off_x), h * (1 - off_y))
 
 
-def image_building(tab, project, key, template):
+def image_building(tab, project, key, template, size=1, out=OUT):
+    """A building (or a thing on the map) that is one picture: `size x SceneScalingFactor` tile widths wide. `size` can
+    be (x, y) for a site that isn't square (TAB: as wide as its x side, its feet still the site's lowest corner)."""
+    site = None
+    if isinstance(size, tuple):
+        site, size = list(size), size[0]
+    if template not in project.templates:
+        print(f"  {key}: no template {template} - left out")
+        return
     files, scaling, off_x, off_y = image_template(tab, project, template)
+    if not files:
+        print(f"  {key}: no picture of {template} - left out")
+        return
     look, tint = project.look(template)
     for n, path in enumerate(files, 1):
-        image, feet = picture_on_site(path, scaling, off_x, off_y)
+        image, feet = picture_on_site(path, size * scaling, off_x, off_y)
         sheet = Sheet()
         normal = tinted(image, look, tint)
-        meta = {"size": 1, "body": plain(sheet.add(normal, feet), sheet.add(ghost(normal), feet))}
-        sheet.save(key if len(files) == 1 else f"{key}_{n}", meta)
+        meta = {"size": size, **({"site": site} if site else {}),
+                "body": plain(sheet.add(normal, feet), sheet.add(ghost(normal), feet))}
+        sheet.save(key if len(files) == 1 else f"{key}_{n}", meta, out)
 
 
 def pieces(project, tab, sheet, clip_name, pillar_box, feet, look, tint, names):
@@ -677,11 +740,10 @@ def wall(tab, project, key, template, clip_name):
     sheet.save(key, meta)
 
 
-def gate(tab, project, key, pillar_image, walls_clip, gate_clip):
+def gate(tab, project, key, template, pillar_image, walls_clip, gate_clip):
     """A gate (`Gate.cs`): a pillar on both end tiles - half a tile wide, its bottom middle a quarter tile from the
     tile's middle towards its lowest corner - and the door between them, placed relative to the first pillar. The
     pillars join the walls next to them with the wall pieces."""
-    template = "GateWood"
     look, tint = project.look(template)
     folder, stem = pillar_image.split("/")
     path = single(os.path.join(tab, "Images"), folder, stem)
@@ -721,12 +783,19 @@ def main():
             continue
         clips = FISHING if key == "fishing_hut" else variants(project, template)
         clip_building(tab, project, key, template, clips, sizes[key])
+    for key, (template, width) in TAB_BUILDINGS.items():
+        if not only or key in only:
+            clip_building(tab, project, key, template, variants(project, template), width)
     for key, (template, width) in DOOM.items():
         if not only or key in only:
             clip_building(tab, project, key, template, variants(project, template), width)
-    for key, template in IMAGES.items():
+    for key, (template, width) in IMAGES.items():
         if not only or key in only:
-            image_building(tab, project, key, template)
+            image_building(tab, project, key, template, width)
+    os.makedirs(DECOR_OUT, exist_ok=True)
+    for key, (template, width) in DECOR.items():
+        if not only or key in only:
+            image_building(tab, project, key, template, width, DECOR_OUT)
     for key, (template, clip) in WALLS.items():
         if not only or key in only:
             wall(tab, project, key, template, clip)

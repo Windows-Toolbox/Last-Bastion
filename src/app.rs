@@ -17,6 +17,7 @@ use crate::home::{self, Home, HomeAction};
 use crate::mapfile::MapFile;
 use crate::mapgen::MapSetup;
 use crate::settings::{Settings, WindowMode};
+use crate::ui_art;
 
 /// Which of the two programs is running.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -62,6 +63,8 @@ pub async fn run(program: Program) {
     }
     let mut screen = first_screen(program);
     loop {
+        // Mouse 4 and 5 – macroquad doesn't report them, so they're asked from Windows before anything reads input.
+        cursor::poll_side_buttons();
         let quit_asked = program == Program::Editor && is_quit_requested();
         // What comes next is decided inside the `match` – but the screen can only be swapped after it, because inside
         // it `screen` is borrowed (`&mut screen`). So the next screen goes into `next` first.
@@ -116,6 +119,8 @@ pub async fn run(program: Program) {
         if let Some(screen_next) = next {
             screen = screen_next;
         }
+        // TAB's mouse pointer, in front of everything (`ui_art.rs`) – picked during the frame, the arrow otherwise.
+        ui_art::draw_pointer();
         cursor::keep_borderless_composed();
         next_frame().await;
     }

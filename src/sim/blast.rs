@@ -86,34 +86,55 @@ impl World {
             blast.left -= 1;
             blast.left > 0
         });
+        let barrel = &data::get().buildings.blast;
+        // The mine traps a zombie stepped on (`spring_traps`): their fuse burns down, then they go off – once, and gone.
+        let mut going_off: Vec<(Vec2, u32, f32)> = Vec::new();
+        for building in self.buildings.iter_mut().filter(|b| b.blown && b.hp > 0) {
+            if let Some(mine) = &building.stats().mine {
+                if building.reload == 0 {
+                    building.hp = 0;
+                    going_off.push((building.center(), mine.damage, mine.radius));
+                } else {
+                    building.reload -= 1;
+                }
+            }
+        }
         loop {
-            let mut going_off = Vec::new();
             for building in self.buildings.iter_mut().filter(|b| b.kind == BuildingKind::Barrel && !b.blown) {
                 if building.hp < building.stats().hp {
                     building.hp = 0;
                     building.blown = true;
-                    going_off.push(building.center());
+                    going_off.push((building.center(), barrel.damage, barrel.radius));
                 }
             }
             for unit in self.units.iter_mut().filter(|u| u.barrel && u.hp == 0) {
                 unit.barrel = false;
-                going_off.push(unit.pos);
+                going_off.push((unit.pos, barrel.damage, barrel.radius));
             }
             if going_off.is_empty() {
                 return;
             }
-            for at in going_off {
-                self.blast(at);
+            for (at, damage, radius) in std::mem::take(&mut going_off) {
+                self.blast(at, damage, radius);
             }
         }
     }
 
-    /// One barrel goes off at `at`: everyone within `radius` takes `damage` – zombies and your units minus their armor
-    /// (at least 1; units in a tower are safe, the tower isn't), buildings like a hit (a broken shield infects), houses
-    /// of doom like a shot (more come out). Loud.
-    fn blast(&mut self, at: Vec2) {
+    /// A zombie stepped on mine trap `b` (`spring_traps`): its fuse is lit – `delay` ticks, then it goes off
+    /// (`detonate`). Once lit, nothing stops it.
+    pub(super) fn light_mine(&mut self, b: usize) {
+        let mine = &mut self.buildings[b];
+        if let Some(stats) = mine.stats().mine.as_ref().filter(|_| !mine.blown && mine.is_built()) {
+            mine.blown = true;
+            mine.reload = stats.delay;
+        }
+    }
+
+    /// Something goes off at `at` – a barrel, a mine: everyone within `radius` takes `damage` – zombies and your units
+    /// minus their armor (at least 1; units in a tower are safe, the tower isn't), buildings like a hit (a broken
+    /// shield infects), houses of doom like a shot (more come out). Loud.
+    fn blast(&mut self, at: Vec2, damage: u32, radius: f32) {
         let blast = &data::get().buildings.blast;
-        let (damage, radius) = (blast.damage, blast.radius);
         // Whoever sleeps there wakes – and gets hit (`sleep.rs`).
         self.wake_area(at, radius);
         let tick = self.tick;
@@ -140,6 +161,6 @@ impl World {
         }
         self.make_colony_sound(at, blast.noise);
         self.blasts.push(Blast { at, left: SHOWN });
-        self.fx.push(Fx::Blast { at });
+        self.fx.push(Fx::Blast { at, radius });
     }
 }

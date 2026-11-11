@@ -8,7 +8,7 @@ use super::crowd;
 use crate::data;
 use crate::formation::{self, Formation};
 use crate::kinds::Resource;
-use crate::map::{to_frame, Map, Ore, Terrain};
+use crate::map::{to_frame, Deposit, Map, Ore, Terrain};
 use crate::mapgen::Generator;
 
 /// A little game of 600 ticks with a bit of everything, returns the checksum at the end.
@@ -58,7 +58,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0xd915_54fd_543a_92f9;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0xb900_98d6_0200_d1a4;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -230,7 +230,7 @@ fn attack_kills_target_and_finishes() {
     world.units.retain(|u| u.id == id); // nobody else steals the kill
     world.step(&[Order::SpawnZombiesAt { count: 1, point: world.base + vec2(9.0, -5.0) }]);
     let zombie = world.zombies[0].id;
-    world.step(&[Order::Command { units: vec![id], command: Command::Attack(zombie), queue: false, formation: None }]);
+    world.step(&[Order::Command { units: vec![id], command: Command::Attack(Prey::Zombie(zombie)), queue: false, formation: None }]);
     for _ in 0..300 {
         world.step(&[]);
     }
@@ -310,8 +310,9 @@ fn no_shooting_through_trees() {
     assert!(!shot, "shot through the trees");
     assert!(!world.vision.sees(world.zombies[0].pos), "sees through the trees");
     world.step(&[Order::PaintTerrain { terrain: Terrain::Grass, tiles: trees }]);
-    shot |= !world.shots.is_empty(); // the first shot already falls in this tick
-    for _ in 0..5 {
+    shot |= !world.shots.is_empty();
+    // It looks around (`search_seconds`), brings its rifle up and winds up – then it shoots.
+    for _ in 0..20 {
         world.step(&[]);
         shot |= !world.shots.is_empty();
     }
@@ -1074,7 +1075,7 @@ fn the_zombie_brush_fills_tiles() {
 }
 
 /// A medic sent onto a unit with T walks to it and keeps the green beam on it. A soldier given the
-/// same command attack-moves there instead. The medic never shoots at zombies.
+/// same command shoots it instead (an attack on your own, on purpose). The medic never shoots at zombies.
 #[test]
 fn medic_beams_at_its_target() {
     let (mut world, id) = quiet_world();
@@ -1083,11 +1084,11 @@ fn medic_beams_at_its_target() {
     let medic = world.units.last().unwrap().id;
     let soldier = world.units[0].id;
     world.step(&[
-        Order::Command { units: vec![medic, soldier], command: Command::Heal(id), queue: false, formation: None },
+        Order::Command { units: vec![medic, soldier], command: Command::Attack(Prey::Unit(id)), queue: false, formation: None },
         Order::SpawnZombiesAt { count: 1, point: start + vec2(-1.0, 0.0) },
     ]);
     let soldier_task = world.units[world.find_unit(soldier).unwrap()].order_name();
-    assert!(soldier_task == "Attack-move" || soldier_task == "Idle", "soldier: {soldier_task}");
+    assert_eq!(soldier_task, "Attack", "soldier: {soldier_task}");
     assert_eq!(world.units[world.find_unit(medic).unwrap()].order_name(), "Heal");
     let target = world.units[world.find_unit(id).unwrap()].pos;
     let mut beamed = false;
@@ -1266,8 +1267,8 @@ fn a_shot_zombie_comes_for_the_shooter() {
     world.zombies[0].speed = 0.0;
     world.spawn_unit(UnitKind::Sniper, p);
     let sniper = world.units[0].id;
-    // The sniper first turns and aims (`data\units.json`) – then it shoots.
-    for _ in 0..40 {
+    // The sniper first looks around, turns, raises its rifle and aims (`data\units.json`) – then it shoots.
+    for _ in 0..80 {
         world.step(&[]);
         if world.zombies[0].aim.is_some() {
             break;
@@ -2550,10 +2551,11 @@ fn shots_to_kill_walkers_and_runners() {
     assert_eq!([shots(Ranger, Breed::Runner), shots(Soldier, Breed::Runner), shots(Sniper, Breed::Runner)], [5, 3, 1]);
 }
 
-/// A ranger with its back to a zombie: first it turns around, then it draws the bow – only then the first arrow.
-/// After that one arrow every `aim + cooldown` ticks.
+/// A ranger with its back to a zombie: once it has looked around and found it, it turns around and brings its bow up
+/// (both at once), then draws it – only then the first arrow. After that one arrow every `aim + windup + cooldown`
+/// ticks, the bow stays up.
 #[test]
-fn units_turn_and_aim_before_they_shoot() {
+fn units_turn_raise_and_aim_before_they_shoot() {
     let (mut world, _) = quiet_world();
     world.units.clear();
     let p = world.base + vec2(8.5, -8.5);
@@ -2564,17 +2566,295 @@ fn units_turn_and_aim_before_they_shoot() {
     world.zombies[0].speed = 0.0;
     world.zombies[0].hp = 100_000;
     let stats = UnitKind::Ranger.stats();
-    let mut shots = Vec::new();
-    for tick in 1..=80u32 {
+    let (mut found, mut shots) = (None, Vec::new());
+    for tick in 1..=120u32 {
         world.step(&[]);
+        if found.is_none() && world.units[0].aim_at.is_some() {
+            found = Some(tick);
+        }
         if !world.shots.is_empty() {
             shots.push(tick);
         }
     }
-    // The tick it finishes turning already counts as the first tick of aiming.
-    let first = stats.turn_around + stats.aim;
-    assert_eq!(shots.first(), Some(&first), "turn {} + aim {} ticks: {shots:?}", stats.turn_around, stats.aim);
+    let found = found.expect("never found the zombie");
+    assert!(found <= data::get().units.search, "found it only in tick {found}");
+    // The tick it finds it already turns and raises; the tick both are done already counts for the wind-up.
+    let first = found - 1 + stats.turn_around.max(stats.raise) + stats.aim + stats.windup;
+    assert_eq!(shots.first(), Some(&first), "found in {found}, turn {} / raise {} + windup {}: {shots:?}", stats.turn_around, stats.raise, stats.windup);
     assert!(shots.windows(2).all(|w| w[1] - w[0] == stats.shot_ticks()), "not every {} ticks: {shots:?}", stats.shot_ticks());
+}
+
+/// A soldier facing a zombie, its rifle up, in the middle of its wind-up – then one more tick with `orders_then`
+/// (given the soldier's `id` and where it stands). Returns the world and the soldier's index.
+fn soldier_winding_up(orders_then: impl Fn(u32, Vec2) -> Vec<Order>) -> (World, usize) {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(8.5, -8.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 6);
+    world.spawn_unit(UnitKind::Soldier, p);
+    world.spawn_zombie_as(p + vec2(2.0, 2.0), Breed::Walker, false); // right in front of it
+    world.zombies[0].speed = 0.0;
+    world.zombies[0].hp = 100_000;
+    let stats = UnitKind::Soldier.stats();
+    assert!(stats.windup >= 2, "the soldier needs a wind-up of 2 ticks or more for this test");
+    let mut ticks = 0;
+    while world.units[0].aim <= stats.aim {
+        world.step(&[]);
+        assert!(world.shots.is_empty(), "shot before its wind-up");
+        ticks += 1;
+        assert!(ticks < 60, "never started its wind-up");
+    }
+    assert!(world.units[0].swing_from.is_some(), "the shot's animation didn't start");
+    let id = world.units[0].id;
+    world.step(&orders_then(id, p));
+    (world, 0)
+}
+
+/// Animation cancelling, part 1: walking off in the middle of the wind-up cancels the shot – no bullet, no reloading
+/// either, and the picture doesn't play the shot on.
+#[test]
+fn walking_off_during_the_windup_cancels_the_shot() {
+    let away = |id, p: Vec2| vec![Order::Command { units: vec![id], command: Command::Move(p - vec2(3.0, 3.0)), queue: false, formation: None }];
+    let (mut world, u) = soldier_winding_up(away);
+    assert!(world.shots.is_empty(), "shot although it walked off");
+    assert!(world.units[u].is_walking());
+    assert_eq!(world.units[u].cooldown, 0, "reloading although it didn't shoot");
+    assert_eq!(world.units[u].swing_from, None, "the cancelled shot's animation plays on");
+    for _ in 0..10 {
+        world.step(&[]);
+        assert!(world.shots.is_empty(), "shot while walking");
+    }
+}
+
+/// Animation cancelling, part 3: the same attack again in the middle of the wind-up starts the shot over (like
+/// StarCraft) – it doesn't just go on with the old one.
+#[test]
+fn the_same_attack_again_starts_the_shot_over() {
+    let (mut world, u) = soldier_winding_up(|_, _| Vec::new());
+    assert!(world.shots.is_empty(), "the wind-up was too short for this test");
+    let started = world.units[u].swing_from.expect("not winding up");
+    let (id, zombie) = (world.units[u].id, world.zombies[0].id);
+    world.step(&[Order::Command { units: vec![id], command: Command::Attack(Prey::Zombie(zombie)), queue: false, formation: None }]);
+    assert!(world.shots.is_empty(), "shot although the attack started over");
+    let restarted = world.units[u].swing_from.expect("no new wind-up");
+    assert!(restarted > started && restarted == world.tick - 1, "the wind-up went on: started {started}, now {restarted}");
+    let stats = UnitKind::Soldier.stats();
+    for _ in 0..stats.aim + stats.windup {
+        world.step(&[]);
+    }
+    assert!(!world.shots.is_empty(), "never shot after the new wind-up");
+}
+
+/// Attack-move with zombies in range: the unit stops at once – also on the tick the command comes, and after every
+/// kill. It doesn't take a step towards its goal while it waits to look around (`search_seconds`).
+#[test]
+fn attack_move_doesnt_step_forward_between_targets() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(8.5, -8.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 6);
+    world.spawn_unit(UnitKind::Soldier, p);
+    world.spawn_zombie_as(p + vec2(1.5, 1.5), Breed::Walker, false);
+    world.spawn_zombie_as(p + vec2(2.5, 2.5), Breed::Walker, false);
+    world.zombies.iter_mut().for_each(|z| z.speed = 0.0);
+    world.zombies[0].hp = 1;
+    world.zombies[1].hp = 100_000;
+    let (id, tough) = (world.units[0].id, world.zombies[1].id);
+    world.step(&[Order::Command { units: vec![id], command: Command::AttackMove(p + vec2(4.0, 4.0)), queue: false, formation: None }]);
+    for tick in 0..100 {
+        assert!(world.units[0].pos.distance(p) < 1e-4, "stepped forward in tick {tick}: {:?}", world.units[0].pos - p);
+        world.step(&[]);
+    }
+    assert_eq!(world.zombies.len(), 1, "the weak zombie isn't dead");
+    let z = world.find_zombie(tough).unwrap();
+    assert!(world.zombies[z].hp < 100_000, "never shot at the second zombie");
+}
+
+/// T on one of your own units: it's shot on purpose, until it's dead – then the command is done, and nobody shoots
+/// your own by themselves.
+#[test]
+fn attack_on_your_own_unit() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(8.5, -8.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 6);
+    world.spawn_unit(UnitKind::Soldier, p);
+    world.spawn_unit(UnitKind::Soldier, p + vec2(2.0, 2.0));
+    world.spawn_unit(UnitKind::Soldier, p - vec2(2.0, 2.0));
+    let (shooter, victim) = (world.units[0].id, world.units[1].id);
+    world.step(&[Order::Command { units: vec![shooter], command: Command::Attack(Prey::Unit(victim)), queue: false, formation: None }]);
+    assert_eq!(world.units[0].order_name(), "Attack");
+    let mut hurt = false;
+    for _ in 0..400 {
+        world.step(&[]);
+        hurt |= world.find_unit(victim).is_some_and(|v| world.units[v].hp < world.units[v].max_hp());
+        if world.find_unit(victim).is_none() {
+            break;
+        }
+    }
+    assert!(hurt && world.find_unit(victim).is_none(), "the unit wasn't shot dead");
+    world.step(&[]); // the tick after: its target is gone, the command is done
+    let s = world.find_unit(shooter).unwrap();
+    assert!(world.units[s].queue.is_empty(), "the attack isn't done");
+    assert_eq!(world.units[s].kills, 0, "a kill for shooting your own");
+    // The third one is never shot – neither by the shooter nor by itself.
+    for _ in 0..100 {
+        world.step(&[]);
+    }
+    assert!(world.units.iter().all(|u| u.hp == u.max_hp()), "someone shot their own without being told to");
+}
+
+/// T on one of your own buildings: shot like a zombie hits it – first the shield, then the hit points – but it's
+/// never infected by that. With the shield gone, though, the next zombie hit infects it at once. And a repair makes it
+/// whole again, even from 1 hit point.
+#[test]
+fn attack_on_your_own_building() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let t = (world.base.x as i32 + 8, world.base.y as i32 - 8);
+    clear_ground(&mut world, t, 6);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile: t, turned: false, editor: true }]);
+    let b = world.buildings.len() - 1;
+    let (tent, full_hp, full_shield) = {
+        let tent = &world.buildings[b];
+        assert!(tent.is_built() && tent.stats().colonists > 0 && tent.stats().max_shield() > 0, "the tent changed");
+        (tent.id, tent.stats().hp, tent.stats().max_shield())
+    };
+    world.buildings[b].shield = full_shield.min(30); // a few shots
+    world.spawn_unit(UnitKind::Soldier, vec2(t.0 as f32 - 2.5, t.1 as f32 + 0.5));
+    let id = world.units[0].id;
+    world.step(&[Order::Command { units: vec![id], command: Command::Attack(Prey::Building(tent)), queue: false, formation: None }]);
+    let mut ticks = 0;
+    while world.buildings[b].hp == full_hp {
+        world.step(&[]);
+        ticks += 1;
+        assert!(ticks < 600, "the hit points never went down");
+        assert!(!world.buildings[b].infected, "infected by your own shots");
+    }
+    world.step(&[Order::Stop { units: vec![id] }]);
+    assert_eq!(world.buildings[b].shield, 0, "hit points down before the shield");
+    assert!(!world.buildings[b].infected, "infected by your own shots");
+    // Without its shield the next zombie hit infects it – and hurts it too.
+    let mut hit = world.buildings[b].clone();
+    assert!(hit.take_damage(1) && hit.infected, "a zombie hit didn't infect it");
+    assert!(hit.hp < world.buildings[b].hp, "the infecting hit did no damage");
+    // A repair brings everything back, even from 1 hit point.
+    world.buildings[b].hp = 1;
+    world.gold = 1_000_000;
+    world.step(&[Order::Repair { buildings: vec![tent] }]);
+    for _ in 0..2000 {
+        if world.buildings[b].repair_left == 0 {
+            break;
+        }
+        world.step(&[]);
+    }
+    let tent = &world.buildings[b];
+    assert_eq!((tent.hp, tent.shield), (full_hp, full_shield), "not whole after the repair");
+}
+
+/// A ranger, a zombie `at` this far from it (in front of it) with `hp` – standing still. Steps until the ranger shoots;
+/// returns the world (ranger 0, zombie 0) and where the ranger stands.
+fn ranger_shoots_at(at: Vec2, hp: u32) -> (World, Vec2) {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(8.5, -8.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 8);
+    world.spawn_unit(UnitKind::Ranger, p);
+    world.spawn_zombie_as(p + at, Breed::Walker, false);
+    world.zombies[0].speed = 0.0;
+    world.zombies[0].hp = hp;
+    for _ in 0..80 {
+        world.step(&[]);
+        if !world.shots.is_empty() {
+            return (world, p);
+        }
+    }
+    panic!("the ranger never shot");
+}
+
+/// An arrow flies (TAB: 12 tiles a second) and hits only when it gets there – a bullet would have hit already.
+#[test]
+fn an_arrow_hits_when_it_lands() {
+    let (mut world, p) = ranger_shoots_at(vec2(3.8, 3.8), 100_000);
+    let full = world.zombies[0].hp;
+    let flight = arrows::flight_ticks(UnitKind::Ranger.stats().projectile_speed, p, world.zombies[0].pos);
+    assert!(flight > 1, "{flight} ticks is no flight");
+    for tick in 1..flight {
+        world.step(&[]);
+        assert_eq!(world.zombies[0].hp, full, "hit after {tick} of {flight} ticks");
+    }
+    world.step(&[]);
+    let damage = after_armor(UnitKind::Ranger.stats().damage, Breed::Walker.stats().armor);
+    assert_eq!(world.zombies[0].hp, full - damage, "not hit when the arrow landed");
+}
+
+/// An arrow on its way counts against overkill (TAB's `AddFutureDamage`): its zombie dies of it, so a second ranger
+/// that looks around meanwhile takes the other zombie – even though the first one is nearer. The first ranger walks off
+/// right after its shot, so only the arrow keeps the zombie "taken".
+#[test]
+fn an_arrow_on_its_way_counts_against_overkill() {
+    let (mut world, p) = ranger_shoots_at(vec2(3.8, 3.8), 1);
+    let doomed = world.zombies[0].id;
+    let first = world.units[0].id;
+    world.step(&[
+        Order::Command { units: vec![first], command: Command::Move(p - vec2(3.0, 3.0)), queue: false, formation: None },
+        Order::SpawnUnit { kind: UnitKind::Ranger, point: p + vec2(0.0, 0.6) },
+        Order::PlaceZombies { center: p + vec2(5.5, 1.0), radius: 0.0, count: 1, breed: Breed::Walker, wander: true },
+    ]);
+    let other = world.zombies.iter().find(|z| z.id != doomed).unwrap().id;
+    world.zombies.iter_mut().for_each(|z| z.speed = 0.0);
+    let second = world.units.len() - 1;
+    let mut took = None;
+    while world.find_zombie(doomed).is_some() {
+        if let Some(aim) = world.units[second].aim_at {
+            took = Some(aim);
+            break;
+        }
+        world.step(&[]);
+    }
+    assert_eq!(took, Some(combat::Aim::Zombie(other)), "the second ranger didn't take the other zombie while the arrow flew");
+}
+
+/// Animation cancelling, part 2: walking off right after the shot costs nothing – the reloading goes on while it walks.
+/// The weapon goes down bit by bit: after one step it's only partly down, and it comes up again in that share of
+/// `raise` (once the soldier has looked around and found the zombie again).
+#[test]
+fn walking_off_after_the_shot_keeps_reloading() {
+    let stats = UnitKind::Soldier.stats();
+    // Let it finish the wind-up and shoot.
+    let (mut world, u) = soldier_winding_up(|_, _| Vec::new());
+    for _ in 0..stats.windup {
+        if !world.shots.is_empty() {
+            break;
+        }
+        world.step(&[]);
+    }
+    assert!(!world.shots.is_empty(), "didn't shoot at the end of its wind-up");
+    let reload = world.units[u].cooldown;
+    let (id, p) = (world.units[u].id, world.units[u].pos);
+    world.step(&[Order::Command { units: vec![id], command: Command::Move(p - vec2(3.0, 3.0)), queue: false, formation: None }]);
+    let unit = &world.units[u];
+    assert!(unit.is_walking());
+    assert_eq!(unit.cooldown, reload - 1, "the reloading stopped while it walked");
+    assert!(unit.weapon > 0 && unit.weapon < units::WEAPON_UP, "after one step the weapon should be partly down: {}", unit.weapon);
+    let down = units::WEAPON_UP - unit.weapon;
+    // Stop: once it has found the zombie again, the rifle comes up – in that share of `raise`.
+    world.step(&[Order::Command { units: vec![id], command: Command::Hold, queue: false, formation: None }]);
+    let mut waited = 0;
+    while world.units[u].aim_at.is_none() {
+        assert_eq!(world.units[u].weapon, units::WEAPON_UP - down, "the weapon moved while it looked around");
+        world.step(&[]);
+        waited += 1;
+        assert!(waited <= data::get().units.search, "didn't find the zombie again");
+    }
+    let mut raising = 1; // the tick it found it, it already raised
+    while world.units[u].weapon < units::WEAPON_UP {
+        world.step(&[]);
+        raising += 1;
+    }
+    let expected = down.div_ceil(units::WEAPON_UP.div_ceil(stats.raise.max(1)));
+    assert_eq!(raising, expected, "raising it from partly down");
+    assert!(raising < stats.raise, "as long as from all the way down");
 }
 
 /// Fat zombies are big: they keep further apart from each other than runners – and they're the toughest.
@@ -2793,7 +3073,10 @@ fn a_crowd_spreads_its_fire() {
         walker(p + vec2(5.0, 0.3)),
         walker(p + vec2(5.5, 1.5)),
     ]);
-    world.step(&[]);
+    // Each looks around on its own tick (`search_seconds`) – after one search both have found theirs.
+    for _ in 0..data::get().units.search {
+        world.step(&[]);
+    }
     let (a, b) = (world.units[0].aim_at, world.units[1].aim_at);
     assert!(a.is_some() && b.is_some(), "not both aiming: {}, {}", a.is_some(), b.is_some());
     assert!(a != b, "both snipers aim at the same walker");
@@ -3450,8 +3733,9 @@ fn stone_buildings_upgrade_their_wooden_ones() {
 }
 
 /// Like TAB: a building placed by a player builds itself first – `build_seconds` long, from `build_start_percent` of
-/// its hit points up, without a shield. Until then it does nothing: a tent gives no workers, a barracks trains nothing.
-/// A hit taken meanwhile stays missing. Finished, it has its shield and works. The editor's buildings stand at once.
+/// its hit points up, without a shield – that grows once the hit points are full. Until then it does nothing: a tent
+/// gives no workers, a barracks trains nothing, and a zombie can't infect it (nobody lives in it yet). A hit taken
+/// meanwhile stays missing. Finished, it works. The editor's buildings stand at once.
 #[test]
 fn buildings_build_themselves_first() {
     let (mut world, _) = quiet_world();
@@ -3469,11 +3753,20 @@ fn buildings_build_themselves_first() {
     assert!(world.buildings[b].hp < stats.hp / 2, "starts with {} of {} hit points", world.buildings[b].hp, stats.hp);
     assert_eq!(world.workers().1, workers, "a tent being built gives workers");
     world.buildings[b].hp -= 5;
+    let mut shielded = false;
     while !world.buildings[b].is_built() {
         world.step(&[]);
+        let tent = &world.buildings[b];
+        assert!(tent.shield == 0 || tent.hp == stats.hp, "shield before full hit points");
+        if tent.shield > 0 && !tent.is_built() && !shielded {
+            shielded = true;
+            let mut hit = tent.clone();
+            assert!(!hit.take_damage(tent.shield + 1) && !hit.infected, "infected while it was built");
+        }
     }
-    assert_eq!(world.buildings[b].hp, stats.hp - 5, "the hit while it was built is gone");
-    assert_eq!(world.buildings[b].shield, stats.max_shield());
+    assert!(shielded, "the shield never grew while it was built");
+    assert_eq!(world.buildings[b].hp, stats.hp);
+    assert_eq!(world.buildings[b].shield, stats.max_shield() - 5, "the hit while it was built is gone");
     assert_eq!(world.workers().1, workers + stats.workers);
 
     // A barracks being built trains nothing; finished, it does.
@@ -5210,4 +5503,263 @@ fn landscape_modifiers_change_the_round() {
     assert_eq!(file.to_world().unwrap().modifiers, setup.modifiers, "lost in the map file");
     let plain = crate::mapfile::MapFile::from_world(&World::new(4), "x");
     assert_eq!(plain.modifiers, data::Modifiers::default());
+}
+
+/// TAB's generator puts its ornaments down (`ornaments.rs`): a treasure ruin under every pile of loot it makes, and its
+/// power line towers in the middle of a 5 × 5 forest.
+#[test]
+fn tab_maps_have_ruins_round_their_loot_and_towers_in_the_forest() {
+    let mut difficulty = data::get().difficulty("").clone();
+    difficulty.roaming_zombies = 0.0;
+    let map = data::get().maps.maps.iter().find(|m| m.setup.generator == Generator::Tab && m.setup.look == "VO").expect("a TAB map");
+    let world = World::generate_with(42, &map.setup, &difficulty);
+    let ruins: Vec<(i32, i32)> = world.ornaments.iter().filter(|o| o.kind == OrnamentKind::Ruin).map(|o| o.tile).collect();
+    assert!(!ruins.is_empty(), "no ruins");
+    for loot in &world.loot {
+        let (x, y) = (loot.pos.x as i32, loot.pos.y as i32);
+        let inside = ruins.iter().any(|&(rx, ry)| x >= rx && y >= ry && x < rx + 4 && y < ry + 4);
+        // The generator's loot lies in ruins; loot dropped by houses of doom elsewhere – there are none at tick 0.
+        assert!(inside, "loot at {x}, {y} outside every ruin {ruins:?}");
+    }
+    for tower in world.ornaments.iter().filter(|o| o.kind != OrnamentKind::Ruin) {
+        let (x, y) = tower.tile;
+        assert!((-2..=2).all(|d| world.map.terrain(x + d, y) == Terrain::Forest && world.map.terrain(x, y + d) == Terrain::Forest));
+    }
+}
+
+/// A spot on cleared grass `dx`, `dy` tiles from the base, `r` tiles round it cleared – for the tests of TAB's late
+/// buildings and units below.
+fn cleared_spot(world: &mut World, dx: i32, dy: i32, r: i32) -> (i32, i32) {
+    let t = (world.base.x as i32 + dx, world.base.y as i32 + dy);
+    clear_ground(world, t, r);
+    t
+}
+
+/// Zombies that stand where they are put – nothing but the attack under test moves them.
+fn frozen_zombies(world: &mut World, spots: &[Vec2], breed: Breed) {
+    for &p in spots {
+        world.add_zombie(p, breed, true);
+    }
+    for zombie in &mut world.zombies {
+        zombie.speed = 0.0;
+    }
+}
+
+/// The shocking tower (TAB's): once charged it hits every zombie within its range at once – not the one further out.
+#[test]
+fn shocking_tower_hits_every_zombie_in_range() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let t = cleared_spot(&mut world, 10, 10, 9);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::ShockingTower, tile: t, turned: false, editor: true }]);
+    let tower = world.buildings.last().unwrap().center();
+    let spots = [tower + vec2(2.0, 0.0), tower + vec2(0.0, 3.0), tower + vec2(-3.0, -2.0), tower + vec2(8.0, 0.0)];
+    frozen_zombies(&mut world, &spots, Breed::Fat);
+    let hp = world.zombies[0].hp;
+    world.step(&[]);
+    let weapon = BuildingKind::ShockingTower.stats().weapon.as_ref().unwrap();
+    let hit = hp - after_armor(weapon.damage, Breed::Fat.stats().armor);
+    let after: Vec<u32> = world.zombies.iter().map(|z| z.hp).collect();
+    assert_eq!(after, vec![hit, hit, hit, hp], "every one in range at once, not the far one");
+}
+
+/// TAB's mine: a zombie steps on it, it goes off – everyone round it is hurt, the one further away isn't – and it's
+/// gone.
+#[test]
+fn a_mine_goes_off_under_a_zombie() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let t = cleared_spot(&mut world, 10, 10, 6);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::MineTrap, tile: t, turned: false, editor: true }]);
+    assert_eq!(world.buildings.last().unwrap().kind, BuildingKind::MineTrap);
+    assert!(world.buildings.last().unwrap().zombies_ignore(), "zombies would attack the mine");
+    let on = vec2(t.0 as f32 + 0.5, t.1 as f32 + 0.5);
+    frozen_zombies(&mut world, &[on, on + vec2(1.2, 0.0), on + vec2(4.0, 0.0)], Breed::Walker);
+    let hp = world.zombies[2].hp;
+    for _ in 0..data::get().buildings.trap_every + 2 {
+        world.step(&[]);
+    }
+    assert!(!world.buildings.iter().any(|b| b.kind == BuildingKind::MineTrap), "the mine is still there");
+    assert_eq!(world.zombies.len(), 1, "the two near it should be dead");
+    assert_eq!(world.zombies[0].hp, hp, "the far one was hurt");
+}
+
+/// Lucifer: its flame hits every zombie in its cone and sets some alight – and burns your own unit standing in it.
+#[test]
+fn lucifer_burns_zombies_and_friends_in_its_cone() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let t = cleared_spot(&mut world, 10, 10, 8);
+    let at = vec2(t.0 as f32 + 0.5, t.1 as f32 + 0.5);
+    world.spawn_unit(UnitKind::Lucifer, at);
+    let lucifer = world.units.last().unwrap().id;
+    bait(&mut world, UnitKind::Soldier, at + vec2(1.0, 1.0));
+    let soldier_hp = world.units.last().unwrap().hp;
+    let (front, beside) = ([at + vec2(2.0, 2.0), at + vec2(1.7, 2.3)], at + vec2(-2.0, 2.5));
+    frozen_zombies(&mut world, &[front[0], front[1], beside], Breed::Fat);
+    let hp = world.zombies[0].hp;
+    let mut burned = false;
+    for _ in 0..(4.0 * TICKS_PER_SECOND) as u32 {
+        world.step(&[]);
+        burned |= world.zombies.iter().any(|z| z.burning > 0);
+    }
+    assert!(world.find_unit(lucifer).is_some());
+    // They stand still, but the list is sorted now and then – found by where they stand.
+    let hp_at = |p: Vec2| world.zombies.iter().find(|z| z.pos == p).map_or(0, |z| z.hp);
+    assert!(hp_at(front[0]) < hp && hp_at(front[1]) < hp, "the two in front aren't burnt");
+    assert_eq!(hp_at(beside), hp, "the one beside it was hit");
+    assert!(burned, "nobody caught fire");
+    let soldier = world.units.iter().find(|u| u.kind == UnitKind::Soldier).map_or(0, |u| u.hp);
+    assert!(soldier < soldier_hp, "the soldier in the flame wasn't burnt");
+}
+
+/// Thanatos: its missile blows up a crowd far off, but it doesn't fire at one closer than `min_range` – there it hits
+/// with its launcher.
+#[test]
+fn thanatos_blows_up_crowds_and_hits_close_up() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let t = cleared_spot(&mut world, 10, 10, 10);
+    let at = vec2(t.0 as f32 + 0.5, t.1 as f32 + 0.5);
+    world.spawn_unit(UnitKind::Thanatos, at);
+    let far = at + vec2(5.0, 5.0);
+    frozen_zombies(&mut world, &[far, far + vec2(0.6, 0.0), far + vec2(0.0, 0.7)], Breed::Fat);
+    let hp = world.zombies[0].hp;
+    for _ in 0..(8.0 * TICKS_PER_SECOND) as u32 {
+        world.step(&[]);
+    }
+    assert!(world.zombies.iter().all(|z| z.hp < hp), "the missile didn't hit all three");
+
+    // Close up: 2 tiles – too close for the missile, too far for the blow: nothing. 1 tile: the blow.
+    world.zombies.clear();
+    frozen_zombies(&mut world, &[at + vec2(1.4, 1.4)], Breed::Fat);
+    let i = world.units.iter().position(|u| u.kind == UnitKind::Thanatos).unwrap();
+    assert!(!world.units[i].reaches(world.zombies[0].pos), "2 tiles away is out of both");
+    world.zombies[0].pos = at + vec2(0.7, 0.7);
+    let hp = world.zombies[0].hp;
+    for _ in 0..(4.0 * TICKS_PER_SECOND) as u32 {
+        world.step(&[]);
+    }
+    assert!(world.zombies.first().is_none_or(|z| z.hp < hp), "no blow close up");
+}
+
+/// The new economy: the power plant burns coal (none, no power), the oil platform only on oil and pumps it, the
+/// warehouse makes room, the Transmutator turns goods into oil.
+#[test]
+fn power_plant_oil_warehouse_transmutator() {
+    let (mut world, _) = quiet_world();
+    world.extra_power = 0;
+    let base = world.base;
+    let t = cleared_spot(&mut world, 4, -10, 8);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::PowerPlant, tile: t, turned: false, editor: true }]);
+    let plant = world.buildings.len() - 1;
+    assert_eq!(world.buildings[plant].kind, BuildingKind::PowerPlant);
+    world.stock.set(Resource::Coal, 0);
+    world.economy_payout();
+    let without: u32 = world.power().made.iter().sum();
+    world.stock.set(Resource::Coal, 100);
+    world.economy_payout();
+    let with: u32 = world.power().made.iter().sum();
+    assert_eq!(with - without, BuildingKind::PowerPlant.stats().energy, "coal makes the power");
+    assert_eq!(world.stock.get(Resource::Coal), 100 - BuildingKind::PowerPlant.stats().burns_coal);
+
+    // The oil platform: not beside the oil, right on it.
+    let o = cleared_spot(&mut world, -12, 4, 4);
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        world.map.set_deposit(o.0 + dx, o.1 + dy, Some(Deposit { ore: Ore::Oil, amount: 1000 }));
+    }
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::Foundry, tile: (t.0 - 6, t.1), turned: false, editor: true }]);
+    assert!(!world.can_place(BuildingKind::OilPlatform, (o.0 + 1, o.1), false), "half beside the oil");
+    assert!(world.can_place(BuildingKind::OilPlatform, o, false), "not on the oil node");
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::OilPlatform, tile: o, turned: false, editor: true }]);
+    world.extra_power = 100_000;
+    world.stock.set(Resource::Oil, 0);
+    world.economy_payout();
+    assert!(world.stock.get(Resource::Oil) > 0, "no oil pumped");
+
+    // The warehouse: 50 more room for the goods, not for food.
+    let (goods, food) = (world.storage(Resource::Stone), world.storage(Resource::Food));
+    let w = cleared_spot(&mut world, -12, -12, 4);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::Warehouse, tile: w, turned: false, editor: true }]);
+    assert_eq!(world.storage(Resource::Stone), goods + 50);
+    assert_eq!(world.storage(Resource::Food), food);
+
+    // The Transmutator: wood, stone and iron into oil – one only.
+    let m = (base.x as i32 + 12, base.y as i32 + 6);
+    clear_ground(&mut world, (m.0 + 2, m.1 + 2), 5);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::Transmutator, tile: m, turned: false, editor: true }]);
+    assert_eq!(world.buildings.last().unwrap().kind, BuildingKind::Transmutator, "the Transmutator didn't fit");
+    assert!(!world.can_place(BuildingKind::Transmutator, (m.0, m.1 + 8), false), "a second wonder");
+    for r in [Resource::Wood, Resource::Stone, Resource::Iron] {
+        world.stock.set(r, 100);
+    }
+    world.stock.set(Resource::Oil, 0);
+    world.economy_payout();
+    assert_eq!(world.stock.get(Resource::Wood), 80, "it took no wood");
+    assert!(world.stock.get(Resource::Oil) >= 40, "it made no oil");
+}
+
+/// The Academy: while it works, every unit is a veteran.
+#[test]
+fn the_academy_makes_veterans() {
+    let (mut world, _) = quiet_world();
+    assert!(world.units.iter().all(|u| !u.veteran));
+    let t = cleared_spot(&mut world, 10, -10, 5);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::Academy, tile: t, turned: false, editor: true }]);
+    world.step(&[]);
+    assert!(world.units.iter().all(|u| u.veteran), "not every unit a veteran");
+}
+
+/// The editor's copy and paste (`clipboard.rs`): a tent with its tag, hit points and infection, a veteran with its tag,
+/// a sleeping zombie, a house of doom and a spawner come again 12 tiles further right with everything they had – a
+/// second command center doesn't. A cut takes the originals off the map.
+#[test]
+fn a_copy_keeps_everything_and_a_cut_takes_it_away() {
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    clear_ground(&mut world, (bx + 16, by + 12), 14);
+    let tile = (bx + 8, by + 8);
+    world.apply_orders(&[
+        Order::PlaceBuilding { kind: BuildingKind::Tent, tile, turned: false, editor: true },
+        Order::SpawnUnit { kind: UnitKind::Soldier, point: vec2(tile.0 as f32 + 3.5, tile.1 as f32 + 0.5) },
+        Order::PaintZombies { tiles: vec![(tile.0 + 5, tile.1)], per_tile: vec![(Breed::Runner, 1)], wander: true },
+        Order::PlaceDoom { tile: (tile.0, tile.1 + 4), size: (2, 2) },
+    ]);
+    let (tent, unit) = (world.buildings.last().unwrap().id, world.units.last().unwrap().id);
+    let tag = Tag { name_id: "home".into(), name: "Old home".into(), minimap: true, ..Tag::default() };
+    world.apply_orders(&[
+        Order::SetTag { thing: ThingRef::Building(tent), tag: tag.clone() },
+        Order::SetHealth { thing: ThingRef::Building(tent), percent: 40 },
+        Order::SetMark { thing: ThingRef::Building(tent), on: true },
+        Order::SetTag { thing: ThingRef::Unit(unit), tag: tag.clone() },
+        Order::SetMark { thing: ThingRef::Unit(unit), on: true },
+    ]);
+    let cc = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter).unwrap().id;
+    let sleeper = world.sleep.iter().find(|s| s.pos.x.floor() as i32 == tile.0 + 5).expect("no zombie painted").pos;
+    let house = world.doom.last().unwrap().id;
+    let spawner = world.spawners[0].id;
+    let pieces = vec![Piece::Building(tent), Piece::Building(cc), Piece::Unit(unit), Piece::Sleeper(sleeper), Piece::Doom(house), Piece::Spawner(spawner)];
+    let clip = world.copy(&pieces);
+    assert_eq!(clip.describe(), "2 buildings, 1 unit, 1 zombie, 1 house of doom, 1 spawner");
+    let (spawners, inside) = (world.spawners.len(), world.doom.last().unwrap().inside);
+    world.apply_orders(&[Order::Paste { clip: Box::new(clip.clone()), to: (clip.middle.0 + 12, clip.middle.1) }]);
+
+    let ccs = world.buildings.iter().filter(|b| b.kind == BuildingKind::CommandCenter).count();
+    assert_eq!(ccs, 1, "a second command center was pasted");
+    let copy = world.buildings.iter().find(|b| b.tile == (tile.0 + 12, tile.1)).expect("the tent wasn't pasted");
+    assert_eq!((copy.kind, copy.hp, copy.infected, copy.tag.as_deref()), (BuildingKind::Tent, BuildingKind::Tent.stats().hp * 40 / 100, true, Some(&tag)));
+    let soldier = world.units.iter().find(|u| u.pos == vec2(tile.0 as f32 + 15.5, tile.1 as f32 + 0.5)).expect("the unit wasn't pasted");
+    assert!(soldier.veteran && soldier.tag.as_deref() == Some(&tag) && soldier.id != unit);
+    assert!(world.sleep.iter().any(|s| s.pos == sleeper + vec2(12.0, 0.0) && s.breed == Breed::Runner), "the zombie wasn't pasted");
+    let doom = world.doom.iter().find(|d| d.tile == (tile.0 + 12, tile.1 + 4)).expect("the house wasn't pasted");
+    assert_eq!((doom.size, doom.inside), ((2, 2), inside));
+    assert_eq!(world.spawners.len(), spawners + 1);
+    let (first, pasted) = (&world.spawners[0], world.spawners.last().unwrap());
+    assert!(pasted.id != first.id && (pasted.name.as_str(), pasted.size, pasted.axes, pasted.mode) == (first.name.as_str(), first.size, first.axes, first.mode));
+
+    let cut: Vec<Piece> = pieces.into_iter().filter(|&p| p != Piece::Building(cc)).collect();
+    world.apply_orders(&[Order::RemovePieces { pieces: cut }]);
+    assert!(world.find_building(tent).is_none() && world.find_unit(unit).is_none() && world.find_doom(house).is_none() && world.find_spawner(spawner).is_none());
+    assert!(world.sleep.iter().all(|s| s.pos != sleeper), "the zombie is still there");
+    assert!(!world.map.is_built(tile.0, tile.1 + 4), "the house's tiles are still taken");
 }

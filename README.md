@@ -35,19 +35,26 @@
 | Datei | Was |
 |---|---|
 | `DESIGN.md` | Design-Dokument: Säulen, Runde, Wirtschaft, Einheiten, Zombies, Karte, Technik, Fahrplan, offene Fragen |
+| `docs\tab-assets.md` | Plan: TABs restliche Bilder einbauen (Leiste, Effekte, neue Einheiten und Gebäude) – jeder Schritt ein Startpunkt für eine neue Unterhaltung |
+| `docs\editor.md` | Plan: der Editor im Aufbau von SC2 mit allen TAB-Funktionen (Module Terrain, Objects, Zombies, Regions, Triggers, Events, Map) – jeder Schritt ein Startpunkt für eine neue Unterhaltung |
+| `docs\trigger-und-28yl.md` | Schritte zu Triggern wie SC2, geprüft an TABs Workshop-Kampagne „28 Years Later“ – jeder Schritt ein Startpunkt für eine neue Unterhaltung |
 | `Cargo.toml` / `Cargo.lock` | Rust-Projekt und Bibliotheken (`macroquad`, `egui-macroquad`, `serde`/`serde_json`, `libm`, `rayon`) / ihre genauen Versionen |
 | `build.ps1` | Baut beide Programme nach `dist\LastBastion.exe` und `dist\LastBastionEditor.exe` |
 | `data\` | **Alle Spielwerte** als JSON (Einheiten, Gebäude, Zombies, Lärm, Streuner, Villages of Doom, Beute, Kolonie, Spawn, Schwierigkeiten, Spieldauer, Karten) – erklärt in `data\README.md` |
-| `assets\` | **Bilder**, je Art ein Ordner: `units\`, `zombies\`, `buildings\`, `terrain\`, `effects\`, `projectiles\` (TABs, nur lokal), `test\` (unser Testbild) – erklärt in `assets\README.md` |
+| `assets\` | **Bilder und Töne**, je Art ein Ordner: `units\`, `zombies\`, `animals\`, `buildings\`, `decor\`, `terrain\`, `effects\`, `projectiles\`, `ui\`, `trains\`, `sounds\` (TABs, nur lokal), `test\` (unser Testbild) – erklärt in `assets\README.md` |
 | `examples\test_sprites.rs` | Malt das graue Testbild `assets\test\figure.png` (`cargo run --release --example test_sprites`) |
-| `tools\tab_skins.py` | Macht aus deinem entpackten TAB die Skins in `assets\units\` und `assets\zombies\` (nur lokal, nie in git) – erklärt in `assets\README.md` |
+| `tools\tab_skins.py` | Macht aus deinem entpackten TAB die Skins in `assets\units\`, `assets\zombies\` und `assets\animals\` (Raben, Ratten) (nur lokal, nie in git) – erklärt in `assets\README.md` |
 | `tools\tab_terrain.py` | Macht aus deinem TAB die Landschaftsbilder in `assets\terrain\` (Boden, Wasser, Bäume, Felsen, Kräuter, Erz – je Landschaft) |
-| `tools\tab_buildings.py` | Macht aus deinem TAB die Gebäudebilder in `assets\buildings\` (jedes Gebäude in Teilen: Körper, Licht, Maschine, Fahnen, Rauch; Mauerstücke, Dorfhäuser) |
-| `tools\tab_effects.py` | Macht aus deinem TAB die Effekte in `assets\effects\` (Blut, Mündungsfeuer, Explosionen, Flecken) und die Pfeile in `assets\projectiles\` |
+| `tools\tab_buildings.py` | Macht aus deinem TAB die Gebäudebilder in `assets\buildings\` (jedes Gebäude in Teilen: Körper, Licht, Maschine, Fahnen, Rauch; Mauerstücke, Dorfhäuser, TABs Gebäude, die wir noch nicht haben) und die Deko in `assets\decor\` (Weizen, Beute, Ruinen, Strommasten, Schienen) |
+| `tools\tab_ui.py` | Macht aus deinem TAB die Bilder der Leiste in `assets\ui\` (Leiste, Knöpfe, Icons, Porträts, Ereignisse, Mauszeiger, Menü-Hintergründe) |
+| `tools\tab_effects.py` | Macht aus deinem TAB die Effekte in `assets\effects\` (Blut, Mündungsfeuer, Explosionen, Flecken, Feuer, Rauch, Kugeln, Wetter, Wasser, Lichter) und Pfeile und Rakete in `assets\projectiles\` |
+| `tools\tab_trains.py` | Macht aus deinem TAB die Züge in `assets\trains\` (Lok, drei Wagen, Räder – je 91 Blickwinkel) |
+| `tools\make_logo.py` | Rendert unser eigenes Logo `assets\logo\last_bastion.png` (Messing-Zahnrad mit Bastionsturm, rote Banner, „LAST BASTION“ – nur Formen und eine Windows-Schrift, nichts von TAB) |
+| `tools\tab_sounds.py` | Kopiert TABs Töne nach `assets\sounds\` (Geräusche, Stimmen, Meldungen, Umgebung, Musik; mp3 → ogg mit ffmpeg) |
 | `src\main.rs`, `src\bin\editor.rs` | Die zwei Programme (je ein paar Zeilen) |
 | `src\lib.rs`, `src\app.rs` | Liste aller Module / Fenster, Bildschirm-Wechsel, Kommandozeile |
 | `src\game.rs` | Eine Karte auf dem Bildschirm: Takte, Zeichnen, Endbildschirm, Edit/Test im Editor |
-| `src\sim\` | **Die Simulation** (deterministisch, zeichnet nichts): Befehle, Spawn, Zombies, Gedränge (`crowd.rs`), Fernkampf-Zombies (`ranged.rs`), Villages of Doom und Beute (`doom.rs`), Einheiten, Kampf, Gebäude, Wirtschaft (`economy.rs`), Markt (`market.rs`), Schulden und Bank (`debt.rs`), Sprengfässer (`blast.rs`), Scan (`scan.rs`), Runde, Tests |
+| `src\sim\` | **Die Simulation** (deterministisch, zeichnet nichts): Befehle, Spawn, Zombies, Gedränge (`crowd.rs`), Fernkampf-Zombies (`ranged.rs`), fliegende Pfeile (`arrows.rs`), Villages of Doom und Beute (`doom.rs`), Einheiten, Kampf, Gebäude, Wirtschaft (`economy.rs`), Markt (`market.rs`), Schulden und Bank (`debt.rs`), Sprengfässer und Minen (`blast.rs`), Kegel- und Flächentreffer (`areas.rs`), Feuer (`fire.rs`), Deko-Ornamente (`ornaments.rs`), Scan (`scan.rs`), Runde, Tests |
 | `src\placement.rs` | Alle Bauregeln an einem Ort |
 | `src\data.rs`, `src\kinds.rs` | `data\` lesen / Einheiten- und Gebäudetypen |
 | `src\aggro.rs`, `hunt.rs`, `flow.rs` | Wegfindung der Zombies und Einheiten (Bedrohungs-, Jagdkarte, Flow Field mit Sichtlinie) |
@@ -58,12 +65,18 @@
 | `src\home.rs`, `menu.rs`, `widgets.rs`, `settings.rs` | Startbildschirm und Karten-Einstellung / Esc-Menü / Knöpfe und Regler / Einstellungen |
 | `src\keys.rs`, `keymap.rs` | Welche Taste was tut (Standard, gespeichert in `settings.json`) / die Seite „Key mapping“ |
 | `src\ui.rs`, `cursor.rs` | Maus und Tastatur → Auswahl, Gruppen, Kamera, Befehle / echte Windows-Maus |
-| `src\hud.rs` | Die Leiste unten wie in TAB (Minimap, Uhr, Gruppen, Auswahl, Befehlskarte, Vorräte) |
-| `src\editor.rs`, `src\undo.rs` | Das Panel des Editors (egui) / Rückgängig und Wiederholen |
+| `src\hud.rs` | Die Leiste unten wie in TAB (Minimap, Uhr, Gruppen, Auswahl, Befehlskarte, Vorräte, Ereignisse) |
+| `src\ui_art.rs` | TABs Bilder der Leiste (`assets\ui\`) laden, Mauszeiger zeichnen |
+| `src\editor.rs`, `src\undo.rs` | Der Editor (egui): Menüs, Module, Panels, Statuszeile / Rückgängig und Wiederholen |
+| `src\view.rs` | Welcher Teil des Fensters die Karte zeigt (im Editor: zwischen den Panels) |
+| `src\picking.rs`, `src\sim\clipboard.rs` | Editor: Auswahl von allem (Box), Kopieren / Ausschneiden / Einfügen |
 | `src\draw.rs`, `sprites.rs` | Zeichnen (Bilder, sonst Platzhalter) / Sprite-Sheets laden, Richtung und Animation wählen |
 | `src\building_sprites.rs` | Gebäudebilder laden und zeichnen: drei Looks (arbeitet, aus, im Bau) aus Teilen, Licht leuchtend (addiert), drehende Geschütze, Mauer- und Torstücke, Turm mit Vorderwand |
 | `src\effects.rs` | TABs Effekte: Blut, Mündungsfeuer, fliegende Pfeile, Explosionen, Flecken am Boden, wohin Ballista und MG zielen – aus dem, was die Simulation meldet (`src\sim\fx.rs`) |
+| `src\effects\lasting.rs` | Bleibende Effekte aus dem Zustand der Welt: Feuer und Rauch an Gebäuden, Infektion, brennende Zombies, Wetter, Blätter, Wasser, Reichweitenkreis |
+| `src\critters.rs` | Raben und Ratten – nur im Bild, nicht in der Simulation |
 | `src\ground.rs` | Die Karte mit TABs Landschaftsbildern: Boden per Maske und Shader, Bäume, Felsen, Kräuter, Erz wie TABs Kartenzeichner |
+| `src\post.rs` | TABs Nachbearbeitung: die Karte erst in ein Bild, dann heller (× 1,5), mit Leuchten (Bloom) und dem Farbfilter der Landschaft auf den Schirm |
 | `src\picture.rs`, `iso.rs` | Kartenbild für Minimap und Vorschau / isometrische Kamera |
 | `src\noise.rs`, `rng.rs` | Rauschen für die Generatoren (auch TABs Simplex-Rauschen) / eigener Zufallsgenerator |
 
@@ -80,7 +93,8 @@
   (Linker und Windows SDK). Im Editor **rust-analyzer**.
 - **Starten:** `cargo run` (Spiel) / `cargo run --bin editor` (Editor) – Debug-Build mit Konsole.
   `cargo build` baut beide (dann findet der Knopf „Map editor“ den Editor).
-- **Fertig bauen:** `.\build.ps1` → `dist\` (Release, ohne Konsole).
+- **Fertig bauen:** `.\build.ps1` → `dist\` (Release, ohne Konsole). Nach einer kleinen Änderung ≈ 4 s. Geht auch,
+  während das Spiel läuft: die laufende Exe wird zu `*.old.exe` umbenannt, die neue startet beim nächsten Mal.
 - **Tests:** `cargo test` – läuft nur, wenn man es aufruft (nicht im Spiel, nicht in `build.ps1`), dauert ≈ 2 s.
 - **Lesen:** [Rust-Buch](https://doc.rust-lang.org/book/), [auf Deutsch](https://rust-lang-de.github.io/rustbook-de/)
   – wichtig: Kap. 1–10, später 13 und 15. Zum Üben [Rustlings](https://github.com/rust-lang/rustlings).
@@ -98,14 +112,15 @@
 - **Gewonnen wie TAB nach Zeit:** am Ende des letzten Tags, wenn das Kommandozentrum noch steht (die Schlusswelle
   kommt bei 92 %); **verloren**, wenn das Kommandozentrum fällt oder **infiziert** wird (wie TAB: sein Schild von
   2.500 bricht – bei halbem Leben) → Endbildschirm (Restart, „Look at the map“, Main menu).
-- **Geschichte der Karte** (aus dem Editor, Reiter „Story“): Fenster und Auswahlen pausieren das Spiel, die Ziele
+- **Geschichte der Karte** (aus dem Editor, Modul „Triggers“): Fenster und Auswahlen pausieren das Spiel, die Ziele
   stehen oben links, die Kommandozentrale kann einen eigenen Knopf haben (V).
 - **Eine Runde = eine Datei** (wie TAB) unter `%APPDATA%\Last Bastion\maps\`. **Restart** liest sie neu (Änderungen aus
   dem Editor gelten sofort). Speichern mitten in der Runde kommt später (DESIGN.md 11.5).
 
 ### Startbildschirm und Karten-Einstellung
 
-- New game, Map editor, **Custom maps** (alle Dateien: Play / Edit / Delete), Settings, **Key mapping**, Quit.
+- New game, Map editor, **Custom maps** (alle Dateien: Play / Edit / Delete), Settings, **Key mapping**, Quit – vor
+  TABs Menübild (Himmel, Horde, Kolonie; bewegt sich leicht mit der Maus).
 - **New game** (wie TAB): **Karte**, **Schwierigkeit** und **Dauer** wählen, Seed, Vorschau – dazu der
   **Score-Faktor** (Karte × Schwierigkeit × Dauer; eine Punktzahl gibt es noch nicht).
   - **Custom levels** (zweiter Reiter, wie TABs „Custom Levels“): jede **im Editor gespeicherte** Karte – nicht die
@@ -145,7 +160,8 @@
   wertvoller); **Stein, Eisen, Kohle, Gold** (gelb) als Flecken auf freier Erde – Kohle ist unsere (TAB hat keine),
   wie Eisen gelegt, mindestens 10 Kacheln nahe der Basis, nie auf Stein oder Eisen; **Öl** eine Quelle pro Block. **Zombies** aus einem Rauschen: je höher, desto mehr auf einer Kachel (1–3), weiter draußen
   stärkere Arten; **Riesen** ab 70 Kacheln. Die Zahlen jeder Landschaft sind **TABs eigene** (`MapThemes` in
-  `ZXRules`). Nicht übernommen: alte Türme, Raben, Vorräte, Mutanten.
+  `ZXRules`). Dazu wie TAB **Schatz-Ruinen** unter der Beute und zwei **Strommasten** in 5 × 5-Wäldern (nur Bild,
+  in der Kartendatei als `ornaments`). Nicht übernommen: alte Türme, Vorräte, Mutanten.
 - **Für unsere Generatoren:** Größe (96–256), freier Platz um die Basis, Spawner pro Seite, Wege hinein, Villages of
   Doom (wie viele, Häuser nahe der Basis / am Rand), Beute, Erde, Erzfelder, Ölgruppen. TABs nimmt davon nur Größe
   und Spawner, das Startgebiet und die Wege hinein gibt es dort nicht.
@@ -293,6 +309,21 @@
 ### Einheiten und Kampf
 
 - **Soldat, Ranger, Scharfschütze, Medic, Speerträger** – alle Werte in `data\` (siehe `data\README.md`).
+- **Schießen wie TAB:** Waffe heben (Ranger 0,5 s, Soldat 0,2 s), ausholen, Schuss, nachladen – mit TABs Zeiten und
+  Animationen. Ohne Ziel sucht eine Einheit nur alle 0,35 s ein neues – im Angriffsmarsch und auf Patrouille jeden
+  Tick, sonst liefe sie erst ein Stück weiter.
+- **Animation Cancelling:** Losgehen beim Ausholen bricht den Schuss ab, Losgehen nach dem Schuss kostet nichts
+  (nachgeladen wird beim Gehen weiter). Beim Gehen sinkt die Waffe – ein kurzer Schritt kostet wenig Heben. Jeder neue
+  Befehl (auch derselbe Angriff nochmal, auch Stopp) fängt das Ausholen von vorn an.
+- **Eigene angreifen:** T + Klick auf eine eigene Einheit oder ein Gebäude schießt darauf, bis es weg ist (Medics:
+  Strahl auf die Einheit). Gebäude: erst Schild, dann Lebenspunkte – eigene Schüsse infizieren nie, aber ohne Schild
+  infiziert der nächste Zombietreffer sofort (und macht Schaden). Reparieren macht es wieder ganz. Von selbst schießt
+  niemand auf eigene.
+- **Im Bau** wächst erst das Leben, ab vollen Lebenspunkten der Schild. Infiziert werden kann es erst fertig – vorher
+  wohnt und arbeitet niemand darin.
+- **Pfeile fliegen** wie in TAB (12 Kacheln/s, im Bogen mit Schatten am Boden) und treffen erst beim Ankommen; der
+  Ranger zielt dorthin, wo der Zombie sein wird. Ein Pfeil unterwegs zählt schon: andere schießen nicht auf denselben
+  todgeweihten Zombie.
 - **Speerträger** (Kaserne, 50 Gold, ohne Munitionsfabrik): Nahkampf mit 1,2 Kacheln Reichweite, **jeder Treffer stößt
   den Zombie zurück** (0,6 Kacheln, große weniger: Fat ≈ die Hälfte, Riese ≈ ein Viertel), **fast lautlos** (Lärm 2 pro
   Stich – etwas mehr als ein Zombie-Treffer, weniger als ein Gewehrschuss). Hält früh eine
@@ -305,6 +336,11 @@
 - **Selbstheilung** (wie TAB): 2 s nach dem letzten Treffer heilen sich Einheiten **und Zombies** jede Sekunde um
   einen Anteil ihrer HP (Soldat 4 %, Ranger 1 %; Walker 8 % = 3 HP/s, Riese 0,5 % = 50 HP/s) – auch im Schlaf. Einen
   Zombie anschießen und laufen lassen bringt also nichts.
+- **Lucifer** (Flammenwerfer): Feuerkegel 3,5 Kacheln, 20° breit – trifft **alles darin, auch eigene Einheiten**, und
+  zündet 70 % der Zombies an (brennen 3 s, je ½ s 5 Schaden ohne Rüstung). Selbst feuerfest.
+- **Thanatos:** Rakete 3–10 Kacheln weit, explodiert (1,8 Kacheln, außen 20 %), zielt 2,4 s; näher als 1,5 Kacheln
+  schlägt er mit dem Werfer (120°-Kegel). Dazwischen trifft er nichts. Sehr laut.
+- **Titan:** 9 Kacheln, harte Schüsse mit kleiner Fläche (0,8), 800 HP, schnell.
 - **Söldner** aus dem Gasthaus (Söldner-Soldat, -Ranger, -Scharfschütze): stärker als Veteranen (×1,5 HP, ×1,4
   Schaden, schneller), 2,5 × so teuer, doppelter Unterhalt, **keine Arbeiter** – das Limit ist nur das Gold. Goldene
   Marke über dem Kopf. Bei Schulden gehen sie zuerst, schon ab Stufe 2.
@@ -314,12 +350,16 @@
   0,5 Kacheln auseinander.
 - **Aussehen:** mit TABs Bildern (nur auf deinem PC, `tools\tab_skins.py`) trägt jede Einheit und jeder Zombie einen
   eigenen **Skin** (Walker 3, Runner 4 Varianten) – Stehen, Gehen, Rennen, Angriff, Knurren, Sterben, 10 Richtungen
-  gespiegelt wie TAB. Ohne sie: die graue Testfigur. Getötete Zombies spielen 1 s ihren Tod, tote Einheiten liegen im
+  gespiegelt wie TAB. Der Medic trägt den silbernen Soldaten, der Speerträger den Marine (beide ohne
+  Angriffsbild: sie stehen, während sie heilen oder stechen). Ohne Bilder: die graue Testfigur. Getötete Zombies spielen 1 s ihren Tod, tote Einheiten liegen im
   letzten Bild, bis sie aufstehen.
 - **Landschaft wie TAB** (mit `tools\tab_terrain.py`, nur auf deinem PC): Erde, Gras weich drübergeblendet, Wasser,
   Felsstücke auf jedem 2 × 2-Berg (tief im Gebirge größer), ein Baum pro Waldkachel (auf Gras andere als auf Erde,
   tief im Wald größer), Kräuter, Erzbrocken – jede TAB-Karte in ihrer Landschaft (`look` in `game_maps.json`), unsere
   Karten wie BR. Öl als TABs Ölquelle (2 × 2); Kohle hat TAB nicht: unsere sind seine Steinbrocken, schwarz und zerbrochen (`tab_terrain.py`). Ohne die Bilder: die farbigen Rauten wie bisher.
+- **Farben wie TAB** (`src\post.rs`): die Karte geht wie bei TAB durch dessen Nachbearbeitung – heller, helle Stellen
+  leuchten weich nach, dazu der Farbfilter der Landschaft (Caustic Lands türkis, Moor und Tiefer Wald warm, Hochland
+  kalt). Nur in der Spieler-Sicht; die Leiste unten und die Editor-Ansichten „All“/„Zombies“ bleiben ungefiltert.
 - **Gebäude wie TAB** (mit `tools\tab_buildings.py`, nur auf deinem PC): jedes Gebäude und jedes Dorfhaus als TABs
   Bild – arbeitend mit Licht, laufender Maschine, Fahnen und Rauch; aus/infiziert blass ohne Licht; im Bau als grüner
   Geist. Zelte, Steinhäuser, Pfähle, Fässer, Dorfhäuser in TABs Varianten, die Fischerhütte schaut zum Wasser. Mauern
@@ -331,6 +371,13 @@
   Pfeile von Ranger und Ballista fliegen, getroffene Zombies bluten, Tote hinterlassen eine Blutlache (wächst 1 s,
   verblasst 10 s), Säure spritzt grün, Fässer explodieren im Feuerball, Gebäude fallen in Holz- oder Steintrümmern
   (`explosion` in `data\buildings.json`), Infizierte mit TABs Kristall-Effekt. Ohne die Bilder: Linien wie bisher.
+- **Bleibende Effekte** (`src\effects\lasting.rs`): Gebäude unter halben HP brennen und rauchen (unter einem Viertel
+  mehr), mit orangem Schein; infizierte qualmen grün; brennende Zombies brennen. **Wetter** wie TAB: Schnee auf dem
+  Frozen Highland (AL), Regen auf den Caustic Lands (VO), Blätter fallen im Deep Forest (FA); Wasser schimmert.
+- **Deko wie TAB:** **Weizen** auf den Feldern der Farm, **Beute** als TABs Kisten und Säcke, **Schatz-Ruinen** unter
+  der Beute (TABs Generator), zwei **Strommasten** in großen Wäldern, **Raben** nahe der Basis (fliegen auf, wenn jemand
+  bis 2 Kacheln kommt – oder einfach so) und **Ratten** an Ruinen und Dorfhäusern (rennen weg). Nur Bild, nicht in der
+  Simulation.
 - **Getragenes Fass** wie TAB: das Fass-Bild hinter der Einheit, etwas angehoben, mit Schatten.
 - **Schießen wie StarCraft:** drehen → zielen → schießen → nachladen. Eine Einheit bleibt bei ihrem Ziel.
   Schüsse bis zum Tod (TABs Werte): Walker Ranger 4 / Soldat 3 / Scharfschütze 1, Runner 5 / 3 / 1.
@@ -341,16 +388,28 @@
 
 ### Die Leiste unten (wie TAB)
 
-- **Minimap** (klicken/ziehen = Kamera, Rechtsklick = hinlaufen). Immer sichtbar, auch im Nebel: jeder **Riese**
-  (oranger Punkt, wach oder schlafend) und jeder **Schwarm einer Welle** (rotes Warndreieck in seiner Mitte, größer
-  je mehr er hat – eine Welle von zwei Seiten sind zwei Schwärme; noch im Spawn-Ring: am Rand der Minimap).
-- **Uhr:** Tag, Stunde, **Pause-Knopf**, Tempo, Countdown einer angekündigten Welle (Schlusswelle rot).
+- **TABs Leiste:** Anordnung aus TABs `MapGUI` (1280 × 720), mit TABs Bild, Knöpfen, Icons, Porträts und
+  Mauszeigern (`tools\tab_ui.py`). Ein größeres Fenster macht alles gleich viel größer; breiter als 16 : 9 → die
+  Auswahl wird breiter. Rohre und Zahnräder oben auf der Leiste gehören zur Leiste, die Lücken dazwischen zur Karte.
+  Ohne TABs Bilder: dieselben Plätze in Messing-Platzhaltern.
+- **Minimap** (klicken/ziehen = Kamera, Rechtsklick = hinlaufen), quadratisch wie TABs – die Spielfläche ist breiter
+  als hoch, oben und unten bleibt ein Streifen. Immer sichtbar, auch im Nebel: jeder **Riese** und jeder **Schwarm
+  einer Welle** (TABs Icons, größer je mehr er hat – eine Welle von zwei Seiten sind zwei Schwärme; noch im
+  Spawn-Ring: am Rand der Minimap). Darüber der **Countdown** der nächsten angekündigten Welle (Schlusswelle rot).
+- **Uhr:** Tag, Stunde, runder **Pause-Knopf**, Tempo; dahinter drehen sich TABs Zahnräder mit der Spielzeit.
 - **Kontrollgruppen** 1–0 untereinander.
-- **Auswahl:** eine Sache = Bild, Name, Lebensbalken (HP + Schild in einem), Text, Werte in Kästchen; mehrere = Symbole.
-- **Befehlskarte** 5 × 3 mit Tooltips, Preis rot, wenn das Gold nicht reicht.
+- **Auswahl:** eine Sache = Porträt (Figuren 3 : 4, Gebäude ihr Bild), Name, Lebensbalken (HP + Schild in einem),
+  Text, rechts die Werte in Kästchen; mehrere = Porträts (der aktive Typ hell).
+- **Befehlskarte** 5 × 3 mit TABs Icons (Bauen und Ausbilden: das Porträt), Taste oben links, Preis unten rechts
+  (rot, wenn das Gold nicht reicht), Tooltips.
+- **Vier kleine Knöpfe** neben dem Lager: Kamera zum Kommandozentrum, alles reparieren (X), Raster, Menü.
+- **Ereignisse** oben links wie TABs Liste (unter den Zielen der Karte): angekündigte und gekommene Wellen, Beitritte,
+  Meldungen der Karte – je mit TABs Bild, 12 Sekunden lang.
+- **Mauszeiger** wie TAB: Fadenkreuz auf einem Zombie (mit Einheiten) und wenn ein Befehl sein Ziel sucht, „Hinein“
+  auf einem Turm mit Platz, „Geht nicht“ auf einem vollen.
 - **Gold im Minus:** gelb („-250 of 500“), solange es im Dispo der Banken liegt, rot darüber.
 - **Vorräte:** Kolonisten, **Arbeiter** (frei/alle), **Nahrung**, **Energie** (gebraucht/erzeugt), Gold, Holz, Stein,
-  Eisenerz, Kohle, **Eisen** – jeweils mit „+/− pro Abrechnung“ (alle 8 Stunden); rot, wenn etwas knapp wird.
+  Eisenerz, Kohle, **Eisen**, **Öl** – jeweils mit „+/− pro Abrechnung“ (alle 8 Stunden); rot, wenn etwas knapp wird.
 
 ### Steuerung (wie StarCraft 2)
 
@@ -363,7 +422,7 @@
 | F2 | Alle Einheiten |
 | Rechte Maus | Laufen / Zombie angreifen / Einheit folgen / in den Turm / Fass aus der Munitionsfabrik holen / Haus eines Dorfs angreifen / auf Beute laufen. Gebäude: Sammelpunkt |
 | Rechte Maus **ziehen** | Formation (X Linie, C Block, V Kreis) |
-| T / P / M + Linksklick | Angriff (Attack-Move) / Patrouille / Laufen – ziehen = in Formation |
+| T / P / M + Linksklick | Angriff (Attack-Move) / Patrouille / Laufen – ziehen = in Formation. T auf Zombie, eigene Einheit oder eigenes Gebäude: genau das angreifen |
 | S / H | Stopp / Halten (läuft nicht von selbst; eigene Einheiten schieben sie, Zombies nicht) |
 | F / X | Ausgewählte Gebäude reparieren / alle reparieren (X nur ohne ausgewählte Einheiten) |
 | **Shift** + Befehl | Hinten an die Befehlskette hängen. Shift loslassen = Befehl weg von der Maus, wieder drücken = zurück |
@@ -378,12 +437,14 @@
 | Leertaste | Pause (Befehle gehen weiter) · `+` / `-`: Tempo ×1–×8 |
 | Esc | Bricht ab, was wartet → hebt die Auswahl auf → Spielmenü (Settings, **Key mapping**, Restart, New map, Main menu) |
 | F3 / F12 | Messwerte, Schalter, Tastenhilfe (Abschnitte per Klick ein-/ausklappen) / Maus im Fenster halten an/aus |
-| F4 | Gitter an/aus: dünne Linien zwischen den Kacheln, wie TAB (auch: Knopf neben der Pause, F3-Schalter, Settings) |
+| F4 | Gitter an/aus wie TAB: dünne Linien zwischen den Kacheln; Berge schwarz, Wald dunkelgrün (halb durchsichtig, weißer Rand), Bäume und Felsen dafür ausgeblendet – so sieht man, wo man nicht bauen kann (auch: Knopf neben der Pause, F3-Schalter, Settings) |
 
 - **Die Tabelle zeigt die Standardtasten – jede ist änderbar:** Esc → **Key mapping** (auch im Startbildschirm).
   - 5 Tabs: Kamera und Zeit, Auswahl und Gruppen, Einheiten (Befehle, Formationen), Kommandozentrum (die Baumenüs und
     **jedes Gebäude darin**, wie in TAB), Gebäude (Ausbilden, Sammelpunkt, Reparieren, On/Off …).
   - Je Aktion **2 Tasten**. Kästchen anklicken → neue Taste drücken; Rechtsklick leert es, Esc bricht ab.
+  - **Mäuse mit vielen Tasten:** Maustaste 4/5 direkt belegbar. Alle weiteren Tasten in der Maus-Software auf
+    **F13–F24** legen – die gehen auch. Kommt eine Taste, die das Spiel nicht kennt, steht das rot unter der Liste.
   - **Rot** = zwei Aktionen haben dieselbe Taste auf einer Karte (oder beide überall). Maus auf der Zeile: was sonst
     auf der Taste liegt bzw. die Standardtaste. „Defaults for this tab / for all“ setzt zurück.
   - Fest bleiben **Shift, Strg** (Kette, 5 auf einmal, Gruppe setzen …), **Esc** und im Editor **Strg+S**, **Strg+Z** / **Strg+Y**.
@@ -400,15 +461,16 @@
 
 | Menü | Q | W | E | R | T | A | S |
 |---|---|---|---|---|---|---|---|
-| **Q** Kolonisten | **Zelt** | **Steinhaus** | | | | | |
-| **W** Ressourcen | **Jägerhütte** | **Fischerhütte** | **Sägewerk** | **Mine** | Ölpumpe | **Farm** | |
-| **E** Energie | **Tesla-Turm** | **Windmühle** | **Köhlerei** | Ölgenerator | | | |
-| **A** Industrie und Handel | **Holzwerkstatt** | **Steinwerkstatt** | **Gießerei** | **Gasthaus** | **Markt** | **Bank** | |
-| **S** Militär | **Kaserne** | **Munitionsfabrik** | Belagerungsfabrik | | | | |
-| **D** Verteidigung | **Mauer** | **Tor** | **Turm** | **Pfahlfalle** (R) | **Sprengfass** (T) | **Steinmauer** (A) | **Steinturm** (D) |
-| **Y** Wunder | – | | | | | | |
+| **Q** Kolonisten | **Zelt** | **Holzhaus** | **Steinhaus** | | | | |
+| **W** Ressourcen | **Jägerhütte** | **Fischerhütte** | **Sägewerk** | **Mine** | **Steinbruch** | **Farm** | **Große Farm** |
+| **E** Energie | **Tesla-Turm** | **Windmühle** | **Köhlerei** | **Kraftwerk** | Ölgenerator | | **Eisenmühle** |
+| **A** Industrie und Handel | **Holzwerkstatt** | **Steinwerkstatt** | **Gießerei** | **Gasthaus** | **Markt** | **Bank** | **Lagerhaus** |
+| **S** Militär | **Kaserne** | **Munitionsfabrik** | **Ingenieurszentrum** | **Aussichtsturm** | **Radar** | | |
+| **D** Verteidigung | **Mauer** | **Tor** | **Turm** | **Pfahlfalle** (R) | **Sprengfass** (T) | **Steinmauer** (A) | **Klingenfalle** (S) |
+| **Y** Wunder | **Spire** | **Academy** | **Victorious** | **Transmutator** | **Crystal Palace** | | |
 
-Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
+Dazu: Ressourcen D großer Steinbruch, F Ölplattform; Verteidigung D Steinturm, F **Balliste**, G **MG-Turm**, unten
+Y **Mine**, X **Shocking Tower**, C **Executor**.
 
 - **Kaserne** (ohne Voraussetzung baubar): Q Soldat (240 Gold + 2 Eisen), W Ranger (120 + 2 Holz), E Speerträger (50),
   R Scharfschütze (300 + 2 Holz + 2 Eisen), T Medic (120), G Sammelpunkt – Preise und Ausbildung (25–31 s) wie TAB,
@@ -418,6 +480,8 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 - **Gasthaus** (Steinwerkstatt, 2.000 Gold): Q Söldner-Soldat (600 + 5 Eisen), W Söldner-Ranger (300 + 5 Holz),
   R Söldner-Scharfschütze (750 + 5 Holz + 5 Eisen) – dieselben Tasten wie in der Kaserne, Schusswaffen auch hier erst
   mit Munitionsfabrik.
+- **Ingenieurszentrum** (TABs, Gießerei, 3.000 Gold + Stein, Eisen, 20 Öl): Q **Lucifer** (600 + 15 Öl), W **Thanatos**
+  (600 + 10 Eisen + 20 Öl), E **Titan** (2.000 + 40 Eisen + 40 Öl) – mit TABs Werten; sie verbrauchen Öl pro Abrechnung.
 - **Sprengfass:** die Munitionsfabrik macht es (Q, 40 Gold + 2 Kohle, 8 s), ihr Lager fasst 6. Im Verteidigungsmenü
   (T) setzen – nimmt eins aus dem Lager, ziehen = Reihe – oder von Einheiten wegtragen lassen. **Jeder Schaden** und es
   geht hoch: 1.000 Schaden (wie TAB) in 2,5 Kacheln für alle (Zombies, eigene Einheiten, Gebäude, Häuser der Dörfer), Fässer
@@ -438,7 +502,10 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 - **Ziehen** baut eine Reihe (Mauern schräg 1 breit wie TAB, Türme mit Lücke). Das Gebäude bleibt an der Maus –
   Rechtsklick/Esc legt es weg.
 - **Regeln:** nicht hinter der Grenze, kein Zombie auf dem Platz + 4 Kacheln drumherum. **Auf eigenen Einheiten
-  erlaubt** – sie werden zur Seite geschoben.
+  erlaubt** – sie werden zur Seite geschoben. Die **Ölplattform** nur genau auf eine Ölquelle, jedes **Wunder** nur
+  einmal.
+- **Beim Platzieren** wie TAB: grünes **Bau-Raster** auf den freien Kacheln rundum (`assets\ui\cell_available.png`),
+  bei Türmen, die selbst schießen, der grüne **Reichweitenkreis** (auch unter ausgewählten).
 - **Tor** (3 × 1, R dreht): Einheiten gehen durch, Zombies nicht. Darf auf Mauern (wird billiger).
 - **Turm:** bis zu 4 Einheiten per Rechtsklick hinein – schießen und sehen 2 Kacheln weiter, unverwundbar. Q = raus,
   G = Sammelpunkt. 1 Kachel Abstand zum nächsten Turm.
@@ -478,8 +545,19 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
   - **Steinwerkstatt** → Munitionsfabrik, **Gießerei**, Steinhaus, Steinmauer, Steinturm.
   - **Gießerei** → MG-Turm.
   - **Munitionsfabrik** (kostet auch 10 Kohle) → Soldat und Scharfschütze. Munition selbst bleibt gratis.
-- **Steinhaus** (16 Kolonisten, 8 Arbeiter, isst 16, zahlt 40), **Steinmauer** (1000 HP), **Steinturm** (2000 HP) lassen sich direkt
-  auf Zelt, Mauer, Turm bauen – ein Upgrade an Ort und Stelle (ein Teil des alten Goldes kommt zurück).
+- **Holzhaus** (TABs, Holzwerkstatt: 8 Kolonisten, 4 Arbeiter, isst 8, zahlt 18) auf dem Zelt, **Steinhaus** (16
+  Kolonisten, 8 Arbeiter, isst 16, zahlt 40) auf Zelt oder Holzhaus, **Steinmauer** (1000 HP), **Steinturm** (2000 HP)
+  lassen sich direkt auf Zelt, Mauer, Turm bauen – ein Upgrade an Ort und Stelle (ein Teil des alten Goldes kommt
+  zurück). Ebenso großer Steinbruch auf Steinbruch, Eisenmühle auf Windmühle, Klingen- auf Pfahlfalle.
+- **TABs späte Gebäude** (TABs Werte, `data\buildings.json`; viele kosten **Öl**, das die **Ölplattform** pumpt – 10
+  pro Abrechnung auf einer Ölquelle):
+  - **Steinbruch** (nur Stein, wie die Mine darunter und 2 rundum), **großer Steinbruch** (doppelt), **große Farm**
+    (doppelt pro Feld), **Eisenmühle** (+60 Strom), **Kraftwerk** (3 × 3, +160 Strom, verbrennt 10 Kohle).
+  - **Lagerhaus** (4 × 4): +50 Lager für jede Ware (nicht Nahrung, nicht Gold); Sammler bis 12 Kacheln drumherum +20 %.
+  - **Aussichtsturm** (24) und **Radar** (40) sehen weit, **über Wald** – wie die Wunder.
+  - **Wunder** (je nur eins): **Spire** +800 Strom, reicht 30 Kacheln; **Academy** macht jede Einheit zum Veteran;
+    **Victorious** (10.000 HP, Rüstung) – Häuser bis 24 Kacheln +20 % Gold, isst 10 Öl; **Transmutator** macht aus
+    20 Holz, 20 Stein, 10 Eisen 40 Öl; **Crystal Palace** 60 Kolonisten und 800 Nahrung pro Abrechnung.
 - **Pfahlfalle** (wie TABs Stakes): Zombies laufen darüber, greifen sie nicht an und bekommen alle 0,5 s Schaden; jeder
   Treffer nutzt sie ab. Wer darauf steht, läuft **halb so schnell** – Zombies und eigene Einheiten (die unverletzt).
 - **Gießerei** (3 × 3, Steinwerkstatt, 3.000 Gold + 30 Holz + 50 Stein, Strom 50, Unterhalt 100): ein Tech-Gebäude wie
@@ -491,6 +569,12 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
   - **MG-Turm** (1 × 1, Gießerei, 320 Gold + **10 Eisen**, Strom 1): 10 Schuss pro Sekunde, 20 Schaden, 6 Kacheln, auf
     den **nächsten** – gegen Massen. Lärm 3 pro Schuss, also sehr laut. Wenig Strom: lädt langsamer.
     Ziehen = Reihe.
+  - **Shocking Tower** (2 × 2, Steinwerkstatt, Strom 20): lädt 4,5 s, dann trifft er **jeden** Zombie in 6 Kacheln
+    (60), mit TABs Schockstrahlen.
+  - **Executor** (2 × 2, Gießerei, 10 Öl): dreht sich wie die Balliste, 2 Schuss pro Sekunde, 100 Schaden, 9 Kacheln,
+    trifft alles in 0,6 Kacheln um sein Ziel.
+  - **Klingenfalle** (Gießerei): die Pfahlfalle, 10 pro Treffer, 350 HP. **Mine** (Steinwerkstatt): tritt ein Zombie
+    drauf, geht sie hoch – 500 Schaden in 1,9 Kacheln, auch an deinen – und ist weg.
   - Ein angeschossener Zombie (und die um ihn ohne Ziel) geht auf den Turm los, wie bei Einheiten. Aus (Y) schießen
     sie nicht.
 - **Abrechnung alle 28 s** (wie TABs `CResourceGenerator`, `economy_every_seconds` in `data\colony.json`):
@@ -522,28 +606,47 @@ Dazu im Verteidigungsmenü **Balliste** (F) und **MG-Turm** (G).
 ### Karten-Editor (`dist\LastBastionEditor.exe`)
 
 - **Starten:** direkt, über „Map editor“ im Spiel, über „Edit“ bei einer Karte, oder Kartendatei auf die Exe ziehen.
+- **Aufbau wie SC2s Editor:** oben Menüleiste (File, Edit, View, Map, Test, Help; rechts der Dateiname, • = nicht
+  gespeichert) und **Modulleiste** (Terrain · Objects · Zombies | Triggers · Events · Map; rechts Undo, Redo, Save,
+  **▶ Test**). Links die Werkzeuge des Moduls, rechts die **Eigenschaften** des Gewählten, dazwischen die Karte – nur
+  dort Kamera, Klicks, TABs Leiste und Minimap. Über der Karte schwebend: **Sight** (All / Player / Zombies), **Grid**,
+  **Zombie tiles**, **Zoom** (− 100 % +), unten links, was die Maus gerade tut. Unten die **Statuszeile**: Kachel und Boden unter der
+  Maus, Auswahl, was in der Hand ist, Undo/Redo, Tag und Uhrzeit. Die Ränder der Panels lassen sich ziehen. Abzeichen
+  an den Abschnitten: **TAB** (gelb), **SC2** (blau), **new** (grün). Help → Keys listet die Tasten.
+- **Zombies als Kacheln** (wie TABs gemalte Zellen): weit herausgezoomt (unter ~83 %) von selbst, oder immer/nie
+  (View-Menü, „Zombie tiles“). Jede Art ihre Farbe (Legende im Modul Zombies), die Art mit den meisten auf der Kachel
+  zählt, je mehr desto deckender, heller Punkt = stürmt. Über TABs Bildern liegen sie über allem (Bäume verdecken nichts),
+  mit feiner Fuge; mit **Grid** liegen sie wie TABs Zellen im Gitter, unter seinen Linien.
+- **Auswählen, Kopieren, Einfügen** (in Edit): Klick wählt auch schlafende Zombies, neutrale Dinge und Deko (große
+  Felsen, Ruinen, Strommasten); eine **Box** nimmt alles darin (Einheiten, Gebäude, Zombies, Dorfhäuser, Loot, Neutrale,
+  Deko), Shift fügt hinzu. **Strg+C** kopiert, **Strg+X** schneidet aus, **Strg+V** setzt an der Maus ein (beliebig oft),
+  **Entf** entfernt – auch im Edit-Menü. Kopiert wird alles, was die Kartendatei von einem Ding behält (Leben, infiziert/
+  Veteran, Besitzer, Tag, Beitritts-Skript, Spawner-Form und -Modus, Zombies im Dorfhaus). Was nicht passt, bleibt weg;
+  ein zweites Kommandozentrum nie. Strg+Z/Strg+Y nehmen es zurück wie alles andere.
 - **Edit / Test** (F10): Edit = keine Zeit vergeht, alles wird so gespeichert. Test = die Runde läuft; zurück in Edit
   ist die Karte wieder wie vorher.
 - **Speichern:** Save / Strg+S. Ungespeichertes → Frage Save / Don't save / Cancel. „Revert to saved“ im Esc-Menü.
 - **Rückgängig:** Undo / Strg+Z, Redo / Strg+Y (oder Strg+Shift+Z) – die letzten 20 Schritte, nur in Edit. Ein Schritt =
   alles, solange die linke Maustaste gedrückt ist (ein ganzer Pinselstrich), oder eine einzelne Änderung.
-- **Gebäude** gehen im Editor überall hin und kosten nichts. **Entf** (oder „Demolish“) nimmt die ausgewählten weg –
-  auch das Kommandozentrum, ohne Rückgeld –, dazu den ausgewählten Spawner. Der Radierer nimmt alles unter dem Pinsel.
+- **Gebäude** gehen im Editor überall hin und kosten nichts. **Entf** nimmt alles Ausgewählte weg – auch das
+  Kommandozentrum, ohne Rückgeld –, dazu den ausgewählten Spawner. Der Radierer nimmt alles unter dem Pinsel.
 - **Speichern = Custom Level:** jede im Editor gespeicherte Karte steht im Spiel unter New game → **Custom levels**.
 - **Spawner:** **Rechtsklick** (ohne Auswahl) öffnet ein Fenster: Name, **gerade** (wie die Weltgrenze) oder **schräg**
   (wie die Kacheln, um 45° gedreht), was er von selbst schickt, entfernen.
-- **Panel** (egui): Zahlen ziehen oder anklicken und tippen (Enter: übernehmen, Esc: abbrechen), Listen zum Aufklappen,
+- **Felder** (egui): Zahlen ziehen oder anklicken und tippen (Enter: übernehmen, Esc: abbrechen), Listen zum Aufklappen,
   Abschnitte klappen mit einem Klick auf die Überschrift zu, das Mausrad scrollt das Panel. Solange man tippt, wirkt
   keine Taste im Spiel.
 
-| Tab | Was |
+| Modul / Menü | Was |
 |---|---|
-| **Map** | Name (= Dateiname), Save, Close, New map, **Info** wie TAB (Autor, Bild – eine PNG neben der Kartendatei –, Beschreibung, **New map every start**, **Clear map**: alles runter, alles Gras – Spawner, Events, Runde bleiben), Tage, Startgold, Startholz, **Playing field** (die Weltgrenze wie SC2s Map Bounds: „Drag the border“ – Kante greifen und ziehen, innen ganz verschieben – oder Breite/Höhe tippen; das Gelände bleibt, nur die Grenze wandert; „Like a new map“ setzt zurück), **Grid** (die ganze Karte darum, wie SC2s Map Size: Apply – wächst/schrumpft an allen Seiten, alles bleibt, wo es ist, neues Land ist Gras; Undo geht) |
-| **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinsel **rund oder eckig** und seine Größe |
-| **Entities** | **Placed** wie TABs Liste (alle Gebäude, Einheiten, neutralen; Filter All/Buildings/Units/Neutral/Tagged) und **Object**: die Eigenschaften des gewählten (Klick in der Liste oder auf der Karte) – Locate, Clone (seine Art in die Hand), Delete, **Owner** (Colony / **Neutral**: tut nichts, Zombies lassen es in Ruhe / **Joins**: tritt bei, sobald eine eigene Einheit auf eine Kachel herankommt), **Life** in %, Infected bzw. Veteran, **Name ID** (für Skripte), **Name** und **Text** (statt der Art in der Leiste), **Mark on the minimap**. Dazu Einheiten, alle Gebäude, **Radierer**, Zombies: **Pinsel wie TAB** (pro Kachel ein Regler je Art, 0–3; nochmal drübermalen füllt nur auf), **Drop** (eine Menge einer Art), **Giant** (einer pro Klick) – schlafend/bummelnd oder stürmend, **Doom house** und **Loot** (Klick), Spawner (setzen, ziehen, umbenennen, Periodic mit Sekunden und Anzahl / Off) |
-| **Events** | Sofort-Wellen und **TABs Events**: Name, Tag und Stunde **+ bis zu** Stunden Zufall, **alle** so viele Stunden, so oft, **Wachstum** pro Mal (mit Obergrenze), **Announce** (so viele Stunden vorher, Countdown, Minikarte – aus: still), **Spread** (Quadrat in Kacheln), **Final** (ruft alle Zombies), **Reveal** (deckt auf), **Wins** (Sieg, wenn es kommt), **Wins when dead** – und **Gruppen**: woher (1 zufälliger Spawner, 1–4 zufällige Seiten oder **ausgewählte Spawner** per Häkchen) und **mehrere Arten** mit Anzahl **von–bis** („+ breed“, „+ group“) | Dazu je Event ein **Skript, wenn es kommt**, und eines, **wenn es fertig ist** |
-| **Story** | Wie TABs „Game Narrative“ (`src\story_panel.rs`, `src\sim\story.rs`): **Skripte** beim Spielstart, Sieg und Niederlage – Aktionen nacheinander: Zombies (aus Seiten/Spawnern, stürmend oder nicht), Ressourcen geben/nehmen, Einheiten, Häuser infizieren, Meldung, Fenster (pausiert), **Zufall** (nach Gewicht), **Auswahl** (der Spieler wählt per Knopf), Zähler setzen/erhöhen, ein neutrales Objekt beitreten lassen, Karte aufdecken, Sieg, Niederlage. **Ziele** (Sieg: alle erreicht – Niederlage: eines erreicht): Kolonisten, Tag, getötete Zombies, Gebäude stehen, ein Objekt (Name-ID) zerstört, Zähler, Event fertig – im Spiel oben links mit Fortschritt. **Knopf an der Kommandozentrale** (V, Name, Tooltip, wie oft, Skript). **Zähler** mit Startwert. Neutrale Objekte haben ein Skript **beim Beitreten** |
-| **View** (immer) | All / Player / Zombies – durch wessen Augen man schaut |
+| **File, Edit, View** | New map, Save, Close · Undo, Redo, Cut, Copy, Paste, Delete, **Clear map** (alles runter, alles Gras – Spawner, Events, Runde bleiben) · Sicht, Grid, Zoom, Kamera zur Basis |
+| **Map** | Name (= Dateiname), **Info** wie TAB (Autor, Bild – eine PNG neben der Kartendatei –, Beschreibung, **New map every start**), Tage, Startgold, Startholz, **Playing field** (die Weltgrenze wie SC2s Map Bounds: „Drag the border“ – Kante greifen und ziehen, innen ganz verschieben – oder Breite/Höhe tippen; das Gelände bleibt, nur die Grenze wandert; „Like a new map“ setzt zurück), **Grid** (die ganze Karte darum, wie SC2s Map Size: Apply – wächst/schrumpft an allen Seiten, alles bleibt, wo es ist, neues Land ist Gras; Undo geht) |
+| **Terrain** | Gelände malen (Berg, Wald, Wasser, Erde, Erase – eine einzelne Waldkachel sieht aus wie Wald), **Big rocks** (TABs große Felsen 3×3/4×4/5×5, Bild A/B/C oder gemischt – Klick, die Kacheln werden Berg; anderes Gelände drübermalen nimmt ihn weg), Erz malen, **Öl stempeln** (2 × 2; eine Kachel löschen nimmt die ganze Quelle), Pinsel **rund oder eckig** und seine Größe |
+| **Objects** | Einheiten, alle Gebäude, **Loot** (Klick), **Radierer**, und **Placed** wie TABs Liste (alle Gebäude, Einheiten, neutralen; Filter All/Buildings/Units/Neutral/Tagged) |
+| **Zombies** | **Pinsel wie TAB** (pro Kachel ein Regler je Art, 0–3; nochmal drübermalen füllt nur auf), **Drop** (eine Menge einer Art), **Giant** (einer pro Klick) – schlafend/bummelnd oder stürmend, Spawner (setzen, ziehen), **Dorfhäuser** wie TABs drei: klein 2 × 2, mittel 3 × 3, groß 5 × 5 (Klick; an der Maus ihre Kacheln – rot, wo kein Platz – und wie viele Zombies drin warten) |
+| **Rechts (immer)** | **Object**: die Eigenschaften des gewählten (Klick in der Liste oder auf der Karte) – Locate, Clone (seine Art in die Hand), Delete, **Owner** (Colony / **Neutral**: tut nichts, Zombies lassen es in Ruhe / **Joins**: tritt bei, sobald eine eigene Einheit auf eine Kachel herankommt), **Life** in %, Infected bzw. Veteran, **Name ID** (für Skripte), **Name** und **Text** (statt der Art in der Leiste), **Mark on the minimap**. Der gewählte **Spawner**: umbenennen, gerade/schräg, Periodic mit Sekunden und Anzahl / Off, entfernen |
+| **Events** | Rechts Sofort-Wellen, links **TABs Events**: Name, Tag und Stunde **+ bis zu** Stunden Zufall, **alle** so viele Stunden, so oft, **Wachstum** pro Mal (mit Obergrenze), **Announce** (so viele Stunden vorher, Countdown, Minikarte – aus: still), **Spread** (Quadrat in Kacheln), **Final** (ruft alle Zombies), **Reveal** (deckt auf), **Wins** (Sieg, wenn es kommt), **Wins when dead** – und **Gruppen**: woher (1 zufälliger Spawner, 1–4 zufällige Seiten oder **ausgewählte Spawner** per Häkchen) und **mehrere Arten** mit Anzahl **von–bis** („+ breed“, „+ group“) | Dazu je Event ein **Skript, wenn es kommt**, und eines, **wenn es fertig ist** |
+| **Triggers** | Wie TABs „Game Narrative“ (`src\story_panel.rs`, `src\sim\story.rs`): **Skripte** beim Spielstart, Sieg und Niederlage – Aktionen nacheinander: Zombies (aus Seiten/Spawnern, stürmend oder nicht), Ressourcen geben/nehmen, Einheiten, Häuser infizieren, Meldung, Fenster (pausiert), **Zufall** (nach Gewicht), **Auswahl** (der Spieler wählt per Knopf), Zähler setzen/erhöhen, ein neutrales Objekt beitreten lassen, Karte aufdecken, Sieg, Niederlage. **Ziele** (Sieg: alle erreicht – Niederlage: eines erreicht): Kolonisten, Tag, getötete Zombies, Gebäude stehen, ein Objekt (Name-ID) zerstört, Zähler, Event fertig – im Spiel oben links mit Fortschritt. **Knopf an der Kommandozentrale** (V, Name, Tooltip, wie oft, Skript). **Zähler** mit Startwert. Neutrale Objekte haben ein Skript **beim Beitreten** |
 
 ### Für Entwickler
 

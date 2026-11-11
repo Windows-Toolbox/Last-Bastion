@@ -19,8 +19,10 @@ use crate::building_sprites::glow;
 use crate::data;
 use crate::iso::{Camera, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::sim::{Fallen, Fx, Nest, World, TICK};
+use crate::sim::{Fallen, Fx, Nest, World, MUZZLE, TICK};
 use crate::sprites::smooth;
+
+mod lasting;
 
 /// `assets\effects\<name>.json`.
 #[derive(Deserialize)]
@@ -136,7 +138,42 @@ struct Flight {
     start: f32,
     time: f32,
     bleeds: bool,
+    /// In an arc (the ranger's arrow) or straight (the ballista's bolt) – TAB's `FactorHeight` 0.1 or 0.
+    arc: bool,
 }
+
+impl Flight {
+    /// How far along its way at `now`: 0 = just shot, 1 = landed.
+    fn share(&self, now: f32) -> f32 {
+        ((now - self.start) / self.time.max(0.01)).clamp(0.0, 1.0)
+    }
+
+    /// How high above the ground it is (tile widths) that far along – TAB's `Proyectile.OnUpdate`: from chest height
+    /// to the target's chest, an arrow in an arc above that line (highest in the middle, the longer the way the higher),
+    /// a bolt straight down from a bit higher up.
+    fn height(&self, t: f32) -> f32 {
+        if self.arc {
+            CHEST + 4.0 * t * (1.0 - t) * self.from.distance(self.to) * ARC
+        } else {
+            CHEST + BOLT_LIFT * (1.0 - t)
+        }
+    }
+}
+
+/// A ray from a point to another (TAB's `ShowRay`): the effect's frames stretched along the way.
+struct Ray {
+    name: &'static str,
+    from: Vec2,
+    to: Vec2,
+    start: f32,
+    /// The building it comes from – gone with it.
+    building: u32,
+}
+
+/// A ray is this much longer than the way (TAB's `lengthFactor`) and starts this high (tile widths – TAB's 1.5 scene
+/// units).
+const RAY_LENGTH: f32 = 1.3;
+const RAY_HEIGHT: f32 = 1.5 * std::f32::consts::FRAC_1_SQRT_2;
 
 /// A stain lying on the ground (TAB's `DieUnit`): it grows for a second, lies there, fades out over ten.
 struct Stain {
@@ -163,9 +200,15 @@ const STAIN_GROWS: f32 = 1.0;
 const STAIN_FADES: f32 = 10.0;
 /// How far above the ground a hit bleeds and a shot leaves (tile widths) – about a figure's chest.
 const CHEST: f32 = 0.3;
-/// TAB's arrows fly this fast (tiles per second, `ProyectileSpeed`): the ranger's, the ballista's bolt.
-const ARROW_SPEED: f32 = 12.0;
+/// TAB's ballista bolt flies this fast (tiles per second, `ProyectileSpeed`). The ranger's arrow: `sim/arrows.rs`.
 const BOLT_SPEED: f32 = 16.0;
+/// How high an arrow's arc goes in its middle, per tile of its way (tile widths): TAB's `FactorHeight` 0.1 – its peak
+/// is 0.1 × the way in TAB's scene units, and a tile is √2 of those wide.
+const ARC: f32 = 0.1 / std::f32::consts::SQRT_2;
+/// The ballista's bolt flies this much higher than an arrow starts (tile widths) – TAB's 0.8 scene units.
+const BOLT_LIFT: f32 = 0.8 / std::f32::consts::SQRT_2;
+/// An arrow's shadow on the ground: black, half see-through – TAB's `_OShadow`.
+const SHADOW: Color = Color::new(0.0, 0.0, 0.0, 0.5);
 /// A zombie's blood is a bit darker (TAB: brightness 0.8, its stain dark red).
 const ZOMBIE_BLOOD: Color = Color::new(0.8, 0.8, 0.8, 1.0);
 const ZOMBIE_STAIN: Color = Color::new(0.55, 0.08, 0.06, 0.8);
@@ -180,6 +223,7 @@ pub struct Effects {
     playing: Vec<Playing>,
     flights: Vec<Flight>,
     stains: Vec<Stain>,
+    rays: Vec<Ray>,
     /// The guns of the ballistas and machine guns, by building `id`.
     guns: HashMap<u32, Gun>,
     /// For the little randomness of the look (where a hit bleeds) – not the simulation's numbers.
@@ -195,7 +239,7 @@ impl Effects {
         let now = world.tick as f32 * TICK;
         for fx in &world.fx {
             match *fx {
-                Fx::UnitShot { from, to, kind, zombie } => self.unit_shot(now, from, to, kind, zombie),
+                Fx::UnitShot { from, to, kind, bleeds, flight } => self.unit_shot(now, from, to, kind, bleeds, flight),
                 Fx::TowerShot { building, kind, from, to } => self.tower_shot(now, building, kind, from, to),
                 Fx::ZombieDied { at } => {
                     self.on_body("effects/blood_zombie", now, at, 0.4, ZOMBIE_BLOOD);
@@ -209,10 +253,13 @@ impl Effects {
                     self.play("effects/venom", now, at, 0.0, 0.6, 0.0, WHITE);
                     self.stain("effects/venom_pool", now, at, 0.4, VENOM_POOL);
                 }
-                Fx::Blast { at } => {
-                    let size = 2.0 * data::get().buildings.blast.radius;
-                    self.play("effects/fire_blast", now, at, 0.0, size, 0.0, WHITE);
+                // TAB's big fire blast for a barrel or a mine, a small one for a shell or a missile – as wide as it hits.
+                Fx::Blast { at, radius } => {
+                    let name = if radius >= 1.5 { "effects/fire_blast" } else { "effects/small_fire" };
+                    self.play(name, now, at, 0.0, 2.0 * radius, 0.0, WHITE);
                 }
+                Fx::Flame { from, to } => self.flame(now, from, to),
+                Fx::Shock { building, from, to } => self.shock(now, building, from, to),
                 Fx::Fell { what, tile, size } => self.fell(now, what, tile, size),
                 Fx::Infected { tile, size } => {
                     let middle = vec2(tile.0 as f32 + size.0 as f32 / 2.0, tile.1 as f32 + size.1 as f32 / 2.0);
@@ -223,21 +270,31 @@ impl Effects {
         }
     }
 
-    /// A unit shot: the soldier's and sniper's flash at the muzzle, the ranger's arrow on its way – and the zombie hit
-    /// bleeds (the ranger's when the arrow gets there).
-    fn unit_shot(&mut self, now: f32, from: Vec2, to: Vec2, kind: UnitKind, zombie: bool) {
+    /// A unit shot: the soldier's and sniper's flash at the muzzle, an arrow on its way – and whom it hits bleeds (an
+    /// arrow's when it gets there). `flight`: the arrow's ticks in the simulation (`sim/arrows.rs`), so it lands in the
+    /// picture just when it hits; 0: a bullet.
+    fn unit_shot(&mut self, now: f32, from: Vec2, to: Vec2, kind: UnitKind, bleeds: bool, flight: u32) {
         let angle = (to - from).to_angle();
-        match kind {
-            UnitKind::Ranger => {
-                let time = from.distance(to) / ARROW_SPEED;
-                self.flights.push(Flight { name: "projectiles/arrow", from, to, start: now, time, bleeds: zombie });
+        if flight > 0 {
+            // It leaves a bit in front of the shooter, like TAB's. Thanatos's missile flies straight, with a flash at
+            // the launcher – it blows up where it lands (`Fx::Blast`).
+            let from = from + (to - from).normalize_or_zero() * MUZZLE;
+            let time = flight as f32 * TICK;
+            if kind == UnitKind::Thanatos {
+                self.flash("effects/flash_thanatos", now, from, angle);
+                self.fly(Flight { name: "projectiles/missile", from, to, start: now, time, bleeds: false, arc: false });
                 return;
             }
-            UnitKind::Soldier => self.flash("effects/flash_soldier", now, from, angle),
-            UnitKind::Sniper => self.flash("effects/flash_sniper", now, from, angle),
+            self.fly(Flight { name: "projectiles/arrow", from, to, start: now, time, bleeds, arc: true });
+            return;
+        }
+        match kind {
+            UnitKind::Soldier | UnitKind::MercSoldier => self.flash("effects/flash_soldier", now, from, angle),
+            UnitKind::Sniper | UnitKind::MercSniper => self.flash("effects/flash_sniper", now, from, angle),
+            UnitKind::Titan => self.flash("effects/flash_thanatos", now, from, angle),
             _ => {}
         }
-        if zombie {
+        if bleeds {
             self.on_body("effects/blood_splash", now, to, 0.4, ZOMBIE_BLOOD);
         }
     }
@@ -252,7 +309,7 @@ impl Effects {
         match kind {
             BuildingKind::Ballista => {
                 let time = from.distance(to) / BOLT_SPEED;
-                self.flights.push(Flight { name: "projectiles/big_arrow", from, to, start: now, time, bleeds: true });
+                self.fly(Flight { name: "projectiles/big_arrow", from, to, start: now, time, bleeds: true, arc: false });
             }
             _ => {
                 self.flash("effects/flash_gun", now, from, (to - from).to_angle());
@@ -302,6 +359,27 @@ impl Effects {
         }
     }
 
+    /// Lucifer's flame: a burst at the nozzle (TAB's `FireBurst_A`), fire all along the cone to its end – bigger
+    /// further out, the cone widens.
+    fn flame(&mut self, now: f32, from: Vec2, to: Vec2) {
+        let way = to - from;
+        self.flash("effects/fire_burst", now, from, way.to_angle());
+        for k in 1..=4 {
+            let share = k as f32 / 4.0;
+            let spot = from + way * share + self.spread(0.1 * share);
+            self.play("effects/small_fire", now, spot, CHEST * (1.0 - share * 0.5), 0.3 + 0.5 * share, 0.0, WHITE);
+        }
+    }
+
+    /// The shocking tower's ray to one zombie (TAB's `ShowRay`: `ShockRay_A` from its top to the zombie, 1.3 times as
+    /// long, 1.5 high) – and the zombie twitches in sparks.
+    fn shock(&mut self, now: f32, building: u32, from: Vec2, to: Vec2) {
+        if matches!(self.load("effects/shock_ray"), Some(Some(_))) {
+            self.rays.push(Ray { name: "effects/shock_ray", from, to, start: now, building });
+        }
+        self.on_body("effects/gun_impact_a", now, to, 0.5, WHITE);
+    }
+
     /// TAB's `ShowOnUnit`: somewhere on the body, up to chest high.
     fn on_body(&mut self, name: &'static str, now: f32, at: Vec2, size: f32, color: Color) {
         let spot = at + self.spread(0.12);
@@ -320,6 +398,13 @@ impl Effects {
         let dir = Vec2::from_angle(world_angle);
         let screen = crate::iso::iso(dir);
         self.play(name, now, at, height * 0.5, 1.0, screen.y.atan2(screen.x), WHITE);
+    }
+
+    /// An arrow or bolt sets off. Its picture is loaded first – `draw` only looks it up, it doesn't load. Without a
+    /// picture it still flies (unseen): the zombie bleeds when it lands.
+    fn fly(&mut self, flight: Flight) {
+        self.load(flight.name);
+        self.flights.push(flight);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -361,6 +446,9 @@ impl Effects {
     /// Every frame: guns turn towards their target, what's over is forgotten. `now`: seconds of game time.
     pub fn update(&mut self, world: &World, now: f32, dt: f32) {
         self.load("effects/flash_soldier"); // for `shows_shots`
+        for name in lasting::NAMES {
+            self.load(name);
+        }
         for gun in self.guns.values_mut() {
             let diff = (gun.target - gun.degrees + 180.0).rem_euclid(360.0) - 180.0;
             gun.degrees = (gun.degrees + diff.clamp(-GUN_TURN * dt, GUN_TURN * dt)).rem_euclid(360.0);
@@ -373,6 +461,7 @@ impl Effects {
             _ => true,
         };
         self.playing.retain(|p| !over(p.name, p.start));
+        self.rays.retain(|r| !over(r.name, r.start) && world.buildings.iter().any(|b| b.id == r.building));
         self.flights.retain(|f| now < f.start + f.time + 0.05);
         self.stains.retain(|s| now < s.start + STAIN_GROWS + STAIN_FADES);
         // Arrows that arrive: the zombie bleeds.
@@ -395,6 +484,18 @@ impl Effects {
 
     /// The stains – on the ground, before the figures. `shows`: is that spot seen.
     pub fn draw_stains(&self, camera: &Camera, now: f32, shows: impl Fn(Vec2) -> bool) {
+        // The shadows of arrows and bolts in flight: straight along the ground below them – that's what makes the arc
+        // visible (TAB's `_OShadow`).
+        for flight in self.flights.iter().filter(|f| shows(f.from) || shows(f.to)) {
+            let Some(Some(effect)) = self.sheets.get(flight.name) else {
+                continue;
+            };
+            let here = flight.from.lerp(flight.to, flight.share(now));
+            let way = camera.world_to_screen(flight.to) - camera.world_to_screen(flight.from);
+            // The arrow points up in its picture.
+            let angle = way.y.atan2(way.x) + FRAC_PI_2;
+            effect.draw_at(camera, camera.world_to_screen(here), 1.0, angle, SHADOW, true);
+        }
         for stain in self.stains.iter().filter(|s| shows(s.at)) {
             let Some(Some(effect)) = self.sheets.get(stain.name) else {
                 continue;
@@ -422,14 +523,37 @@ impl Effects {
             let Some(Some(effect)) = self.sheets.get(flight.name) else {
                 continue;
             };
-            let t = ((now - flight.start) / flight.time.max(0.01)).clamp(0.0, 1.0);
-            // A low arc: up from chest height and down onto the target.
-            let height = |t: f32| CHEST + 4.0 * t * (1.0 - t) * flight.from.distance(flight.to) * 0.08;
+            let t = flight.share(now);
+            let height = |t: f32| flight.height(t);
             let point = |t: f32| camera.world_to_screen(flight.from.lerp(flight.to, t)) - vec2(0.0, height(t) * TILE_W * camera.zoom);
             let (here, next) = (point(t), point((t + 0.02).min(1.0)) - point((t - 0.02).max(0.0)));
             // The arrow points up in its picture.
             let angle = next.y.atan2(next.x) + FRAC_PI_2;
             effect.draw_at(camera, here, 1.0, angle, WHITE, true);
+        }
+        for ray in self.rays.iter().filter(|r| shows(r.from) || shows(r.to)) {
+            let Some(Some(effect)) = self.sheets.get(ray.name) else {
+                continue;
+            };
+            let Some((frame, fade)) = effect.at_age(now - ray.start) else {
+                continue;
+            };
+            let lift = vec2(0.0, RAY_HEIGHT * TILE_W * camera.zoom);
+            let (a, b) = (camera.world_to_screen(ray.from) - lift, camera.world_to_screen(ray.to) - lift * 0.3);
+            let way = (b - a) * RAY_LENGTH;
+            // As long as the way, one scene unit thick, its middle half way, turned along it.
+            let size = vec2(way.length(), TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom);
+            let middle = a + way / 2.0;
+            let params = DrawTextureParams {
+                dest_size: Some(size),
+                source: Some(effect.source(frame)),
+                rotation: way.y.atan2(way.x),
+                pivot: Some(middle),
+                ..Default::default()
+            };
+            let color = Color { a: fade, ..WHITE };
+            let corner = middle - size / 2.0;
+            glow(|| draw_texture_ex(&effect.texture, corner.x, corner.y, color, params.clone()));
         }
         for p in self.playing.iter().filter(|p| shows(p.at)) {
             let Some(Some(effect)) = self.sheets.get(p.name) else {

@@ -15,6 +15,7 @@
 //! - `sleep.rs`: the zombies far from everything – asleep as plain entries until something wakes them.
 //! - `ranged.rs`: the zombies that attack from afar – spitters and infested – and the acid in flight.
 //! - `neutral.rs`: what the editor gives a placed thing – a tag, an owner (neutral, joinable) – and the neutral ones.
+//! - `clipboard.rs`: the editor's copy, cut and paste – things the way the map file keeps them.
 //! - `doom.rs`: the villages of doom and the loot lying around – zombies waiting until you come close.
 //! - `sound.rs`: noise like in TAB – what makes how much, where it adds up, who hears it and comes.
 //! - `units.rs`: your units – walking, arriving, pushing, climbing into towers.
@@ -36,8 +37,11 @@
 //!
 //! This file: the `World` itself, the order of a tick (`step`) and small helpers that all of them use.
 
+mod areas;
+mod arrows;
 mod blast;
 mod buildings;
+mod clipboard;
 mod combat;
 mod commands;
 mod crowd;
@@ -46,11 +50,13 @@ mod doom;
 mod economy;
 mod events;
 mod fallen;
+mod fire;
 mod fx;
 mod landscape;
 mod market;
 mod neutral;
 mod orders;
+mod ornaments;
 mod ranged;
 mod regen;
 mod round;
@@ -83,8 +89,9 @@ use crate::vision::Vision;
 
 // What the rest of the game sees of the simulation – the same names as when it was all one file `sim.rs`.
 pub use blast::Blast;
+pub use clipboard::{count_pieces, ornament_middle, Clip, Piece};
 pub use buildings::{Building, Product, Rally, RepairPlan, SwitchBlock, MAX_PRODUCTION};
-pub use commands::{Command, Mark};
+pub use commands::{Command, Mark, Prey};
 pub use debt::DebtStage;
 pub use doom::{DoomHouse, Loot, LootKind, Nest};
 pub use economy::{Power, Stock};
@@ -94,10 +101,13 @@ pub use fx::{Fallen, Fx};
 pub use neutral::{Neutral, Owner, Tag, Thing, ThingRef};
 pub use story::{Action, Choice, Condition, CustomCommand, Goal, Script, Story};
 pub use ranged::Spit;
+use arrows::Arrow;
+pub use arrows::MUZZLE;
 pub use orders::{Order, MAP_SIZES, MOST_PER_TILE};
+pub use ornaments::{Ornament, OrnamentKind};
 pub use round::{Outcome, Score};
 pub use scan::Scanned;
-pub use sleep::Sleep;
+pub use sleep::{Sleep, Sleeper};
 pub use spawning::{corners as spawner_corners, tiles as spawner_tiles, Axes, BreedCount, Corpse, SpawnMode, Spawner, WaveFrom, WaveGroup};
 pub use units::Unit;
 pub use zombies::{Breed, Zombie};
@@ -153,8 +163,12 @@ pub struct World {
     /// Neutral buildings and units (`neutral.rs`) – nobody's, until a joinable one joins the colony.
     pub neutral: Vec<Neutral>,
     pub loot: Vec<Loot>,
+    /// Treasure ruins and power line towers – only to be looked at (`ornaments.rs`).
+    pub ornaments: Vec<Ornament>,
     /// Spitters' acid in flight (`ranged.rs`).
     pub spits: Vec<Spit>,
+    /// Your rangers' arrows in flight (`arrows.rs`).
+    arrows: Vec<Arrow>,
     /// The colony's gold: the tents pay it every hour (`buildings.rs`), units and buildings cost it (`orders.rs`).
     pub gold: u32,
     /// Upkeep the gold didn't cover (`debt.rs`) – paid off first by any gold that comes in, so while there is debt the
@@ -321,6 +335,7 @@ impl World {
             let zombies = World::doom_zombies(house.size, difficulty.population);
             world.add_doom(house.tile, house.size, zombies, difficulty.population * nests);
         }
+        world.ornaments = generated.ornaments;
         for spot in generated.loot {
             let pos = vec2(spot.tile.0 as f32 + 0.5, spot.tile.1 as f32 + 0.5);
             let (kind, amount, guards) = world.roll_loot(pos, difficulty.loot_guards);
@@ -417,7 +432,9 @@ impl World {
             doom: Vec::new(),
             neutral: Vec::new(),
             loot: Vec::new(),
+            ornaments: Vec::new(),
             spits: Vec::new(),
+            arrows: Vec::new(),
             gold: difficulty.start_gold,
             debt: 0,
             army_keep: 1000,
@@ -539,8 +556,14 @@ impl World {
         // How far everyone sees on this map (`eye_range`) – worked out first, `vision` is changed with it.
         let reach = Modifiers::factor(self.modifiers.unit_sight);
         let units = self.units.iter().map(|u| (u.pos, u.sight() * reach));
-        let buildings = self.buildings.iter().map(|b| (b.center(), b.stats().sight * reach));
+        // Radar, lookout tower and the wonders see over forest (TAB's `WatchThroughOpaque`) – finished and not infected;
+        // they're added on top below, like the scans.
+        let over_forest = |b: &Building| b.stats().sees_through_forest && b.is_built() && !b.infected;
+        let buildings = self.buildings.iter().filter(|b| !over_forest(b)).map(|b| (b.center(), b.stats().sight * reach));
         self.vision.update(&self.map, units.chain(buildings));
+        for b in self.buildings.iter().filter(|b| over_forest(b)) {
+            self.vision.reveal_circle(b.center(), b.stats().sight * reach);
+        }
         // The scans on top – they see over forests too, like StarCraft's.
         let radius = data::get().buildings.scan.radius;
         for scan in &self.scans {
@@ -567,11 +590,14 @@ impl World {
         self.listen(); // sound.rs – zombies, houses of doom, guards of loot hear the noise
         self.move_zombies(); // zombies.rs, infected buildings in buildings.rs, shots of the ranged ones in ranged.rs
         self.fly_spits(); // ranged.rs
+        self.fly_arrows(); // arrows.rs – before the units choose: a zombie an arrow killed is no target
         self.update_units(); // units.rs, shooting in combat.rs
         self.join_neutrals(); // neutral.rs
-        self.fire_towers(); // towers.rs – the ballista and the machine gun tower
+        self.fire_towers(); // towers.rs – the ballista, the machine gun tower, the shocking tower, the executor
+        self.burn(); // fire.rs – zombies Lucifer set alight
         self.detonate(); // blast.rs – barrels hit or carried by the dead go off
         self.update_buildings(); // buildings.rs, gold too
+        self.academy(); // veterans.rs – the Academy makes every unit a veteran
         self.update_scan(); // scan.rs
         self.update_debt(); // debt.rs
         self.regenerate(); // regen.rs – units and zombies heal themselves
@@ -623,7 +649,8 @@ impl World {
         for u in &self.units {
             mix(u.pos.x.to_bits());
             mix(u.pos.y.to_bits());
-            mix(u.facing.to_bits()); // decides when it can shoot
+            mix(u.facing.to_bits()); // decides when it can shoot – and so does how far its weapon is up
+            mix(u.weapon);
             mix(u.hp);
             mix(u.barrel as u32);
             mix(u.xp);
@@ -654,6 +681,9 @@ impl World {
         }
         for s in &self.spits {
             mix(s.left);
+        }
+        for left in self.arrows_left() {
+            mix(left);
         }
         for (_, level) in self.sound.loud() {
             mix(level);

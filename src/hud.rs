@@ -2,6 +2,13 @@
 //! button, the control groups, the selection, the command card with the build menus, the colony's stock. Here is
 //! where everything lies (`Layout`), what it looks like, and what is under the mouse (`hit`). What a click does is
 //! decided by `ui.rs`.
+//!
+//! Where everything lies is TAB's: its clip `MapGUI` (in `ZXGame.dxprj`) places the bar and every field on a screen of
+//! 1280 x 720 – our window's first size. A bigger window makes all of it bigger by the same factor (`scale`, TAB's
+//! `DXScene.ScreenVirtualUnit`); a window wider than 16 : 9 gets a wider selection in the middle. Its pictures are
+//! TAB's (`ui_art.rs`) – without them the old brass placeholders are drawn in the same places.
+
+use std::cell::Cell;
 
 use macroquad::prelude::*;
 
@@ -16,22 +23,29 @@ use crate::map::{from_frame, to_frame, Region};
 use crate::picture::MapPicture;
 use crate::sim::{DebtStage, LootKind, Power, Product, RepairPlan, World, Zombie, MAX_PRODUCTION, TICKS_PER_SECOND};
 use crate::ui::{Pick, Place, Sub, Ui};
+use crate::ui_art;
 
-pub const PANEL_H: f32 = 200.0;
-const PAD: f32 = 8.0;
-/// Between two parts of the panel.
-const GAP: f32 = 8.0;
-const MINIMAP_W: f32 = 260.0; // the minimap has the shape of the map on screen (`TILE_W` : `TILE_H`)
-const CLOCK_W: f32 = 104.0;
-const GROUPS_W: f32 = 46.0;
-const STOCK_W: f32 = 224.0;
+/// TAB's screen the bar is laid out on (`MapGUI`): 1280 x 720 – our window's first size.
+const REF_W: f32 = 1280.0;
+const REF_H: f32 = 720.0;
+/// The bar's picture (`GUIBackgroundControls`): its top left corner and height on TAB's screen.
+const BAR_Y: f32 = 523.0;
+const BAR_H: f32 = 197.7;
+/// Where the bar's picture may be stretched on a window wider than 16 : 9 – a plain stretch of the green screen in
+/// the middle (TAB's x, on its 1280 pixels).
+const STRETCH: (f32, f32) = (600.0, 700.0);
+/// Without TAB's picture: the bar is a plain rectangle from here down (the top of the minimap's frame).
+const PLAIN_TOP: f32 = 553.0;
+
+/// Multi-selection: one icon per thing, this big.
 const ICON: f32 = 36.0;
-const QUEUE_ICON: f32 = 40.0;
-const SUMMARY_H: f32 = 20.0;
-const PORTRAIT: f32 = 84.0;
-const CELL_W: f32 = 58.0;
-const CELL_H: f32 = 38.0;
-const BUTTON: f32 = 58.0;
+const QUEUE_ICON: f32 = 36.0;
+const SUMMARY_H: f32 = 16.0;
+/// The values next to the text, one small box each (TAB's `AreaFeatures`).
+const CELL_W: f32 = 45.5;
+const CELL_H: f32 = 29.0;
+/// A button of the command card: 5 x 3 of them in TAB's 200 x 120.
+const BUTTON: f32 = 40.0;
 const CARD_COLS: usize = 5;
 const CARD_ROWS: usize = 3;
 
@@ -42,8 +56,6 @@ const BOX_BG: Color = Color::new(0.15, 0.11, 0.07, 1.0);
 /// The fill of a storage bar in the stock – and full, when what comes in is lost.
 const STORAGE: Color = Color::new(0.36, 0.27, 0.12, 1.0);
 const STORAGE_FULL: Color = Color::new(0.55, 0.22, 0.12, 1.0);
-const HOVER_BG: Color = Color::new(0.25, 0.19, 0.11, 1.0);
-const WAIT_BG: Color = Color::new(0.22, 0.32, 0.14, 1.0);
 const BORDER: Color = Color::new(0.45, 0.32, 0.16, 1.0);
 const BRASS: Color = Color::new(0.80, 0.60, 0.30, 1.0);
 const DIM: Color = Color::new(0.72, 0.64, 0.50, 1.0);
@@ -51,6 +63,11 @@ const GLOW: Color = Color::new(0.62, 0.95, 0.40, 1.0);
 const KEY: Color = Color::new(1.0, 0.85, 0.40, 1.0);
 const TOO_DEAR: Color = Color::new(1.0, 0.35, 0.3, 1.0);
 const FINAL: Color = Color::new(1.0, 0.6, 0.5, 1.0);
+/// Over TAB's buttons: hovered a bit lighter, waiting (the command on the mouse, the chosen formation) green.
+const HOVER_LIGHT: Color = Color::new(1.0, 0.95, 0.8, 0.16);
+const WAIT_LIGHT: Color = Color::new(0.5, 1.0, 0.3, 0.30);
+/// A button that can't be pressed right now (too dear, planned): its picture greyed.
+const GREYED: Color = Color::new(0.45, 0.45, 0.45, 1.0);
 /// The villages of doom on the minimap – red like TAB's.
 const DOOM_MINIMAP: Color = Color::new(0.85, 0.12, 0.10, 1.0);
 /// A giant on the minimap: a big dot, always shown.
@@ -111,6 +128,46 @@ pub enum Button {
     Custom,
 }
 
+impl Button {
+    /// TAB's picture on the button (`assets\ui\`): the portrait of what it trains or places, an icon for a command.
+    /// `switching_on`: On/Off would switch the selected buildings on (then it shows "play", otherwise "pause").
+    /// `None`: no picture for it (the formations), or TAB's pictures aren't there.
+    fn picture(self, switching_on: bool) -> Option<Texture2D> {
+        let icon_name = match self {
+            Button::Train(kind) => return portrait_of(kind),
+            Button::Place(kind) => return portrait_of(kind),
+            Button::MakeBarrel => return portrait_of(BuildingKind::Barrel),
+            Button::Planned(i) => return PLANNED[i].art.and_then(|art| ui_art::get(&format!("portraits/{art}"))),
+            Button::FormLine | Button::FormBox | Button::FormCircle => return None,
+            Button::Move => "IconTravel",
+            Button::Stop => "IconStop",
+            Button::Hold => "IconHold",
+            Button::Patrol => "IconPatrol",
+            Button::Attack => "IconAttack",
+            Button::Rally => "IconSetRallyPoint",
+            Button::Sell => "IconFResourcesToGold",
+            Button::Scan => "IconFWatchRange",
+            Button::Drop => "IconLeaveObject",
+            Button::Dismiss => "IconDismissUnit",
+            Button::Open(Submenu::Colonists) => "IconDwellings",
+            Button::Open(Submenu::Resources) => "IconResources",
+            Button::Open(Submenu::Energy) => "IconEnergy",
+            Button::Open(Submenu::Industry) => "IconIndustry",
+            Button::Open(Submenu::Military) => "IconMilitary",
+            Button::Open(Submenu::Defense) => "IconDeffense",
+            Button::Open(Submenu::Wonders) => "IconWonders",
+            Button::Back => "IconBack",
+            Button::Unload => "IconExtractAll",
+            Button::Repair => "IconRepair",
+            Button::Switch if switching_on => "IconPlay",
+            Button::Switch => "IconPause",
+            Button::Demolish => "IconDestroyBuilding",
+            Button::Custom => "CustomCommandGear",
+        };
+        icon(icon_name)
+    }
+}
+
 /// The build menus of the command center – the keys on the left of the keyboard, like TAB's build categories.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Submenu {
@@ -153,19 +210,17 @@ pub struct Planned {
     pub short: &'static str,
     pub name: &'static str,
     pub help: &'static str,
+    /// Its portrait in `assets\ui\portraits\` – TAB's building of that kind, or none.
+    pub art: Option<&'static str>,
 }
 
 /// Shorter to write the table below.
-const fn plan(menu: Submenu, slot: usize, short: &'static str, name: &'static str, help: &'static str) -> Planned {
-    Planned { menu, slot, short, name, help }
+const fn plan(menu: Submenu, slot: usize, short: &'static str, name: &'static str, help: &'static str, art: Option<&'static str>) -> Planned {
+    Planned { menu, slot, short, name, help, art }
 }
 
 /// All planned buildings, menu by menu. When one gets built, its line goes and a real button takes its spot.
-pub const PLANNED: [Planned; 3] = [
-    plan(Submenu::Resources, 4, "Oil pump", "Oil pump", "2 x 2, right on an oil node (the dark pools - one next to the base, groups further out). Oil."),
-    plan(Submenu::Energy, 3, "Oil gen.", "Oil burning generator", "Burns oil: a lot of power."),
-    plan(Submenu::Military, 2, "Siege", "Siege factory", "Vehicles and siege weapons."),
-];
+pub const PLANNED: [Planned; 1] = [plan(Submenu::Energy, 4, "Oil gen.", "Oil burning generator", "Burns oil: a lot of power.", None)];
 
 /// The buttons for units – top row like in StarCraft, the formations at the bottom.
 pub const UNIT_BUTTONS: [Button; 9] = [
@@ -210,6 +265,14 @@ pub const INN_BUTTONS: [Button; 5] = [
     Button::Rally,
     Button::Repair,
 ];
+/// The buttons of the engineering center – TAB's advanced units.
+pub const ENGINEERING_BUTTONS: [Button; 5] = [
+    Button::Train(UnitKind::Lucifer),
+    Button::Train(UnitKind::Thanatos),
+    Button::Train(UnitKind::Titan),
+    Button::Rally,
+    Button::Repair,
+];
 /// The buttons of the munitions factory.
 pub const MUNITIONS_BUTTONS: [Button; 2] = [Button::MakeBarrel, Button::Repair];
 /// The buttons of a market.
@@ -223,13 +286,15 @@ pub const REPAIR_BUTTONS: [Button; 1] = [Button::Repair];
 pub fn menu_buttons(menu: Submenu) -> Vec<Button> {
     use BuildingKind::*;
     let built: &[BuildingKind] = match menu {
-        Submenu::Colonists => &[Tent, StoneHouse],
-        Submenu::Resources => &[HunterCottage, FishingHut, Sawmill, Mine, Farm],
-        Submenu::Energy => &[TeslaTower, Windmill, CharcoalBurner],
-        Submenu::Industry => &[WoodWorkshop, StoneWorkshop, Foundry, Inn, Market, Bank],
-        Submenu::Military => &[Barracks, MunitionsFactory],
-        Submenu::Defense => &[Wall, Gate, Tower, Stakes, Barrel, StoneWall, StoneTower, Ballista, MachineGunTower],
-        Submenu::Wonders => &[],
+        Submenu::Colonists => &[Tent, WoodHouse, StoneHouse],
+        Submenu::Resources => &[HunterCottage, FishingHut, Sawmill, Mine, Quarry, Farm, BigFarm, BigQuarry, OilPlatform],
+        Submenu::Energy => &[TeslaTower, Windmill, CharcoalBurner, PowerPlant, BigMill],
+        Submenu::Industry => &[WoodWorkshop, StoneWorkshop, Foundry, Inn, Market, Bank, Warehouse],
+        Submenu::Military => &[Barracks, MunitionsFactory, EngineeringCenter, LookoutTower, Radar],
+        Submenu::Defense => &[
+            Wall, Gate, Tower, Stakes, Barrel, StoneWall, BladeTrap, StoneTower, Ballista, MachineGunTower, MineTrap, ShockingTower, Executor,
+        ],
+        Submenu::Wonders => &[Spire, Academy, Victorious, Transmutator, CrystalPalace],
     };
     let built = built.iter().map(|&kind| Button::Place(kind));
     let planned = (0..PLANNED.len()).filter(|&i| PLANNED[i].menu == menu).map(Button::Planned);
@@ -249,6 +314,7 @@ pub fn building_buttons(kind: BuildingKind) -> Vec<Button> {
     let mut card = match kind {
         BuildingKind::Barracks => BARRACKS_BUTTONS.to_vec(),
         BuildingKind::Inn => INN_BUTTONS.to_vec(),
+        BuildingKind::EngineeringCenter => ENGINEERING_BUTTONS.to_vec(),
         BuildingKind::MunitionsFactory => MUNITIONS_BUTTONS.to_vec(),
         BuildingKind::Market => MARKET_BUTTONS.to_vec(),
         BuildingKind::Tower | BuildingKind::StoneTower => TOWER_BUTTONS.to_vec(),
@@ -271,7 +337,7 @@ pub fn building_buttons(kind: BuildingKind) -> Vec<Button> {
 pub fn all_cards() -> Vec<Vec<Button>> {
     let mut cards = vec![[UNIT_BUTTONS.as_slice(), &[Button::Drop]].concat(), COMMAND_CENTER_BUTTONS.to_vec()];
     cards.extend(build_menus().map(menu_buttons));
-    for buttons in [&BARRACKS_BUTTONS[..], &INN_BUTTONS, &MUNITIONS_BUTTONS, &MARKET_BUTTONS, &TOWER_BUTTONS, &REPAIR_BUTTONS] {
+    for buttons in [&BARRACKS_BUTTONS[..], &INN_BUTTONS, &ENGINEERING_BUTTONS, &MUNITIONS_BUTTONS, &MARKET_BUTTONS, &TOWER_BUTTONS, &REPAIR_BUTTONS] {
         cards.push([buttons, &[Button::Switch, Button::Demolish]].concat());
     }
     // The command center's card with the map's own button, and in the editor (`Ui::card`).
@@ -477,17 +543,24 @@ impl Button {
 fn place_slot(kind: BuildingKind) -> usize {
     use BuildingKind::*;
     match kind {
-        Tent | Barracks | Wall | HunterCottage | TeslaTower | WoodWorkshop | CommandCenter => 0,
-        Gate | FishingHut | Windmill | StoneHouse | StoneWorkshop | MunitionsFactory => 1,
-        Tower | Sawmill | CharcoalBurner | Foundry => 2,
-        Mine | Stakes | Inn => 3,
-        Market | Barrel => 4,
+        Tent | Barracks | Wall | HunterCottage | TeslaTower | WoodWorkshop | CommandCenter | Spire => 0,
+        Gate | FishingHut | Windmill | WoodHouse | StoneWorkshop | MunitionsFactory | Academy => 1,
+        Tower | Sawmill | CharcoalBurner | Foundry | StoneHouse | EngineeringCenter | Victorious => 2,
+        Mine | Stakes | Inn | PowerPlant | LookoutTower | Transmutator => 3,
+        Market | Barrel | Quarry | Radar | CrystalPalace => 4,
         // Below their wooden ones – and the farm below the hunter, the other food. The bank next to the market.
         StoneWall | Farm | Bank => 5,
-        StoneTower => 7,
+        // The better ones below the first ones: the big farm next to the farm, the iron mill below the windmill, the
+        // blades below the gate.
+        BigFarm | BigMill | Warehouse | BladeTrap => 6,
+        StoneTower | BigQuarry => 7,
         // F and G, next to the stone tower.
-        Ballista => 8,
+        Ballista | OilPlatform => 8,
         MachineGunTower => 9,
+        // The bottom row: TAB's late defence.
+        MineTrap => 10,
+        ShockingTower => 11,
+        Executor => 12,
     }
 }
 
@@ -499,6 +572,10 @@ fn train_slot(kind: UnitKind) -> usize {
         UnitKind::Spearman => 2,
         UnitKind::Sniper | UnitKind::MercSniper => 3,
         UnitKind::Medic => 4,
+        // The engineering center's.
+        UnitKind::Lucifer => 0,
+        UnitKind::Thanatos => 1,
+        UnitKind::Titan => 2,
     }
 }
 
@@ -513,6 +590,9 @@ fn train_help(kind: UnitKind) -> &'static str {
         UnitKind::MercSoldier => "Mercenary soldier: half again as tough, hits harder and shoots faster than a soldier. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Needs a munitions factory. Ctrl: 5 at once, Shift: on credit.",
         UnitKind::MercRanger => "Mercenary ranger: half again as tough, hits harder and shoots faster than a ranger, quiet. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Ctrl: 5 at once, Shift: on credit.",
         UnitKind::MercSniper => "Mercenary sniper: half again as tough and a bigger shot than a sniper - very loud. Needs no worker - but double upkeep, and in debt mercenaries are the first to leave. Needs a munitions factory. Ctrl: 5 at once, Shift: on credit.",
+        UnitKind::Lucifer => "Lucifer: a flamethrower - a cone of fire 3.5 tiles long hits everything in it and sets zombies on fire. Burns your own units in the cone too! Fireproof itself, tough. Costs oil, eats oil every payout.",
+        UnitKind::Thanatos => "Thanatos: a missile launcher - a rocket up to 10 tiles far blows up a crowd (1.8 tiles round), but not closer than 3 tiles; close up it hits with the launcher. Aims long, very loud. Costs iron and oil.",
+        UnitKind::Titan => "Titan: a walking cannon - hard shots 9 tiles far that hit a little area, very tough, fast. Costs a lot of gold, iron and oil, eats oil every payout.",
     }
 }
 
@@ -547,18 +627,42 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Barrel => "Explosive barrel (1 x 1). Takes one from the munitions factory's store. Any damage and it goes off: 200 damage to everyone within 2.5 tiles - other barrels too - and very loud. Drag: a line.",
         BuildingKind::Ballista => "Ballista (2 x 2, 700 HP). Shoots by itself: a heavy bolt every 2.5 s, 9 tiles far, always at the toughest zombie in range - fat ones, riots, giants. No power needed. Needs a wood workshop.",
         BuildingKind::MachineGunTower => "Machine gun tower (1 x 1, 900 HP). Shoots by itself: five shots a second at the nearest zombie - against crowds. Loud. Costs iron from the foundry, needs power and a foundry.",
+        BuildingKind::WoodHouse => "Wood house (2 x 2). 8 colonists eat 8 food at every payout and pay gold, 4 workers - between tent and stone house. Goes on a tent (an upgrade), a stone house goes on it. Needs power and a wood workshop.",
+        BuildingKind::PowerPlant => "Power plant (3 x 3). A lot of power - but it burns 10 coal at every payout, without coal none. Loud. Has to stand inside the grid. Needs a stone workshop.",
+        BuildingKind::OilPlatform => "Oil platform (2 x 2). Pumps oil - it has to stand right on an oil node (the dark pools). Needs power and a foundry.",
+        BuildingKind::Quarry => "Quarry (2 x 2). Stone from the stone patches under it and up to 2 tiles around it - only stone. Put it right on the stone. Needs power.",
+        BuildingKind::BigQuarry => "Advanced quarry (2 x 2). Like the quarry, twice the stone per tile. Costs oil, needs power and a foundry.",
+        BuildingKind::BigFarm => "Advanced farm (2 x 2). Like the farm, twice the food per field - on grass only. Costs oil, needs power and a foundry.",
+        BuildingKind::BigMill => "Iron mill (2 x 2). Twice the windmill's power, needs nothing but its upkeep. Has to stand inside the grid. Needs a foundry.",
+        BuildingKind::Warehouse => "Warehouse (4 x 4). +50 room for every good (not food, not gold) - and the gathering buildings within 12 tiles of it bring in 20 % more. Needs power.",
+        BuildingKind::EngineeringCenter => "Engineering center (3 x 3). Trains Lucifer, Thanatos and the Titan. Needs power and a foundry, costs oil.",
+        BuildingKind::ShockingTower => "Shocking tower (2 x 2). Charges for 4.5 s, then hits every zombie within 6 tiles at once (60 each). Needs a lot of power and a stone workshop.",
+        BuildingKind::Executor => "Executor (2 x 2). Shoots by itself: a heavy shot twice a second, 9 tiles far, that hits everything round its target. Needs power and a foundry, costs oil.",
+        BuildingKind::BladeTrap => "Blade trap (1 x 1). Like the stake trap, harder (10 per hit) and tougher. Costs iron, needs a foundry. Drag: a line.",
+        BuildingKind::MineTrap => "Mine (1 x 1). Goes off under the first zombie that steps on it: 500 damage to everyone within 1.9 tiles - your units and buildings too - and it's gone. Costs iron, needs a stone workshop. Drag: a line.",
+        BuildingKind::Radar => "Radar (1 x 1). Sees 40 tiles far - over forest too. Needs power and a foundry.",
+        BuildingKind::LookoutTower => "Lookout tower (1 x 1). Sees 24 tiles far - over forest too. Needs a wood workshop.",
+        BuildingKind::Spire => "The Spire (5 x 5, wonder). 800 power that reaches 30 tiles, sees 36 tiles over forest. Only one. Needs a foundry.",
+        BuildingKind::Academy => "The Academy (4 x 4, wonder). While it works every one of your units is a veteran. Only one. Needs power and a stone workshop.",
+        BuildingKind::Victorious => "The Victorious (4 x 4, wonder). A fortress (10,000 HP, armor) - houses within 24 tiles of it pay 20 % more gold. Eats 10 oil every payout. Only one. Needs power and a stone workshop.",
+        BuildingKind::Transmutator => "The Transmutator (5 x 5, wonder). Turns 20 wood, 20 stone and 10 iron into 40 oil at every payout. Only one. Needs a lot of power and a foundry.",
+        BuildingKind::CrystalPalace => "The Crystal Palace (6 x 6, wonder). 60 colonists - and 800 food at every payout, out of nothing. Only one. Needs a wood workshop.",
     }
 }
 
 /// What lies under the mouse.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum HudHit {
     /// A point on the minimap – already converted to world coordinates.
     Minimap(Vec2),
     /// The pause button of the clock.
     Pause,
-    /// The grid button next to it.
+    /// The grid button next to the stock.
     GridView,
+    /// Camera to the command center (Backspace).
+    Base,
+    /// The menu (Esc).
+    Menu,
     /// A control group (0 = key 1 … 9 = key 0).
     Group(usize),
     /// An icon in the selection – the index in `Ui::selection_view` (units and buildings).
@@ -572,40 +676,134 @@ pub enum HudHit {
     Panel,
 }
 
-/// Where everything lies on screen, from left to right. Computed anew every frame, in case the window changes size.
+thread_local! {
+    /// The factor of the bar while it's being drawn (`draw`) – 1 otherwise. `draw_text` and the mouse below use it.
+    static DRAWING: Cell<f32> = const { Cell::new(1.0) };
+}
+
+/// How much bigger than on TAB's 1280 x 720 the bar is drawn: as much as the map's part of the window (`view.rs` – in
+/// the game all of it) is bigger – by its width, or by its height if that's less (wider than 16 : 9). Never below half.
+pub fn scale() -> f32 {
+    let view = crate::view::rect();
+    (view.w / REF_W).min(view.h / REF_H).max(0.5)
+}
+
+// The bar is drawn in TAB's pixels, and a camera makes them bigger (`draw`). Text is the exception: drawn at the
+// small size and then blown up it would be blurry. So these two replace macroquad's functions of the same name in
+// this file – a function defined here wins over one that comes in with `use macroquad::prelude::*` (a `*` import
+// only fills in names the file doesn't have itself). They put the letters together at the real size on screen and
+// shrink them back into TAB's pixels: sharp at any size.
+
+fn draw_text(text: impl AsRef<str>, x: f32, y: f32, size: f32, color: Color) {
+    let (font_size, font_scale) = text_size(size);
+    draw_text_ex(text.as_ref(), x, y, TextParams { font_size, font_scale, color, ..Default::default() });
+}
+
+fn measure_text(text: &str, font: Option<&Font>, size: u16, scale: f32) -> TextDimensions {
+    let (font_size, font_scale) = text_size(size as f32 * scale);
+    macroquad::text::measure_text(text, font, font_size, font_scale)
+}
+
+/// Text `size` TAB pixels high: the size of its letters on screen, and the factor back into TAB's pixels.
+fn text_size(size: f32) -> (u16, f32) {
+    let real = (size * DRAWING.get()).round().max(1.0);
+    (real as u16, size / real)
+}
+
+/// The mouse in TAB's pixels, while the bar is drawn – counted from the corner of the map's part of the window.
+fn mouse() -> Vec2 {
+    (Vec2::from(mouse_position()) - crate::view::rect().point()) / DRAWING.get()
+}
+
+/// Where everything lies, in TAB's pixels (`scale` times bigger on screen). Computed anew every frame, in case the
+/// window changes size.
 pub struct Layout {
+    /// The bar in screen pixels, from the top of its frames down (the editor's hint over the map stays above it).
     pub panel: Rect,
-    /// The minimap (its frame is as high as the panel).
+    /// Where TAB's corner (0, 0) lies on the screen: the corner of the map's part of the window (`view.rs`).
+    origin: Vec2,
+    /// TAB's pixels → screen pixels.
+    s: f32,
+    /// The screen in TAB's pixels: its width, and how much higher than 720 it is.
+    w: f32,
+    dy: f32,
+    /// How much wider than 1280: the selection in the middle grows by that, the card and the stock move right.
+    dx: f32,
+    /// The top of the bar's frames: tooltips go above it.
+    top: f32,
+    /// The minimap (TAB's `@MiniMap`).
     minimap: Rect,
-    clock: Rect,
-    groups: Rect,
-    /// The selection: one thing in detail, or an icon for each of several.
+    /// Above the minimap: when the next wave comes (`@NextSwarm`).
+    next_swarm: Rect,
+    /// The selection: one thing in detail, or an icon for each of several (`@SelectionArea`).
     info: Rect,
     card: Rect,
-    /// The colony's stock: colonists, gold, resources.
+    /// The colony's stock: colonists, gold, resources (`@ResourcesArea`).
     stock: Rect,
 }
 
 impl Layout {
     pub fn new() -> Layout {
-        let (w, h) = (screen_width(), screen_height());
-        let panel = Rect::new(0.0, h - PANEL_H, w, PANEL_H);
-        let (top, inner_h) = (panel.y + PAD, PANEL_H - 2.0 * PAD);
-        let minimap_h = MINIMAP_W * TILE_H / TILE_W;
-        let minimap = Rect::new(PAD, panel.y + (PANEL_H - minimap_h) / 2.0, MINIMAP_W, minimap_h);
-        let clock = Rect::new(minimap.right() + GAP, top, CLOCK_W, inner_h);
-        let groups = Rect::new(clock.right() + GAP, top, GROUPS_W, inner_h);
-        let stock = Rect::new(w - PAD - STOCK_W, top, STOCK_W, inner_h);
-        let (card_w, card_h) = (CARD_COLS as f32 * BUTTON, CARD_ROWS as f32 * BUTTON);
-        let card = Rect::new(stock.x - GAP - card_w, panel.y + (PANEL_H - card_h) / 2.0, card_w, card_h);
-        let info_x = groups.right() + GAP;
-        let info = Rect::new(info_x, top, (card.x - GAP - info_x).max(0.0), inner_h);
-        Layout { panel, minimap, clock, groups, info, card, stock }
+        let s = scale();
+        let view = crate::view::rect();
+        let (w, h) = (view.w / s, view.h / s);
+        let (dx, dy) = ((w - REF_W).max(0.0), h - REF_H);
+        let at = |x: f32, y: f32, width: f32, height: f32| Rect::new(x, y + dy, width, height);
+        let right = |x: f32, y: f32, width: f32, height: f32| Rect::new(x + dx, y + dy, width, height);
+        let top = PLAIN_TOP + dy;
+        Layout {
+            panel: Rect::new(view.x, view.y + top * s, view.w, view.h - top * s),
+            origin: view.point(),
+            s,
+            w,
+            dy,
+            dx,
+            top,
+            minimap: at(5.0, 557.0, 158.0, 158.0),
+            next_swarm: at(4.0, 486.0, 64.0, 38.0),
+            info: at(367.0, 591.0, 460.0 + dx, 120.0),
+            card: right(824.0, 593.0, 200.0, 120.0),
+            stock: right(1062.0, 612.0, 210.0, 103.0),
+        }
     }
 
-    /// Is this screen point on the map (so not on the panel)?
+    /// TAB's 1280 x 720 position → ours: further down by what the screen is higher, right of the stretch further
+    /// right by what it's wider.
+    fn tab(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
+        let x = if x >= STRETCH.1 { x + self.dx } else { x };
+        Rect::new(x, y + self.dy, w, h)
+    }
+
+    /// Is this screen point on the map (so not on the bar, and not beside the map's part of the window)? TAB's way:
+    /// the bar is where its picture isn't see-through – the pipes and gears on top of it are bar, the gaps between
+    /// them are map.
     pub fn in_game_view(&self, p: Vec2) -> bool {
-        p.x >= 0.0 && p.y >= 0.0 && p.x < screen_width() && p.y < self.panel.y
+        crate::view::rect().contains(p) && !self.covers(self.to_tab(p))
+    }
+
+    /// A screen point → TAB's pixels.
+    fn to_tab(&self, p: Vec2) -> Vec2 {
+        (p - self.origin) / self.s
+    }
+
+    /// Does the bar cover this point (TAB's pixels)?
+    fn covers(&self, p: Vec2) -> bool {
+        let bar_y = BAR_Y + self.dy;
+        if p.y < bar_y {
+            return false;
+        }
+        // Back from the stretched picture to a point on TAB's 1280 pixels.
+        let x = if p.x < STRETCH.0 {
+            p.x
+        } else if p.x < STRETCH.1 + self.dx {
+            STRETCH.0 + (p.x - STRETCH.0) * (STRETCH.1 - STRETCH.0) / (STRETCH.1 - STRETCH.0 + self.dx)
+        } else {
+            p.x - self.dx
+        };
+        match ui_art::panel_solid(x / REF_W, (p.y - bar_y) / BAR_H) {
+            Some(solid) => solid,
+            None => p.y >= self.top,
+        }
     }
 
     /// What lies under the mouse? `None` = nothing of the panel, so the map.
@@ -613,19 +811,22 @@ impl Layout {
     /// `selected`: how many units are selected, `queue`: how long the production queue of the
     /// selected building is, `card`: which buttons the command card shows right now.
     pub fn hit(&self, mouse: Vec2, area: Region, selected: usize, queue: usize, card: &[Button]) -> Option<HudHit> {
-        if !self.panel.contains(mouse) {
-            return None;
-        }
+        let mouse = self.to_tab(mouse);
         if self.minimap.contains(mouse) {
             // Right at its edge: limit to the area.
             let p = self.minimap_to_world(mouse, area);
             return Some(HudHit::Minimap(area.clamp(p, 0.01)));
         }
+        if !self.covers(mouse) {
+            return None;
+        }
         if self.pause_rect().contains(mouse) {
             return Some(HudHit::Pause);
         }
-        if self.grid_rect().contains(mouse) {
-            return Some(HudHit::GridView);
+        for (side, hit) in SIDE_BUTTONS.iter().enumerate() {
+            if self.side_rect(side).contains(mouse) {
+                return Some(*hit);
+            }
         }
         for g in 0..10 {
             if self.group_rect(g).contains(mouse) {
@@ -649,17 +850,14 @@ impl Layout {
                 return Some(HudHit::Button(button));
             }
         }
-        if self.repair_all_rect().contains(mouse) {
-            return Some(HudHit::RepairAll);
-        }
         Some(HudHit::Panel)
     }
 
     // --- Minimap: the map turned the same way as on screen, only small – `area` as big as fits, not stretched ---
 
-    /// The part of the minimap `area` takes: all of it if the area has the minimap's shape on screen
-    /// (a new map's playing field, the whole map in the editor), otherwise a narrower or flatter rectangle in its
-    /// middle. A step of the screen axes across is `TILE_W / 2` pixels, one down `TILE_H / 2`.
+    /// The part of the minimap `area` takes: all of it if the area has the minimap's shape on screen, otherwise a
+    /// narrower or flatter rectangle in its middle (TAB's minimap is square: a field wider than high leaves a stripe
+    /// above and below). A step of the screen axes across is `TILE_W / 2` pixels, one down `TILE_H / 2`.
     fn minimap_fit(&self, area: Region) -> Rect {
         let extent = area.max - area.min;
         let on_screen = vec2(extent.x * TILE_W, extent.y * TILE_H);
@@ -678,109 +876,178 @@ impl Layout {
         from_frame(area.min + (m - fit.point()) / fit.size() * (area.max - area.min))
     }
 
-    // --- Where the individual fields lie ---
+    // --- Where the individual fields lie (TAB's `MapGUI` and its clips) ---
 
-    /// The frame around the minimap: as high as the other parts, the minimap in its middle.
-    fn minimap_frame(&self) -> Rect {
-        Rect::new(self.minimap.x, self.clock.y, self.minimap.w, self.clock.h)
-    }
-
-    /// "Repair all" in the stock: the fifth row of the people column is free.
-    fn repair_all_rect(&self) -> Rect {
-        let r = self.stock;
-        let row_h = (r.h - 12.0) / 5.0;
-        Rect::new(r.x + 10.0, r.y + 6.0 + 4.0 * row_h + 2.0, 74.0, row_h - 4.0)
-    }
-
+    /// The round button between day and hour (`@ButtonPlay`).
     fn pause_rect(&self) -> Rect {
-        let w = 56.0;
-        Rect::new(self.clock.x + (self.clock.w - w) / 2.0, self.clock.y + 72.0, w, 40.0)
+        self.tab(214.0, 638.8, 55.6, 55.6)
     }
 
-    /// The grid button: in the free space to the right of the pause button.
-    fn grid_rect(&self) -> Rect {
-        let pause = self.pause_rect();
-        Rect::new(pause.right() + 2.0, pause.y + 9.0, 20.0, 22.0)
+    /// The gears behind the clock (`@ClipGears`, on a black square).
+    fn gears_rect(&self) -> Rect {
+        self.tab(171.0, 677.0, 136.9, 136.9)
     }
 
-    /// The control groups one below the other, like TAB's numbers next to the selection.
+    /// The four small buttons between the card and the stock (`@ButtonCommandCenter`, `@ButtonRepairAll`,
+    /// `@ButtonMayors`, `@ButtonOptions`).
+    fn side_rect(&self, k: usize) -> Rect {
+        let y = [599.0, 627.0, 654.0, 681.0][k];
+        self.tab(1032.0, y, 28.0, 28.0)
+    }
+
+    /// The control groups one below the other (`ControlSelectionGroups`: TAB's 8 in 128 pixels – here 1 to 0).
     fn group_rect(&self, g: usize) -> Rect {
-        let h = self.groups.h / 10.0;
-        Rect::new(self.groups.x, self.groups.y + g as f32 * h, self.groups.w, h - 2.0)
+        let h = 128.0 / 10.0;
+        let r = self.tab(326.0, 587.0, 36.0, 128.0);
+        Rect::new(r.x, r.y + g as f32 * h, r.w, h - 1.0)
     }
 
-    /// The selection without its frame.
-    fn info_inner(&self) -> Rect {
-        Rect::new(self.info.x + 6.0, self.info.y + 6.0, (self.info.w - 12.0).max(0.0), self.info.h - 12.0)
-    }
-
+    /// The portrait of a unit or zombie (`@ImagePortrait`, 3 : 4) – a building's picture is square (`@Image`).
     fn portrait(&self) -> Rect {
-        let inner = self.info_inner();
-        Rect::new(inner.x, inner.y, PORTRAIT, PORTRAIT)
+        Rect::new(self.info.x + 6.0, self.info.y + 12.0, 76.0, 101.3)
     }
 
-    /// Right of the portrait: name, life bar, a few lines of text (or the production queue).
+    fn building_picture(&self) -> Rect {
+        Rect::new(self.info.x - 8.0, self.info.y + 14.0, 97.6, 97.6)
+    }
+
+    /// Right of the portrait: name, life bar, a few lines of text (or the production queue) – TAB's `BuildingSheet`.
     fn text_column(&self) -> Rect {
-        let inner = self.info_inner();
-        let x = inner.x + PORTRAIT + 10.0;
-        Rect::new(x, inner.y, (inner.right() - x).max(0.0), PORTRAIT)
+        Rect::new(self.info.x + 88.0, self.info.y + 3.0, 180.0, self.info.h - 6.0)
     }
 
-    /// Below the portrait: the values, one small box each (like TAB's icons with a number).
+    /// Right of the text: the values, one small box each (TAB's `@AreaFeatures`).
     fn cells(&self) -> Rect {
-        let inner = self.info_inner();
-        let y = inner.y + PORTRAIT + 8.0;
-        Rect::new(inner.x, y, inner.w, inner.bottom() - y)
+        let x = self.text_column().right() + 6.0;
+        Rect::new(x, self.info.y + 3.0, (self.info.right() - x - 4.0).max(0.0), self.info.h - 4.0)
     }
 
     fn icon_columns(&self) -> usize {
-        ((self.info_inner().w / ICON) as usize).max(1)
+        ((self.info.w / ICON) as usize).max(1)
     }
 
     /// How many icons fit into the field.
     fn icon_capacity(&self) -> usize {
-        self.icon_columns() * ((self.info_inner().h - SUMMARY_H) / ICON) as usize
+        self.icon_columns() * ((self.info.h - SUMMARY_H) / ICON) as usize
     }
 
     fn icon_rect(&self, i: usize) -> Rect {
-        let inner = self.info_inner();
         let cols = self.icon_columns();
         let (col, row) = ((i % cols) as f32, (i / cols) as f32);
-        Rect::new(inner.x + col * ICON, inner.y + row * ICON, ICON - 4.0, ICON - 4.0)
+        Rect::new(self.info.x + col * ICON, self.info.y + 2.0 + row * ICON, ICON - 3.0, ICON - 3.0)
     }
 
     /// The production queue (and a tower's garrison) lies right of the portrait, below the life bar.
     fn queue_rect(&self, i: usize) -> Rect {
         let text = self.text_column();
-        Rect::new(text.x + i as f32 * QUEUE_ICON, text.y + 44.0, QUEUE_ICON - 4.0, QUEUE_ICON - 4.0)
+        Rect::new(text.x + i as f32 * QUEUE_ICON, text.y + 44.0, QUEUE_ICON - 3.0, QUEUE_ICON - 3.0)
     }
 
     fn button_rect(&self, b: usize) -> Rect {
         let (col, row) = ((b % CARD_COLS) as f32, (b / CARD_COLS) as f32);
-        Rect::new(self.card.x + col * BUTTON, self.card.y + row * BUTTON, BUTTON - 4.0, BUTTON - 4.0)
+        Rect::new(self.card.x + col * BUTTON, self.card.y + row * BUTTON, BUTTON - 2.0, BUTTON - 2.0)
     }
 }
 
-/// Draws the whole panel. `minimap`: the picture of the map (`picture.rs`), kept up to date by `game.rs`.
-pub fn draw(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minimap: &MapPicture) {
-    let p = layout.panel;
-    draw_rectangle(p.x, p.y, p.w, p.h, PANEL_BG);
-    draw_line(p.x, p.y + 1.5, p.right(), p.y + 1.5, 3.0, BRASS);
-    draw_line(p.x, p.y + 4.0, p.right(), p.y + 4.0, 1.0, BORDER);
-    for r in [layout.minimap_frame(), layout.clock, layout.info, layout.stock] {
-        frame(r);
-    }
+/// The four small buttons next to the stock, top to bottom: camera to the command center, repair all, the grid, the
+/// menu – TAB has its mayors where we have the grid.
+const SIDE_BUTTONS: [HudHit; 4] = [HudHit::Base, HudHit::RepairAll, HudHit::GridView, HudHit::Menu];
 
+/// Draws the whole panel. `minimap`: the picture of the map (`picture.rs`), kept up to date by `game.rs`.
+///
+/// Everything here is drawn in TAB's pixels: the camera (`Camera2D`, like a `pygame.transform.scale` of the whole
+/// surface, only done by the graphics card while drawing) shows `layout.w` of them across the map's part of the window.
+pub fn draw(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minimap: &MapPicture) {
+    // `from_display_rect` would show it upside down (it's made for drawing into a texture) – so by hand. A camera
+    // shows the point `target` in the middle of the window, and `zoom` says how much of the window one pixel drawn
+    // takes: 2 for the whole width (from -1 at one edge to 1 at the other). TAB's pixel `p` should land at `origin +
+    // p · s` – so one pixel is `s` screen pixels (`zoom` = 2 s / window), and the window's middle shows the TAB pixel
+    // that lies there: (middle - origin) / s. In the game `origin` is (0, 0), and it's TAB's middle.
+    let window = vec2(screen_width(), screen_height());
+    let target = (window / 2.0 - layout.origin) / layout.s;
+    set_camera(&Camera2D { target, zoom: 2.0 * layout.s / window, ..Default::default() });
+    DRAWING.set(layout.s);
+
+    // Back to front, like TAB's layers: the gears behind the clock, the minimap, then the bar's picture with its holes
+    // over both, then everything on top of it.
+    let bar = ui_art::get("panel");
+    if bar.is_some() {
+        draw_gears(layout, world);
+    }
     draw_minimap(layout, world, camera, ui, minimap);
+    match &bar {
+        Some(texture) => draw_bar(layout, texture),
+        None => {
+            let r = Rect::new(0.0, layout.top, layout.w, REF_H + layout.dy - layout.top);
+            draw_rectangle(r.x, r.y, r.w, r.h, PANEL_BG);
+            draw_line(r.x, r.y + 1.5, r.right(), r.y + 1.5, 3.0, BRASS);
+            let m = layout.minimap;
+            for f in [Rect::new(m.x - 3.0, m.y - 3.0, m.w + 6.0, m.h + 6.0), layout.tab(167.0, 590.0, 150.0, 128.0), layout.info, layout.stock] {
+                frame(f);
+            }
+        }
+    }
+    draw_next_swarm(layout, world);
     draw_clock(layout, world, ui);
     draw_groups(layout, world, ui);
     draw_selection(layout, world, ui);
     draw_card(layout, world, ui, &ui.card(world));
     draw_stock(layout, world);
-    draw_repair_all(layout, world);
+    draw_side_buttons(layout, world, ui);
+    draw_events(layout, world, ui);
+
+    DRAWING.set(1.0);
+    set_default_camera();
 }
 
-/// A part of the panel: dark inside, a brass edge with a rivet in every corner.
+/// TAB's bar: its picture across the bottom – on a window wider than 16 : 9 stretched in the middle (`STRETCH`).
+fn draw_bar(layout: &Layout, texture: &Texture2D) {
+    let y = BAR_Y + layout.dy;
+    // Texture pixels per TAB pixel (the picture is 3840 wide: three times TAB's 1280).
+    let k = texture.width() / REF_W;
+    let piece = |from: f32, to: f32, x: f32, w: f32| {
+        let source = Rect::new(from * k, 0.0, (to - from) * k, texture.height());
+        draw_texture_ex(texture, x, y, WHITE, DrawTextureParams { dest_size: Some(vec2(w, BAR_H)), source: Some(source), ..Default::default() });
+    };
+    piece(0.0, STRETCH.0, 0.0, STRETCH.0);
+    piece(STRETCH.0, STRETCH.1, STRETCH.0, STRETCH.1 - STRETCH.0 + layout.dx);
+    piece(STRETCH.1, REF_W, STRETCH.1 + layout.dx, REF_W - STRETCH.1);
+}
+
+/// The gears behind the clock (TAB's clip `GearsA`: ten gears on a 500 x 500 canvas, on a black square). They turn
+/// with the game's time – faster at a higher speed, still while paused. Neighbours turn the other way, a small one
+/// faster than a big one, like real gears.
+fn draw_gears(layout: &Layout, world: &World) {
+    let Some(gear) = ui_art::get("gear") else {
+        return;
+    };
+    let black = layout.tab(166.8, 679.3, 156.0, 57.0);
+    draw_rectangle(black.x, black.y, black.w, black.h, BLACK);
+    // (x, y, size on the canvas, turning: +1 clockwise (`GearA_Right`), -1 the other way (`GearA_Left`)).
+    const GEARS: [(f32, f32, f32, f32); 10] = [
+        (-61.5, 78.7, 123.6, 1.0),
+        (287.1, 35.2, 167.1, -1.0),
+        (176.2, 2.2, 123.6, -1.0),
+        (447.6, 133.4, 173.9, -1.0),
+        (187.4, 146.2, 141.6, -1.0),
+        (49.5, 38.2, 134.1, -1.0),
+        (330.6, 10.5, 179.9, -1.0),
+        (18.0, 152.9, 174.6, -1.0),
+        (289.4, 192.7, 182.9, -1.0),
+        (164.2, 64.5, 182.9, 1.0),
+    ];
+    let area = layout.gears_rect();
+    let k = area.w / 500.0;
+    let time = world.tick as f32 / TICKS_PER_SECOND;
+    for (x, y, size, turn) in GEARS {
+        let side = size * k;
+        let rotation = turn * time * 60.0 / size;
+        let params = DrawTextureParams { dest_size: Some(vec2(side, side)), rotation, ..Default::default() };
+        draw_texture_ex(&gear, area.x + x * k, area.y + y * k, Color::new(0.75, 0.6, 0.4, 1.0), params);
+    }
+}
+
+/// A part of the panel without TAB's picture: dark inside, a brass edge with a rivet in every corner.
 fn frame(r: Rect) {
     draw_rectangle(r.x, r.y, r.w, r.h, SECTION_BG);
     draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, BORDER);
@@ -788,6 +1055,58 @@ fn frame(r: Rect) {
     for (x, y) in [(r.x, r.y), (r.right(), r.y), (r.x, r.bottom()), (r.right(), r.bottom())] {
         draw_circle(x, y, 3.0, BRASS);
     }
+}
+
+/// A picture as big as fits into `r`, not stretched, in its middle. `color`: white = as painted.
+fn draw_picture(texture: &Texture2D, r: Rect, color: Color) {
+    let k = (r.w / texture.width()).min(r.h / texture.height());
+    let size = vec2(texture.width(), texture.height()) * k;
+    let at = r.center() - size / 2.0;
+    draw_texture_ex(texture, at.x, at.y, color, DrawTextureParams { dest_size: Some(size), ..Default::default() });
+}
+
+/// A portrait on a square: only its top (the face) when it's higher than wide – TAB's 3 : 4 portraits.
+fn draw_face(texture: &Texture2D, r: Rect, color: Color) {
+    let side = texture.width().min(texture.height());
+    let source = Rect::new((texture.width() - side) / 2.0, 0.0, side, side);
+    draw_texture_ex(texture, r.x, r.y, color, DrawTextureParams { dest_size: Some(r.size()), source: Some(source), ..Default::default() });
+}
+
+/// The portrait of a kind (`assets\ui\portraits\`), by its name in Rust: `Soldier`, `MachineGunTower`, `Walker` …
+fn portrait_of(name: impl std::fmt::Debug) -> Option<Texture2D> {
+    ui_art::get(&format!("portraits/{name:?}"))
+}
+
+fn icon(name: &str) -> Option<Texture2D> {
+    ui_art::get(&format!("icons/{name}"))
+}
+
+/// A button TAB's way: its brass plate (`plate`: `button_square` or `button_round`), the picture on it a bit smaller
+/// (`inset`: the share left free on each side), lighter under the mouse, green while it waits, grey when it can't be
+/// pressed. Without TAB's plate: our brass box. Returns whether the plate was there.
+fn draw_button(r: Rect, plate: &str, picture: Option<&Texture2D>, inset: f32, hover: bool, waiting: bool, greyed: bool) -> bool {
+    let round = plate == "button_round";
+    let art = ui_art::get(plate);
+    match &art {
+        Some(texture) => draw_texture_ex(texture, r.x, r.y, if greyed { GREYED } else { WHITE }, DrawTextureParams { dest_size: Some(r.size()), ..Default::default() }),
+        None => {
+            draw_rectangle(r.x, r.y, r.w, r.h, if greyed { SECTION_BG } else { BOX_BG });
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if greyed { BORDER } else { BRASS });
+        }
+    }
+    if let Some(picture) = picture {
+        let inner = Rect::new(r.x + r.w * inset, r.y + r.h * inset, r.w * (1.0 - 2.0 * inset), r.h * (1.0 - 2.0 * inset));
+        draw_picture(picture, inner, if greyed { GREYED } else { WHITE });
+    }
+    let light = if waiting { Some(WAIT_LIGHT) } else if hover { Some(HOVER_LIGHT) } else { None };
+    if let Some(light) = light {
+        if round {
+            draw_circle(r.center().x, r.center().y, r.w * 0.42, light);
+        } else {
+            draw_rectangle(r.x + r.w * 0.08, r.y + r.h * 0.08, r.w * 0.84, r.h * 0.84, light);
+        }
+    }
+    art.is_some()
 }
 
 fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minimap: &MapPicture) {
@@ -801,6 +1120,8 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
         draw_triangle(a, b, c, color);
         draw_triangle(a, c, d, color);
     };
+    let m = layout.minimap;
+    draw_rectangle(m.x, m.y, m.w, m.h, BLACK);
 
     // Terrain and fog: one picture instead of a diamond per tile. Fog only in the player's view – in the editor's
     // "View: Zombies" the map stays readable (`game.rs` paints the picture that way).
@@ -817,129 +1138,127 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
     }
     for loot in world.loot.iter().filter(|l| explored(l.pos)) {
         let m = to_mini(loot.pos);
-        draw_rectangle(m.x - 1.0, m.y - 1.0, 2.5, 2.5, loot_color(loot.kind));
+        draw_rectangle(m.x - 1.0, m.y - 1.0, 2.0, 2.0, loot_color(loot.kind));
     }
 
     // Zombies only where someone sees them right now (in the editor all of them – the sleeping ones too, darker).
     for zombie in world.zombies.iter().filter(|z| area.contains(z.pos) && (!fog || world.vision.sees(z.pos))) {
         let m = to_mini(zombie.pos);
-        draw_rectangle(m.x - 1.0, m.y - 1.0, 2.0, 2.0, ZOMBIE);
+        draw_rectangle(m.x - 0.75, m.y - 0.75, 1.5, 1.5, ZOMBIE);
     }
     if !fog {
         for sleeper in world.sleep.iter().filter(|s| area.contains(s.pos)) {
             let m = to_mini(sleeper.pos);
-            draw_rectangle(m.x - 1.0, m.y - 1.0, 2.0, 2.0, Color { a: 0.5, ..ZOMBIE });
+            draw_rectangle(m.x - 0.75, m.y - 0.75, 1.5, 1.5, Color { a: 0.5, ..ZOMBIE });
         }
     }
     for unit in world.units.iter().filter(|u| !u.is_inside()) {
         let m = to_mini(unit.pos);
         let color = if ui.selected.contains(&unit.id) { WHITE } else { kind_color(unit.kind) };
-        draw_rectangle(m.x - 1.5, m.y - 1.5, 3.0, 3.0, color);
+        draw_rectangle(m.x - 1.0, m.y - 1.0, 2.0, 2.0, color);
     }
 
     // On top, through the fog: every giant, awake or asleep, and the middle of every swarm of a wave – the bigger the
-    // swarm, the bigger its triangle. A mark outside what the minimap shows (a wave still in the spawn ring) sits at
-    // its edge, on the side it comes from.
+    // swarm, the bigger its mark (TAB's `IconInfectedGiant` and `IconMiniMap_Swarn`). A mark outside what the minimap
+    // shows (a wave still in the spawn ring) sits at its edge, on the side it comes from.
     let fit = layout.minimap_fit(area);
     let (lo, hi) = (fit.point(), fit.point() + fit.size());
     let pin = |p: Vec2, r: f32| to_mini(p).clamp(lo + Vec2::splat(r), hi - Vec2::splat(r));
+    let giant_icon = icon("IconInfectedGiant");
     for giant in world.giants() {
         let m = pin(giant, 4.0);
-        draw_circle(m.x, m.y, 4.0, MARK_EDGE);
-        draw_circle(m.x, m.y, 3.0, GIANT_MINIMAP);
+        match &giant_icon {
+            Some(t) => draw_picture(t, Rect::new(m.x - 5.0, m.y - 5.0, 10.0, 10.0), WHITE),
+            None => {
+                draw_circle(m.x, m.y, 3.5, MARK_EDGE);
+                draw_circle(m.x, m.y, 2.5, GIANT_MINIMAP);
+            }
+        }
     }
     // What the editor marked for the minimap (TAB's "Display Icon on Minimap", `sim/neutral.rs`): a white diamond.
     for at in world.minimap_marks() {
-        let m = pin(at, 5.0);
-        let (top, right, bottom, left) = (m + vec2(0.0, -5.0), m + vec2(5.0, 0.0), m + vec2(0.0, 5.0), m + vec2(-5.0, 0.0));
+        let m = pin(at, 4.0);
+        let (top, right, bottom, left) = (m + vec2(0.0, -4.0), m + vec2(4.0, 0.0), m + vec2(0.0, 4.0), m + vec2(-4.0, 0.0));
         draw_triangle(top, right, bottom, MARK_EDGE);
         draw_triangle(top, left, bottom, MARK_EDGE);
-        let (top, right, bottom, left) = (m + vec2(0.0, -3.5), m + vec2(3.5, 0.0), m + vec2(0.0, 3.5), m + vec2(-3.5, 0.0));
+        let (top, right, bottom, left) = (m + vec2(0.0, -2.8), m + vec2(2.8, 0.0), m + vec2(0.0, 2.8), m + vec2(-2.8, 0.0));
         draw_triangle(top, right, bottom, WHITE);
         draw_triangle(top, left, bottom, WHITE);
     }
+    let swarm_icon = icon("IconMiniMap_Swarn");
     for (middle, count) in world.swarms() {
-        let r = 5.0 + (count as f32).sqrt().min(10.0) * 0.4;
+        let r = 4.0 + (count as f32).sqrt().min(10.0) * 0.35;
         let m = pin(middle, r);
-        let corners = |r: f32| (m + vec2(0.0, -r), m + vec2(r * 0.9, r * 0.6), m + vec2(-r * 0.9, r * 0.6));
-        let (a, b, c) = corners(r + 1.5);
-        draw_triangle(a, b, c, MARK_EDGE);
-        let (a, b, c) = corners(r);
-        draw_triangle(a, b, c, SWARM_MINIMAP);
-        draw_line(m.x, m.y - r * 0.55, m.x, m.y + r * 0.05, 1.5, MARK_EDGE);
-        draw_rectangle(m.x - 0.75, m.y + r * 0.2, 1.5, 1.5, MARK_EDGE);
+        match &swarm_icon {
+            Some(t) => draw_picture(t, Rect::new(m.x - r, m.y - r, 2.0 * r, 2.0 * r), WHITE),
+            None => {
+                let corners = |r: f32| (m + vec2(0.0, -r), m + vec2(r * 0.9, r * 0.6), m + vec2(-r * 0.9, r * 0.6));
+                let (a, b, c) = corners(r + 1.5);
+                draw_triangle(a, b, c, MARK_EDGE);
+                let (a, b, c) = corners(r);
+                draw_triangle(a, b, c, SWARM_MINIMAP);
+            }
+        }
     }
 
-    // What the camera shows right now: a rectangle, because the map and the minimap are rotated the same way.
-    let top_left = to_mini(camera.screen_to_world(Vec2::ZERO)).max(lo);
-    let bottom_right = to_mini(camera.screen_to_world(vec2(screen_width(), layout.panel.y))).min(hi);
+    // What the camera shows right now: a rectangle, because the map and the minimap are rotated the same way. From the
+    // corner of the map's part of the window down to the top of the bar.
+    let view = crate::view::rect();
+    let top_left = to_mini(camera.screen_to_world(view.point())).max(lo);
+    let bottom_right = to_mini(camera.screen_to_world(vec2(view.right(), view.y + layout.top * layout.s))).min(hi);
     let size = bottom_right - top_left;
-    draw_rectangle_lines(top_left.x, top_left.y, size.x, size.y, 1.5, WHITE);
+    draw_rectangle_lines(top_left.x, top_left.y, size.x, size.y, 1.0, WHITE);
 }
 
-/// The clock like in TAB: day and hour in big numbers, the pause button between them and below, the speed, and how
-/// long until the next wave (the final wave in its colour).
-/// The button that switches the grid on and off: a tile with a cross in it, lit while the grid is on.
-fn draw_grid_button(layout: &Layout, ui: &Ui) {
-    let r = layout.grid_rect();
-    let on = ui.settings.show_grid;
-    let hover = r.contains(Vec2::from(mouse_position()));
-    draw_rectangle(r.x, r.y, r.w, r.h, if hover { HOVER_BG } else { BOX_BG });
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, if on { GLOW } else { BRASS });
-    let color = if on { GLOW } else { DIM };
-    let c = r.center();
-    let (w, h) = (7.0, 7.0 * TILE_H / TILE_W);
-    let corners = [vec2(0.0, -h), vec2(w, 0.0), vec2(0.0, h), vec2(-w, 0.0)].map(|p| c + p);
-    for k in 0..4 {
-        let (p, q) = (corners[k], corners[(k + 1) % 4]);
-        draw_line(p.x, p.y, q.x, q.y, 1.0, color);
-        // From the middle of this edge to the middle of the opposite one.
-        let (m, n) = ((p + q) / 2.0, (corners[(k + 2) % 4] + corners[(k + 3) % 4]) / 2.0);
-        draw_line(m.x, m.y, n.x, n.y, 1.0, color);
+/// Above the minimap, like TAB's `@NextSwarm`: when the next announced wave comes (the final wave in its colour) – the
+/// silent ones (stragglers) give none.
+fn draw_next_swarm(layout: &Layout, world: &World) {
+    let Some((at, final_wave)) = world.next_announced() else {
+        return;
+    };
+    let r = layout.next_swarm;
+    draw_rectangle(r.x, r.y, r.w + 12.0, r.h, Color::new(0.0, 0.0, 0.0, 0.55));
+    match icon("IconMiniMap_Swarn") {
+        Some(t) => draw_picture(&t, Rect::new(r.x + 2.6, r.y + 2.9, 30.7, 31.9), WHITE),
+        None => draw_triangle(vec2(r.x + 18.0, r.y + 6.0), vec2(r.x + 32.0, r.y + 32.0), vec2(r.x + 4.0, r.y + 32.0), SWARM_MINIMAP),
     }
-    if hover {
-        let text = format!("Grid view ({})", ui.settings.keys.label(Action::GridView));
-        draw_tooltip(&[&text], r.x, layout.panel.y - 4.0);
-    }
+    let seconds = at.saturating_sub(world.tick) / TICKS_PER_SECOND as u64;
+    let (what, color) = if final_wave { ("FINAL", FINAL) } else { ("Next", DIM) };
+    draw_text(what, r.x + 36.0, r.y + 14.0, 12.0, color);
+    draw_text(format!("{}:{:02}", seconds / 60, seconds % 60), r.x + 35.0, r.y + 32.0, 16.0, if final_wave { FINAL } else { WHITE });
 }
 
+/// The clock like in TAB: day and hour on the brass plate, the round pause button between them – below them how many
+/// days the map has and the speed.
 fn draw_clock(layout: &Layout, world: &World, ui: &Ui) {
-    let r = layout.clock;
     let (day, hour) = world.clock();
-    let (left, right) = (r.x + 10.0, r.right() - 10.0);
-    draw_text("Day", left, r.y + 18.0, 15.0, DIM);
-    draw_right("Hour", right, r.y + 18.0, 15.0, DIM);
-    draw_text(day.to_string(), left, r.y + 48.0, 32.0, GLOW);
-    draw_right(&format!("{hour:02}"), right, r.y + 48.0, 32.0, GLOW);
+    let (day_label, hour_label) = (layout.tab(176.0, 618.0, 47.0, 14.0), layout.tab(258.0, 619.0, 51.0, 13.0));
+    let (day_value, hour_value) = (layout.tab(167.0, 632.0, 49.0, 27.0), layout.tab(274.0, 633.0, 33.0, 24.0));
+    draw_centered("Day", day_label.center().x - 4.0, day_label.bottom() - 2.0, 12.0, DIM);
+    draw_centered("Hour", hour_label.center().x + 8.0, hour_label.bottom() - 1.0, 12.0, DIM);
+    draw_fitted(&day.to_string(), day_value.center().x + 4.0, day_value.bottom() - 6.0, day_value.w, 20.0, GLOW);
+    draw_fitted(&format!("{hour:02}"), hour_value.center().x, hour_value.bottom() - 5.0, hour_value.w, 20.0, GLOW);
     if world.days > 0 {
-        draw_text(format!("of {}", world.days), left, r.y + 64.0, 14.0, DIM);
+        draw_centered(&format!("of {}", world.days), day_value.center().x + 4.0, day_value.bottom() + 10.0, 10.0, DIM);
     }
+    let speed = if ui.paused { "PAUSED".to_owned() } else { format!("x{}", ui.speed) };
+    draw_centered(&speed, hour_value.center().x, hour_value.bottom() + 11.0, 10.0, if ui.paused { GLOW } else { DIM });
 
     let pause = layout.pause_rect();
-    let hover = pause.contains(Vec2::from(mouse_position()));
-    draw_rectangle(pause.x, pause.y, pause.w, pause.h, if hover { HOVER_BG } else { BOX_BG });
-    draw_rectangle_lines(pause.x, pause.y, pause.w, pause.h, 2.0, if ui.paused { GLOW } else { BRASS });
-    let c = pause.center();
-    if ui.paused {
-        // A "play" triangle: click to go on.
-        draw_triangle(vec2(c.x - 7.0, c.y - 10.0), vec2(c.x - 7.0, c.y + 10.0), vec2(c.x + 10.0, c.y), GLOW);
-    } else {
-        draw_rectangle(c.x - 8.0, c.y - 10.0, 5.0, 20.0, BRASS);
-        draw_rectangle(c.x + 3.0, c.y - 10.0, 5.0, 20.0, BRASS);
-    }
-    draw_grid_button(layout, ui);
-    let speed = if ui.paused { "PAUSED".to_owned() } else { format!("Speed x{}", ui.speed) };
-    draw_centered(&speed, c.x, pause.bottom() + 18.0, 15.0, if ui.paused { GLOW } else { DIM });
-
-    // The countdown of an announced event, like TAB's – the silent ones (stragglers) give none.
-    if let Some((at, final_wave)) = world.next_announced() {
-        let seconds = at.saturating_sub(world.tick) / TICKS_PER_SECOND as u64;
-        let (what, color) = if final_wave { ("FINAL WAVE", FINAL) } else { ("next wave", DIM) };
-        draw_centered(what, c.x, r.bottom() - 26.0, 14.0, color);
-        draw_centered(&format!("{}:{:02}", seconds / 60, seconds % 60), c.x, r.bottom() - 9.0, 18.0, if final_wave { FINAL } else { WHITE });
+    let hover = pause.contains(mouse());
+    let picture = icon(if ui.paused { "IconPlay" } else { "IconPause" });
+    if !draw_button(pause, "button_round", picture.as_ref(), 0.27, hover, ui.paused, false) || picture.is_none() {
+        let c = pause.center();
+        if ui.paused {
+            // A "play" triangle: click to go on.
+            draw_triangle(vec2(c.x - 7.0, c.y - 10.0), vec2(c.x - 7.0, c.y + 10.0), vec2(c.x + 10.0, c.y), GLOW);
+        } else {
+            draw_rectangle(c.x - 8.0, c.y - 10.0, 5.0, 20.0, BRASS);
+            draw_rectangle(c.x + 3.0, c.y - 10.0, 5.0, 20.0, BRASS);
+        }
     }
     if hover {
-        draw_tooltip(&["Pause (Space)", "Orders still work while paused. + / - : faster, slower."], pause.x, layout.panel.y - 4.0);
+        draw_tooltip(&["Pause (Space)", "Orders still work while paused. + / - : faster, slower."], pause.x, layout.top - 4.0);
     }
 }
 
@@ -947,11 +1266,11 @@ fn draw_groups(layout: &Layout, world: &World, ui: &Ui) {
     for (g, group) in ui.groups.iter().enumerate() {
         let r = layout.group_rect(g);
         let selected = !group.is_empty() && group.units == ui.selected && group.buildings == ui.selected_buildings;
-        draw_rectangle(r.x, r.y, r.w, r.h, if group.is_empty() { SECTION_BG } else { BOX_BG });
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, if selected { 2.0 } else { 1.0 }, if selected { WHITE } else { BORDER });
+        draw_rectangle(r.x, r.y, r.w, r.h, if group.is_empty() { Color { a: 0.6, ..SECTION_BG } } else { BOX_BG });
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if selected { WHITE } else { BORDER });
 
         let key = if g == 9 { "0".to_owned() } else { (g + 1).to_string() };
-        draw_text(&key, r.x + 4.0, r.y + r.h - 4.0, 14.0, if group.is_empty() { BORDER } else { KEY });
+        draw_text(&key, r.x + 2.0, r.bottom() - 2.5, 10.0, if group.is_empty() { BORDER } else { KEY });
         if group.is_empty() {
             continue;
         }
@@ -964,8 +1283,83 @@ fn draw_groups(layout: &Layout, world: &World, ui: &Ui) {
             (None, Some(kind)) => building_color(kind),
             (None, None) => BORDER,
         };
-        draw_rectangle(r.x + 14.0, r.y + 3.0, 6.0, r.h - 6.0, color);
-        draw_right(&group.len().to_string(), r.right() - 3.0, r.y + r.h - 4.0, 14.0, WHITE);
+        draw_rectangle(r.x + 10.0, r.y + 2.0, 4.0, r.h - 4.0, color);
+        draw_right(&group.len().to_string(), r.right() - 2.0, r.bottom() - 2.5, 10.0, WHITE);
+    }
+}
+
+/// The four small buttons between the card and the stock: camera to the command center, repair all, the grid, the
+/// menu. The plan for "repair all" is only worked out while the mouse is on it – with thousands of zombies it isn't
+/// free.
+fn draw_side_buttons(layout: &Layout, world: &World, ui: &Ui) {
+    let pictures = [icon("IconMapColony"), icon("IconRepair"), None, icon("IconOptions")];
+    for (k, picture) in pictures.iter().enumerate() {
+        let r = layout.side_rect(k);
+        let hover = r.contains(mouse());
+        let lit = SIDE_BUTTONS[k] == HudHit::GridView && ui.settings.show_grid;
+        draw_button(r, "button_square", picture.as_ref(), 0.2, hover, lit, false);
+        match SIDE_BUTTONS[k] {
+            HudHit::GridView => draw_grid_glyph(r, if lit { GLOW } else { BRASS }),
+            _ if picture.is_none() => draw_centered(["C", "X", "", "Esc"][k], r.center().x, r.center().y + 4.0, 10.0, KEY),
+            _ => {}
+        }
+        if !hover {
+            continue;
+        }
+        let keys = &ui.settings.keys;
+        let (title, help) = match SIDE_BUTTONS[k] {
+            HudHit::Base => (format!("Camera to the command center ({})", keys.label(Action::Base)), String::new()),
+            HudHit::RepairAll => {
+                let plan = world.repair_plan(0..world.buildings.len());
+                let title = match repair_price(&plan) {
+                    Some(price) => format!("Repair all ({}) - {price} gold", keys.label(Action::RepairAll)),
+                    None => format!("Repair all ({}) - {}", keys.label(Action::RepairAll), nothing_to_repair(&plan)),
+                };
+                (title, "Every damaged building without a zombie near it - cheapest first, as many as the gold pays for. \
+                    X works while no units are selected (then X is the Line formation).".to_owned())
+            }
+            HudHit::GridView => (format!("Grid view ({})", keys.label(Action::GridView)), String::new()),
+            _ => ("Menu (Esc)".to_owned(), String::new()),
+        };
+        let lines: Vec<&str> = [title.as_str(), help.as_str()].into_iter().filter(|l| !l.is_empty()).collect();
+        draw_tooltip(&lines, r.x, layout.top - 4.0);
+    }
+}
+
+/// The grid button's picture (TAB has none): a tile with a cross in it.
+fn draw_grid_glyph(r: Rect, color: Color) {
+    let c = r.center();
+    let (w, h) = (r.w * 0.3, r.w * 0.3 * TILE_H / TILE_W);
+    let corners = [vec2(0.0, -h), vec2(w, 0.0), vec2(0.0, h), vec2(-w, 0.0)].map(|p| c + p);
+    for k in 0..4 {
+        let (p, q) = (corners[k], corners[(k + 1) % 4]);
+        draw_line(p.x, p.y, q.x, q.y, 1.0, color);
+        // From the middle of this edge to the middle of the opposite one.
+        let (m, n) = ((p + q) / 2.0, (corners[(k + 2) % 4] + corners[(k + 3) % 4]) / 2.0);
+        draw_line(m.x, m.y, n.x, n.y, 1.0, color);
+    }
+}
+
+/// TAB's event list in the top left (`@AreaEvents`, one `ControlEventMessage` each): its picture on the dark-green
+/// circle and the text – below the map's goals, if it has some. They fade out in their last second.
+fn draw_events(layout: &Layout, world: &World, ui: &Ui) {
+    let mut y = goals_bottom(world).map_or(53.0, |bottom| bottom / layout.s + 6.0);
+    let background = ui_art::get("event_background");
+    for event in ui.events.iter().rev() {
+        let fade = event.time_left.min(1.0);
+        let r = Rect::new(12.0, y, 320.0, 36.0);
+        draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.5 * fade));
+        let picture = Rect::new(r.x + 2.0, r.y + 2.0, 32.0, 32.0);
+        let tint = Color::new(1.0, 1.0, 1.0, fade);
+        if let Some(t) = &background {
+            draw_picture(t, picture, tint);
+        }
+        match ui_art::get(&format!("events/{}", event.icon)) {
+            Some(t) => draw_picture(&t, picture, tint),
+            None => draw_rectangle(picture.x, picture.y, picture.w, picture.h, Color { a: fade, ..BORDER }),
+        }
+        draw_wrapped(&event.text, r.x + 40.0, r.y + 15.0, 276.0, 12.0, 2, Color::new(1.0, 1.0, 1.0, fade));
+        y += 40.0;
     }
 }
 
@@ -976,14 +1370,14 @@ fn draw_selection(layout: &Layout, world: &World, ui: &Ui) {
             Some(z) => draw_zombie(layout, world, &world.zombies[z]),
             None if ui.selected_place.is_some_and(|place| draw_place(layout, world, place)) => {}
             None => {
-                let inner = layout.info_inner();
-                draw_text("Nothing selected", inner.x + 4.0, inner.y + 20.0, 20.0, DIM);
+                let inner = layout.info;
+                draw_text("Nothing selected", inner.x + 10.0, inner.y + 20.0, 16.0, DIM);
                 // The keys of the build menus as they are set (`keys.rs`).
                 let menus: Vec<String> = build_menus()
                     .map(|menu| format!("{} {}", ui.settings.keys.short(Action::of(Button::Open(menu))), Button::Open(menu).name().to_lowercase()))
                     .collect();
                 let hint = format!("Click the command center to build: {}.", menus.join(", "));
-                draw_wrapped(&hint, inner.x + 4.0, inner.y + 46.0, inner.w - 8.0, 15.0, 4, DIM);
+                draw_wrapped(&hint, inner.x + 10.0, inner.y + 40.0, inner.w - 20.0, 13.0, 4, DIM);
             }
         },
         [Pick::Unit(i)] => draw_single(layout, world, *i),
@@ -997,35 +1391,45 @@ fn seconds(ticks: u32) -> f32 {
     ticks as f32 / TICKS_PER_SECOND
 }
 
-/// The portrait: a coloured field with the letter of the type, `edge` around it.
-fn draw_portrait(layout: &Layout, color: Color, letter: &str, edge: Color) {
+/// The portrait: TAB's picture (`picture`) – a figure's 3 : 4, a building's square (`building`). Without one: a
+/// coloured field with the letter of the type, `edge` around it.
+fn draw_portrait(layout: &Layout, picture: Option<Texture2D>, building: bool, color: Color, letter: &str, edge: Color) {
     let r = layout.portrait();
-    draw_rectangle(r.x, r.y, r.w, r.h, color);
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, edge);
-    draw_centered(letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 12.0, 36.0, BLACK);
+    match picture {
+        Some(t) if building => draw_picture(&t, layout.building_picture(), WHITE),
+        Some(t) => {
+            draw_texture_ex(&t, r.x, r.y, WHITE, DrawTextureParams { dest_size: Some(r.size()), ..Default::default() });
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, edge);
+        }
+        None => {
+            draw_rectangle(r.x, r.y, r.w, r.h, color);
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, edge);
+            draw_centered(letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 12.0, 36.0, BLACK);
+        }
+    }
 }
 
 /// Name and life bar at the top of the text column. Returns where the next line goes.
 fn draw_title(layout: &Layout, name: &str, hp: (u32, u32), shield: (u32, u32)) -> f32 {
     let text = layout.text_column();
-    draw_text(name, text.x, text.y + 18.0, 22.0, BRASS);
-    let bar = Rect::new(text.x, text.y + 26.0, text.w.min(220.0), 10.0);
+    draw_fitted_left(name, text.x, text.y + 15.0, text.w, 17.0, BRASS);
+    let bar = Rect::new(text.x, text.y + 21.0, text.w, 8.0);
     draw_life(bar, hp, shield, BOX_BG, Some(BORDER));
-    text.y + 54.0
+    text.y + 43.0
 }
 
-/// The values below the portrait, one box each: a small label above, the number below. As many as fit.
+/// The values right of the text, one box each: a small label above, the number below. As many as fit.
 fn draw_cells(layout: &Layout, cells: &[(&str, String)]) {
     let area = layout.cells();
     let cols = ((area.w / CELL_W) as usize).max(1);
     let rows = (area.h / CELL_H) as usize;
     for (k, (label, value)) in cells.iter().take(cols * rows).enumerate() {
         let (x, y) = (area.x + (k % cols) as f32 * CELL_W, area.y + (k / cols) as f32 * CELL_H);
-        let r = Rect::new(x, y, CELL_W - 4.0, CELL_H - 4.0);
-        draw_rectangle(r.x, r.y, r.w, r.h, BOX_BG);
+        let r = Rect::new(x, y, CELL_W - 3.0, CELL_H - 3.0);
+        draw_rectangle(r.x, r.y, r.w, r.h, Color { a: 0.75, ..BOX_BG });
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER);
-        draw_centered(label, r.x + r.w / 2.0, r.y + 12.0, 12.0, DIM);
-        draw_fitted(value, r.x + r.w / 2.0, r.bottom() - 5.0, r.w - 4.0, 17.0, GLOW);
+        draw_fitted(label, r.x + r.w / 2.0, r.y + 10.0, r.w - 3.0, 10.0, DIM);
+        draw_fitted(value, r.x + r.w / 2.0, r.bottom() - 4.0, r.w - 3.0, 13.0, GLOW);
     }
 }
 
@@ -1033,7 +1437,7 @@ fn draw_cells(layout: &Layout, cells: &[(&str, String)]) {
 fn draw_single(layout: &Layout, world: &World, i: usize) {
     let unit = &world.units[i];
     let stats = unit.stats();
-    draw_portrait(layout, kind_color(unit.kind), &stats.letter, BORDER);
+    draw_portrait(layout, portrait_of(unit.kind), false, kind_color(unit.kind), &stats.letter, BORDER);
     let text = layout.text_column();
     // A tag of the editor's (`sim/neutral.rs`): its own name, and its text instead of the kind's.
     let tag = unit.tag.as_deref();
@@ -1044,9 +1448,9 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
         0 | 1 => format!("Order: {}", unit.order_name()),
         n => format!("Order: {} (+{} queued)", unit.order_name(), n - 1),
     };
-    draw_fitted_left(&order, text.x, y, text.w, 15.0, WHITE);
+    draw_fitted_left(&order, text.x, y, text.w, 13.0, WHITE);
     let about = tag.filter(|t| !t.text.is_empty()).map_or(unit_text(unit.kind), |t| t.text.as_str());
-    draw_wrapped(about, text.x, y + 16.0, text.w, 14.0, 1, DIM);
+    draw_wrapped(about, text.x, y + 15.0, text.w, 12.0, 4, DIM);
 
     let mut cells = vec![
         ("HP", format!("{}/{}", unit.hp, unit.max_hp())),
@@ -1073,7 +1477,9 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
         ("Kills", unit.kills.to_string()),
         // Experience towards a veteran (`sim/veterans.rs`) – mercenaries don't gather any.
         ("XP", if stats.mercenary { "-".to_owned() } else { format!("{}/{}", unit.xp / 1000, data::get().units.veterans.xp) }),
-        ("Aim", format!("{:.2} s", seconds(stats.aim))),
+        // Bringing the weapon up once, then before every shot: aiming and the wind-up (`sim/combat.rs`).
+        ("Raise", format!("{:.2} s", seconds(stats.raise))),
+        ("Aim", format!("{:.2} s", seconds(stats.aim + stats.windup))),
         ("Turn", format!("{:.2} s", seconds(stats.turn_around))),
         ("Noise", format!("{}", stats.noise)),
     ]);
@@ -1091,17 +1497,20 @@ fn unit_text(kind: UnitKind) -> &'static str {
         UnitKind::MercSoldier => "Mercenary: tougher and stronger than a soldier, no worker - double upkeep, first to leave in debt.",
         UnitKind::MercRanger => "Mercenary: tougher and stronger than a ranger, no worker - double upkeep, first to leave in debt.",
         UnitKind::MercSniper => "Mercenary: tougher and stronger than a sniper, no worker - double upkeep, first to leave in debt.",
+        UnitKind::Lucifer => "Flamethrower: a cone of fire that sets zombies alight - and burns your own units in it too.",
+        UnitKind::Thanatos => "Missile launcher: blows up crowds 3 to 10 tiles away, hits with the launcher close up.",
+        UnitKind::Titan => "Walking cannon: far, hard shots that hit a little area. Very tough.",
     }
 }
 
 /// A zombie clicked on: picture, health, its values and what it's up to.
 fn draw_zombie(layout: &Layout, world: &World, zombie: &Zombie) {
     let stats = zombie.breed.stats();
-    draw_portrait(layout, breed_color(zombie.breed), "Z", RED);
+    draw_portrait(layout, portrait_of(zombie.breed), false, breed_color(zombie.breed), "Z", RED);
     let text = layout.text_column();
     let title = if zombie.final_wave { format!("{} (final wave)", zombie.breed.name()) } else { zombie.breed.name().to_owned() };
     let y = draw_title(layout, &title, (zombie.hp(), stats.hp), (0, 0));
-    draw_wrapped(world.zombie_doing(zombie), text.x, y, text.w, 15.0, 2, WHITE);
+    draw_wrapped(world.zombie_doing(zombie), text.x, y, text.w, 13.0, 5, WHITE);
 
     let mut cells = vec![
         ("HP", format!("{}/{}", zombie.hp(), stats.hp)),
@@ -1135,7 +1544,13 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
             };
             let house = &world.doom[d];
             let doom = &data::get().doom;
-            draw_portrait(layout, DOOM_MINIMAP, "!", RED);
+            // TAB's three houses of doom, by their size.
+            let picture = ui_art::get(match house.size.0 {
+                0..=2 => "portraits/DoomSmall",
+                3 => "portraits/DoomMedium",
+                _ => "portraits/DoomBig",
+            });
+            draw_portrait(layout, picture, true, DOOM_MINIMAP, "!", RED);
             let y = draw_title(layout, "Village of doom", (house.hp, house.full_hp()), (0, 0));
             let about = if house.is_stirring(world.tick) {
                 "STIRRING - its zombies are coming out.".to_owned()
@@ -1147,7 +1562,7 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
             } else {
                 "Empty - shoot it down for its loot.".to_owned()
             };
-            draw_wrapped(&about, text.x, y, text.w, 15.0, 3, WHITE);
+            draw_wrapped(&about, text.x, y, text.w, 12.0, 5, WHITE);
             let (w, h) = house.size;
             draw_cells(
                 layout,
@@ -1166,14 +1581,14 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
             };
             let loot = &world.loot[l];
             let letter = if loot.kind == LootKind::Gold { "$" } else { &loot.kind.name()[..1] };
-            draw_portrait(layout, loot_color(loot.kind), letter, BORDER);
-            draw_text(&format!("Loot: {} {}", loot.amount, loot.kind.name().to_lowercase()), text.x, text.y + 18.0, 22.0, BRASS);
+            draw_portrait(layout, ui_art::get(&format!("portraits/Loot{:?}", loot.kind)), true, loot_color(loot.kind), letter, BORDER);
+            draw_fitted_left(&format!("Loot: {} {}", loot.amount, loot.kind.name().to_lowercase()), text.x, text.y + 15.0, text.w, 17.0, BRASS);
             let about = if loot.guards > 0 {
                 format!("Walk onto it to pick it up - but zombies lie hidden around it and come out within {} tiles.", data::get().loot.wake_radius)
             } else {
                 "Walk onto it to pick it up (right click it with your units).".to_owned()
             };
-            draw_wrapped(&about, text.x, text.y + 44.0, text.w, 15.0, 3, WHITE);
+            draw_wrapped(&about, text.x, text.y + 36.0, text.w, 12.0, 6, WHITE);
             let guarded = if loot.guards > 0 { "yes" } else { "no" };
             draw_cells(layout, &[(loot.kind.name(), loot.amount.to_string()), ("Guarded", guarded.to_owned())]);
         }
@@ -1187,7 +1602,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     let building = &world.buildings[b];
     let stats = building.stats();
     let power = world.power();
-    draw_portrait(layout, building_color(building.kind), &stats.letter, BORDER);
+    draw_portrait(layout, portrait_of(building.kind), true, building_color(building.kind), &stats.letter, BORDER);
     let text = layout.text_column();
     let tag = building.tag.as_deref();
     let name = tag.filter(|t| !t.name.is_empty()).map_or(stats.name.as_str(), |t| t.name.as_str());
@@ -1302,7 +1717,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     if !building.is_built() {
         let done = 100 - building.construction * 100 / stats.build_time.max(1);
         cells.insert(1, ("Built", format!("{done} %")));
-        draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 15.0, 3, DIM);
+        draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 12.0, 5, DIM);
         draw_cells(layout, &cells);
         return;
     }
@@ -1314,8 +1729,14 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
             match inside.get(k) {
                 Some(&i) => {
                     let unit = &world.units[i];
-                    draw_rectangle(r.x, r.y, r.w, r.h, kind_color(unit.kind));
-                    draw_centered(&unit.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+                    match portrait_of(unit.kind) {
+                        Some(t) => draw_face(&t, r, WHITE),
+                        None => {
+                            draw_rectangle(r.x, r.y, r.w, r.h, kind_color(unit.kind));
+                            draw_centered(&unit.stats().letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+                        }
+                    }
+                    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER);
                 }
                 None => draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER),
             }
@@ -1326,7 +1747,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         return;
     }
     if !building.kind.trains() && !building.kind.makes_barrels() {
-        draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 15.0, 3, DIM);
+        draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 12.0, 5, DIM);
         draw_cells(layout, &cells);
         return;
     }
@@ -1335,21 +1756,30 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         let r = layout.queue_rect(i);
         match building.production.get(i) {
             Some(&product) => {
-                let (color, letter, name) = match product {
-                    Product::Unit(kind) => (kind_color(kind), kind.stats().letter.as_str(), kind.stats().name.as_str()),
+                let (color, letter, name, picture) = match product {
+                    Product::Unit(kind) => (kind_color(kind), kind.stats().letter.as_str(), kind.stats().name.as_str(), portrait_of(kind)),
                     Product::Barrel => {
                         let barrel = BuildingKind::Barrel.stats();
-                        (building_color(BuildingKind::Barrel), barrel.letter.as_str(), barrel.name.as_str())
+                        (building_color(BuildingKind::Barrel), barrel.letter.as_str(), barrel.name.as_str(), portrait_of(BuildingKind::Barrel))
                     }
                 };
-                draw_rectangle(r.x, r.y, r.w, r.h, color);
-                draw_centered(letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+                match picture {
+                    Some(t) => {
+                        draw_rectangle(r.x, r.y, r.w, r.h, SECTION_BG);
+                        draw_face(&t, r, WHITE);
+                        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER);
+                    }
+                    None => {
+                        draw_rectangle(r.x, r.y, r.w, r.h, color);
+                        draw_centered(letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+                    }
+                }
                 if i == 0 {
                     let t = building.progress as f32 / product.build_time().max(1) as f32;
                     draw_rectangle(r.x, r.bottom() - 5.0, r.w * t, 5.0, GREEN);
                 }
-                if r.contains(Vec2::from(mouse_position())) {
-                    draw_tooltip(&[&format!("{name} - click to cancel")], r.x, layout.panel.y - 4.0);
+                if r.contains(mouse()) {
+                    draw_tooltip(&[&format!("{name} - click to cancel")], r.x, layout.top - 4.0);
                 }
             }
             None => draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER),
@@ -1413,6 +1843,8 @@ fn building_text(world: &World, power: &Power, b: usize) -> String {
             Source::Water => "water",
             Source::Ore => "ore",
             Source::Fertile => "grass",
+            Source::Stone => "stone",
+            Source::Oil => "oil",
         };
         let place = if stats.gather_below { "under and around" } else { "around" };
         return format!("Works {tiles} {what} tiles {place} it. Tiles another one of its kind already works don't count.");
@@ -1452,6 +1884,9 @@ struct IconInfo {
     name: &'static str,
     hp: (u32, u32),
     shield: (u32, u32),
+    /// TAB's portrait – a figure's (3 : 4, `figure`) or a building's.
+    picture: Option<Texture2D>,
+    figure: bool,
 }
 
 fn icon_info(world: &World, pick: Pick) -> IconInfo {
@@ -1460,14 +1895,16 @@ fn icon_info(world: &World, pick: Pick) -> IconInfo {
             let unit = &world.units[i];
             let stats = unit.stats();
             let (letter, name) = (stats.letter.as_str(), stats.name.as_str());
-            IconInfo { sub: Sub::Unit(unit.kind), color: kind_color(unit.kind), letter, name, hp: (unit.hp, unit.max_hp()), shield: (0, 0) }
+            let picture = portrait_of(unit.kind);
+            IconInfo { sub: Sub::Unit(unit.kind), color: kind_color(unit.kind), letter, name, hp: (unit.hp, unit.max_hp()), shield: (0, 0), picture, figure: true }
         }
         Pick::Building(b) => {
             let building = &world.buildings[b];
             let stats = building.stats();
             let (letter, name) = (stats.letter.as_str(), stats.name.as_str());
             let (hp, shield) = ((building.hp, stats.hp), (building.shield, stats.max_shield()));
-            IconInfo { sub: Sub::Building(building.kind), color: building_color(building.kind), letter, name, hp, shield }
+            let picture = portrait_of(building.kind);
+            IconInfo { sub: Sub::Building(building.kind), color: building_color(building.kind), letter, name, hp, shield, picture, figure: false }
         }
     }
 }
@@ -1481,21 +1918,31 @@ fn draw_icons(layout: &Layout, world: &World, ui: &Ui, view: &[Pick]) {
         let base = info.color;
         let fill = if ui.active == Some(info.sub) { base } else { Color::new(base.r * 0.4, base.g * 0.4, base.b * 0.4, 1.0) };
         let frac = info.hp.0 as f32 / info.hp.1.max(1) as f32;
-        draw_rectangle(r.x, r.y, r.w, r.h, fill);
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, hp_color(frac));
-        draw_centered(info.letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+        // TAB's portrait – the types not active (Tab) greyed.
+        let tint = if ui.active == Some(info.sub) { WHITE } else { GREYED };
+        match &info.picture {
+            Some(t) => {
+                draw_rectangle(r.x, r.y, r.w, r.h, SECTION_BG);
+                if info.figure { draw_face(t, r, tint) } else { draw_picture(t, r, tint) }
+            }
+            None => {
+                draw_rectangle(r.x, r.y, r.w, r.h, fill);
+                draw_centered(info.letter, r.x + r.w / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, BLACK);
+            }
+        }
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, hp_color(frac));
         // small life bar at the bottom of the icon
         draw_life(Rect::new(r.x + 3.0, r.bottom() - 6.0, r.w - 6.0, 3.0), info.hp, info.shield, BLACK, None);
     }
 
     // Tooltip above the icon under the mouse: name and health.
-    let mouse = Vec2::from(mouse_position());
+    let mouse = mouse();
     for (k, &pick) in view.iter().take(capacity).enumerate() {
         let r = layout.icon_rect(k);
         if r.contains(mouse) {
             let info = icon_info(world, pick);
             let text = format!("{}   HP {} / {}", info.name, info.hp.0, info.hp.1);
-            draw_tooltip(&[&text], r.x, layout.panel.y - 4.0);
+            draw_tooltip(&[&text], r.x, layout.top - 4.0);
         }
     }
 
@@ -1507,18 +1954,20 @@ fn draw_icons(layout: &Layout, world: &World, ui: &Ui, view: &[Pick]) {
     if let Some(sub) = ui.active {
         text += &format!("   active: {} ({})", sub.name(), ui.settings.keys.label(Action::NextType));
     }
-    let inner = layout.info_inner();
-    draw_fitted_left(&text, inner.x, inner.bottom() - 4.0, inner.w, 16.0, DIM);
+    let inner = layout.info;
+    draw_fitted_left(&text, inner.x + 2.0, inner.bottom() - 3.0, inner.w - 4.0, 12.0, DIM);
 }
 
 fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
-    let mouse = Vec2::from(mouse_position());
+    let mouse = mouse();
 
-    // Empty spots.
-    for b in 0..CARD_COLS * CARD_ROWS {
-        let r = layout.button_rect(b);
-        draw_rectangle(r.x, r.y, r.w, r.h, SECTION_BG);
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, Color { a: 0.5, ..BORDER });
+    // Empty spots: without TAB's pictures a dark box each (TAB leaves them empty).
+    if ui_art::get("button_square").is_none() {
+        for b in 0..CARD_COLS * CARD_ROWS {
+            let r = layout.button_rect(b);
+            draw_rectangle(r.x, r.y, r.w, r.h, SECTION_BG);
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, Color { a: 0.5, ..BORDER });
+        }
     }
 
     let mut hovered = None;
@@ -1536,43 +1985,52 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
             || button.formation().is_some_and(|shape| shape == ui.formation)
             || (button == Button::Switch && ui.switching_on(world))
             || (button == Button::Sell && ui.selling(world));
-        let bg = if waiting {
-            WAIT_BG
-        } else if hover {
-            HOVER_BG
-        } else if planned {
-            SECTION_BG
-        } else {
-            BOX_BG
-        };
-        // Too expensive right now – gold or workers: the name dims and the price turns red (like StarCraft's missing
-        // minerals or supply). Planned: everything dim – the button only shows where it will be.
+        // Too expensive right now – gold or workers: the picture greys and the price turns red (like StarCraft's
+        // missing minerals or supply). Planned: everything grey – the button only shows where it will be.
         let cost = shown_cost(button, world, ui);
         let goods = button.places().is_none_or(|kind| world.can_afford_goods(kind) && world.unlocked(kind))
             && button.trains().is_none_or(|kind| world.unit_unlocked(kind) && world.can_afford_unit_goods(kind));
         let affordable = cost.is_none_or(|cost| cost <= world.gold) && button.workers() <= free_workers && goods;
-        // Repair with nothing to repair: dim like a planned button.
-        let idle = button == Button::Repair && cost.is_none();
-        let text = if planned || idle || !affordable { DIM } else { GLOW };
-        draw_rectangle(r.x, r.y, r.w, r.h, bg);
-        let edge = if waiting { GREEN } else if planned { BORDER } else { BRASS };
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, if waiting { 2.0 } else { 1.0 }, edge);
+        // Repair with nothing to repair: grey like a planned button. The map's own button once it can't be pressed.
+        let idle = (button == Button::Repair && cost.is_none()) || (button == Button::Custom && !world.command_ready());
+        let greyed = planned || idle || !affordable;
+        // TAB's picture: a portrait for what it trains or builds, an icon for a command.
+        let picture = button.picture(ui.switching_on(world));
+        let figure = button.trains().is_some();
+        let plate = draw_button(r, "button_square", None, 0.0, false, false, planned);
+        if let Some(t) = &picture {
+            let inner = Rect::new(r.x + 4.0, r.y + 4.0, r.w - 8.0, r.h - 8.0);
+            let tint = if greyed { GREYED } else { WHITE };
+            if figure { draw_face(t, inner, tint) } else { draw_picture(t, inner, tint) }
+        }
+        let light = if waiting { Some(WAIT_LIGHT) } else if hover { Some(HOVER_LIGHT) } else { None };
+        if let Some(light) = light {
+            draw_rectangle(r.x + 3.0, r.y + 3.0, r.w - 6.0, r.h - 6.0, light);
+        }
+        if waiting {
+            draw_rectangle_lines(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, 1.5, GREEN);
+        }
         // Only the first key fits on the button – the tooltip has both.
-        draw_text(ui.settings.keys.short(Action::of(button)), r.x + 4.0, r.y + 15.0, 16.0, if planned { DIM } else { KEY });
+        let key = ui.settings.keys.short(Action::of(button));
+        draw_shadowed(key, r.x + 4.0, r.y + 11.0, 11.0, if planned { DIM } else { KEY });
         if let Some(cost) = cost {
             let price = cost.to_string();
-            draw_right(&price, r.right() - 3.0, r.y + 14.0, 14.0, if affordable { KEY } else { TOO_DEAR });
-        } else if planned {
-            draw_right("soon", r.right() - 3.0, r.y + 14.0, 12.0, BORDER);
-        } else if matches!(button, Button::Open(_)) {
-            draw_right(">", r.right() - 4.0, r.y + 15.0, 16.0, BRASS);
+            let x = r.right() - 3.0 - text_width(&price, 10.0);
+            draw_shadowed(&price, x, r.bottom() - 4.0, 10.0, if affordable { KEY } else { TOO_DEAR });
+        } else if planned && !plate {
+            draw_right("soon", r.right() - 3.0, r.y + 11.0, 9.0, BORDER);
+        } else if matches!(button, Button::Open(_)) && picture.is_none() {
+            draw_right(">", r.right() - 4.0, r.y + 12.0, 12.0, BRASS);
         }
-        // The map's own button carries the map's name for it, and goes dim once it can't be pressed any more.
-        let (name, text) = match (button, &world.story.command) {
-            (Button::Custom, Some(command)) => (command.label.as_str(), if world.command_ready() { text } else { DIM }),
-            _ => (button.name(), text),
-        };
-        draw_fitted(name, r.x + r.w / 2.0, r.y + r.h - 9.0, r.w - 6.0, 15.0, text);
+        // No picture (the formations, or no TAB pictures): its name. The map's own button carries the map's name for
+        // it.
+        if picture.is_none() {
+            let name = match (button, &world.story.command) {
+                (Button::Custom, Some(command)) => command.label.as_str(),
+                _ => button.name(),
+            };
+            draw_fitted(name, r.x + r.w / 2.0, r.y + r.h / 2.0 + 8.0, r.w - 4.0, 11.0, if greyed { DIM } else { GLOW });
+        }
     }
 
     // Tooltip above the command card, like in StarCraft – with the price.
@@ -1597,7 +2055,7 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
             (Button::Custom, Some(command)) if !command.text.is_empty() => command.text.as_str(),
             _ => button.help(),
         };
-        draw_tooltip(&[&title, help], layout.card.x, layout.panel.y - 4.0);
+        draw_tooltip(&[&title, help], layout.card.x, layout.top - 4.0);
     }
 }
 
@@ -1618,6 +2076,9 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
         if s.cost_iron > 0 {
             parts.push(format!("{} iron", s.cost_iron));
         }
+        if s.cost_oil > 0 {
+            parts.push(format!("{} oil", s.cost_oil));
+        }
     }
     if let Some(kind) = button.trains() {
         let s = kind.stats();
@@ -1626,6 +2087,9 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
         }
         if s.cost_iron > 0 {
             parts.push(format!("{} iron", s.cost_iron));
+        }
+        if s.cost_oil > 0 {
+            parts.push(format!("{} oil", s.cost_oil));
         }
     }
     match button.workers() {
@@ -1682,36 +2146,10 @@ fn nothing_to_repair(plan: &RepairPlan) -> &'static str {
     if plan.blocked > 0 { "zombies too close" } else { "nothing to repair" }
 }
 
-/// "Repair all" (X) in the stock: like a button of the card. The plan (all buildings) is only worked out while the
-/// mouse is on it – with thousands of zombies it isn't free.
-fn draw_repair_all(layout: &Layout, world: &World) {
-    let r = layout.repair_all_rect();
-    let hover = r.contains(Vec2::from(mouse_position()));
-    draw_rectangle(r.x, r.y, r.w, r.h, if hover { HOVER_BG } else { BOX_BG });
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BRASS);
-    draw_text("X", r.x + 4.0, r.y + 13.0, 14.0, KEY);
-    draw_fitted("Repair all", r.x + r.w / 2.0, r.y + r.h - 7.0, r.w - 6.0, 14.0, GLOW);
-    if hover {
-        let plan = world.repair_plan(0..world.buildings.len());
-        let title = match repair_price(&plan) {
-            Some(price) => format!("Repair all (X) - {price} gold"),
-            None => format!("Repair all (X) - {}", nothing_to_repair(&plan)),
-        };
-        let help = "Every damaged building without a zombie near it - cheapest first, as many as the gold pays for. \
-                    X works while no units are selected (then X is the Line formation).";
-        draw_tooltip(&[&title, help], layout.stock.x, layout.panel.y - 4.0);
-    }
-}
-
-/// The colony's stock on the right, like TAB's: people, food and power on the left, goods with a bar on the right –
-/// with what comes in (or goes out) per payout.
+/// The colony's stock on the right, like TAB's (`@ResourcesArea`): people, food and power on the left with TAB's icons,
+/// goods with a bar on the right – with what comes in (or goes out) per payout next to it.
 fn draw_stock(layout: &Layout, world: &World) {
-    let r = layout.stock;
-    let mouse = Vec2::from(mouse_position());
-    let row_h = (r.h - 12.0) / 5.0;
-    let row = |k: usize| r.y + 6.0 + k as f32 * row_h;
-    let (left_x, left_w) = (r.x + 10.0, 74.0);
-    let (right_x, right_w) = (left_x + left_w + 8.0, r.right() - 10.0 - (left_x + left_w + 8.0));
+    let mouse = mouse();
     let mut tooltip: Option<[&str; 2]> = None;
 
     let power = world.power();
@@ -1727,17 +2165,22 @@ fn draw_stock(layout: &Layout, world: &World) {
     let food_text = if food_flow == 0 { food.to_string() } else { format!("{food} ({})", signed(food_flow)) };
     let power_help = "Needed / made in all grids. The command center makes some, windmills and charcoal burners more. \
         Not enough: every building in that grid works slower.";
-    let people: [(&str, String, bool, &str); 4] = [
-        ("Colonists", colonists.to_string(), false, "The colonists living in your houses (and the command center) - fed, they pay gold at every payout."),
-        ("Workers", format!("{}/{workers}", workers.saturating_sub(used)), false, workers_help),
-        ("Food", food_text, food_flow < 0 && food < 10, "Every house and every soldier eats some at every payout. The command center, hunter cottages, fishing huts and farms bring it in - what doesn't fit in the storage is lost."),
-        ("Energy", format!("{needed}/{made}"), needed > made, power_help),
+    // TAB's places: its icon (x, y, size) and where its number starts (y) – `@ColonistsLabel`, `@Colonists` …
+    let people: [(&str, &str, (f32, f32, f32), f32, String, bool, &str); 4] = [
+        ("Colonists", "IconFColonist", (1079.0, 622.2, 23.9), 631.0, colonists.to_string(), false, "The colonists living in your houses (and the command center) - fed, they pay gold at every payout."),
+        ("Workers", "IconFWorker", (1077.0, 643.0, 25.3), 650.0, format!("{}/{workers}", workers.saturating_sub(used)), false, workers_help),
+        ("Food", "IconFFood", (1081.0, 665.2, 21.3), 671.0, food_text, food_flow < 0 && food < 10, "Every house and every soldier eats some at every payout. The command center, hunter cottages, fishing huts and farms bring it in - what doesn't fit in the storage is lost."),
+        ("Energy", "IconFEnergy", (1082.0, 687.2, 20.9), 692.0, format!("{needed}/{made}"), needed > made, power_help),
     ];
-    for (k, (label, text, short, help)) in people.into_iter().enumerate() {
-        let y = row(k);
-        draw_text(label, left_x, y + 13.0, 13.0, DIM);
-        draw_fitted_left(&text, left_x, y + 31.0, left_w, 19.0, if short { TOO_DEAR } else { GLOW });
-        if Rect::new(left_x, y, left_w, row_h).contains(mouse) {
+    for (label, picture, (x, y, size), value_y, text, short, help) in people {
+        let at = layout.tab(x, y, size, size);
+        match icon(picture) {
+            Some(t) => draw_picture(&t, at, WHITE),
+            None => draw_fitted(label, at.center().x, at.center().y + 3.0, 26.0, 9.0, DIM),
+        }
+        let value = layout.tab(1105.0, value_y, 36.0, 15.0);
+        draw_fitted_left(&text, value.x, value.bottom() - 3.0, value.w, 13.0, if short { TOO_DEAR } else { GLOW });
+        if Rect::new(at.x, value.y - 2.0, value.right() - at.x, value.h + 4.0).contains(mouse) {
             tooltip = Some([label, help]);
         }
     }
@@ -1754,26 +2197,27 @@ fn draw_stock(layout: &Layout, world: &World) {
     };
     let net = (world.income() as i64 - world.upkeep() as i64) * 1000;
     let good = |r: Resource| (world.stock.get(r), world.storage(r), flow[r.index()]);
-    let goods: [(&str, (u32, u32, i64), &str); 6] = [
-        ("Gold", (world.gold, world.gold_storage(), net), gold_help),
-        ("Wood", good(Resource::Wood), "From sawmills. Buildings cost it, charcoal burners burn it."),
-        ("Stone", good(Resource::Stone), "From mines on stone patches. Buildings cost it."),
-        ("Iron ore", good(Resource::IronOre), "From mines on iron patches - the foundry smelts iron of it."),
-        ("Coal", good(Resource::Coal), "From mines on coal patches - for barrels and the foundry."),
-        ("Iron", good(Resource::Iron), "From the foundry: 2 iron ore and 1 coal each. The machine gun tower costs it."),
+    // TAB has an icon for gold, wood, stone and iron – iron ore and coal (ours) get their name instead.
+    let goods: [(&str, Option<&str>, (u32, u32, i64), &str); 7] = [
+        ("Gold", Some("IconFGold"), (world.gold, world.gold_storage(), net), gold_help),
+        ("Wood", Some("IconFWood"), good(Resource::Wood), "From sawmills. Buildings cost it, charcoal burners burn it."),
+        ("Stone", Some("IconFStone"), good(Resource::Stone), "From mines on stone patches. Buildings cost it."),
+        ("Iron ore", None, good(Resource::IronOre), "From mines on iron patches - the foundry smelts iron of it."),
+        ("Coal", None, good(Resource::Coal), "From mines on coal patches - for barrels and the foundry."),
+        ("Iron", Some("IconFIron"), good(Resource::Iron), "From the foundry: 2 iron ore and 1 coal each. The machine gun tower costs it."),
+        ("Oil", Some("IconFOil"), good(Resource::Oil), "From oil platforms on oil nodes (and the Transmutator). TAB's late units and buildings cost it, they burn some every payout."),
     ];
-    // Six goods in the height of five rows on the left: a bit lower each.
-    let goods_h = (r.h - 12.0) / goods.len() as f32;
-    for (k, (label, (value, limit, per_hour), help)) in goods.into_iter().enumerate() {
-        let y = r.y + 6.0 + k as f32 * goods_h;
-        draw_text(label, right_x, y + 12.0, 13.0, DIM);
-        if per_hour != 0 {
-            let color = if per_hour < 0 { TOO_DEAR } else { GLOW };
-            let every = (crate::sim::payout_ticks() as f32 / TICKS_PER_SECOND).round();
-            draw_right(&format!("{}/{every}s", signed(per_hour)), right_x + right_w, y + 12.0, 13.0, color);
+    // TAB's five bars 18 pixels apart (`@GoldValue` … `@OilValue`) – our seven closer.
+    let every = (crate::sim::payout_ticks() as f32 / TICKS_PER_SECOND).round();
+    for (k, (label, picture, (value, limit, per_hour), help)) in goods.into_iter().enumerate() {
+        let y = 619.0 + k as f32 * 13.3;
+        let at = layout.tab(1140.0, y - 2.5, 16.0, 16.0);
+        match picture.and_then(icon) {
+            Some(t) => draw_picture(&t, at, WHITE),
+            None => draw_fitted(if label == "Coal" { "Coal" } else { "Ore" }, at.center().x, at.bottom() - 4.0, 19.0, 9.0, DIM),
         }
-        let bar = Rect::new(right_x, y + 15.0, right_w, (goods_h - 16.0).min(16.0));
-        draw_rectangle(bar.x, bar.y, bar.w, bar.h, BOX_BG);
+        let bar = layout.tab(1160.0, y, 72.0, 11.0);
+        draw_rectangle(bar.x, bar.y, bar.w, bar.h, Color::new(0.0, 0.0, 0.0, 0.45));
         // How full the storage is – full, and what comes in is lost.
         let full = (value as f32 / limit.max(1) as f32).min(1.0);
         draw_rectangle(bar.x, bar.y, bar.w * full, bar.h, if value >= limit { STORAGE_FULL } else { STORAGE });
@@ -1784,14 +2228,25 @@ fn draw_stock(layout: &Layout, world: &World) {
             "Gold" if world.debt > 0 => (format!("-{}", world.debt), TOO_DEAR),
             _ => (format!("{value}/{limit}"), WHITE),
         };
-        draw_centered(&value, bar.x + bar.w / 2.0, bar.bottom() - 2.0, 15.0, color);
-        if Rect::new(right_x, y, right_w, goods_h).contains(mouse) {
+        draw_fitted(&value, bar.center().x, bar.bottom() - 2.0, bar.w - 2.0, 10.5, color);
+        if per_hour != 0 {
+            let color = if per_hour < 0 { TOO_DEAR } else { GLOW };
+            draw_fitted_left(&signed(per_hour), bar.right() + 3.0, bar.bottom() - 2.0, 34.0, 10.0, color);
+        }
+        if Rect::new(at.x, bar.y - 2.0, bar.right() + 36.0 - at.x, 15.0).contains(mouse) {
             tooltip = Some([label, help]);
         }
     }
-    if let Some(lines) = tooltip {
-        draw_tooltip(&lines, r.x, layout.panel.y - 4.0);
+    if let Some([label, help]) = tooltip {
+        let title = format!("{label} - the number right of a bar comes in (or goes out) every {every} s");
+        let title = if people_label(label) { label.to_owned() } else { title };
+        draw_tooltip(&[&title, help], layout.stock.x, layout.top - 4.0);
     }
+}
+
+/// One of the people's rows (no bar, no payout number)?
+fn people_label(label: &str) -> bool {
+    matches!(label, "Colonists" | "Workers" | "Food" | "Energy")
 }
 
 /// Thousandths per payout with a sign: "+2.5", "-1".
@@ -1802,16 +2257,18 @@ fn signed(milli: i64) -> String {
 /// A box with text above the panel. `x`: left edge (or right edge if there's not enough room),
 /// `bottom`: bottom edge. The first line is bright, the rest grey.
 fn draw_tooltip(lines: &[&str], x: f32, bottom: f32) {
-    let line_h = 20.0;
-    let w = lines.iter().map(|line| measure_text(line, None, 18, 1.0).width).fold(0.0, f32::max) + 16.0;
+    let line_h = 17.0;
+    let w = lines.iter().map(|line| measure_text(line, None, 15, 1.0).width).fold(0.0, f32::max) + 16.0;
     let h = lines.len() as f32 * line_h + 8.0;
-    let x = if x + w > screen_width() { (screen_width() - w).max(0.0) } else { x };
+    // The width of the map's part of the window in the pixels drawn in right now (TAB's while the bar is drawn).
+    let width = crate::view::rect().w / DRAWING.get();
+    let x = if x + w > width { (width - w).max(0.0) } else { x };
     let y = bottom - h;
     draw_rectangle(x, y, w, h, PANEL_BG);
     draw_rectangle_lines(x, y, w, h, 1.0, BRASS);
     for (k, line) in lines.iter().enumerate() {
         let color = if k == 0 { WHITE } else { DIM };
-        draw_text(line, x + 8.0, y + 20.0 + k as f32 * line_h, 18.0, color);
+        draw_text(line, x + 8.0, y + 17.0 + k as f32 * line_h, 15.0, color);
     }
 }
 
@@ -1862,6 +2319,12 @@ fn draw_right(text: &str, x: f32, y: f32, size: f32, color: Color) {
     draw_text(text, x - text_width(text, size), y, size, color);
 }
 
+/// Text with a dark shadow – readable on a picture (the key and the price on a button).
+fn draw_shadowed(text: &str, x: f32, y: f32, size: f32, color: Color) {
+    draw_text(text, x + 1.0, y + 1.0, size, Color::new(0.0, 0.0, 0.0, 0.85));
+    draw_text(text, x, y, size, color);
+}
+
 /// The font size at which `text` fits into `max_w` – `size`, or smaller.
 fn fitted_size(text: &str, max_w: f32, size: f32) -> f32 {
     let w = text_width(text, size);
@@ -1904,12 +2367,20 @@ pub fn draw_wrapped(text: &str, x: f32, y: f32, max_w: f32, size: f32, max_lines
 
 /// The map's goals (its story, `sim/story.rs`) in the top left corner, like TAB's mission goals: each with how far along
 /// it is – a tick once reached. Defeat goals in red.
+/// Where the goals' box ends on screen – `None`: the map has no goals. The event list goes below it.
+fn goals_bottom(world: &World) -> Option<f32> {
+    let goals = world.story.goals.len();
+    (goals > 0).then(|| 46.0 + 22.0 * goals as f32 + 26.0)
+}
+
 pub fn draw_goals(world: &World) {
     let goals = &world.story.goals;
     if goals.is_empty() {
         return;
     }
-    let (x, mut y) = (12.0, 64.0);
+    // In the corner of the map's part of the window – `goals_bottom` counts from there too.
+    let corner = crate::view::rect().point();
+    let (x, mut y) = (corner.x + 12.0, corner.y + 64.0);
     let w = 340.0;
     draw_rectangle(x - 6.0, y - 18.0, w, 22.0 * goals.len() as f32 + 26.0, Color::new(0.0, 0.0, 0.0, 0.55));
     draw_text("Goals", x, y, 18.0, BRASS);

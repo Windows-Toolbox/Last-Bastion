@@ -9,15 +9,19 @@ use crate::cursor::Cursor;
 use crate::data;
 use crate::draw::{draw_diamond, draw_ring, mark_color, ore_color, terrain_color, SpawnerShape, TESLA_GLOW, ZOMBIE};
 use crate::editor::{Editor, Sight, Tool};
+use crate::effects::Effects;
 use crate::formation::{self, Formation, Shape, MIN_DRAG};
 use crate::hud::{building_buttons, menu_buttons, Button, HudHit, Layout, Submenu, COMMAND_CENTER_BUTTONS, UNIT_BUTTONS};
 use crate::iso::{Camera, FLAT, TILE_H, TILE_W};
-use crate::keys::Action;
+use crate::keys::{Action, Key};
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{to_frame, Ore, Region, Terrain};
 use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
-use crate::sim::{spawner_corners, Axes, Breed, Command, Mark, Order, Rally, SwitchBlock, ThingRef, World, MAX_PRODUCTION, UNIT_RADIUS};
+use crate::ui_art::{self, Pointer};
+use crate::sim::{
+    spawner_corners, Axes, Breed, Command, Mark, Nest, Order, Piece, Prey, Rally, SwitchBlock, ThingRef, World, MAX_PRODUCTION, UNIT_RADIUS,
+};
 
 /// One entry of the selection, as an index into the world's list of units or buildings.
 #[derive(Clone, Copy, PartialEq)]
@@ -83,6 +87,7 @@ enum Short {
     Stone,
     Coal,
     Iron,
+    Oil,
     Workers,
     /// Not enough spare power – switching a building on again (Y).
     Power,
@@ -102,6 +107,7 @@ impl Short {
             Short::Stone => "Not enough stone - build a mine on a stone patch".to_owned(),
             Short::Coal => "Not enough coal - build a mine on a coal patch".to_owned(),
             Short::Iron => "Not enough iron - the foundry smelts it from iron ore and coal".to_owned(),
+            Short::Oil => "Not enough oil - build an oil platform on an oil node".to_owned(),
             Short::Workers => "Not enough workers - build tents".to_owned(),
             Short::Power => "Not enough power - build a windmill or a charcoal burner".to_owned(),
             Short::Income => "Not enough gold income for its upkeep - build houses".to_owned(),
@@ -126,19 +132,19 @@ const REPEAT_EVERY: f64 = 0.04;
 #[derive(Default)]
 struct KeyRepeat {
     /// The key that was pressed last, and when it counts as pressed the next time.
-    held: Option<(KeyCode, f64)>,
+    held: Option<(Key, f64)>,
 }
 
 impl KeyRepeat {
     /// Was `key` pressed this frame – the first time, or again because it's held long enough?
-    fn pressed(&mut self, key: KeyCode) -> bool {
+    fn pressed(&mut self, key: Key) -> bool {
         let now = get_time();
-        if is_key_pressed(key) {
+        if key.pressed() {
             self.held = Some((key, now + REPEAT_DELAY));
             return true;
         }
         match self.held {
-            Some((held, next)) if held == key && is_key_down(key) && now >= next => {
+            Some((held, next)) if held == key && key.down() && now >= next => {
                 // `max`: after a slow frame not several presses to catch up – one per frame at most.
                 self.held = Some((key, (next + REPEAT_EVERY).max(now)));
                 true
@@ -226,6 +232,17 @@ impl RectDrag {
     }
 }
 
+/// How many lines TAB's event list holds, and how long each one stays.
+const MAX_EVENTS: usize = 6;
+const EVENT_SECONDS: f32 = 12.0;
+
+/// A line of TAB's event list: its picture, its text, how many seconds it stays.
+pub struct EventLine {
+    pub icon: &'static str,
+    pub text: String,
+    pub time_left: f32,
+}
+
 /// A house of a village of doom or a pile of loot clicked on (its `id`) – only to look at it, like a zombie.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Place {
@@ -243,6 +260,9 @@ pub struct Ui {
     pub selected_zombie: Option<u32>,
     /// The same for a house of doom or a pile of loot.
     pub selected_place: Option<Place>,
+    /// The editor's Edit mode: what's selected besides units and buildings – sleeping zombies, neutral things,
+    /// decoration, and from a box also zombies, houses and loot (`picking.rs`).
+    pub picked: Vec<Piece>,
     /// The Tab subgroup: which type of the selection is "in front" right now – its buttons are on the card.
     pub active: Option<Sub>,
     /// The build menu of the command center that is open (D, E, A) – `None`: its main buttons.
@@ -279,6 +299,10 @@ pub struct Ui {
     free_placing: bool,
     /// A short message in the middle at the top ("Not enough gold", a wave is coming) and how many seconds it stays.
     alert: Option<(String, f32)>,
+    /// TAB's event list in the top left (`hud::draw_events`): what the map's events said, newest last.
+    pub events: Vec<EventLine>,
+    /// The menu button on the bar was clicked – `game.rs` opens the menu.
+    pub open_menu: bool,
     /// The building on the mouse is turned by 90° (R – only the gate is not square).
     turned: bool,
     /// The formation units line up in when they're sent somewhere (buttons on the command card).
@@ -319,6 +343,7 @@ impl Ui {
             selected_buildings: Vec::new(),
             selected_zombie: None,
             selected_place: None,
+            picked: Vec::new(),
             active: None,
             submenu: None,
             paused: false,
@@ -338,6 +363,8 @@ impl Ui {
             placing: None,
             free_placing: false,
             alert: None,
+            events: Vec::new(),
+            open_menu: false,
             turned: false,
             formation: Shape::Line,
             form_drag: None,
@@ -424,6 +451,7 @@ impl Ui {
         let gold_short = if !credit && world.spendable_on_credit() > world.gold { Short::GoldCredit } else { Short::Gold };
         let (mut wood, mut stone) = (world.stock.get(Resource::Wood), world.stock.get(Resource::Stone));
         let (mut coal, mut iron) = (world.stock.get(Resource::Coal), world.stock.get(Resource::Iron));
+        let mut oil = world.stock.get(Resource::Oil);
         let stats = kind.stats();
         let mut plan = LinePlan { built: Vec::new(), cost: 0, workers: 0, short: None };
         // Power: what the grids have to spare, and what the pieces planned so far take of it, per grid.
@@ -478,6 +506,10 @@ impl Ui {
                 plan.short.get_or_insert(Short::Iron);
                 continue;
             }
+            if !free && stats.cost_oil > oil {
+                plan.short.get_or_insert(Short::Oil);
+                continue;
+            }
             if !free && kind == BuildingKind::Barrel && barrels == 0 {
                 plan.short.get_or_insert(Short::Barrels);
                 continue;
@@ -487,6 +519,7 @@ impl Ui {
                 stone -= stats.cost_stone;
                 coal -= stats.cost_coal;
                 iron -= stats.cost_iron;
+                oil -= stats.cost_oil;
                 if kind == BuildingKind::Barrel {
                     barrels -= 1;
                 }
@@ -505,6 +538,15 @@ impl Ui {
         self.alert = Some((text.to_owned(), 2.5));
     }
 
+    /// A line in TAB's event list, with its picture (`assets\ui\events\<icon>.png`: `EventSwarm`, `EventInfo` …).
+    /// At most `MAX_EVENTS` – the oldest goes.
+    pub fn event(&mut self, icon: &'static str, text: &str) {
+        if self.events.len() >= MAX_EVENTS {
+            self.events.remove(0);
+        }
+        self.events.push(EventLine { icon, text: text.to_owned(), time_left: EVENT_SECONDS });
+    }
+
     /// Nothing selected anymore, the control groups empty – the editor's test runs on a copy of the map, whose units
     /// and buildings have other numbers.
     pub fn forget_selection(&mut self) {
@@ -512,6 +554,7 @@ impl Ui {
         self.selected_buildings.clear();
         self.selected_zombie = None;
         self.selected_place = None;
+        self.picked.clear();
         self.groups = Default::default();
         self.targeting = None;
         self.parked = None;
@@ -591,7 +634,7 @@ impl Ui {
     /// Does Esc have something to do here – cancel, put away, deselect the spawner, stop typing, clear the selection?
     /// Then it doesn't open the menu.
     pub fn is_busy(&self) -> bool {
-        self.has_pending() || self.has_selection() || self.selected_zombie.is_some() || self.selected_place.is_some()
+        self.has_pending() || self.has_selection() || self.selected_zombie.is_some() || self.selected_place.is_some() || !self.picked.is_empty()
     }
 
     /// Everything Esc cancels before it gets to the selection: a waiting command or tool, a formation being drawn,
@@ -605,7 +648,7 @@ impl Ui {
     }
 
     /// Nothing selected anymore (Esc, a click or a box on nothing) – then WASD moves the camera again.
-    fn deselect(&mut self) {
+    pub(crate) fn deselect(&mut self) {
         self.set_selection(Vec::new(), Vec::new());
         self.targeting = None;
     }
@@ -641,7 +684,7 @@ impl Ui {
     fn global_pressed(&self, action: Action, card: &[Button]) -> bool {
         let keys = &self.settings.keys;
         let on_card = |key| card.iter().any(|&button| keys.has(Action::of(button), key));
-        keys.keys(action).into_iter().flatten().any(|key| is_key_pressed(key) && !on_card(key))
+        keys.keys(action).into_iter().flatten().any(|key| key.pressed() && !on_card(key))
     }
 
     pub fn card(&self, world: &World) -> Vec<Button> {
@@ -672,11 +715,12 @@ impl Ui {
 
     /// A new selection: these units and buildings, nothing on the mouse anymore. A build menu of the command center
     /// closes – selecting it again (click, group key) shows its main buttons.
-    fn set_selection(&mut self, units: Vec<u32>, buildings: Vec<u32>) {
+    pub(crate) fn set_selection(&mut self, units: Vec<u32>, buildings: Vec<u32>) {
         self.selected = units;
         self.selected_buildings = buildings;
         self.selected_zombie = None;
         self.selected_place = None;
+        self.picked.clear();
         self.placing = None;
         self.parked = None;
         self.submenu = None;
@@ -693,13 +737,16 @@ impl Ui {
 
     pub fn handle_input(&mut self, world: &World, camera: &mut Camera, orders: &mut Vec<Order>, dt: f32) {
         self.forget_dead(world);
-        // One building or one unit selected: the editor shows its properties.
-        let selected = match (self.selected.as_slice(), self.selected_buildings.as_slice()) {
-            ([unit], []) => Some(ThingRef::Unit(*unit)),
-            ([], [building]) => Some(ThingRef::Building(*building)),
+        self.sync_pieces(world);
+        // One building, one unit or one neutral thing selected: the editor shows its properties.
+        let selected = match (self.selected.as_slice(), self.selected_buildings.as_slice(), self.picked.as_slice()) {
+            ([unit], [], []) => Some(ThingRef::Unit(*unit)),
+            ([], [building], []) => Some(ThingRef::Building(*building)),
+            ([], [], [Piece::Neutral(id)]) => Some(ThingRef::Neutral(*id)),
             _ => None,
         };
-        self.editor.sync(self.placing, tile_of(camera.screen_to_world(Vec2::from(mouse_position()))), selected);
+        let counts = (self.selected.len(), self.selected_buildings.len());
+        self.editor.sync(self.placing, tile_of(camera.screen_to_world(Vec2::from(mouse_position()))), selected, counts);
         // What the editor's panel did this frame (it ran before, `Game::frame`): a building button hangs the building
         // on the mouse; a tool taken in hand takes off whatever is on it – a building, a command waiting for its target.
         if let Some(place) = self.editor.place.take() {
@@ -746,7 +793,9 @@ impl Ui {
             }
             self.form_drag = None;
         }
-        if !typing && is_key_pressed(KeyCode::Delete) {
+        // The editor's clipboard and Del in Edit (`picking.rs`) – a key it takes, nothing else gets this frame.
+        let clipped = self.clip_keys(world, camera, orders, mouse, typing);
+        if !typing && !clipped && is_key_pressed(KeyCode::Delete) {
             if let Some(spawner) = self.editor.spawner.take() {
                 orders.push(Order::RemoveSpawner { spawner });
             }
@@ -754,10 +803,10 @@ impl Ui {
         let card = self.card(world);
         self.mouse_buttons(world, camera, orders, &layout, mouse, shift, ctrl);
         // X: repair all (like TAB) – unless the card has a button on X right now (units: the Line formation).
-        if !typing && self.global_pressed(Action::RepairAll, &card) {
+        if !typing && !clipped && self.global_pressed(Action::RepairAll, &card) {
             self.repair(world, orders, (0..world.buildings.len()).collect());
         }
-        if !typing {
+        if !typing && !clipped {
             self.command_keys(world, orders, &card, shift, ctrl);
             self.selection_keys(world, camera, &card, shift, ctrl);
             self.other_keys(&card);
@@ -783,6 +832,11 @@ impl Ui {
                 self.alert = None;
             }
         }
+        // `retain_mut`: keep the ones that are still there – and count each one's time down on the way.
+        self.events.retain_mut(|event| {
+            event.time_left -= dt;
+            event.time_left > 0.0
+        });
     }
 
     /// Strike dead units from the selection and the control groups. Units in a tower can't be selected (like in
@@ -874,6 +928,10 @@ impl Ui {
                 match self.aimed_at(button, world, camera, mouse).filter(|_| on_field) {
                     Some(command) => {
                         self.give(orders, command, shift, point, None);
+                        // Only medics: they beam at that unit – a green mark, not a red one.
+                        if matches!(command, Command::Attack(Prey::Unit(_))) && self.all_medics(world) {
+                            self.marker = Some((point, 0.6, Mark::Heal));
+                        }
                         self.keep_targeting(shift);
                     }
                     None if on_field => self.form_drag = Some(FormDrag { from: point, button, mouse: MouseButton::Left }),
@@ -903,6 +961,8 @@ impl Ui {
                     Some(HudHit::Pause) => self.paused = !self.paused,
                     Some(HudHit::GridView) => self.settings.show_grid = !self.settings.show_grid,
                     Some(HudHit::RepairAll) => self.repair(world, orders, (0..world.buildings.len()).collect()),
+                    Some(HudHit::Base) => camera.center = world.base,
+                    Some(HudHit::Menu) => self.open_menu = true,
                     Some(HudHit::Panel) => {}
                 }
             }
@@ -997,7 +1057,7 @@ impl Ui {
                     let tower = building_under_mouse(world, camera, mouse)
                         .filter(|&b| world.buildings[b].kind.is_tower() || world.buildings[b].kind.makes_barrels());
                     if let Some(zombie) = self.zombie_at(world, camera, mouse) {
-                        self.give(orders, Command::Attack(zombie), shift, point, None);
+                        self.give(orders, Command::Attack(Prey::Zombie(zombie)), shift, point, None);
                     } else if let Some(i) = unit_under_mouse(world, camera, mouse) {
                         self.give(orders, Command::Follow(world.units[i].id), shift, point, None);
                     } else if let Some(b) = tower {
@@ -1101,12 +1161,13 @@ impl Ui {
                 }
             }
             Tool::Unit(kind) => orders.push(Order::SpawnUnit { kind, point }),
-            // A 3 × 3 house with its middle tile under the mouse.
-            Tool::Doom => {
-                let (x, y) = tile_of(point);
-                orders.push(Order::PlaceDoom { tile: (x - 1, y - 1), size: (3, 3) });
+            // A house of its size with its middle tile under the mouse.
+            Tool::Doom(nest) => {
+                let (tile, size) = doom_spot(nest, point);
+                orders.push(Order::PlaceDoom { tile, size });
             }
             Tool::Loot => orders.push(Order::PlaceLoot { point }),
+            Tool::BigRock(size) => orders.push(Order::PlaceBigRock(self.editor.big_rock(size, tile_of(point)))),
             Tool::Spawner => {
                 // Select the new spawner right away, so its edge can be dragged. Which number it will get:
                 // the next free one – plus the spawners placed while the game is paused (orders still waiting).
@@ -1177,18 +1238,28 @@ impl Ui {
         self.marker = Some((point, 0.6, Mark::Move));
     }
 
-    /// What T or M means on a zombie or a unit under the mouse – `None` if there is none (or it's P): then the
-    /// command goes to the ground.
+    /// What T or M means on a zombie, a unit or a building under the mouse – `None` if there is none (or it's P):
+    /// then the command goes to the ground.
     fn aimed_at(&self, button: Button, world: &World, camera: &Camera, mouse: Vec2) -> Option<Command> {
         let unit = || unit_under_mouse(world, camera, mouse).map(|i| world.units[i].id);
         match button {
-            // Attack (T) on a zombie = attack exactly that one (like in StarCraft). On one of your own units:
-            // medics aim their beam at it, everyone else attack-moves there.
-            Button::Attack => self.zombie_at(world, camera, mouse).map(Command::Attack).or_else(|| unit().map(Command::Heal)),
+            // Attack (T) on a zombie = attack exactly that one (like in StarCraft). On one of your own units or
+            // buildings: shoot it too, on purpose – medics aim their beam at a unit instead.
+            Button::Attack => self
+                .zombie_at(world, camera, mouse)
+                .map(Prey::Zombie)
+                .or_else(|| unit().map(Prey::Unit))
+                .or_else(|| building_under_mouse(world, camera, mouse).map(|b| Prey::Building(world.buildings[b].id)))
+                .map(Command::Attack),
             // M-click on a unit = follow it.
             Button::Move => unit().map(Command::Follow),
             _ => None,
         }
+    }
+
+    /// Is the selection only medics (`heals`)?
+    fn all_medics(&self, world: &World) -> bool {
+        self.selected.iter().filter_map(|&id| world.find_unit(id)).all(|i| world.units[i].stats().heals)
     }
 
     /// The zombie under the mouse – only one you can see (in the game view not in the fog, not outside the border).
@@ -1227,7 +1298,6 @@ impl Ui {
         let mark = match command {
             Command::Move(_) | Command::Follow(_) => Mark::Move,
             Command::Patrol(_) => Mark::Patrol,
-            Command::Heal(_) => Mark::Heal,
             _ => Mark::Attack,
         };
         self.marker = Some((point, 0.6, mark));
@@ -1468,7 +1538,7 @@ impl Ui {
             let repeats = button.trains().is_some() || button == Button::MakeBarrel;
             // `into_iter().flatten()`: the keys that are there (the `Some`s of the two places).
             let keys = self.settings.keys.keys(Action::of(button));
-            let pressed = keys.into_iter().flatten().any(|key| if repeats { self.repeat.pressed(key) } else { is_key_pressed(key) });
+            let pressed = keys.into_iter().flatten().any(|key| if repeats { self.repeat.pressed(key) } else { key.pressed() });
             if pressed {
                 self.press(button, world, orders, shift, ctrl);
                 break; // the card may change (a build menu opens) – one button per key press
@@ -1522,6 +1592,12 @@ impl Ui {
             (start.y - end.y).abs(),
         );
 
+        // The editor's Edit mode: a box takes everything in it, a click also what the game can't select (`picking.rs`).
+        let edit = self.editor.editing() && !self.editor.testing();
+        if edit && (rect.w >= 5.0 || rect.h >= 5.0) {
+            self.pick_box(world, camera, rect, shift);
+            return;
+        }
         if rect.w >= 5.0 || rect.h >= 5.0 {
             let found: Vec<u32> = world
                 .units
@@ -1565,6 +1641,7 @@ impl Ui {
             // the screen. Nothing at all: the selection goes.
             match building_under_mouse(world, camera, end) {
                 Some(b) => self.click_building(world, camera, layout, b, shift, ctrl),
+                None if edit && self.pick_click(world, camera, end, shift) => {}
                 None if !shift && !ctrl => self.deselect(),
                 None => {}
             }
@@ -1814,7 +1891,7 @@ impl Ui {
         for (action, dir) in CAMERA {
             for key in self.settings.keys.keys(action).into_iter().flatten() {
                 let free = !self.settings.keys.on_any_card(key) || (!ctrl && !selected);
-                if keys && is_key_down(key) && free {
+                if keys && key.down() && free {
                     pan += dir;
                 }
             }
@@ -1822,18 +1899,22 @@ impl Ui {
         // At the edge only the real mouse counts: if the window has no focus or the mouse is outside
         // (e.g. on the second monitor), nothing scrolls. Also not while a selection box is being dragged
         // (it hangs on the screen, not on the world) or the camera is moved another way.
+        // The edge is the edge of the map's part of the window (`view.rs`): in the game the window's, in the editor the
+        // panels' – on a panel itself the mouse is the panel's.
         let busy = self.drag_start.is_some() || self.minimap_drag || self.pan_drag.is_some() || self.rect_drag.is_some();
-        if let Some(mouse) = self.real_mouse.filter(|_| self.settings.edge_scroll && !busy) {
-            if mouse.x < EDGE {
+        let view = crate::view::rect();
+        let on_map = |m: &Vec2| view.contains(*m) && !self.editor.has_mouse();
+        if let Some(mouse) = self.real_mouse.filter(|m| self.settings.edge_scroll && !busy && on_map(m)) {
+            if mouse.x < view.x + EDGE {
                 pan.x -= 1.0;
             }
-            if mouse.x > screen_width() - EDGE {
+            if mouse.x > view.right() - EDGE {
                 pan.x += 1.0;
             }
-            if mouse.y < EDGE {
+            if mouse.y < view.y + EDGE {
                 pan.y -= 1.0;
             }
-            if mouse.y > screen_height() - EDGE {
+            if mouse.y > view.bottom() - EDGE {
                 pan.y += 1.0;
             }
         }
@@ -1878,10 +1959,28 @@ impl Ui {
         if self.hover_zombie.is_none() && self.hover_unit.is_none() {
             self.hover_building = building_under_mouse(world, camera, mouse).map(|b| world.buildings[b].id);
         }
+        self.pick_pointer(world);
+    }
+
+    /// TAB's mouse pointer for what a right click would do (`ui_art.rs`): the cross hairs at a zombie or while a
+    /// command waits for its target, "enter" at a tower with room – "can't" at a full one. Otherwise the arrow.
+    fn pick_pointer(&self, world: &World) {
+        let units = !self.selected.is_empty();
+        let tower = self.hover_building.and_then(|id| world.find_building(id)).filter(|&b| world.buildings[b].kind.is_tower());
+        let pointer = if self.targeting.is_some() || (units && self.hover_zombie.is_some()) {
+            Pointer::Target
+        } else if let (true, Some(b)) = (units, tower) {
+            let full = world.garrison(world.buildings[b].id).len() >= data::get().buildings.tower_slots;
+            if full { Pointer::Invalid } else { Pointer::Enter }
+        } else {
+            Pointer::Arrow
+        };
+        ui_art::set_pointer(pointer);
     }
 
     /// Selection box, highlights, target marker and the waiting command or tool on the mouse.
-    pub fn draw(&self, world: &World, camera: &Camera) {
+    /// `effects`: TAB's effects (`effects.rs`) – the range circle of a tower being placed.
+    pub fn draw(&self, world: &World, camera: &Camera, effects: &Effects) {
         let mouse = Vec2::from(mouse_position());
 
         if let Some(start) = self.drag_start {
@@ -1896,6 +1995,7 @@ impl Ui {
                 }
             }
         }
+        self.draw_picked(world, camera);
         // Under the mouse: zombie red (right click = attack), own unit white.
         if let Some(z) = self.hover_zombie.and_then(|id| world.find_zombie(id)) {
             draw_ring(camera, world.zombies[z].pos, world.zombies[z].radius, 1.5, RED);
@@ -1975,6 +2075,15 @@ impl Ui {
                 None => vec![here],
             };
             let (w, h) = kind.footprint(turned);
+            // TAB's build grid: a green tile wherever you could build around the mouse, fading out towards its edge.
+            if !free && let Some(cell) = ui_art::get("cell_available") {
+                draw_build_grid(world, camera, &cell, here, (w, h));
+            }
+            // A tower that shoots by itself: how far it will reach.
+            if let Some(weapon) = &kind.stats().weapon {
+                let middle = tile_corner(here) + vec2(w as f32, h as f32) / 2.0;
+                effects.draw_range(camera, middle, weapon.range, world.tick as f32 * crate::sim::TICK);
+            }
             // Green: it will be built – red: no room there, or the gold or the workers don't reach that far.
             let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
             let plan = self.affordable(world, kind, &tiles, shift);
@@ -2008,6 +2117,9 @@ impl Ui {
             if !free && stats.cost_iron > 0 {
                 text += &format!(", {} iron", stats.cost_iron * pieces);
             }
+            if !free && stats.cost_oil > 0 {
+                text += &format!(", {} oil", stats.cost_oil * pieces);
+            }
             if plan.workers > 0 {
                 text += &format!(", {} worker{}", plan.workers, if plan.workers == 1 { "" } else { "s" });
             }
@@ -2022,6 +2134,7 @@ impl Ui {
                 Some(Short::Stone) => text += &format!(" - not enough stone ({})", world.stock.get(Resource::Stone)),
                 Some(Short::Coal) => text += &format!(" - not enough coal ({})", world.stock.get(Resource::Coal)),
                 Some(Short::Iron) => text += &format!(" - not enough iron ({})", world.stock.get(Resource::Iron)),
+                Some(Short::Oil) => text += &format!(" - not enough oil ({})", world.stock.get(Resource::Oil)),
                 Some(Short::Workers) => text += &format!(" - not enough workers ({} free)", world.free_workers()),
                 Some(short @ (Short::Locked(_) | Short::Power | Short::Income)) => text += &format!(" - {}", short.alert().to_lowercase()),
                 None => {}
@@ -2060,7 +2173,27 @@ impl Ui {
                     draw_ellipse_lines(mouse.x, mouse.y, w, w * FLAT, 0.0, 2.0, ZOMBIE);
                     draw_text(format!("{} zombies", self.editor.drop), mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
                 }
-                Tool::Unit(_) | Tool::Spawner | Tool::Doom | Tool::Loot | Tool::Giant => {
+                // Its tiles, in the colour of mountain.
+                Tool::BigRock(size) => {
+                    let rock = self.editor.big_rock(size, tile_of(camera.screen_to_world(mouse)));
+                    for (x, y) in rock.tiles() {
+                        draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, Color { a: 0.6, ..terrain_color(Terrain::Mountain) });
+                    }
+                    let text = format!("Big rock {} {}", tool.name(), ["A", "B", "C"][rock.variant as usize % 3]);
+                    draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
+                }
+                // Its tiles: brown where it can stand, red where not (outside the border, on rock or water, on a
+                // building) – and how many zombies wait inside.
+                Tool::Doom(nest) => {
+                    let (tile, size) = doom_spot(nest, camera.screen_to_world(mouse));
+                    let fits = world.doom_fits(tile, size);
+                    let color = if fits { Color::new(0.55, 0.30, 0.20, 0.65) } else { Color::new(0.9, 0.15, 0.15, 0.5) };
+                    draw_diamond(camera, vec2(tile.0 as f32, tile.1 as f32), vec2(size.0 as f32, size.1 as f32), color);
+                    let inside = World::doom_zombies(size, data::get().difficulty(&world.difficulty).population);
+                    let text = if fits { format!("{} house - {inside} zombies inside", nest.name()) } else { "No room here".to_owned() };
+                    draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, if fits { YELLOW } else { Color::new(1.0, 0.45, 0.4, 1.0) });
+                }
+                Tool::Unit(_) | Tool::Spawner | Tool::Loot | Tool::Giant => {
                     draw_circle_lines(mouse.x, mouse.y, 10.0, 2.0, YELLOW);
                     draw_text(tool.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
                 }
@@ -2130,7 +2263,8 @@ impl Ui {
         if let Some((text, time_left)) = &self.alert {
             let fade = (time_left * 2.0).min(1.0);
             let w = measure_text(text, None, 24, 1.0).width + 32.0;
-            let (x, y) = ((screen_width() - w) / 2.0, 48.0);
+            let view = crate::view::rect();
+            let (x, y) = (view.center().x - w / 2.0, view.y + 48.0);
             draw_rectangle(x, y, w, 38.0, Color::new(0.08, 0.09, 0.11, 0.85 * fade));
             draw_rectangle_lines(x, y, w, 38.0, 1.0, Color::new(0.95, 0.62, 0.20, fade));
             draw_text(text, x + 16.0, y + 26.0, 24.0, Color::new(1.0, 1.0, 1.0, fade));
@@ -2246,7 +2380,15 @@ fn grab(min: (i32, i32), size: (i32, i32), axes: Axes, point: Vec2, camera: &Cam
 }
 
 /// The tile a world point lies on.
-fn tile_of(p: Vec2) -> (i32, i32) {
+/// Where a house of doom of this size goes with `point` under the mouse: its top left tile and its size – its middle
+/// tile (for an even side the one right below the middle, like the generator's `house_at`) under the mouse.
+fn doom_spot(nest: Nest, point: Vec2) -> ((i32, i32), (i32, i32)) {
+    let (x, y) = tile_of(point);
+    let side = nest.side();
+    ((x - (side - 1) / 2, y - (side - 1) / 2), (side, side))
+}
+
+pub(crate) fn tile_of(p: Vec2) -> (i32, i32) {
     (p.x.floor() as i32, p.y.floor() as i32)
 }
 
@@ -2310,3 +2452,37 @@ fn building_under_mouse(world: &World, camera: &Camera, mouse: Vec2) -> Option<u
 fn oil_node(tile: (i32, i32)) -> Vec<(i32, i32)> {
     vec![tile, (tile.0 + 1, tile.1), (tile.0, tile.1 + 1), (tile.0 + 1, tile.1 + 1)]
 }
+
+/// TAB's build grid round a building being placed at `tile` (`size` tiles): its picture of a free tile on every tile
+/// within `BUILD_GRID` tiles of the site's middle where you could build – fainter further out.
+fn draw_build_grid(world: &World, camera: &Camera, cell: &Texture2D, tile: (i32, i32), size: (i32, i32)) {
+    let middle = vec2(tile.0 as f32 + size.0 as f32 / 2.0, tile.1 as f32 + size.1 as f32 / 2.0);
+    let reach = BUILD_GRID as f32;
+    let mut vertices = Vec::new();
+    let mut indices: Vec<u16> = Vec::new();
+    for y in tile.1 - BUILD_GRID..tile.1 + size.1 + BUILD_GRID {
+        for x in tile.0 - BUILD_GRID..tile.0 + size.0 + BUILD_GRID {
+            let distance = vec2(x as f32 + 0.5, y as f32 + 0.5).distance(middle);
+            if distance > reach || !world.map.is_buildable(x, y) {
+                continue;
+            }
+            let alpha = BUILD_GRID_ALPHA * (1.0 - distance / reach).clamp(0.0, 1.0).sqrt();
+            let color = Color::new(1.0, 1.0, 1.0, alpha);
+            // The picture on the tile's diamond, a little smaller, so there is a gap between the tiles like TAB's.
+            let k = vertices.len() as u16;
+            for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+                let corner = vec2(x as f32, y as f32) + vec2(0.06 + 0.88 * dx, 0.06 + 0.88 * dy);
+                let p = camera.world_to_screen(corner);
+                vertices.push(Vertex::new(p.x, p.y, 0.0, dx, dy, color));
+            }
+            indices.extend_from_slice(&[k, k + 1, k + 2, k, k + 2, k + 3]);
+        }
+    }
+    if !vertices.is_empty() {
+        draw_mesh(&Mesh { vertices, indices, texture: Some(cell.clone()) });
+    }
+}
+
+/// How far the build grid reaches round the building on the mouse (tiles from its middle), and how strong it is there.
+const BUILD_GRID: i32 = 7;
+const BUILD_GRID_ALPHA: f32 = 0.35;

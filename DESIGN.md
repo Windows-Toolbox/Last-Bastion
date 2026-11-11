@@ -254,15 +254,15 @@ Costs and stats live in `data\buildings.json` (12.4).
 | Category | Building | Notes |
 |---|---|---|
 | **Core** | Command center | Start building, small storage, losing it = losing the game – infected (shield broken, half its life, like TAB's) or destroyed. Builds everything, trains nothing |
-| **Housing** | Tent → stone house → apartment | Upgrade when the materials and the next tier's goods are there (5.3) |
-| **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – no quarry – and TAB's gold: 20 times as much, straight into the gold), oil pump, farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where ore lies in rock. A later stone mine can simply get a bigger range |
+| **Housing** | Tent → wooden house (TAB's) → stone house → apartment | Upgrade when the materials and the next tier's goods are there (5.3) |
+| **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – and TAB's gold: 20 times as much, straight into the gold), TAB's quarry and advanced quarry (stone), oil platform (TAB's oil pump), farm and TAB's advanced farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where ore lies in rock. A later stone mine can simply get a bigger range |
 | **Production** | Foundry (smelter), wood workshop, stone workshop, lab | Take inputs from the colony stock (5.4). The workshops make nothing yet: like TAB's, they unlock buildings (wood → stone → munitions) |
 | **Logistics and trade** | Warehouse, market, bank, road | Warehouse = storage; market = houses around it pay more, sells the surplus (5.3); bank = gold storage + credit (Dispo, 7.2); road = **units and zombies** faster |
-| **Power** | Tesla tower (pole), charcoal burner (wood), windmill, oil burning generator, coal plant, solar, battery | Charcoal burner early, eats wood; windmill big but with upkeep; solar quieter but weaker |
-| **Military** | Barracks, munitions factory, inn, siege factory (vehicles), tech lab | Barracks from the start. The munitions factory is a tech gate for firearms (question 26) and makes explosive barrels; the inn hires mercenaries (7.2); the foundry later the second weapon tier (MG tower, vehicles) |
-| **Defence** | Wall, gate, tower (4 units inside), stone wall, stone tower, stake trap, explosive barrel, ballista tower, MG tower, flame tower | Stone ones go on the wooden ones (upgrade). Stake trap like TAB's: walked over, hurts zombies, wears out, everyone on it walks half as fast. Barrel (instead of mines, 2026-10-21): any damage sets it off, blasts chain, hurt everyone, loud; set like a trap or carried by units |
-| **Special** | Radar, sound dampener, cleanser (removes creep/noise) | No menu yet. The command center scans like StarCraft's (2026-10-21). The beacon is out: a free, endless lure into the kill zone is too strong – a barrel lures once and costs |
-| **Wonders** | ❓ (29) | Most expensive, very strong buffs |
+| **Power** | Tesla tower (pole), charcoal burner (wood), windmill and TAB's advanced mill, oil burning generator, coal plant (TAB's power plant), solar, battery | Charcoal burner early, eats wood; windmill big but with upkeep; solar quieter but weaker |
+| **Military** | Barracks, munitions factory, inn, engineering center (TAB's: Thanatos, Titan), siege factory (vehicles), tech lab | Barracks from the start. The munitions factory is a tech gate for firearms (question 26) and makes explosive barrels; the inn hires mercenaries (7.2); the foundry later the second weapon tier (MG tower, vehicles) |
+| **Defence** | Wall, gate, tower (4 units inside), stone wall, stone tower, stake trap, TAB's blade trap and mine, explosive barrel, ballista tower, MG tower, TAB's shocking tower and executor, flame tower | Stone ones go on the wooden ones (upgrade). Stake trap like TAB's: walked over, hurts zombies, wears out, everyone on it walks half as fast. Barrel (next to TAB's mine): any damage sets it off, blasts chain, hurt everyone, loud; set like a trap or carried by units |
+| **Special** | Radar (TAB's), lookout tower (TAB's), sound dampener, cleanser (removes creep/noise) | No menu yet. The command center scans like StarCraft's (2026-10-21). The beacon is out: a free, endless lure into the kill zone is too strong – a barrel lures once and costs |
+| **Wonders** | TAB's: Spire, Academy, Victorious, Transmutator, Crystal Palace (29) | Most expensive, very strong buffs – TAB's effects and values |
 
 - **Building like TAB** (open question 5): placed, paid at once, builds itself. No worker units.
 - **Infection** (from TAB): HP + shield; shield down = **infected** – its people come out as zombies, like TAB:
@@ -326,6 +326,17 @@ Pillar 2. The heart is still the TAB side (open question 13).
 - **Smart-casting:** an ability key uses the best-suited unit of the selection, not all.
 - **Smart targeting:** fire is spread over different zombies, no overkill (StarCraft 2). *In since 2026-10-17 – without
   it 160 soldiers fired like 15.*
+- **A shot like TAB's, cancelled like StarCraft's** (2026-11-11): raise the weapon once (TAB's `LoadAttack`), aim,
+  wind up, shoot, reload – TAB's times. Walking off during the wind-up loses the shot; walking off after it costs
+  nothing, the reload goes on. The weapon sinks while walking and has to come up again – a step aside is cheap, a long
+  walk isn't. Every new command – the same attack again, stop – starts the wind-up over. That's the pro's tool
+  (stutter-step, kiting with rangers) and room for challenge maps. Units without a target look for a new one only every
+  1/3 s, like TAB – on attack-move and patrol every tick, or they'd walk on past it. The picture plays each shot once, in step with the simulation
+  (12.8 still holds: the simulation decides, the animation follows).
+- **Attacking your own** (T on an own unit or building), like StarCraft: shot until it's gone – a building in its hit
+  shield, then hit points – never infected by it, but with the shield gone the next zombie hit infects it (and hurts
+  it). A repair makes it whole again. Still being built, a building can't be infected – nobody lives or works in it
+  yet; its life grows into the hit points first, then into the shield. Nobody shoots their own by themselves.
 - **Rally points** for production buildings, also onto a unit.
 - **Formations like *Diplomacy is Not an Option*:** line, box, circle – only when **dragging**; a click sends everyone
   to the point. Soldiers in front, the rest behind. Travels with the order (same on both PCs in co-op).
@@ -344,6 +355,8 @@ one active ability** (low APM, clear identity).
 | **Soldier** | TAB | 1 | 2 | Rifle all-rounder, the backbone | *Stim*: faster, costs HP | Loud | Walkers, runners | Clumped swarms, brutes |
 | **Sniper** | TAB | 2 | 3 | Very long range, slow, huge damage | *Headshot* | Very loud | Brutes, spitters, harpies | Anything that reaches it |
 | **Flamethrower** | TAB (Lucifer) | 2 | 3 | Short cone, burns the ground | *Burn ground* (also removes creep) | Loud | Swarms | Spitters, brutes |
+| **Thanatos** | TAB | 3 | ❓ | Rocket launcher: long range, splash, minimum range; hits with the launcher up close | ❓ | Very loud | Clumped hordes, brutes | Anything up close |
+| **Titan** | TAB | 3 | ❓ | TAB's mech, as in TAB for now: heavy gun, splash | ❓ | Very loud | Large hordes | ❓ |
 | **Medic** | SC | 2 | 2 | No attack, heals infantry nearby | *Restoration* | Silent | – (support) | Being targeted |
 | **Machine gunner** | – (mech) | 3 | 5 | Walker with a gun that **spins up** (25 % → 100 % in ≈ 3 s) | *Keep spinning* (energy + constant noise) | Very loud | Large hordes, holding a line | Brutes, surprises |
 | **Siege tank** | SC | 3 | 6 | Crude artillery, **only shoots sieged** (≈ 4 s to siege), minimum range | *Siege / unsiege* | Very loud | Hordes at range, nests | Anything up close |
@@ -382,6 +395,8 @@ nothing.
 - **Look:** TAB's roles with a StarCraft-*like* look of our own (era: open question 21) – ranger like a Reaper without
   jetpack, soldier like a makeshift marine, sniper like a Ghost, flamethrower like a Firebat, medic in white, machine
   gunner a small two-legged walker, siege tank patched together. Swappable PNGs in an `images` folder.
+  Until then the medic wears TAB's soldier in polished steel, the spearman TAB's Lucifer suit as a marine (both stand
+  while they work: no attack picture), the soldier only TAB's soldier.
 
 ### 7.3 Veterancy
 
@@ -610,7 +625,11 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   over the reachable land, 1–3 per tile by how high it is, the kind by a roll and the distance (`medium_from` …), giants
   at least 70 tiles out, 40 apart. The difficulty is TAB's **population** (`population`: how many, half the villages
   below 0.5, the giants) – not `roaming_zombies`/`keep_out`. None of the shared steps (start area, ways in, safety
-  net): what the base can't reach stays empty. Not taken over: old towers, ravens, supplies, mutants, decorations.
+  net): what the base can't reach stays empty. Not taken over: old towers, supplies, mutants, decorations (ravens and rats come as decoration).
+- **Rocks bigger than TAB's:** a rock piece is drawn bigger already when the 4 × 4 / 6 / 8 / 10 tiles around its block
+  are mountain (TAB: 6 / 8 / 10 / 12) – so narrow ranges get big rocks too (`ground.rs`, `SCALES` / `HEIGHTS`).
+- **Big rocks** (TAB's `BRMountainC2/C3/C4`, 3 × 3 to 5 × 5 tiles): the generator doesn't place them (TAB's neither –
+  only its hand-made maps); the editor does. Their tiles are mountain, the map file keeps them (`big_rocks`).
 - **Landscape modifiers** (`modifiers` of a map in `data\game_maps.json`, kept in its map file): for now one set for
   the whole map – zombies' hearing, sight, speed; your units' speed, your sight; power buildings need; the hunters'
   game on forest/grass/dirt. TAB's strengths: AL hearing 50 %, everyone 80 % speed, power 130 %; DS hearing 130 %,
@@ -729,6 +748,8 @@ of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: no
   like TAB's hotkeys), buildings. Up to **2 keys per action**; a key twice on one card (or twice among the global
   keys) turns red.
 - **Fixed:** Shift and Ctrl (queue, credit, 5 at once, groups), Esc, Ctrl+S and Ctrl+Z / Ctrl+Y in the editor.
+- **Mice with many buttons:** mouse 4/5 bindable (read from Windows, `cursor.rs`); further buttons via the mouse's
+  software as **F13–F24** (bindable). A key macroquad doesn't know is reported on the page, not silently ignored.
 - **The card comes first:** a global key that the current card also has only works without it (X: line formation for
   units, otherwise repair all). A camera key that's on any card only moves the camera with nothing selected.
 - macroquad reads keys by their **US position**: on a German keyboard the grid key "Y" arrives as Z (12.2). The names
@@ -806,7 +827,9 @@ of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: no
   - keys by **US position** (good for key grids, but bindings must show the player's own labels ❓);
   - Alt + key probably beeps → no Alt shortcuts;
   - no "mouse left the window"/focus event → solved with own Windows calls in `src\cursor.rs` (focus, real mouse
-    position, mouse kept in the window like StarCraft 2);
+    position, mouse kept in the window like StarCraft 2) – a watchdog thread lets go of the held mouse when no frame
+    comes for 0.4 s, so a stalled game never traps it;
+  - no mouse buttons 4/5 → asked from Windows once per frame (`cursor.rs`);
   - borderless = a window exactly the size of the screen → Windows/driver take it for exclusive fullscreen, popups
     (screenshot tools) make it blink → `cursor.rs` keeps it one pixel taller.
 - **Setup:** `winget install Rustlang.Rustup` + Visual Studio with "Desktop development with C++" (linker, SDK).
@@ -909,9 +932,21 @@ Same seed + same orders → **the same state, bit for bit**. Rules for the simul
 Goal: far more settings per map. TAB's editor (Info, Painter, Entities, Events) is the model for the first steps,
 StarCraft 2's (regions, triggers, players and AI, data) for what follows.
 
+- **Layout like SC2's editor** (steps in `docs\editor.md`): a module bar (Terrain, Objects, Zombies, Regions |
+  Triggers, Events, Map, later Data), tools left, properties right, the map in between, a status line – every TAB
+  function stays.
+  *In the prototype:* the frame – menu bar, module bar (Terrain, Objects, Zombies | Triggers, Events, Map; Regions and
+  Data come with their logic), fixed egui panels left and right, a status line, bars floating over the map (sight,
+  grid, zoom, what the mouse does), badges TAB / SC2 / new. The map only uses the room between the panels: the camera,
+  clicks, TAB's bar and its minimap go through one view rectangle (`src\view.rs`); in the game it's the window.
+  Also: zoomed out the zombies are tiles in a colour per breed (TAB paints them as cells) – over the pictures on top of
+  everything, in the grid view inside its cells; a box in Edit selects everything, Ctrl+C/X/V copy, cut and paste it
+  with all the map file keeps of it (`src\picking.rs`, `src\sim\clipboard.rs`, orders `Paste` / `RemovePieces`);
+  houses of doom in TAB's three sizes.
+
 - **Events today:** a new round turns TAB's survival plan (`spawning.json`) + days + population into its `events` (map
   format 5: hour, random offset, repeat, growth, notice, spread, final, reveal, victory, groups). From then on the file
-  counts: the editor's "Events" tab edits them, `data\` only changes new maps. Changing the days moves only the
+  counts: the editor's "Events" module edits them, `data\` only changes new maps. Changing the days moves only the
   victory.
 - **Steps:**
   1. **UI foundation:** fields to type numbers and text into, drop-downs, scrolling lists, a properties panel, dialogs –
@@ -945,10 +980,22 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      objectives, reveal, resources, wait, victory/defeat, orders to allies. Edited as sentences ("When a unit enters
      North gate: 200 runners from spawner 2"). Checked in the simulation every tick in a fixed order – deterministic
      for co-op.
-     *In the prototype:* TAB's story first (`sim/story.rs`, editor tab "Story"): scripts of actions from a fixed list
+     *In the prototype:* TAB's story first (`sim/story.rs`, editor module "Triggers"): scripts of actions from a fixed list
      (no free code) at the start, victory and defeat, when an event comes or is done, when a neutral thing joins, from
      the command center's own button; goals from a fixed list with progress; counters. A player's choice comes as an
      order. SC2's triggers (regions, "when …") build on it later.
+     *Planned* (steps in `docs\trigger-und-28yl.md`): SC2's layers.
+     - **Triggers** (event + conditions + actions) are the main layer and are stored as data. Today's scripts, goals
+       and the command center's button become parts of them.
+     - Conditions and code are a small **typed expression language**: number, yes/no and text, later unit, region and
+       point. It is typed as text in the editor, checked at once and stored as a fixed tree.
+     - **Functions** come from one list in Rust (name, parameter types, what they do). The language grows without
+       touching the interpreter.
+     - **A running script** is only "which trigger, where in its tree, which local values". That is plain serde, so
+       saving mid-script, replays and rejoining in co-op just work, and **wait** is an action like any other.
+     - **No embedded Lua/Rhai:** a running coroutine can't be saved, and Lua's `pairs` order would break lockstep.
+       Maybe later as an extra layer for modding (handlers that never wait).
+     - First real test: TAB's workshop campaign "28 Years Later" (20 maps) through a converter.
   7. **Players and ally AIs (SC2):** the colony (1–2 humans), ally AIs with colour, start units and buildings, shared
      vision or not; zombies against everyone. Behaviours: hold a region, patrol, guard, attack-move, retreat (building
      later). Steered by triggers ("Ally 1: defend West") and reacting to events ("ally base attacked").
@@ -996,8 +1043,6 @@ before step 6.
 | 17 | Library? | macroquad in use and fast enough; the feel of the controls still to judge |
 | 21 | Which era / technology? | Open – decides the look, towers, air units |
 | 22 | Where do the pictures come from? | Open – Blender / packs / artist / AI |
-| 27 | Two tesla towers (power pole vs. weapon)? | Open – one needs another name |
-| 29 | What do the wonders do? (The inn: mercenaries, 2026-10-21) | Open |
 
 **Decided** (number = question, referenced elsewhere):
 
@@ -1009,7 +1054,7 @@ before step 6.
   **20** direct IP / Tailscale, Steam if released · **23** first power: command center + charcoal burners (wood) · **24** colonists are a
   resource · **25** a unit is free again when idle and in no control group · **26** no ammo item: the munitions factory only unlocks firearms, after the stone workshop
   (2026-10-20) · **28** one mine for every ore patch
-  (iron, coal, stone), no quarry (2026-10-20) · **30** the final wave calls every zombie on the map, villages and loot
+  (iron, coal, stone), plus TAB's quarry · **27** the weapon is TAB's shocking tower, the tesla tower stays the power pole · **29** the wonders are TAB's, with TAB's effects · **30** the final wave calls every zombie on the map, villages and loot
   guards too · **31** the waves bring the special breeds, more and more over the round (both 2026-10-20) · **32** the
   foundry is both: a tech building like TAB's (it unlocks the iron tier) that smelts iron ore + coal into iron while it
   runs, like the charcoal burner burns wood – no extra building, the Factorio chain stays · **33** new towers

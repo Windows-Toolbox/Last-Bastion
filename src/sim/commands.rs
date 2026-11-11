@@ -21,12 +21,10 @@ pub enum Command {
     AttackMove(Vec2),
     /// Back and forth between start and target, on the way like attack-move (P + click).
     Patrol(Vec2),
-    /// Chase exactly this zombie until it's dead (right click on a zombie). The number is its `id`.
-    /// Medics have no attack and ignore this.
-    Attack(u32),
-    /// T + click on one of your own units (its `id`): medics aim their beam at it until it dies,
-    /// all others attack-move to where it stands.
-    Heal(u32),
+    /// Chase exactly this one and shoot it until it's gone (right click on a zombie; T + click on a zombie, one of
+    /// your own units or buildings – like in StarCraft you can shoot your own on purpose). Medics have no attack: on
+    /// one of your units they aim their beam at it instead, anything else they ignore.
+    Attack(Prey),
     /// Walk after one of your own units until it dies (right click on a unit). Its `id`.
     Follow(u32),
     /// Go into this tower (its `id`; right click on it). Medics stay outside – they have nothing to shoot.
@@ -40,9 +38,19 @@ impl Command {
     fn point(&self) -> Option<Vec2> {
         match *self {
             Command::Move(p) | Command::AttackMove(p) | Command::Patrol(p) => Some(p),
-            Command::Attack(_) | Command::Heal(_) | Command::Follow(_) | Command::Enter(_) | Command::Hold => None,
+            Command::Attack(_) | Command::Follow(_) | Command::Enter(_) | Command::Hold => None,
         }
     }
+}
+
+/// What an attack is on – by `id`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Prey {
+    Zombie(u32),
+    /// One of your own units – not in a tower (there nothing can hit it).
+    Unit(u32),
+    /// One of your own buildings.
+    Building(u32),
 }
 
 /// An entry in a unit's command queue: the command plus what the unit needs for it.
@@ -53,7 +61,7 @@ pub(super) enum Task {
     /// `to`: where it's walking right now. At the target `to` and `back` swap – back and forth forever.
     Patrol { to: Waypoint, back: Waypoint },
     /// `chase`: way to the spot where the target was last. If it moves on, it's recomputed.
-    Attack { zombie: u32, chase: Option<Waypoint> },
+    Attack { prey: Prey, chase: Option<Waypoint> },
     /// Medic: keep the beam on this unit, walk after it when it's out of range.
     Heal { unit: u32, chase: Option<Waypoint> },
     Follow { unit: u32, chase: Option<Waypoint> },
@@ -101,9 +109,9 @@ impl World {
                     points.push((to.point, Mark::Patrol));
                     points.push((back.point, Mark::Patrol));
                 }
-                Task::Attack { zombie, .. } => {
-                    if let Some(z) = self.find_zombie(*zombie) {
-                        points.push((self.zombies[z].pos, Mark::Attack));
+                Task::Attack { prey, .. } => {
+                    if let Some((_, at)) = self.prey_spot(*prey, self.units[unit].pos) {
+                        points.push((at, Mark::Attack));
                     }
                 }
                 Task::Heal { unit, .. } => {
@@ -186,11 +194,8 @@ impl World {
             })
             .collect();
 
-        // Where the units walk to. For "heal" the others attack-move to where the healed unit stands.
-        let point = match command {
-            Command::Heal(id) => self.find_unit(id).map(|u| self.units[u].pos),
-            _ => command.point(),
-        };
+        // Where the units walk to.
+        let point = command.point();
         // In a formation every unit has its own spot – otherwise everyone walks to the point. Outside the world
         // border means: at the border – a bit more than one step of the screen axes inside it, so the spot's tile
         // is inside too (`Region::clamp`).
@@ -240,13 +245,12 @@ impl World {
                     Some((field, middle)) => Task::Patrol { to, back: self.waypoint(field, *middle, Some(starts[k])) },
                     None => Task::Move(to), // nowhere free to come back to
                 },
-                (Command::Attack(zombie), _) if !heals => Task::Attack { zombie, chase: None },
-                (Command::Heal(other), _) if heals && other != id => Task::Heal { unit: other, chase: None },
-                (Command::Heal(_), Some(to)) if !heals => Task::AttackMove(to),
+                (Command::Attack(Prey::Unit(other)), _) if heals && other != id => Task::Heal { unit: other, chase: None },
+                (Command::Attack(prey), _) if !heals && prey != Prey::Unit(id) => Task::Attack { prey, chase: None },
                 (Command::Follow(other), _) if other != id => Task::Follow { unit: other, chase: None },
                 (Command::Enter(building), _) if !heals => Task::Enter { building, chase: None },
                 (Command::Hold, _) => Task::Hold,
-                _ => continue, // e.g. following itself, or a medic told to attack a zombie
+                _ => continue, // e.g. following or shooting itself, or a medic told to attack a zombie
             };
             tasks.push((i, task));
         }
@@ -255,6 +259,9 @@ impl World {
             let unit = &mut self.units[i];
             if !queue {
                 unit.queue.clear();
+                // A new command breaks off the shot it's winding up – also the same attack again: it starts over
+                // (animation cancelling, like StarCraft).
+                unit.restart_shot();
             }
             // A "hold" at the end of the queue would block everything after it – so away with it.
             if matches!(unit.queue.back(), Some(Task::Hold)) {

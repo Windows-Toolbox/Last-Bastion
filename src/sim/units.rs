@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::f32::consts::{FRAC_PI_4, PI, TAU};
+use std::sync::Arc;
 
 use macroquad::math::{vec2, Vec2};
 
@@ -10,9 +11,10 @@ use super::fallen::Fling;
 use super::neutral::Tag;
 use super::combat::{Aim, Target};
 use super::crowd;
-use super::commands::{Task, Waypoint};
+use super::commands::{Prey, Task, Waypoint};
 use super::{after_armor, clear_line, push_apart, slide, World, TICK, UNIT_RADIUS};
 use crate::data;
+use crate::flow::{FlowField, Walker};
 use crate::kinds::{Stats, UnitKind};
 
 /// Whoever follows a unit stops at this distance.
@@ -24,6 +26,9 @@ const UNIT_SPACE: f32 = 0.6;
 const CROWD_REACH: f32 = 8.0;
 /// This close to the edge of a tower a unit climbs in.
 const ENTER_REACH: f32 = 0.8;
+/// `Unit::weapon` when the weapon is all the way up – thousandths, whole numbers like everything the simulation
+/// keeps (the same on every PC, DESIGN.md 12.8).
+pub(super) const WEAPON_UP: u32 = 1000;
 
 #[derive(Clone)]
 pub struct Unit {
@@ -47,10 +52,20 @@ pub struct Unit {
     pub facing: f32,
     /// Ticks left until the weapon is reloaded (`combat.rs`).
     pub(super) cooldown: u32,
-    /// Ticks it has aimed at `aim_at` so far – at `aim` (`data\units.json`) it shoots.
+    /// Ticks it has aimed at `aim_at` so far – holding the aim, then the wind-up: at `aim + windup` (`data\units.json`)
+    /// it shoots.
     pub(super) aim: u32,
     /// Whom it is aiming at – kept from tick to tick (`combat.rs`).
     pub(super) aim_at: Option<Aim>,
+    /// How far its weapon is up: 0 = down (walking, nothing to shoot at), `WEAPON_UP` = ready to shoot (`combat.rs`).
+    pub(super) weapon: u32,
+    /// The tick its last shot's animation started (the wind-up) – for the picture, which plays it from there. `None`:
+    /// cancelled, or it walked since.
+    pub(super) swing_from: Option<u64>,
+    /// That shot is Thanatos's blow (`Melee`), not its missile – the picture plays its `fight` then.
+    pub(super) fighting: bool,
+    /// Ticks since it last had a target (saturating). Longer than a search: nothing around, the weapon goes down.
+    pub(super) since_target: u32,
     /// In a tower (its `id`): it stands in the middle of it, can't be hit, shoots and sees further, isn't drawn.
     pub inside: Option<u32>,
     /// Carries a barrel (`blast.rs`): slower, doesn't shoot – and if it dies, the barrel goes off.
@@ -115,6 +130,19 @@ impl Unit {
         self.hurt_at = tick;
     }
 
+    /// Can it attack something standing at `p` – not closer than its `min_range` (Thanatos's missile), unless its
+    /// blow (`melee`) reaches that far? The range itself is checked on its own.
+    pub(super) fn reaches(&self, p: Vec2) -> bool {
+        let stats = self.stats();
+        let d = self.pos.distance(p);
+        d >= stats.min_range || stats.melee.as_ref().is_some_and(|m| d <= m.range)
+    }
+
+    /// Is its current shot the blow from close by (Thanatos)? For the picture.
+    pub fn fighting(&self) -> bool {
+        self.fighting
+    }
+
     /// Range and sight – in a tower both are longer.
     pub fn range(&self) -> f32 {
         self.stats().range + if self.is_inside() { data::get().buildings.tower_bonus } else { 0.0 }
@@ -137,6 +165,17 @@ impl Unit {
     /// Did it walk this tick (being pushed doesn't count)? For the picture: the walk animation.
     pub fn is_walking(&self) -> bool {
         self.moving
+    }
+
+    /// For the picture: how far its weapon is up, 0 (down) to 1 (ready) – TAB's `LoadAttack` at that share.
+    pub fn weapon_up(&self) -> f32 {
+        self.weapon as f32 / WEAPON_UP as f32
+    }
+
+    /// For the picture: the tick its shot's animation started (wind-up, shot, the rest) – `None` if there is none to
+    /// play (cancelled, or it walked since).
+    pub fn swing_from(&self) -> Option<u64> {
+        self.swing_from
     }
 
     /// Has it a target it turns to, aims at or shoots? For the picture: the attack animation.
@@ -239,6 +278,10 @@ impl World {
             cooldown: 0,
             aim: 0,
             aim_at: None,
+            weapon: 0,
+            swing_from: None,
+            fighting: false,
+            since_target: u32::MAX,
             inside: None,
             barrel: false,
             xp: 0,
@@ -312,9 +355,7 @@ impl World {
         }
         // `shoots`: attack and beam need a clear view of the target, following doesn't.
         let (target, close_enough, shoots) = match unit.queue.front() {
-            Some(Task::Attack { zombie, .. }) => {
-                (self.find_zombie(*zombie).map(|z| self.zombies[z].pos), unit.stats().range, true)
-            }
+            Some(Task::Attack { prey, .. }) => (self.prey_spot(*prey, pos).map(|(_, at)| at), unit.stats().range, true),
             Some(Task::Heal { unit: other, .. }) => {
                 (self.find_unit(*other).map(|o| self.units[o].pos), unit.stats().range, true)
             }
@@ -330,13 +371,32 @@ impl World {
         if target.distance(pos) <= close_enough && (!shoots || self.map.clear_sight(pos, target)) {
             return; // close enough: no way needed. Behind a tree it has to walk around it first.
         }
-        let map = &self.map;
+        // A building: the way leads to the middle of it and ends right in front of its walls (its tiles are blocked).
+        let building = match unit.queue.front() {
+            Some(Task::Attack { prey: Prey::Building(id), .. }) => self.find_building(*id),
+            _ => None,
+        };
+        let goal = building.map_or(target, |b| self.buildings[b].center());
+        let stale = match self.units[i].queue.front() {
+            Some(Task::Attack { chase, .. } | Task::Heal { chase, .. } | Task::Follow { chase, .. }) => {
+                chase.as_ref().map_or(true, |way| way.point.distance(goal) > 2.0)
+            }
+            _ => false,
+        };
+        if !stale {
+            return;
+        }
+        let way = match building {
+            Some(b) => {
+                let field = FlowField::to_area(&self.map, &self.buildings[b].tiles(), goal, Walker::Unit);
+                Waypoint { point: goal, field: Arc::new(field), straight: 0.0 }
+            }
+            None => Waypoint::new(&self.map, target),
+        };
         if let Some(Task::Attack { chase, .. } | Task::Heal { chase, .. } | Task::Follow { chase, .. }) =
             self.units[i].queue.front_mut()
         {
-            if chase.as_ref().map_or(true, |way| way.point.distance(target) > 2.0) {
-                *chase = Some(Waypoint::new(map, target));
-            }
+            *chase = Some(way);
         }
     }
 
@@ -361,9 +421,9 @@ impl World {
                 Some(t) => (None, Some(t)),
                 None => (Some(to), None),
             },
-            // A particular zombie: shoot when in range and in sight, otherwise go after it.
-            Some(Task::Attack { zombie, chase }) => match self.find_zombie(*zombie) {
-                Some(z) if self.in_shot(unit.pos, self.zombies[z].pos, stats.range) => (None, Some(Target::Zombie(z))),
+            // A particular zombie, unit or building: shoot when in range and in sight, otherwise go after it.
+            Some(Task::Attack { prey, chase }) => match self.prey_spot(*prey, unit.pos) {
+                Some((target, at)) if self.in_shot(unit.pos, at, stats.range) => (None, Some(target)),
                 _ => (chase.as_ref(), None),
             },
             // Medic on a particular unit: beam when in range and in sight (hurt or not), otherwise go after it.

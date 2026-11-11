@@ -512,6 +512,8 @@ pub struct Generated {
     pub spawners: Vec<SpawnerSpot>,
     pub houses: Vec<HouseSpot>,
     pub loot: Vec<LootSpot>,
+    /// Treasure ruins and power line towers – only to be looked at (`sim/ornaments.rs`). TAB's generator only.
+    pub ornaments: Vec<crate::sim::Ornament>,
     /// The command center's middle tile – the middle of the map, TAB's generator puts it on the free spot nearest it.
     pub base: (i32, i32),
     /// The zombies lying on the map at the start (TAB's generator) – `None`: the world scatters them by its difficulty
@@ -615,7 +617,7 @@ fn generate_counting(seed: u64, setup: &MapSetup) -> (Generated, usize, Vec<Vec2
     let spawners = spawner_spots(size, c.spawners_per_side.round() as i32);
     let loot = places.loot.into_iter().map(|tile| LootSpot { tile, haul: None }).collect();
     let base = (size as i32 / 2, size as i32 / 2);
-    (Generated { map, spawners, houses: places.houses, loot, base, zombies: None }, cut, places.villages)
+    (Generated { map, spawners, houses: places.houses, loot, ornaments: Vec::new(), base, zombies: None }, cut, places.villages)
 }
 
 /// The ways in of this map (`lanes.rs`) – none for the generators without them. They get their own random numbers:

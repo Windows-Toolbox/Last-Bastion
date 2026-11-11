@@ -17,6 +17,12 @@ What TAB's map drawer does (`ZX.GameSystems\\ZXMapDrawer.cs`, `ZXMapTheme*.cs`) 
 3. Trees: one per forest tile, picked by weight - other trees on grass than on bare earth; deep in a forest bigger.
 4. Herbs on the grass, and the ore lumps: four small ones per ore tile. An oil source on every 2 x 2 oil node.
    Coal TAB doesn't have: ours, its stone lumps blackened and broken (`coal_lump`).
+5. The big rocks (`BRMountainC2/C3/C4`, 3 x 3, 4 x 4 and 5 x 5 tiles, three of each): TAB's generator never puts them
+   down, only its hand-made maps - ours in the editor. Coloured like the landscape's mountains (`geology`, TAB's
+   `SetGeologyStyle`).
+6. The floor under a building (`ZX.Components\\CFloorUndeBuilding.cs`): TAB's stone pavement `Floor A`, coloured like the
+   landscape's `FloorBuilding_*` template, repeating every 8 tiles - and its three soft masks (`MasksTerrainSmall`,
+   `MaskTerrainMedium`, `TerrainMaskLarge`, for buildings 1, 2 and 3+ tiles wide) side by side in one picture.
 Every picture coloured like TAB's `DefaultVisualState` (saturation, contrast, brightness, hue; a tree's random hue as
 three variants). The water is a picture TAB composes of layers (`Clips`) - here mixed once into one texture, close to
 it (the recipes below, read from the clips by hand).
@@ -79,23 +85,36 @@ THEMES = {
                max_tree=1.8),
 }
 ORES = {"stone": "MineralStoneA", "iron": "MineralIronA", "gold": "MineralGoldA"}
+# The big rocks per size (tiles): TAB's templates, three pictures each.
+BIG_ROCKS = {3: "BRMountainC2_", 4: "BRMountainC3_", 5: "BRMountainC4_"}
+# How a landscape colours the big rocks (`ZXMapTheme*.SetGeologyStyle`): (saturation, contrast, brightness, hue) - it
+# replaces the template's own. FA and VO don't change it: the template's (1, 0.9, 1, 15).
+GEOLOGY = {"BR": (0.5, 0.55, 1.05, 0), "AL": (0.2, 0.9, 1.07, 200), "DS": (1.5, 0.55, 1.1, 0), "TM": (1.0, 0.9, 1.0, 15)}
 
 # The water: TAB composes it of layers (its clips `Water_BR`, `Water_AL` ...): the earth picture tinted, a water picture
 # added on top, animated. Per layer here: picture, repeats every so many tiles, (saturation, contrast, brightness,
 # hue), colour multiplied (r, g, b), how it's put on ("normal" / "add"), opacity. `period`: the texture covers this many
-# tiles. The pictures and tints are TAB's; how strong the added layer is, by eye - TAB's numbers for it (BR: brightness
-# 1.6, contrast 0.08) turn it white with our colouring. TM and DS add an animation we don't have - Water_E instead.
+# tiles. The numbers are TAB's (BR's and AL's were by eye once, while our colouring spread the contrast around the
+# middle grey - with TAB's own colouring, `colour_matrix`, TAB's numbers fit). TM and DS add an animation we don't
+# have - Water_E instead. VO's darkening layer (`Square_Black`, blend "Darkness") is left out.
 WATER = {
-    "BR": dict(period=30, layers=[("Terrains/TerrainEarth_A.png", 30, (0.4, 0.4, 0.75, 0), (50, 140, 220), "normal", 1),
-                                  ("Water/Water_G.png", 10, (1, 1, 1, 0), (50, 140, 220), "add", 0.25)]),
+    "BR": dict(period=30, layers=[("Terrains/TerrainEarth_A.png", 30, (10, 0.4, 1, 0), (50, 140, 220), "normal", 1),
+                                  ("Water/Water_G.png", 10, (1, 0.08, 1.6, 0), None, "add", 1)]),
     "AL": dict(period=30, layers=[("Terrains/TerrainEarth_A.png", 30, (0.3, 1, 1.13, 0), (30, 144, 255), "normal", 1),
-                                  ("Water/Water_D.png", 15, (0.1, 0.6, 1, 0), None, "add", 0.2)]),
+                                  ("Water/Water_D.png", 15, (0.1, 0.6, 0.2, 0), None, "add", 1)]),
     "VO": dict(period=30, layers=[("Terrains/VOEarthTerrain.png", 30, (0, 1, 0.9, 150), None, "normal", 1),
                                   ("Water/Water_A.png", 5, (1, 1, 1, 0), (46, 139, 87), "add", 0.3),
                                   ("Water/Water_A.png", 30, (1, 1, 1, 0), (102, 205, 170), "add", 0.6)]),
     "TM": dict(period=10, layers=[("Terrains/TerrainEarth_A.png", 5, (0.4, 1, 0.7, -20), (60, 140, 200), "normal", 1),
                                   ("Water/Water_E.png", 10, (1, 1, 1, 0), None, "add", 0.3)]),
 }
+# The floor under the buildings: the template per landscape (`ZXMapTheme*.TemplateFloorBuilding`) - FA and VO keep
+# the default (BR's). Its masks by the building's smaller side: 1, 2, 3 and more tiles.
+FLOORS = {"BR": "FloorBuilding_BR", "AL": "FloorBuilding_AL", "DS": "FloorBuilding_DS", "TM": "FloorBuilding_TM",
+          "FA": "FloorBuilding_BR", "VO": "FloorBuilding_BR"}
+FLOOR_MASKS = ["Masks/MasksTerrainSmall.png", "Masks/MaskTerrainMedium.png", "Masks/TerrainMaskLarge.png"]
+FLOOR_MASK_SIZE = 512
+
 WATER["DS"] = WATER["TM"]
 WATER["FA"] = WATER["BR"]  # FA keeps the default (BR) water
 
@@ -133,6 +152,9 @@ def template(images, templates, name):
             out["image"] = images.get(d.get("IDImage"))
             out["scaling"] = num("SceneScalingFactor", "1")
             out["offset"] = num("SceneOffsetFactorY", "0")
+            # Its random pictures can be named right here (FA's and VO's mountain pieces: `VOPiece1` = VOPiece1A-F).
+            if d.get("RandomImageName"):
+                out["random"] = d["RandomImageName"]
         elif kind == "DXComponentDefaultVisualState+TTemplateConfiguration":
             out["look"] = (num("Saturation", "1"), num("Contrast", "1"), num("Brightness", "1"), num("HueRotation", "0"))
             lo, hi = d.get("RandomHueRotation", "0;0").split(";")
@@ -176,16 +198,10 @@ def single(images, folder, stem):
 
 
 def tinted(image, look, tint, hue=0.0):
-    """TAB's colouring: hue (plus a random turn), saturation, contrast, brightness - then the colour multiplied."""
+    """TAB's colouring (`colour_matrix`): hue (plus a random turn), saturation, contrast, brightness and the colour
+    `tint` (TAB's `ColorHue`) - all in one matrix, like TAB."""
     s, c, b, h = look
-    image = colour(image.convert("RGBA"), (s, c, b, h + hue))
-    if tint:
-        r, g, bl, a = image.split()
-        r = r.point(lambda x: x * tint[0] // 255)
-        g = g.point(lambda x: x * tint[1] // 255)
-        bl = bl.point(lambda x: x * tint[2] // 255)
-        image = Image.merge("RGBA", (r, g, bl, a))
-    return image
+    return colour(image.convert("RGBA"), (s, c, b, h + hue), tint)
 
 
 def texture(tab, t, out):
@@ -413,6 +429,22 @@ def coal(tab, images, templates, atlas):
     return found
 
 
+def big_rocks(tab, images, templates, atlas, key):
+    """The big rocks in the atlas: per size (3, 4, 5 tiles) its pictures, coloured for the landscape."""
+    out = []
+    for size, stem in BIG_ROCKS.items():
+        found = []
+        for letter in "ABC":
+            t = template(images, templates, stem + letter)
+            for path in picture_files(tab, t):
+                look = GEOLOGY.get(key, t["look"])
+                found.append(atlas.add(tinted(Image.open(path), look, None), t["size"] * t["scaling"], t["offset"]))
+        if not found:
+            print(f"    big rocks {size} x {size}: no picture found - left out")
+        out.append(found)
+    return out
+
+
 def weighted(tab, images, templates, atlas, weights, cache):
     """A tree dictionary of TAB's -> [[picture, weight] ...]: a template's weight split over its pictures."""
     out = []
@@ -427,6 +459,18 @@ def weighted(tab, images, templates, atlas, weights, cache):
     return out
 
 
+def floor_masks(tab, out):
+    """TAB's three floor masks (grey: how much floor shows) side by side, each FLOOR_MASK_SIZE big - one picture, so
+    the game can pick one per building without switching textures."""
+    side = FLOOR_MASK_SIZE
+    sheet = Image.new("L", (side * len(FLOOR_MASKS), side))
+    for i, rel in enumerate(FLOOR_MASKS):
+        mask = Image.open(os.path.join(tab, "Images", rel)).convert("L").resize((side, side), Image.LANCZOS)
+        sheet.paste(mask, (i * side, 0))
+    sheet.save(out, optimize=True)
+    return "floor_masks.png"
+
+
 def convert(tab, images, templates, key, theme):
     folder = os.path.join(OUT, key)
     os.makedirs(folder, exist_ok=True)
@@ -435,6 +479,10 @@ def convert(tab, images, templates, key, theme):
         t = template(images, templates, theme[layer])
         meta[layer] = {"image": f"{layer}.png", "tiles": texture(tab, t, os.path.join(folder, f"{layer}.png"))}
     meta["water"] = {"image": "water.png", "tiles": water(tab, WATER[key], os.path.join(folder, "water.png"))}
+
+    t = template(images, templates, FLOORS[key])
+    meta["floor"] = {"image": "floor.png", "tiles": texture(tab, t, os.path.join(folder, "floor.png"))}
+    meta["floor_masks"] = floor_masks(tab, os.path.join(folder, "floor_masks.png"))
 
     atlas, cache = Atlas(), {}
     meta["pieces"] = [objects(tab, images, templates, atlas, p, hue_variants=False) for p in theme["pieces"]]
@@ -447,6 +495,7 @@ def convert(tab, images, templates, key, theme):
         meta[ore] = objects(tab, images, templates, atlas, name, hue_variants=False)
     meta["oil"] = oil(tab, atlas)
     meta["coal"] = coal(tab, images, templates, atlas)
+    meta["big_rocks"] = big_rocks(tab, images, templates, atlas, key)
     meta["pictures"], size = atlas.save(os.path.join(folder, "objects.png"))
     meta["objects"] = "objects.png"
     with open(os.path.join(folder, "terrain.json"), "w", encoding="utf-8") as f:

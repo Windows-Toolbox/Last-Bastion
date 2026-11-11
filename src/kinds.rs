@@ -23,6 +23,30 @@ pub enum UnitKind {
     MercSoldier,
     MercRanger,
     MercSniper,
+    /// TAB's flamethrower (`trained_in` the engineering center): a cone of fire in front of it – it sets zombies on fire
+    /// and burns your own units in it too (`friendly_fire`).
+    Lucifer,
+    /// TAB's rocket launcher: a missile at a crowd further than `min_range` away (`splash`) – and close up a blow with
+    /// the launcher (`melee`).
+    Thanatos,
+    /// TAB's walking cannon: far, hard shots that hit a little area (`splash`).
+    Titan,
+}
+
+/// A second attack from close by (Thanatos's blow, TAB's `ThanatosAttack`) – used whenever the target is within its
+/// `range`, otherwise the unit's own attack. Its times like the unit's (`Stats`), in seconds in the file.
+#[derive(Deserialize)]
+pub struct Melee {
+    pub damage: u32,
+    pub range: f32,
+    /// It hits everyone in a cone this wide (degrees) and `range` long in front of it …
+    pub cone_degrees: f32,
+    /// … at the edge only this share of `damage` (TAB's `MinFactorDamageInArea`).
+    pub edge_factor: f32,
+    #[serde(rename = "windup_seconds", deserialize_with = "data::seconds")]
+    pub windup: u32,
+    #[serde(rename = "cooldown_seconds", deserialize_with = "data::seconds")]
+    pub cooldown: u32,
 }
 
 /// The values of a unit type – one block in `data\units.json`.
@@ -39,6 +63,9 @@ pub struct Stats {
     pub cost_wood: u32,
     #[serde(default)]
     pub cost_iron: u32,
+    /// Oil out of the stock – TAB's engineering-center units.
+    #[serde(default)]
+    pub cost_oil: u32,
     /// Workers it takes from the colony (`World::workers`) – like its gold when it goes into the production queue, but
     /// they come back when it dies (or is cancelled). DESIGN.md 5.6.
     pub worker_cost: u32,
@@ -50,6 +77,9 @@ pub struct Stats {
     /// (`economy_payout`). Left out: 0.
     #[serde(default)]
     pub food: u32,
+    /// Oil every payout for as long as it lives (TAB's `OilGen` −1, the Titan −2) – like its food. Left out: 0.
+    #[serde(default)]
+    pub oil: u32,
     pub hp: u32,
     /// Armor like TAB's: this share of every zombie's hit doesn't get through (`after_armor`; 0.4 = 40 % less, at
     /// least 1 always does).
@@ -63,22 +93,40 @@ pub struct Stats {
     /// In the file in seconds (`turn_around_seconds`).
     #[serde(rename = "turn_around_seconds", deserialize_with = "data::seconds")]
     pub turn_around: u32,
-    /// Ticks of wind-up before every shot (drawing the bow, raising the rifle) – like StarCraft's "damage point".
-    /// Facing the target, the unit aims this long, then it shoots. Another target: aiming starts over.
-    /// In the file in seconds (`aim_seconds`).
+    /// Ticks to bring the weapon up (TAB's `TimeLoad`, the animation `LoadAttack`) – once, when it stands and has a
+    /// target; it stays up as long as it keeps shooting. In the file in seconds (`raise_seconds`).
+    #[serde(rename = "raise_seconds", deserialize_with = "data::seconds")]
+    pub raise: u32,
+    /// Ticks to take it down again (TAB's `TimeUnload`) – while it walks, it doesn't wait for that. Walked only a short
+    /// bit: it's only partly down, and raising it again is quicker (`combat.rs`). In the file `lower_seconds`.
+    #[serde(rename = "lower_seconds", deserialize_with = "data::seconds")]
+    pub lower: u32,
+    /// Ticks of holding the aim before every shot (TAB's `TimePreAction` – only the sniper has one). Another target:
+    /// aiming starts over. In the file in seconds (`aim_seconds`).
     #[serde(rename = "aim_seconds", deserialize_with = "data::seconds")]
     pub aim: u32,
-    /// Ticks of reloading after a shot, before it can aim again. One shot takes `aim + cooldown`. In the file in
-    /// seconds (`cooldown_seconds`); 0 for the medic – its beam is on every tick, so it looks continuous.
+    /// Ticks from the start of the shot's animation to the shot itself (TAB's `TimeAction × TimeFactorAction`) –
+    /// StarCraft's "damage point". Walking off now cancels the shot: no damage, and no reloading either. In the file
+    /// `windup_seconds`.
+    #[serde(rename = "windup_seconds", deserialize_with = "data::seconds")]
+    pub windup: u32,
+    /// Ticks of reloading after a shot, before it can aim again (TAB's rest of `TimeAction` + `TimePostAction`). It goes
+    /// on while the unit walks – walking off right after the shot costs no time (animation cancelling). One shot takes
+    /// `aim + windup + cooldown`. In the file in seconds (`cooldown_seconds`); 0 for the medic – its beam is on every
+    /// tick, so it looks continuous.
     #[serde(rename = "cooldown_seconds", deserialize_with = "data::seconds")]
     pub cooldown: u32,
+    /// Its arrow flies this many tiles per second (TAB's `ProyectileSpeed`, the ranger 12) and hits when it lands
+    /// (`sim/arrows.rs`). Left out: 0 – a bullet, it hits at once.
+    #[serde(default)]
+    pub projectile_speed: f32,
     /// Tiles per second.
     pub speed: f32,
     /// Only while one of these stands can it be trained – firearms need the munitions factory. Written as the type's
     /// name in the file (`"MunitionsFactory"`), left out: none.
     #[serde(default)]
     pub requires: Option<BuildingKind>,
-    /// Where it's trained: `"Barracks"` (left out) or `"Inn"` – the mercenaries.
+    /// Where it's trained: `"Barracks"` (left out), `"Inn"` – the mercenaries – or `"EngineeringCenter"`.
     #[serde(default = "barracks")]
     pub trained_in: BuildingKind,
     /// A mercenary: works for gold, not for the colony – in debt it deserts first, already deep in debt
@@ -111,6 +159,31 @@ pub struct Stats {
     /// points (rounded up), once it hasn't been hit for `regen_after_seconds` (`data\units.json`, `sim/units.rs`). In
     /// every block – no default.
     pub regen: f32,
+    /// Its shot hits everyone within this many tiles of where it lands (TAB's `EffectRadius`) – 0: only its target …
+    #[serde(default)]
+    pub splash: f32,
+    /// … at the edge of it only this share of `damage` (TAB's `MinFactorDamageInArea`; 1: everyone all of it).
+    #[serde(default = "one")]
+    pub edge_factor: f32,
+    /// It shoots nothing closer than this (tiles) – Thanatos's missile (TAB's `MinTargetDistance`).
+    #[serde(default)]
+    pub min_range: f32,
+    /// Lucifer: it hits everyone in a cone this wide (degrees) and `range` long in front of it – 0: no cone.
+    #[serde(default)]
+    pub cone_degrees: f32,
+    /// Its shot hurts your own units too (TAB's `FriendlyDamage`) – the ones in its cone or its splash.
+    #[serde(default)]
+    pub friendly_fire: bool,
+    /// The share of hits that set a zombie on fire (TAB's `BurnFactor`, Lucifer 0.7) – it burns for its breed's
+    /// `burn_seconds` (`sim/fire.rs`).
+    #[serde(default)]
+    pub burn_chance: f32,
+    /// How much fire hurts it (TAB's `FireDamageFactor`: 1 all, 0.5 half, 0 none – Lucifer's suit). In every block – no
+    /// default, like `venom_factor`.
+    pub fire_factor: f32,
+    /// Thanatos: the blow it deals close up instead of its missile.
+    #[serde(default)]
+    pub melee: Option<Melee>,
     /// Its looks: sprites in `assets\` (`sprites.rs`), e.g. `"units/ranger"` – every unit wears one of them, for life.
     /// Those that aren't there are left out (TAB's pictures only exist where they were converted). Left out: none.
     #[serde(default)]
@@ -125,7 +198,7 @@ impl UnitKind {
     }
 
     /// All types, in the order of the selection panel.
-    pub const ALL: [UnitKind; 8] = [
+    pub const ALL: [UnitKind; 11] = [
         UnitKind::Soldier,
         UnitKind::Ranger,
         UnitKind::Sniper,
@@ -134,6 +207,9 @@ impl UnitKind {
         UnitKind::MercSoldier,
         UnitKind::MercRanger,
         UnitKind::MercSniper,
+        UnitKind::Lucifer,
+        UnitKind::Thanatos,
+        UnitKind::Titan,
     ];
 }
 
@@ -142,10 +218,15 @@ fn barracks() -> BuildingKind {
     BuildingKind::Barracks
 }
 
+/// 1 – `edge_factor` left out: everyone in the splash takes all of it.
+fn one() -> f32 {
+    1.0
+}
+
 impl Stats {
     /// Ticks from the start of aiming to the next start of aiming – one shot.
     pub fn shot_ticks(&self) -> u32 {
-        self.aim + self.cooldown
+        self.aim + self.windup + self.cooldown
     }
 }
 
@@ -207,11 +288,49 @@ pub enum BuildingKind {
     /// An explosive barrel standing on the ground (`sim/blast.rs`): any damage and it goes off. Made in the
     /// munitions factory, set from the defence menu or put down by a unit carrying one.
     Barrel,
+    /// TAB's wooden house: the house between tent and stone house – goes on a tent, a stone house goes on it.
+    WoodHouse,
+    /// TAB's power plant: a lot of power, burns coal (DESIGN.md's coal plant – TAB's burns wood).
+    PowerPlant,
+    /// TAB's oil platform: right on an oil node (all its tiles oil), pumps oil.
+    OilPlatform,
+    /// TAB's quarry: stone from the stone patches under and around it – only stone (DESIGN.md 6).
+    Quarry,
+    /// TAB's advanced quarry: the same, twice as much per tile.
+    BigQuarry,
+    /// TAB's advanced farm: twice the food per field.
+    BigFarm,
+    /// TAB's iron mill: twice the windmill's power.
+    BigMill,
+    /// TAB's warehouse: more room in the stock, and the gathering buildings around it bring in more.
+    Warehouse,
+    /// TAB's advanced unit center: trains Lucifer, Thanatos and Titan.
+    EngineeringCenter,
+    /// TAB's shocking tower: charges, then hits every zombie in range at once.
+    ShockingTower,
+    /// TAB's executor: a turning gun like the ballista's, fast, hard, a little splash.
+    Executor,
+    /// TAB's blade trap: the stake trap, harder.
+    BladeTrap,
+    /// TAB's mine: goes off under the first zombie that steps on it.
+    MineTrap,
+    /// TAB's radar: sees very far, through forest too.
+    Radar,
+    /// TAB's lookout tower: sees far, through forest too.
+    LookoutTower,
+    /// TAB's wonders (DESIGN.md question 29) – one each, with TAB's effects: the Spire (much power, far reach), the
+    /// Academy (every unit a veteran), the Victorious (a fortress, houses around it pay more), the Transmutator (goods
+    /// into oil), the Crystal Palace (colonists and food).
+    Spire,
+    Academy,
+    Victorious,
+    Transmutator,
+    CrystalPalace,
 }
 
 impl BuildingKind {
     /// Every type, in the order above – `kind as usize` is its place in this list.
-    pub const ALL: [BuildingKind; 28] = [
+    pub const ALL: [BuildingKind; 48] = [
         BuildingKind::CommandCenter,
         BuildingKind::Barracks,
         BuildingKind::Tent,
@@ -240,6 +359,26 @@ impl BuildingKind {
         BuildingKind::Bank,
         BuildingKind::Inn,
         BuildingKind::Barrel,
+        BuildingKind::WoodHouse,
+        BuildingKind::PowerPlant,
+        BuildingKind::OilPlatform,
+        BuildingKind::Quarry,
+        BuildingKind::BigQuarry,
+        BuildingKind::BigFarm,
+        BuildingKind::BigMill,
+        BuildingKind::Warehouse,
+        BuildingKind::EngineeringCenter,
+        BuildingKind::ShockingTower,
+        BuildingKind::Executor,
+        BuildingKind::BladeTrap,
+        BuildingKind::MineTrap,
+        BuildingKind::Radar,
+        BuildingKind::LookoutTower,
+        BuildingKind::Spire,
+        BuildingKind::Academy,
+        BuildingKind::Victorious,
+        BuildingKind::Transmutator,
+        BuildingKind::CrystalPalace,
     ];
 }
 
@@ -256,13 +395,15 @@ pub enum Resource {
     /// Iron – smelted in the foundry from iron ore and coal (`smelts` in `data\buildings.json`). The second tier of
     /// defence costs it: the machine gun tower.
     Iron,
+    /// Oil – pumped by the oil platform from an oil node (DESIGN.md 5.1). TAB's late units and buildings cost it.
+    Oil,
 }
 
 impl Resource {
     /// How many there are – the size of the lists with one entry per good (`Stock`).
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
     pub const ALL: [Resource; Resource::COUNT] =
-        [Resource::Wood, Resource::Stone, Resource::IronOre, Resource::Coal, Resource::Food, Resource::Iron];
+        [Resource::Wood, Resource::Stone, Resource::IronOre, Resource::Coal, Resource::Food, Resource::Iron, Resource::Oil];
 
     /// Its place in `Stock`.
     pub fn index(self) -> usize {
@@ -277,6 +418,7 @@ impl Resource {
             Resource::Coal => "Coal",
             Resource::Food => "Food",
             Resource::Iron => "Iron",
+            Resource::Oil => "Oil",
         }
     }
 
@@ -311,6 +453,10 @@ pub enum Source {
     Fertile,
     /// Ore patches (not oil) – each tile gives its own ore.
     Ore,
+    /// Only the stone patches – the quarries.
+    Stone,
+    /// The oil nodes – the oil platform.
+    Oil,
 }
 
 /// The values of a building type – one block in `data\buildings.json`.
@@ -352,6 +498,9 @@ pub struct BuildingStats {
     /// Iron from the foundry (`Resource::Iron`) – the second tier of defence costs it.
     #[serde(default)]
     pub cost_iron: u32,
+    /// Oil from the oil platform – TAB's late buildings cost it.
+    #[serde(default)]
+    pub cost_oil: u32,
     /// Only while one of these stands can it be built – like TAB's wood workshop. Written as the type's name in the
     /// file (`"WoodWorkshop"`).
     #[serde(default)]
@@ -369,6 +518,39 @@ pub struct BuildingStats {
     /// Wood it burns every payout – without it, it makes no power (the charcoal burner).
     #[serde(default)]
     pub burns_wood: u32,
+    /// The same with coal (the power plant – DESIGN.md's coal plant).
+    #[serde(default)]
+    pub burns_coal: u32,
+    /// Goods it turns into others every payout while it works (TAB's negative and positive `WoodGen`, `OilGen` …): the
+    /// Transmutator wood, stone and iron into oil, the Victorious eats oil. Only when all it `takes` is in the stock.
+    #[serde(default)]
+    pub converts: Option<Convert>,
+    /// This much more of every good fits into the stock while it stands – not food, not gold (TAB's
+    /// `ResourcesStorage`, the warehouse).
+    #[serde(default)]
+    pub goods_storage: u32,
+    /// TAB's buildings that help their neighbours (`CBuildingEnhanced`): the buildings whose whole site lies within its
+    /// site plus this many tiles …
+    #[serde(default)]
+    pub boost_range: i32,
+    /// … bring in this many percent more when they gather (the warehouse: TAB's `FactorProductionNearBuildings`) …
+    #[serde(default)]
+    pub gather_boost_percent: u32,
+    /// … or pay this many percent more gold (the Victorious: TAB's `FactorGoldNearBuildings`).
+    #[serde(default)]
+    pub gold_boost_percent: u32,
+    /// Sees over forest – nothing blocks its view (TAB's `WatchThroughOpaque`: radar, lookout tower, wonders).
+    #[serde(default)]
+    pub sees_through_forest: bool,
+    /// At most one of it may stand (TAB's `MaxInstances` 1 – the wonders).
+    #[serde(default)]
+    pub only_one: bool,
+    /// While it works every one of your units counts as a veteran (TAB's `MakeSoldiersVeteran`, the Academy).
+    #[serde(default)]
+    pub veteran_units: bool,
+    /// The mine trap: what it does when a zombie steps on it (`sim/traps.rs`).
+    #[serde(default)]
+    pub mine: Option<MineBlast>,
     /// Food its colonists eat every payout – without it, they pay no gold (houses).
     #[serde(default)]
     pub food: u32,
@@ -482,6 +664,32 @@ pub struct Weapon {
     /// walkers), `false` the nearest.
     #[serde(default)]
     pub toughest: bool,
+    /// The shocking tower: once charged it hits every zombie in range and in sight at once (TAB's `ShockingTower`).
+    #[serde(default)]
+    pub all_in_range: bool,
+    /// Its shot hits everyone within this many tiles of its target, all of `damage` (the executor: TAB's
+    /// `EffectRadius`). 0: only the target.
+    #[serde(default)]
+    pub splash: f32,
+}
+
+/// Goods a building turns into others every payout (`BuildingStats::converts`): `[["Wood", 20], …]`.
+#[derive(Deserialize)]
+pub struct Convert {
+    #[serde(default)]
+    pub takes: Vec<(Resource, u32)>,
+    #[serde(default)]
+    pub makes: Vec<(Resource, u32)>,
+}
+
+/// What a mine trap does (TAB's `TrapMine`): a zombie steps on it, `delay_seconds` later it goes off – `damage` to
+/// everyone within `radius` (zombies, your units, buildings, like a barrel's blast), and it's gone.
+#[derive(Deserialize)]
+pub struct MineBlast {
+    pub damage: u32,
+    pub radius: f32,
+    #[serde(rename = "delay_seconds", deserialize_with = "data::seconds")]
+    pub delay: u32,
 }
 
 impl BuildingStats {
@@ -499,12 +707,17 @@ impl BuildingKind {
     /// Does it train units (a production queue and a rally point)? The barracks – and the inn its mercenaries. Which
     /// unit where: `trained_in` in `data\units.json`.
     pub fn trains(self) -> bool {
-        matches!(self, BuildingKind::Barracks | BuildingKind::Inn)
+        matches!(self, BuildingKind::Barracks | BuildingKind::Inn | BuildingKind::EngineeringCenter)
     }
 
     /// Does it make barrels (a production queue of them, `sim/blast.rs`)? The munitions factory.
     pub fn makes_barrels(self) -> bool {
         self.stats().barrel_storage > 0
+    }
+
+    /// TAB's wonders – the build menu Y.
+    pub fn is_wonder(self) -> bool {
+        matches!(self, BuildingKind::Spire | BuildingKind::Academy | BuildingKind::Victorious | BuildingKind::Transmutator | BuildingKind::CrystalPalace)
     }
 
     /// The walls, and the gates in them – a harpy leaps over them (`leap_over`).
@@ -524,9 +737,10 @@ impl BuildingKind {
         self.is_wall() || self.is_tower() || self.stats().weapon.is_some()
     }
 
-    /// A trap: everyone walks over it, zombies don't attack it – it hurts them (`trap_damage`).
+    /// A trap: everyone walks over it, zombies don't attack it – it hurts them (`trap_damage`), or it goes off under
+    /// them (the mine).
     pub fn is_trap(self) -> bool {
-        self.stats().trap_damage > 0
+        self.stats().trap_damage > 0 || self.stats().mine.is_some()
     }
 
     /// What a gathering building works, and what it gets from it – a mine: whatever ore lies there (`None`).
@@ -535,8 +749,10 @@ impl BuildingKind {
             BuildingKind::Sawmill => Some((Source::Forest, Some(Resource::Wood))),
             BuildingKind::HunterCottage => Some((Source::Hunting, Some(Resource::Food))),
             BuildingKind::FishingHut => Some((Source::Water, Some(Resource::Food))),
-            BuildingKind::Farm => Some((Source::Fertile, Some(Resource::Food))),
+            BuildingKind::Farm | BuildingKind::BigFarm => Some((Source::Fertile, Some(Resource::Food))),
             BuildingKind::Mine => Some((Source::Ore, None)),
+            BuildingKind::Quarry | BuildingKind::BigQuarry => Some((Source::Stone, Some(Resource::Stone))),
+            BuildingKind::OilPlatform => Some((Source::Oil, Some(Resource::Oil))),
             _ => None,
         }
     }
@@ -561,7 +777,12 @@ impl BuildingKind {
     /// Does it have to stand on grass – every tile of it fertile (`Terrain::is_fertile`)? The farm: nothing grows on
     /// dirt.
     pub fn needs_fertile(self) -> bool {
-        self == BuildingKind::Farm
+        matches!(self, BuildingKind::Farm | BuildingKind::BigFarm)
+    }
+
+    /// Does it have to stand right on an oil node – every tile of it oil? The oil platform (TAB's `OilSource`).
+    pub fn needs_oil(self) -> bool {
+        self == BuildingKind::OilPlatform
     }
 
     /// Does it have to stand inside the power grid – does it make, take or carry power? Not the command center: it

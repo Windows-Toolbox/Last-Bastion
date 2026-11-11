@@ -17,6 +17,48 @@ pub enum WindowMode {
     Borderless,
 }
 
+/// Which units and buildings get a health bar above them.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")] // in the file: "always" / "damaged" / "selected" / "never"
+pub enum HealthBars {
+    /// Above everything.
+    Always,
+    /// Above the hurt and the selected ones.
+    Damaged,
+    /// Only above the selected ones.
+    Selected,
+    Never,
+}
+
+impl HealthBars {
+    pub const ALL: [HealthBars; 4] = [HealthBars::Always, HealthBars::Damaged, HealthBars::Selected, HealthBars::Never];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HealthBars::Always => "Always",
+            HealthBars::Damaged => "Damaged",
+            HealthBars::Selected => "Selected",
+            HealthBars::Never => "Never",
+        }
+    }
+
+    /// The next one in `ALL` – a click on the setting goes round them.
+    pub fn next(self) -> HealthBars {
+        let i = HealthBars::ALL.iter().position(|&b| b == self).unwrap_or(0);
+        HealthBars::ALL[(i + 1) % HealthBars::ALL.len()]
+    }
+
+    /// Does something with this health (`hurt`) and selection get a bar?
+    pub fn shows(self, hurt: bool, selected: bool) -> bool {
+        match self {
+            HealthBars::Always => true,
+            HealthBars::Damaged => hurt || selected,
+            HealthBars::Selected => selected,
+            HealthBars::Never => false,
+        }
+    }
+}
+
 /// `#[serde(default)]`: if a value is missing in the file, it comes from `Default` below.
 /// Unknown values in the file are simply skipped.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -29,8 +71,8 @@ pub struct Settings {
     pub scroll_speed: f32,
     /// Hold the mouse inside the window while the game is in front (like StarCraft 2).
     pub confine_mouse: bool,
-    /// Health bars above all units – otherwise only above hurt and selected ones.
-    pub always_health_bars: bool,
+    /// Which units and buildings show a health bar.
+    pub health_bars: HealthBars,
     /// Lines through the whole command queue of the selected units. Off: only the current target, the whole
     /// queue only while Shift is held (like StarCraft 2).
     pub always_full_queue: bool,
@@ -51,7 +93,7 @@ impl Default for Settings {
             edge_scroll: true,
             scroll_speed: 900.0,
             confine_mouse: true,
-            always_health_bars: false,
+            health_bars: HealthBars::Damaged,
             always_full_queue: true,
             show_grid: false,
             dev_overlay: true,
@@ -150,14 +192,27 @@ mod tests {
         assert!(Settings::parse(&text) == s);
     }
 
+    /// The health bar setting goes round all four and is saved by name.
+    #[test]
+    fn health_bars_cycle_and_save() {
+        let mut b = HealthBars::Damaged;
+        for _ in 0..HealthBars::ALL.len() {
+            b = b.next();
+        }
+        assert!(b == HealthBars::Damaged);
+        let s = Settings::parse(r#"{ "health_bars": "never" }"#);
+        assert!(s.health_bars == HealthBars::Never);
+        assert!(HealthBars::Selected.shows(false, true) && !HealthBars::Selected.shows(true, false));
+    }
+
     /// A changed key is saved and read back with the rest.
     #[test]
     fn keys_round_trip() {
         use crate::keys::Action;
         use macroquad::prelude::KeyCode;
         let mut s = Settings::default();
-        s.keys.set(Action::Pause, 0, Some(KeyCode::P));
+        s.keys.set(Action::Pause, 0, Some(KeyCode::P.into()));
         let text = serde_json::to_string_pretty(&s).unwrap();
-        assert!(Settings::parse(&text).keys.has(Action::Pause, KeyCode::P));
+        assert!(Settings::parse(&text).keys.has(Action::Pause, KeyCode::P.into()));
     }
 }

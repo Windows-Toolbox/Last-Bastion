@@ -32,6 +32,7 @@ use crate::picture::{Extras, MapPicture};
 use crate::rng::Rng;
 use crate::settings::{self, Settings};
 use crate::sim::{spawner_tiles, Axes, DAY_TICKS, TICKS_PER_SECOND};
+use crate::ui_art;
 use crate::widgets::{self, button, button_lit, field_slider, pick, text_box, tooltip, type_into, Column, ACCENT, DIM, GAP, ROW};
 
 /// What the home screen wants `app.rs` to do.
@@ -56,6 +57,10 @@ enum Page {
 
 /// This many maps fit on the maps page at once – the mouse wheel scrolls the rest.
 const SHOWN: usize = 10;
+/// The room the logo gets at the top left of the main page – it keeps its shape inside it (`draw_fitted`). The
+/// buttons below stay where they were.
+const LOGO_W: f32 = 420.0;
+const LOGO_H: f32 = 180.0;
 
 pub struct Home {
     program: Program,
@@ -216,8 +221,24 @@ impl Home {
         self.preview.draw(area, |p| top_left + (iso(p) - origin) * scale);
     }
 
-    /// The map of the current setup over the whole screen, darkened – behind the main page.
+    /// Behind the pages: TAB's menu picture (`draw_tab_backdrop`) – without it the map of the current setup over the
+    /// whole screen. Darkened by `dark`, so the text stays readable.
     fn draw_backdrop(&self, dark: f32) {
+        if draw_tab_backdrop() {
+            // Darker on the left, where the buttons are – TAB's picture is busy.
+            // One rectangle whose corners have their own colour – the graphics card blends between them.
+            let (w, h) = (screen_width(), screen_height());
+            let shade = |a: f32| Color::new(0.03, 0.04, 0.05, a);
+            let (left, right) = (shade(dark), shade(dark * 0.3));
+            let vertices = vec![
+                Vertex::new(0.0, 0.0, 0.0, 0.0, 0.0, left),
+                Vertex::new(w, 0.0, 0.0, 0.0, 0.0, right),
+                Vertex::new(w, h, 0.0, 0.0, 0.0, right),
+                Vertex::new(0.0, h, 0.0, 0.0, 0.0, left),
+            ];
+            draw_mesh(&Mesh { vertices, indices: vec![0, 1, 2, 0, 2, 3], texture: None });
+            return;
+        }
         // High enough that the width decides how big it is: it fills the screen to both sides.
         let width = screen_width() + 120.0;
         let height = (width * TILE_H / TILE_W).max(screen_height() * 1.15);
@@ -256,12 +277,22 @@ impl Home {
     fn main_page(&mut self) -> HomeAction {
         self.draw_backdrop(0.6);
         let x = 80.0;
-        draw_text("LAST BASTION", x, 150.0, 84.0, WHITE);
+        // Our logo (`tools\make_logo.py`) above the buttons – without it the name as text, like before.
+        let subtitle_y = match ui_art::logo() {
+            Some(logo) => {
+                draw_fitted(&logo, Rect::new(x - 20.0, 10.0, LOGO_W, LOGO_H));
+                10.0 + LOGO_H + 22.0
+            }
+            None => {
+                draw_text("LAST BASTION", x, 150.0, 84.0, WHITE);
+                188.0
+            }
+        };
         let subtitle = match self.program {
             Program::Game => "Hold the line. Build the factory. Survive the billions.",
             Program::Editor => "Map editor - every map is one file",
         };
-        draw_text(subtitle, x + 4.0, 188.0, 22.0, DIM);
+        draw_text(subtitle, x + 4.0, subtitle_y, 22.0, DIM);
         let mut col = Column { x, y: 240.0, width: 340.0 };
         let mut action = HomeAction::Nothing;
         match self.program {
@@ -780,6 +811,38 @@ fn level_picture(path: &std::path::Path, file: &MapFile) -> Option<Texture2D> {
 }
 
 /// `texture` as big as fits into `area`, its shape kept, in the middle.
+/// TAB's main menu (`assets\ui\backgrounds\`, `tools\tab_ui.py`): the sky, three rows of the horde, the ground and the
+/// colony in front – laid over each other from the back, each a little wider than the screen. TAB moves them in a 3D
+/// scene; here the nearer ones shift a little more with the mouse (parallax). `false`: the pictures aren't there.
+fn draw_tab_backdrop() -> bool {
+    let Some(sky) = ui_art::get("backgrounds/Background_Sky") else {
+        return false;
+    };
+    let (w, h) = (screen_width(), screen_height());
+    // How far the mouse is from the middle: -1 … 1 across and down.
+    let mouse = (Vec2::from(mouse_position()) / vec2(w, h) * 2.0 - 1.0).clamp(Vec2::NEG_ONE, Vec2::ONE);
+    let scale = (w / sky.width()).max(h / sky.height());
+    draw_texture_ex(&sky, 0.0, 0.0, WHITE, DrawTextureParams { dest_size: Some(vec2(sky.width(), sky.height()) * scale), ..Default::default() });
+    // (picture, width and left edge as shares of the screen width, bottom as a share of its height, how far it moves
+    // with the mouse in pixels)
+    let layers = [
+        ("Background_Row3", 1.1, -0.05, 0.70, 6.0),
+        ("Background_Row2", 1.1, -0.05, 0.80, 10.0),
+        ("Background_Row1", 1.1, -0.05, 0.88, 16.0),
+        ("Background_Ground", 1.1, -0.05, 1.25, 24.0),
+        ("Background_Colony", 0.75, 0.3, 1.0, 30.0),
+    ];
+    for (name, width, left, bottom, moves) in layers {
+        let Some(texture) = ui_art::get(&format!("backgrounds/{name}")) else {
+            continue;
+        };
+        let size = vec2(width * w, width * w * texture.height() / texture.width());
+        let corner = vec2(left * w, bottom * h - size.y) - mouse * moves;
+        draw_texture_ex(&texture, corner.x, corner.y, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
+    }
+    true
+}
+
 fn draw_fitted(texture: &Texture2D, area: Rect) {
     let scale = (area.w / texture.width()).min(area.h / texture.height());
     let (w, h) = (texture.width() * scale, texture.height() * scale);

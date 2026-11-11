@@ -9,15 +9,17 @@ use std::f32::consts::{PI, TAU};
 use macroquad::prelude::*;
 
 use crate::building_sprites::{Aim, Appearance, BuildingSprite, State};
+use crate::critters::Critters;
 use crate::data;
 use crate::effects::Effects;
-use crate::ground::{Decor, Landscape};
+use crate::ground::{Decor, Floor, Landscape};
 use crate::hud::{draw_life, hp_color};
 use crate::iso::{Camera, FLAT, TILE_H, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::map::{to_frame, Deposit, Ore, Region, Terrain};
+use crate::map::{to_frame, Deposit, Map, Ore, Region, Terrain};
 use crate::picture;
-use crate::sim::{self, Breed, Building, DoomHouse, LootKind, Mark, TICK, UNIT_RADIUS, World};
+use crate::settings::HealthBars;
+use crate::sim::{self, Breed, Building, DoomHouse, LootKind, Mark, Unit, TICK, UNIT_RADIUS, World};
 use crate::sprites::{Pose, Sprite, Sprites};
 use crate::vision::Vision;
 
@@ -118,9 +120,11 @@ pub struct View<'a> {
     /// Show the whole command queue (setting; otherwise like in StarCraft only while Shift is held), otherwise only
     /// the current target.
     pub full_plan: bool,
-    /// Health bars above all units (setting).
-    pub always_bars: bool,
-    /// The lines between the tiles on the ground (setting, TAB's grid).
+    /// Which units and buildings get a health bar (setting).
+    pub bars: HealthBars,
+    /// The `id`s of the selected buildings – for the bars.
+    pub selected_buildings: &'a [u32],
+    /// TAB's grid view (setting): lines between the tiles, mountains and forests coloured instead of drawn.
     pub grid: bool,
     /// Whose eyes: fog of war like in the game, the zombies' view, or none (editor).
     pub fog: Fog<'a>,
@@ -135,6 +139,9 @@ pub struct View<'a> {
     pub landscape: Option<&'a Landscape>,
     /// The spawners to show (only in editor mode) – with the size they have while being dragged.
     pub spawners: Vec<SpawnerShape>,
+    /// The zombies as coloured tiles instead of figures (editor, zoomed out – `zombie_tiles`): far quicker with
+    /// thousands of them, and you see at a glance where which breed stands.
+    pub zombie_tiles: bool,
 }
 
 /// How long a zombie takes to fade in when it comes into your sight, and to fade out after it leaves it (seconds) – like
@@ -156,6 +163,8 @@ pub struct Looks {
     zombies: HashMap<u32, Look>,
     /// TAB's effects playing, and where the turning guns point (`effects.rs`).
     pub effects: Effects,
+    /// Ravens and rats – only in the picture (`critters.rs`).
+    critters: Critters,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -205,6 +214,7 @@ impl Looks {
         }
         self.zombies = next;
         self.effects.update(world, time, dt);
+        self.critters.update(world, time);
     }
 
     pub fn get(&self, id: u32) -> Look {
@@ -293,25 +303,60 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             }
         }
     }
-    // The flat things on the ground (herbs, ore lumps) – before the fog, which darkens them like the ground.
+    // The paved floor under the buildings (`ground::Floor`), then the flat things on the ground (herbs – not under a
+    // floor –, ore lumps) – before the fog, which darkens them like the ground.
     if let Some(landscape) = view.landscape {
-        landscape.decor_in(area, false, |d| landscape.draw_decor(camera, d, WHITE));
+        let floors = floors(world, view);
+        landscape.draw_floors(camera, &floors);
+        landscape.decor_in(area, false, |d| {
+            if !d.is_paved(&floors) {
+                landscape.draw_decor(camera, d, WHITE)
+            }
+        });
+    }
+    // Game time (seconds) for the effects and animations: stands still while paused, runs faster at higher speed.
+    let now = (world.tick as f32 + alpha) * TICK;
+    // The shimmer on the water (`effects.rs`) – with TAB's pictures, not in the grid view.
+    if view.landscape.is_some() && !view.grid {
+        view.looks.effects.draw_water(world, area, camera, now);
     }
     // The fields of the farms: every grass tile a farm works, a field (`World::worked_tiles`). Before the fog, so it
     // darkens them like the ground.
-    for (b, farm) in world.buildings.iter().enumerate().filter(|(_, b)| b.kind == BuildingKind::Farm && !b.infected) {
+    // With TAB's wheat (`CFarmer`) the fields are pictures standing among the rest – further down.
+    let wheat = view.sprites.decor("wheat").filter(|_| !view.grid);
+    // TAB's treasure ruins: lying on the ground round their loot, in the look of the landscape.
+    let ruin_look = match world.look.as_str() {
+        look @ ("TM" | "AL" | "DS" | "VO") => look.to_lowercase(),
+        _ => "br".to_owned(),
+    };
+    if let Some(ruin) = view.sprites.decor(&format!("treasure_ruin_{ruin_look}")) {
+        for ornament in world.ornaments.iter().filter(|o| o.kind == sim::OrnamentKind::Ruin) {
+            // Its picture in the middle of its 4 × 4 tiles.
+            let width = ruin.size();
+            let at = vec2(ornament.tile.0 as f32, ornament.tile.1 as f32) + Vec2::splat(2.0 + width / 2.0);
+            if area.contains(at) && seen(world, &view.fog, at - width / 2.0)
+                && let Some(body) = ruin.body()
+            {
+                ruin.draw(camera, body, State::Working, 0.0, Aim::default(), at, width, WHITE);
+            }
+        }
+    }
+    for (b, farm) in world.buildings.iter().enumerate().filter(|(_, b)| b.kind == BuildingKind::Farm && !b.infected && wheat.is_none()) {
         for (x, y) in world.worked_tiles(farm.kind, farm.tile, b) {
             if area.contains_tile(x, y) {
                 draw_diamond(camera, vec2(x as f32 + 0.08, y as f32 + 0.08), Vec2::splat(0.84), FIELD);
             }
         }
     }
+    // The zombies as tiles (editor, zoomed out): in the grid view they lie in it like TAB's painted cells – on its
+    // flat colours, under its lines. Over TAB's pictures they're drawn over everything that stands (below), so trees
+    // and houses don't hide them.
+    let zombie_tiles = if view.zombie_tiles { zombie_tiles(world, view) } else { Vec::new() };
     // The grid lies on the ground like the fields: the fog darkens it, and whatever stands there covers it.
     if view.grid {
-        draw_grid(camera, area);
+        draw_grid(camera, &world.map, area, &zombie_tiles);
     }
     // Blood and acid lying on the ground (`effects.rs`) – where you see it.
-    let now = (world.tick as f32 + alpha) * TICK;
     let shows = |p: Vec2| !matches!(view.fog, Fog::Player) || world.vision.sees(p);
     view.looks.effects.draw_stains(camera, now, shows);
     for spawner in &view.spawners {
@@ -327,6 +372,12 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
 
     // --- Selection rings and command queues lie on the ground, so draw them before the figures ---
+    // A selected tower that shoots by itself: its range, like TAB's.
+    for building in world.buildings.iter().filter(|b| view.selected_buildings.contains(&b.id)) {
+        if let Some(weapon) = &building.stats().weapon {
+            view.looks.effects.draw_range(camera, building.center(), weapon.range, now);
+        }
+    }
     for (i, unit) in world.units.iter().enumerate() {
         if !selected.contains(&unit.id) {
             continue;
@@ -352,7 +403,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     let mut things: Vec<(f32, Thing)> = Vec::with_capacity(world.zombies.len() + world.units.len());
     // Game time (seconds) for the animations: stands still while paused, runs faster at higher speed.
     let time = (world.tick as f32 + alpha) * TICK;
-    for zombie in world.zombies.iter().filter(|z| area.contains(z.pos)) {
+    for zombie in world.zombies.iter().filter(|z| !view.zombie_tiles && area.contains(z.pos)) {
         let look = view.looks.get(zombie.id);
         // In the player's view only the ones you see – and those still fading out.
         let visible = if matches!(view.fog, Fog::Player) { look.alpha } else { 1.0 };
@@ -384,7 +435,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
     // The sleeping ones (`sim/sleep.rs`) only where there's no fog (editor): standing still, a little darker. In the
     // player's view they're never seen – they wake before your eyes get there.
-    if !matches!(view.fog, Fog::Player) {
+    if !matches!(view.fog, Fog::Player) && !view.zombie_tiles {
         for sleeper in world.sleep.iter().filter(|s| area.contains(s.pos)) {
             let color = darken(breed_color(sleeper.breed), 0.7);
             // A way to face of its own, from where it lies – the same every frame.
@@ -450,7 +501,56 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         }
         doom_parts(house, world.tick, &mut parts);
     }
+    // Wheat on the farm's fields: every grass tile it works, not under it – 70 % opaque, like TAB's.
+    if let Some(wheat) = wheat
+        && let Some(body) = wheat.body()
+    {
+        for (b, farm) in world.buildings.iter().enumerate().filter(|(_, b)| b.kind == BuildingKind::Farm && b.works()) {
+            for (x, y) in world.worked_tiles(farm.kind, farm.tile, b) {
+                let at = vec2(x as f32 + 1.0, y as f32 + 1.0);
+                if area.contains_tile(x, y) {
+                    let picture = Picture { sprite: wheat, looks: body, state: State::Working, clock: 0.0, aim: Aim::default(), at, width: 1.0, color: Color::new(1.0, 1.0, 1.0, 0.7) };
+                    things.push((at.x + at.y - 1.0, Thing::Picture(picture)));
+                }
+            }
+        }
+    }
+    // TAB's power line towers in the forest – gone in the grid view, like the trees.
+    for ornament in world.ornaments.iter().filter(|_| !view.grid) {
+        let name = match ornament.kind {
+            sim::OrnamentKind::PowerTower => "power_tower_high",
+            sim::OrnamentKind::PowerTowerFlip => "power_tower_high_flip",
+            sim::OrnamentKind::Ruin => continue,
+        };
+        let middle = vec2(ornament.tile.0 as f32 + 0.5, ornament.tile.1 as f32 + 0.5);
+        if let Some(tower) = view.sprites.decor(name)
+            && let Some(body) = tower.body()
+            && area.contains(middle)
+        {
+            let width = tower.size();
+            let at = middle + Vec2::splat(width / 2.0);
+            let picture = Picture { sprite: tower, looks: body, state: State::Working, clock: 0.0, aim: Aim::default(), at, width, color: WHITE };
+            things.push((middle.x + middle.y, Thing::Picture(picture)));
+        }
+    }
     for loot in world.loot.iter().filter(|l| area.contains(l.pos)) {
+        // TAB's picture of it (coal is TAB's oil barrel) – else a little crate.
+        let name = match loot.kind {
+            LootKind::Gold => "loot_gold",
+            LootKind::Wood => "loot_wood",
+            LootKind::Stone => "loot_stone",
+            LootKind::Iron => "loot_iron",
+            LootKind::Coal => "loot_oil_1",
+        };
+        if let Some(sprite) = view.sprites.decor(name)
+            && let Some(body) = sprite.body()
+            && seen(world, &view.fog, loot.pos)
+        {
+            let at = loot.pos + 0.5;
+            let picture = Picture { sprite, looks: body, state: State::Working, clock: 0.0, aim: Aim::default(), at, width: 1.0, color: WHITE };
+            things.push((loot.pos.x + loot.pos.y, Thing::Picture(picture)));
+            continue;
+        }
         if seen(world, &view.fog, loot.pos) {
             let color = loot_color(loot.kind);
             let p = loot.pos;
@@ -460,12 +560,13 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
     things.extend(parts.into_iter().map(|(depth, part)| (depth, Thing::Body(part))));
     // Trees and rocks (`ground.rs`): sorted in like everything else. Always there, like TAB's – the fog lies over them,
-    // so they never pop up tile by tile.
-    if let Some(landscape) = view.landscape {
+    // so they never pop up tile by tile. In the grid view gone, like TAB's: their tiles are coloured instead
+    // (`draw_grid`), and you see what stands among them.
+    if let Some(landscape) = view.landscape.filter(|_| !view.grid) {
         landscape.decor_in(area, true, |d| things.push((d.at.x + d.at.y, Thing::Decor(landscape, *d, WHITE))));
     }
     // Killed zombies dying (`sim/fallen.rs`) – only as a picture with a death, as before they're just gone otherwise.
-    for body in world.dying.iter().filter(|d| area.contains(d.pos)) {
+    for body in world.dying.iter().filter(|d| !view.zombie_tiles && area.contains(d.pos)) {
         let look = view.looks.get(body.id);
         let visible = if matches!(view.fog, Fog::Player) { look.alpha } else { 1.0 };
         let Some(sprite) = view.sprites.breed(body.breed, body.look as u32).filter(|s| s.dies()) else {
@@ -518,13 +619,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         }
         // A unit's skin by its number – it never changes.
         if let Some(sprite) = view.sprites.unit(unit.kind, unit.id) {
-            let pose = if unit.is_aiming() {
-                Pose::Attack(None)
-            } else if unit.is_walking() {
-                Pose::Walk(unit.stats().speed)
-            } else {
-                Pose::Idle
-            };
+            let pose = unit_pose(unit, time);
             let color = if sprite.tinted() { color } else { WHITE };
             let figure = Figure { sprite, at: p, facing: unit.facing, pose, clock: clock(time, unit.id), color };
             things.push((p.x + p.y, Thing::Figure(figure)));
@@ -543,6 +638,15 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             things.push((middle.x + middle.y, Thing::Body(Prism(weapon, height * 0.5, height * 0.62, WEAPON))));
         }
     }
+    // Ravens and rats (`critters.rs`) – only where you see them. A flying raven is drawn over what it flies above.
+    for critter in view.looks.critters.looks(time).filter(|c| area.contains(c.pos) && shows(c.pos)) {
+        let name = if critter.raven { "animals/raven" } else { "animals/rat" };
+        if let Some(sprite) = view.sprites.animal(name) {
+            let depth = critter.pos.x + critter.pos.y + 2.0 * (critter.pos - critter.at).x;
+            let figure = Figure { sprite, at: critter.at, facing: critter.facing, pose: critter.pose, clock: time + critter.pos.x, color: WHITE };
+            things.push((depth, Thing::Figure(figure)));
+        }
+    }
     things.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     for (_, thing) in &things {
@@ -557,11 +661,18 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
             }
         }
     }
+    if !view.grid {
+        draw_zombie_tiles(camera, &zombie_tiles, ZOMBIE_TILE_GAP);
+    }
 
     // --- TAB's effects (`effects.rs`): flashes, arrows, blood, blasts – over everything, like TAB's. Without them:
     // shots as lines, a barrel's blast as a growing fireball ---
     let effects = &view.looks.effects;
     effects.draw(camera, now, shows);
+    // Fire and smoke on damaged buildings, green smoke on infected ones, leaves falling – where you see it.
+    effects.draw_buildings(world, camera, now, shows);
+    effects.draw_burning(world, camera, now, shows);
+    effects.draw_leaves(world, area, camera, now, shows);
     let pictured = effects.shows_shots();
     let lift = vec2(0.0, -0.3 * TILE_W * camera.zoom);
     for (from, to) in world.shots.iter().filter(|_| !pictured) {
@@ -607,16 +718,21 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         draw_circle(ground.x, ground.y - height, size, ACID);
     }
 
+    // The landscape's weather (snow, rain) over the whole map – under the fog, which darkens it like the rest.
+    if view.landscape.is_some() {
+        effects.draw_weather(&world.look, camera, now);
+    }
+
     // Fog of war over everything that stands on the map, like TAB's: a tall thing is covered where its top reaches into
     // the dark. The bars come after it – your units and buildings always see themselves.
     if !matches!(view.fog, Fog::Off) {
         view.fog_picture.draw(camera, area);
     }
 
-    // --- Health bars above hurt and selected units, just above the block ---
+    // --- Health bars above units, just above the block – which ones: the setting (hurt and selected ones at first) ---
     for unit in world.units.iter().filter(|u| !u.is_inside()) {
         let max = unit.max_hp();
-        if unit.hp == max && !view.always_bars && !selected.contains(&unit.id) {
+        if !view.bars.shows(unit.hp < max, selected.contains(&unit.id)) {
             continue;
         }
         let frac = unit.hp as f32 / max as f32;
@@ -628,11 +744,11 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         draw_rectangle(feet.x - w / 2.0, y, w * frac, 3.0, hp_color(frac));
     }
 
-    // --- Life bars above damaged buildings, above the roof: hit points and shield in one bar (`hud::draw_life`) ---
+    // --- Life bars above buildings, above the roof: hit points and shield in one bar (`hud::draw_life`) ---
     for building in &world.buildings {
         let stats = building.stats();
         let hurt = building.hp < stats.hp || building.shield < stats.max_shield();
-        if !hurt && !view.always_bars {
+        if !view.bars.shows(hurt, view.selected_buildings.contains(&building.id)) {
             continue;
         }
         // Above the middle: from there up to the top corner of the diamond, then the height of the building.
@@ -643,8 +759,8 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
         let bar = Rect::new(middle.x - w / 2.0, middle.y - lift, w, 4.0);
         draw_life(bar, (building.hp, stats.hp), (building.shield, stats.max_shield()), BLACK, None);
     }
-    // The same over shot houses of doom you can see.
-    for house in world.doom.iter().filter(|d| d.hp < d.full_hp() && watched(world, &view.fog, d.center())) {
+    // The same over houses of doom you can see – they can't be selected.
+    for house in world.doom.iter().filter(|d| view.bars.shows(d.hp < d.full_hp(), false) && watched(world, &view.fog, d.center())) {
         let middle = camera.world_to_screen(house.center());
         let lift = ((house.size.0 + house.size.1) as f32 * TILE_H / 4.0 + (doom_height(house) + 0.3) * TILE_W) * camera.zoom;
         let w = house.size.0 as f32 * 0.5 * TILE_W * camera.zoom;
@@ -856,6 +972,27 @@ struct Figure<'a> {
     color: Color,
 }
 
+/// What a unit's picture shows (`time`: seconds of game time, between ticks too): walking; the medic's beam; or
+/// standing with its weapon – how far it's up and how long ago its shot's animation started, like TAB plays them
+/// (`sim/combat.rs` decides both, the picture only follows).
+fn unit_pose(unit: &Unit, time: f32) -> Pose {
+    if unit.is_walking() {
+        return Pose::Walk(unit.stats().speed);
+    }
+    if unit.stats().heals {
+        return if unit.is_aiming() { Pose::Attack(None) } else { Pose::Idle };
+    }
+    let shot = unit.swing_from().map(|tick| time - tick as f32 * TICK);
+    // Thanatos's blow: its `fight`, played once over the blow's wind-up and reloading.
+    if let (Some(seconds), true, Some(melee)) = (shot, unit.fighting(), unit.stats().melee.as_ref()) {
+        let length = (melee.windup + melee.cooldown).max(1) as f32 * TICK;
+        if seconds < length {
+            return Pose::Fight(seconds / length);
+        }
+    }
+    Pose::Weapon { up: unit.weapon_up(), shot }
+}
+
 /// `time` shifted a bit for every figure (by its `id`, 0–10 s), so a crowd doesn't move in step.
 fn clock(time: f32, id: u32) -> f32 {
     time + (id as f32 * 0.618_034).fract() * 10.0
@@ -1023,8 +1160,31 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
         | BuildingKind::StoneHouse
         | BuildingKind::Market
         | BuildingKind::Bank
-        | BuildingKind::Inn => {
+        | BuildingKind::Inn
+        | BuildingKind::WoodHouse
+        | BuildingKind::PowerPlant
+        | BuildingKind::OilPlatform
+        | BuildingKind::Quarry
+        | BuildingKind::BigQuarry
+        | BuildingKind::BigFarm
+        | BuildingKind::BigMill
+        | BuildingKind::Warehouse
+        | BuildingKind::EngineeringCenter
+        | BuildingKind::ShockingTower
+        | BuildingKind::Executor
+        | BuildingKind::Radar
+        | BuildingKind::LookoutTower
+        | BuildingKind::Spire
+        | BuildingKind::Academy
+        | BuildingKind::Victorious
+        | BuildingKind::Transmutator
+        | BuildingKind::CrystalPalace => {
             part(rect(building.corner(), building.far_corner() - building.corner()), 0.0, height, color);
+        }
+        // Flat plates on the ground: the blades a ring of steel, the mine a dark disc.
+        BuildingKind::BladeTrap | BuildingKind::MineTrap => {
+            let middle = building.center();
+            part(rect(middle - Vec2::splat(0.3), Vec2::splat(0.6)), 0.0, height, color);
         }
     }
 }
@@ -1175,7 +1335,7 @@ fn building_pictures<'a>(world: &World, building: &Building, view: &View<'a>, ti
         for (&i, spot) in world.garrison(building.id).iter().zip(TOWER_SPOTS) {
             let unit = &world.units[i];
             if let Some(figure) = sprites.unit(unit.kind, unit.id) {
-                let pose = if unit.is_aiming() { Pose::Attack(None) } else { Pose::Idle };
+                let pose = unit_pose(unit, time);
                 let color = if figure.tinted() { kind_color(unit.kind) } else { WHITE };
                 let at = middle + spot - lift;
                 let figure = Figure { sprite: figure, at, facing: unit.facing, pose, clock: clock(time, unit.id), color };
@@ -1189,6 +1349,27 @@ fn building_pictures<'a>(world: &World, building: &Building, view: &View<'a>, ti
 
 /// Has something lying on the map (a house of doom, loot) ever been seen in this view? Only the player's view has fog
 /// that hides it. How dark it is now is the fog's business: it lies over it.
+/// The floors under the buildings in view (TAB's `CFloorUndeBuilding`): every building but the farm (TAB's
+/// `FarmBase.HasFloor`), ours and the neutral ones once seen.
+fn floors(world: &World, view: &View) -> Vec<Floor> {
+    let near = |tile: (i32, i32), (w, h): (i32, i32)| {
+        view.area.contains(vec2(tile.0 as f32 + w as f32 / 2.0, tile.1 as f32 + h as f32 / 2.0)) || {
+            // A big one whose middle is just off screen: its corners.
+            let (a, b) = (vec2(tile.0 as f32, tile.1 as f32), vec2((tile.0 + w) as f32, (tile.1 + h) as f32));
+            [a, b, vec2(a.x, b.y), vec2(b.x, a.y)].iter().any(|&c| view.area.contains(c))
+        }
+    };
+    let ours = world.buildings.iter().map(|b| (b.kind, b.tile, b.footprint()));
+    let neutral = world.neutral.iter().filter_map(|n| match n.thing {
+        sim::Thing::Building { kind, tile, turned } if seen(world, &view.fog, n.center()) => Some((kind, tile, kind.footprint(turned))),
+        _ => None,
+    });
+    ours.chain(neutral)
+        .filter(|&(kind, tile, size)| kind != BuildingKind::Farm && near(tile, size))
+        .map(|(_, tile, size)| Floor::under(&world.map, tile, size))
+        .collect()
+}
+
 fn seen(world: &World, fog: &Fog, p: Vec2) -> bool {
     let (x, y) = (p.x.floor() as i32, p.y.floor() as i32);
     match fog {
@@ -1249,6 +1430,10 @@ pub fn unit_shape(kind: UnitKind) -> (f32, f32) {
         UnitKind::MercSoldier => unit_shape(UnitKind::Soldier),
         UnitKind::MercRanger => unit_shape(UnitKind::Ranger),
         UnitKind::MercSniper => unit_shape(UnitKind::Sniper),
+        // Big men in heavy suits – the Titan a walking cannon.
+        UnitKind::Lucifer => (0.26, 0.32),
+        UnitKind::Thanatos => (0.26, 0.34),
+        UnitKind::Titan => (0.4, 0.5),
     }
 }
 
@@ -1352,6 +1537,29 @@ pub fn building_color(kind: BuildingKind) -> Color {
         // Gun metal.
         BuildingKind::MachineGunTower => Color::new(0.36, 0.40, 0.44, 1.0),
         BuildingKind::Barrel => Color::new(0.78, 0.18, 0.12, 1.0),
+        BuildingKind::WoodHouse => Color::new(0.66, 0.52, 0.34, 1.0),
+        BuildingKind::PowerPlant => Color::new(0.34, 0.30, 0.28, 1.0),
+        // Black like oil.
+        BuildingKind::OilPlatform => Color::new(0.22, 0.18, 0.24, 1.0),
+        BuildingKind::Quarry => Color::new(0.56, 0.54, 0.50, 1.0),
+        BuildingKind::BigQuarry => Color::new(0.48, 0.47, 0.45, 1.0),
+        BuildingKind::BigFarm => Color::new(0.82, 0.72, 0.36, 1.0),
+        BuildingKind::BigMill => Color::new(0.56, 0.58, 0.60, 1.0),
+        BuildingKind::Warehouse => Color::new(0.55, 0.46, 0.34, 1.0),
+        BuildingKind::EngineeringCenter => Color::new(0.42, 0.44, 0.52, 1.0),
+        // Electric blue, like the tesla tower.
+        BuildingKind::ShockingTower => Color::new(0.40, 0.68, 0.90, 1.0),
+        BuildingKind::Executor => Color::new(0.30, 0.34, 0.38, 1.0),
+        BuildingKind::BladeTrap => Color::new(0.62, 0.64, 0.68, 1.0),
+        BuildingKind::MineTrap => Color::new(0.25, 0.25, 0.22, 1.0),
+        BuildingKind::Radar => Color::new(0.50, 0.62, 0.66, 1.0),
+        BuildingKind::LookoutTower => Color::new(0.60, 0.48, 0.30, 1.0),
+        // The wonders in rich colours: copper, marble, bronze, violet, crystal.
+        BuildingKind::Spire => Color::new(0.72, 0.48, 0.30, 1.0),
+        BuildingKind::Academy => Color::new(0.86, 0.84, 0.78, 1.0),
+        BuildingKind::Victorious => Color::new(0.62, 0.50, 0.30, 1.0),
+        BuildingKind::Transmutator => Color::new(0.56, 0.38, 0.72, 1.0),
+        BuildingKind::CrystalPalace => Color::new(0.70, 0.86, 0.92, 1.0),
     }
 }
 
@@ -1370,6 +1578,10 @@ pub fn kind_color(kind: UnitKind) -> Color {
         UnitKind::MercSoldier => mix(kind_color(UnitKind::Soldier), MERC_GOLD, 0.45),
         UnitKind::MercRanger => mix(kind_color(UnitKind::Ranger), MERC_GOLD, 0.45),
         UnitKind::MercSniper => mix(kind_color(UnitKind::Sniper), MERC_GOLD, 0.45),
+        // Fire orange, rocket olive, cannon steel.
+        UnitKind::Lucifer => Color::new(0.95, 0.45, 0.15, 1.0),
+        UnitKind::Thanatos => Color::new(0.55, 0.60, 0.30, 1.0),
+        UnitKind::Titan => Color::new(0.55, 0.58, 0.64, 1.0),
     }
 }
 
@@ -1414,14 +1626,71 @@ pub fn mark_color(mark: Mark) -> Color {
     }
 }
 
+/// TAB's flat mode (`ZXSystem_GameLevel.UpdateFlatObject`), which comes with its grid: one colour per tile – mountain
+/// black, forest dark green (`Color.DarkGreen`), outside the world border almost black (16, 16, 16) – the whole layer
+/// half see-through, with a white edge (`DXShaderEffect_Border(Color.White, 2)`) where it meets open ground.
+const FLAT_MOUNTAIN: Color = Color::new(0.0, 0.0, 0.0, 0.5);
+const FLAT_FOREST: Color = Color::new(0.0, 100.0 / 255.0, 0.0, 0.5);
+const FLAT_OUTSIDE: Color = Color::new(16.0 / 255.0, 16.0 / 255.0, 16.0 / 255.0, 0.5);
+const FLAT_EDGE: Color = Color::new(1.0, 1.0, 1.0, 0.5);
+const FLAT_EDGE_WIDTH: f32 = 2.0;
+
+/// A tile's colour in the flat mode – `None` on open ground (also water: it shows anyway, TAB leaves it out too).
+/// Mountain and forest win over the world border, like in TAB, where they are painted over it.
+fn flat_color(map: &Map, x: i32, y: i32) -> Option<Color> {
+    match map.terrain(x, y) {
+        Terrain::Mountain => Some(FLAT_MOUNTAIN),
+        Terrain::Forest => Some(FLAT_FOREST),
+        _ if !map.in_play(x, y) => Some(FLAT_OUTSIDE),
+        _ => None,
+    }
+}
+
 /// TAB's grid view (`DXIsometricGridObject`: thin white lines around every tile, on the ground under everything that
-/// stands): the lines inside `area` that are on screen.
-fn draw_grid(camera: &Camera, area: Region) {
+/// stands), and under the lines its flat mode (`flat_color`): which tiles you can't build on, though the trees and
+/// rocks are hidden meanwhile (`draw_world`). Only what lies inside `area` and on screen.
+fn draw_grid(camera: &Camera, map: &Map, area: Region, zombies: &[ZombieTile]) {
     let screen = Region {
         min: to_frame(camera.screen_to_world(Vec2::ZERO)),
         max: to_frame(camera.screen_to_world(vec2(screen_width(), screen_height()))),
     };
     let shown = Region { min: screen.min.max(area.min), max: screen.max.min(area.max) };
+    let size = map.size as i32;
+    let on_map = |x: i32, y: i32| x >= 0 && y >= 0 && x < size && y < size;
+    // The colours: tiles of one colour next to each other in a row as one strip – far fewer triangles than one
+    // diamond per tile.
+    for (y, xs) in shown.rows(1.0) {
+        let mut run: Option<(i32, Color)> = None; // where the strip began, and its colour
+        for x in xs.start..=xs.end {
+            // `xs.end` once more, as `None`: so the last strip is drawn too.
+            let color = if x < xs.end && on_map(x, y) { flat_color(map, x, y) } else { None };
+            if run.map(|(_, c)| c) == color {
+                continue;
+            }
+            if let Some((from, c)) = run {
+                draw_diamond(camera, vec2(from as f32, y as f32), vec2((x - from) as f32, 1.0), c);
+            }
+            run = color.map(|c| (x, c));
+        }
+        // The white edge: along every side of a coloured tile whose neighbour there is open ground.
+        for x in xs.filter(|&x| on_map(x, y) && flat_color(map, x, y).is_some()) {
+            let (left, right, top, bottom) = (x as f32, x as f32 + 1.0, y as f32, y as f32 + 1.0);
+            let sides = [
+                ((x - 1, y), vec2(left, top), vec2(left, bottom)),
+                ((x + 1, y), vec2(right, top), vec2(right, bottom)),
+                ((x, y - 1), vec2(left, top), vec2(right, top)),
+                ((x, y + 1), vec2(left, bottom), vec2(right, bottom)),
+            ];
+            for ((nx, ny), from, to) in sides {
+                if on_map(nx, ny) && flat_color(map, nx, ny).is_none() {
+                    let (p, q) = (camera.world_to_screen(from), camera.world_to_screen(to));
+                    draw_line(p.x, p.y, q.x, q.y, FLAT_EDGE_WIDTH, FLAT_EDGE);
+                }
+            }
+        }
+    }
+    // The zombies' tiles on the flat colours, the lines over them – each a cell of the grid.
+    draw_zombie_tiles(camera, zombies, 0.0);
     // Zoomed far out the lines lie close together – fainter, so the map still shows through.
     let tile_pixels = TILE_W * camera.zoom;
     let color = Color::new(1.0, 1.0, 1.0, 0.35 * (tile_pixels / 40.0).clamp(0.3, 1.0));
@@ -1454,6 +1723,95 @@ fn grid_lines(shown: Region) -> Vec<(Vec2, Vec2)> {
         }
     }
     lines
+}
+
+/// Below this zoom the editor shows the zombies as tiles by itself (`Editor::zombie_tiles`): a tile is less than 16
+/// pixels wide then, a figure hardly more than a dot – and drawing tens of thousands of them makes the frame slow.
+pub const ZOMBIE_TILES_BELOW: f32 = 0.25;
+/// Over TAB's pictures each zombie tile is this much smaller than its tile on every side – a hairline of the ground
+/// between two tiles, so a crowd reads as cells and not as one blot. In the grid view its lines do that.
+const ZOMBIE_TILE_GAP: f32 = 0.07;
+
+/// A tile with zombies on it, as the editor shows it zoomed out: in the colour of the breed most of them are, the more
+/// there are the more solid – and a light spot in the middle if one of them storms (not asleep or wandering).
+pub struct ZombieTile {
+    pub tile: (i32, i32),
+    pub color: Color,
+    pub storming: bool,
+}
+
+/// Each breed's colour as a tile – bright, and far from what the ground is (grass and forest green, mountain black,
+/// water blue, the grid's white lines), unlike the greys the figures are tinted with (`breed_color`).
+pub fn breed_tile_color(breed: Breed) -> Color {
+    let rgb = |r: u8, g: u8, b: u8| Color::from_rgba(r, g, b, 255);
+    match breed {
+        Breed::Walker => rgb(225, 60, 50),
+        Breed::Runner => rgb(250, 145, 35),
+        Breed::Fat => rgb(245, 190, 140),
+        Breed::Armored => rgb(130, 150, 255),
+        Breed::Spitter => rgb(40, 215, 200),
+        Breed::Infested => rgb(170, 80, 220),
+        Breed::Harpy => rgb(250, 225, 60),
+        Breed::Giant => rgb(255, 50, 200),
+    }
+}
+
+/// How solid a tile with this many zombies is: 1, 2, 3 or more – TAB's brush puts up to 3 of a kind on a tile.
+fn tile_alpha(count: u32) -> f32 {
+    match count {
+        0 | 1 => 0.55,
+        2 => 0.75,
+        _ => 0.92,
+    }
+}
+
+/// The zombies inside the area, counted per tile – the awake ones you see (in the player's view only those you see),
+/// and the sleepers where there's no fog. A `HashMap` from the tile to how many of each breed (in the order of
+/// `Breed::ALL`) and whether one storms – like a Python dict of lists. Only drawing, so its order doesn't matter.
+fn zombie_tiles(world: &World, view: &View) -> Vec<ZombieTile> {
+    let mut counts: HashMap<(i32, i32), ([u32; Breed::ALL.len()], bool)> = HashMap::new();
+    let mut add = |pos: Vec2, breed: Breed, storming: bool| {
+        if view.area.contains(pos) {
+            let entry = counts.entry((pos.x.floor() as i32, pos.y.floor() as i32)).or_default();
+            entry.0[Breed::ALL.iter().position(|&b| b == breed).unwrap_or(0)] += 1;
+            entry.1 |= storming;
+        }
+    };
+    let player = matches!(view.fog, Fog::Player);
+    for zombie in world.zombies.iter().filter(|z| z.is_alive()) {
+        if !player || view.looks.get(zombie.id).alpha > 0.0 {
+            add(zombie.pos, zombie.breed, !world.is_wanderer(zombie));
+        }
+    }
+    if !player {
+        for sleeper in world.sleep.iter() {
+            add(sleeper.pos, sleeper.breed, false);
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(tile, (per_breed, storming))| {
+            // The breed most of them are – of a tie the first in `Breed::ALL` (`max_by_key` takes the last of the
+            // biggest, so the place counts backwards).
+            let (most, _) = per_breed.iter().enumerate().max_by_key(|&(b, &n)| (n, usize::MAX - b)).unwrap_or((0, &0));
+            let color = Color { a: tile_alpha(per_breed.iter().sum()), ..breed_tile_color(Breed::ALL[most]) };
+            ZombieTile { tile, color, storming }
+        })
+        .collect()
+}
+
+/// The zombie tiles on screen, each `gap` smaller than its tile on every side.
+fn draw_zombie_tiles(camera: &Camera, tiles: &[ZombieTile], gap: f32) {
+    for t in tiles {
+        let corner = vec2(t.tile.0 as f32, t.tile.1 as f32);
+        if !on_screen(camera.world_to_screen(corner + 0.5), 20.0) {
+            continue;
+        }
+        draw_diamond(camera, corner + gap, Vec2::splat(1.0 - 2.0 * gap), t.color);
+        if t.storming {
+            draw_diamond(camera, corner + 0.32, Vec2::splat(0.36), Color::new(1.0, 1.0, 1.0, 0.85));
+        }
+    }
 }
 
 /// A rectangle of the world (corner + size in tiles) as a diamond on screen.

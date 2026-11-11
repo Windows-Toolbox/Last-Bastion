@@ -4,6 +4,7 @@
 use macroquad::math::{vec2, Vec2};
 
 use super::buildings::{Product, Rally, MAX_PRODUCTION};
+use super::clipboard::{Clip, Piece};
 use super::commands::Command;
 use super::events::Event;
 use super::neutral::{Owner, Tag, ThingRef};
@@ -14,7 +15,7 @@ use super::World;
 use crate::data;
 use crate::formation::Formation;
 use crate::kinds::{BuildingKind, Resource, UnitKind};
-use crate::map::{Deposit, Ore, Terrain};
+use crate::map::{BigRock, Deposit, Ore, Terrain};
 
 /// How much ore the editor's brush puts on a tile – about the middle of a patch near the base (`mapgen/ores.rs`).
 const PAINTED_ORE: u32 = 1000;
@@ -69,6 +70,8 @@ pub enum Order {
     /// Editor: these tiles get this terrain (grass = erase). Tiles with buildings stay as they are,
     /// whoever stands on new solid ground is pushed out.
     PaintTerrain { terrain: Terrain, tiles: Vec<(i32, i32)> },
+    /// Editor: one of TAB's big rocks – its tiles become mountain like painted ones (`Map::place_big_rock`).
+    PlaceBigRock(BigRock),
     /// Editor: ore on these tiles (only where there's grass) – `None` takes it away.
     PaintOre { ore: Option<Ore>, tiles: Vec<(i32, i32)> },
     /// A new spawner centred on this point of the screen axes (`map::to_frame`), named "Spawner" + its number.
@@ -85,6 +88,10 @@ pub enum Order {
     /// Editor: a house of a village of doom (top left tile, width and depth) with as many zombies inside as the generator
     /// would put there (`World::doom_zombies`). Only inside the world border, on open ground nothing else takes.
     PlaceDoom { tile: (i32, i32), size: (i32, i32) },
+    /// Editor (Ctrl+V): a copy again, its middle on this tile (`clipboard.rs`) – what doesn't fit is left out.
+    Paste { clip: Box<Clip>, to: (i32, i32) },
+    /// Editor (Ctrl+X, Del): these off the map – buildings, units, zombies, houses of doom, loot, spawners, decoration.
+    RemovePieces { pieces: Vec<Piece> },
     /// Editor: a pile of loot at this point – what lies in it and how many guards, rolled like the generator does.
     PlaceLoot { point: Vec2 },
     /// Editor eraser: everything on these tiles goes – buildings standing on one of them, houses of doom, units,
@@ -186,6 +193,7 @@ impl World {
                 for &id in units {
                     if let Some(i) = self.find_unit(id) {
                         self.units[i].queue.clear();
+                        self.units[i].restart_shot();
                     }
                 }
             }
@@ -240,6 +248,7 @@ impl World {
                 self.zombies.clear();
                 self.sleep.clear();
                 self.spits.clear();
+                self.arrows.clear();
             }
             Order::SpawnUnit { kind, point } => {
                 if !self.map.blocks_unit(point.x.floor() as i32, point.y.floor() as i32) {
@@ -251,6 +260,11 @@ impl World {
                     if self.map.set_terrain(x, y, *terrain) {
                         self.map_changed = true;
                     }
+                }
+            }
+            Order::PlaceBigRock(rock) => {
+                if self.map.place_big_rock(*rock) {
+                    self.map_changed = true;
                 }
             }
             Order::PaintOre { ore, tiles } => {
@@ -296,9 +310,7 @@ impl World {
                 self.forget_spawner(*spawner);
             }
             Order::PlaceDoom { tile, size } => {
-                let free = (tile.1..tile.1 + size.1)
-                    .all(|y| (tile.0..tile.0 + size.0).all(|x| self.map.in_play(x, y) && !self.map.is_solid(x, y) && !self.map.is_built(x, y)));
-                if free {
+                if self.doom_fits(*tile, *size) {
                     // As full as the generator makes it at the map's difficulty.
                     let population = data::get().difficulty(&self.difficulty).population;
                     self.add_doom(*tile, *size, World::doom_zombies(*size, population), population);
@@ -312,6 +324,8 @@ impl World {
                 }
             }
             Order::RemoveAt { tiles } => self.remove_at(tiles),
+            Order::Paste { clip, to } => self.paste(clip, *to),
+            Order::RemovePieces { pieces } => self.remove_pieces(pieces),
             Order::RemoveBuildings { buildings } => {
                 for &id in buildings {
                     self.take_down(id);
@@ -407,8 +421,7 @@ impl World {
                         building.production.push_back(Product::Unit(*kind));
                         self.score.gold_spent += cost;
                         self.pay_gold(cost);
-                        self.stock.take(Resource::Wood, kind.stats().cost_wood);
-                        self.stock.take(Resource::Iron, kind.stats().cost_iron);
+                        self.pay_unit_goods(*kind);
                     }
                 }
             }
@@ -459,7 +472,10 @@ impl World {
                         self.gold += cost;
                         self.score.gold_spent = self.score.gold_spent.saturating_sub(cost);
                         let goods = match product {
-                            Product::Unit(kind) => vec![(Resource::Wood, kind.stats().cost_wood), (Resource::Iron, kind.stats().cost_iron)],
+                            Product::Unit(kind) => {
+                                let s = kind.stats();
+                                vec![(Resource::Wood, s.cost_wood), (Resource::Iron, s.cost_iron), (Resource::Oil, s.cost_oil)]
+                            }
                             Product::Barrel => vec![(Resource::Coal, data::get().buildings.blast.cost_coal)],
                         };
                         for (r, n) in goods {

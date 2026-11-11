@@ -143,7 +143,9 @@ pub fn settings_page(col: &mut Column, s: &mut Settings) -> bool {
             WindowMode::Borderless => WindowMode::Window,
         };
     }
-    toggle(col.row(), "Always show health bars", &mut s.always_health_bars);
+    if choice(col.row(), "Health bars", s.health_bars.name()) {
+        s.health_bars = s.health_bars.next();
+    }
     toggle(col.row(), "Always show the whole command queue", &mut s.always_full_queue);
     toggle(col.row(), "Show the grid", &mut s.show_grid);
     toggle(col.row(), "Stats in the top left (F3)", &mut s.dev_overlay);

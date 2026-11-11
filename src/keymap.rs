@@ -28,11 +28,13 @@ pub struct KeyMap {
     scroll: usize,
     /// The key being set – which action, which of its two places. The next key pressed goes there.
     listening: Option<(Action, usize)>,
+    /// While waiting: a key came that can't go on an action – said under the list, so the page doesn't just seem stuck.
+    refused: bool,
 }
 
 impl KeyMap {
     pub fn new() -> KeyMap {
-        KeyMap { tab: 0, scroll: 0, listening: None }
+        KeyMap { tab: 0, scroll: 0, listening: None, refused: false }
     }
 
     /// Esc while a key is being set: only that stops. Returns `true` if Esc was used for it – then the page stays.
@@ -108,6 +110,7 @@ impl KeyMap {
                 let (left, right) = key_box(Rect::new(x, y + 2.0, KEY_W, LINE - 4.0), text, waiting, clash);
                 if left {
                     self.listening = Some((action, slot));
+                    self.refused = false;
                     on_a_key = true;
                 } else if right {
                     keys.set(action, slot, None);
@@ -126,14 +129,18 @@ impl KeyMap {
         }
 
         col.y = bottom + 8.0;
-        match info {
+        if self.listening.is_none() {
+            self.refused = false;
+        }
+        let refused = "This key doesn't reach the game - in the mouse's software, put F13-F24 on such buttons.";
+        match self.refused.then(|| (refused.to_owned(), BAD)).or(info) {
             Some((text, color)) => {
                 draw_text(&text, col.x, col.y + 16.0, 16.0, color);
                 col.y += 22.0;
             }
             None => col.note(""),
         }
-        col.note("Click a key, then press the new one. Right click: no key. Esc: cancel. Shift and Ctrl stay fixed.");
+        col.note("Click a key, then press the new one (or mouse 4/5). Right click: no key. Esc: cancel. Shift, Ctrl fixed.");
         let row = col.split(3);
         if button(row[0], "Defaults for this tab", true) {
             for line in &lines {
@@ -148,15 +155,21 @@ impl KeyMap {
         button(row[2], "Back", true)
     }
 
-    /// While waiting for a key: the first one pressed that can be put on an action goes there. Shift, Ctrl and the
-    /// like can't – it waits on (Esc: `escape`).
+    /// While waiting for a key: the first one pressed that can be put on an action goes there – a key, or the mouse's
+    /// side button 4 or 5. Shift, Ctrl, and keys macroquad doesn't know (`KeyCode::Unknown`, some media keys) can't – it
+    /// says so and waits on (Esc: `escape`).
     fn catch_key(&mut self, keys: &mut Bindings) {
         let Some((action, slot)) = self.listening else {
             return;
         };
-        if let Some(key) = get_keys_pressed().into_iter().find(|&key| keys::bindable(key)) {
-            keys.set(action, slot, Some(key));
-            self.listening = None;
+        match keys::caught() {
+            Some(Ok(key)) => {
+                keys.set(action, slot, Some(key));
+                self.listening = None;
+                self.refused = false;
+            }
+            Some(Err(())) => self.refused = true,
+            None => {}
         }
     }
 }
@@ -206,6 +219,8 @@ fn lines(tab: usize) -> Vec<Line> {
             heading(&mut lines, "Barracks - and the inn: a mercenary has the key of its kind");
             let trains = BARRACKS_BUTTONS.into_iter().filter(|b| b.trains().is_some()).map(Action::of);
             binds(&mut lines, trains.chain([Action::of(Button::Rally)]));
+            heading(&mut lines, "Engineering center");
+            binds(&mut lines, hud::ENGINEERING_BUTTONS.into_iter().filter(|b| b.trains().is_some()).map(Action::of));
             heading(&mut lines, "Other buildings");
             let others = [Button::Repair, Button::Switch, Button::Demolish, Button::Unload, Button::MakeBarrel, Button::Sell];
             binds(&mut lines, others.into_iter().map(Action::of));
