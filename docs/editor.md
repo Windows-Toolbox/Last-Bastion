@@ -35,8 +35,8 @@ plant DESIGN.md 12.9 (Englisch); die Trigger-Sprache und 28YL stehen in `docs\tr
 | 1 | **Rahmen:** Menü- und Modulleiste, feste Panels links/rechts statt des schwebenden Fensters, Statuszeile, schwebende Leisten über der Karte, F10 = Test. Die heutigen Tabs ziehen um: Map → **Map**, Terrain → **Terrain**, Entities → **Objects** und **Zombies** (Pinsel, Drop, Riese, Spawner, Dorfhäuser), Events → **Events**, Story → **Triggers**. Die Karte nutzt nur die Fläche zwischen den Panels (Kamera, Klicks, Minimap) | **fertig** – Map, Events und Triggers zeigen ihre Felder vorerst links neben der Karte (Vollbild-Seiten kommen mit 5–7) |
 | 2 | **Objects** (Tafel 1): links alle Arten **mit Bild** (Porträts/Gebäudebilder aus `assets\`), in Gruppen, mit Suche und Filtern (Colony, Defense, Units, Neutral, Decor, Loot); „Placing“: Besitzer, Drehen (R), Shift = weiter setzen, „frei“ (ohne Kosten, ohne Arbeiter). Unten die Liste von allem Platzierten (TABs Entity-Liste: Spalten Art, Name-ID, Kachel, Besitzer, Leben, Skripte; Filter, Suche; Klick wählt, Doppelklick springt hin). Rechts die Eigenschaften, **Mehrfachauswahl ändert alle**. Dazu alle neuen Arten (TAB-Gebäude, Wunder, Deko, Raben) – sie sind schon im Spiel | **fertig** (`src\editor\objects.rs`, `thumbs.rs`) – ohne „frei“ (im Editor kostet nie etwas) und ohne Raben (sie leben nur im Bild, nicht in der Karte: `critters.rs`); Skripte in der Liste = das Beitritts-Skript, mehr kommt mit 5 |
 | 3 | **Terrain** (Tafel 2): Werkzeuge Pinsel, Linie, Rechteck, Füllen, Rauschen, Glätten, Bereich kopieren/einfügen, Generator nur in der Auswahl (Wald, See, Berge, Erzfeld, Village of Doom – mit Seed). Ebenen wie TABs Painter: Boden, Wald, Felsen, Erz, je Bild A/B/C oder zufällig, Dichte; Pinsel rund/eckig, „Gebäude und Wege frei lassen“. Landschaft umschalten (BR … VO). Rechts Minimap, SC2s **Ebenen-Schalter** (Boden, Wald/Felsen/Erz, Gebäude und Einheiten, Zombies, Regionen, Gitter, Nebel, Wege der Zombies, Lärm als Wärmebild) und „Unter der Maus“ (Kachel, Boden, was drauf ist, begehbar) | **fertig** (`src\editor\terrain.rs`, `src\sim\landscaping.rs`) – **Dichte** statt eines eigenen Rausch-Pinsels; Bild A/B/C = die Bilder der Landschaft in drei Gruppen, für Wald, Felsen, Erz (der Boden hat nur eine Textur); „Wege“ = die Gleise (Straßen gibt es nicht); Erzfeld ohne Öl; die Ebene „Regionen“ kommt mit Schritt 4; Lärm entsteht nur im Test |
-| 4 | **Regions** (Tafel 3, DESIGN 12.9 Schritt 5): benannte Flächen (Rechteck, Kreis, gemalte Kacheln, zusammensetzbar) und Punkte – neu in der Karten-Datei. Das Spielfeld wird eine besondere Region. Rechts: wer die Region benutzt (damit Umbenennen nichts kaputt macht) | **gebaut, Rest offen** (`src\sim\regions.rs`, `src\editor\regions.rs`, Kartenformat 6) – siehe „Plan im Detail → Schritt 4, Rest“. „Benutzt von“ kommt mit dem ersten Nutzer (Schritt 6: Gruppen aus Regionen) |
-| 5 | **Triggers** (Tafel 4, eigenes Vollbild-Modul): links der Baum – TABs feste Skripte (Start, Sieg, Niederlage, Knopf der Kommandozentrale, Ziele), Variablen, eigene Trigger in Ordnern, alle Objekt-Skripte zum Wiederfinden. Mitte: Ereignis → Bedingungen → Aktionen als **Sätze**, blaue Wörter anklicken zum Ändern; TABs Ablauf (Block, Loop/Exit Loop, Auswahl mit Bedingung je Option, Zufall nach Gewicht, Fenster, Sound). Umschalter **Sätze / Text** (unsere kleine Sprache). Rechts Aktionen zum Hineinziehen. Baut auf `docs\trigger-und-28yl.md` Schritte 2–5 auf | offen |
+| 4 | **Regions** (Tafel 3, DESIGN 12.9 Schritt 5): benannte Flächen (Rechteck, Kreis, gemalte Kacheln, zusammensetzbar) und Punkte – neu in der Karten-Datei. Das Spielfeld wird eine besondere Region. Rechts: wer die Region benutzt (damit Umbenennen nichts kaputt macht) | **fertig bis auf Handprüfung** (`src\sim\regions.rs`, `src\editor\regions.rs`, Kartenformat 6) – siehe „Plan im Detail → Schritt 4, Rest“. „Used by“ zeigt die Events, die eine Region benutzen (`World::zone_uses`); Trigger-Aktionen tragen sich mit 5.6 ein |
+| 5 | **Triggers** (Tafel 4, eigenes Vollbild-Modul): links der Baum – TABs feste Skripte (Start, Sieg, Niederlage, Knopf der Kommandozentrale, Ziele), Variablen, eigene Trigger in Ordnern, alle Objekt-Skripte zum Wiederfinden. Mitte: Ereignis → Bedingungen → Aktionen als **Sätze**, blaue Wörter anklicken zum Ändern; TABs Ablauf (Block, Loop/Exit Loop, Auswahl mit Bedingung je Option, Zufall nach Gewicht, Fenster, Sound). Umschalter **Sätze / Text** (unsere kleine Sprache). Rechts Aktionen zum Hineinziehen. Baut auf `docs\trigger-und-28yl.md` Schritte 2–5 auf | **gebaut, Rest offen** (`src\editor\triggers.rs`, `src\story_panel\sentences.rs`) – Vollbild-Seite: Baum, Sätze, Text, Palette, Statuszeile. Offen: Ereignisse mit Regionen und Betreten (Trigger-Doku 5 – dann Punkt 6 im Plan). Abweichungen: siehe „Schritt 5 – Triggers“ |
 | 6 | **Events** (Tafel 5): TABs Events als **Zeitleiste** über alle Tage – Wellen, Endschwarm, Hinweise, Aufdecken, Sieg; Balkenhöhe = Anzahl Zombies. Unten die Werte des gewählten (Stunde, Zufall, Wiederholen, Wachstum, Seiten, Gruppen aus Spawnern oder aus Regionen – das braucht Schritt 4). „Neu planen“ rechnet aus TABs Regeln | **fertig** (`src\editor\events.rs`, Orders `PlanEvents`, `SendEvent`, `WaveFrom::Zones`, Kartenformat 7) – Vollbild-Seite; „Used by“ im Regions-Modul; ohne „Jump to day“ (die Simulation kennt kein Vorspulen), ohne „Constant spawn“ (TABs Stragglers sind Events); Balken ziehen nur von Hand geprüft |
 | 7 | **Map** (Tafel 6): TABs Info (für die Liste eigener Level), Landschaft, Kartengröße, Spielfeld, Schwierigkeit und infizierte Bevölkerung mit TABs Stufen, Tage. **Spieler** wie SC2 (Kolonie, Verbündete mit KI, Neutral, Zombies – Farbe, Steuerung, Team, Startpunkt; die KIs selbst sind DESIGN 12.9 Schritt 7). **Sieg/Niederlage** wie TAB: Text, Bedingung, Fortschritt | **fertig** (`src\editor\map_page.rs`, Order `SetDifficulty`) – Vollbild-Seite (`Module::FULL`); **Difficulty** statt TABs „Infected population“ allein (unsere Stufen enthalten sie); Spieler nur zum Lesen, Wetter/Musik, Keep-out je Karte, Rules, Strings fehlen mit Absicht; Bild der Karte in der Vorschau erst, wenn das Spiel es irgendwo zeigt |
 | – | **Data** (SC2s Data-Editor, leicht): Werte aus `data\` je Karte überschreiben (DESIGN 12.9 Schritt 8) | später |
@@ -85,21 +85,14 @@ Gebaut und im laufenden Editor gesehen: Modul „Regions“ (Werkzeuge + Rectang
 Special, Regions, Points, Spawners mit Suche; rechts Name, Farbe, Formen mit Zahlen, Locate / Duplicate / Delete),
 auf der Karte auswählen, verschieben, Rechteck-Kanten ziehen, Ebene „Regions and points“ unter „Show“, Statuszeile,
 Orders `AddZone` `SetZone` `PaintZone` `RemoveZone` `AddSpot` `SetSpot` `RemoveSpot`, Kartenformat 6, 3 Tests
-(`sim::regions::tests`). Offen:
+(`sim::regions::tests`), Entf löscht Regionen und Punkte (`clip_keys` lässt die Taste ohne Auswahl durch), der
+Punkt-Name steht über dem Punkt, „Used by“, Doku. Offen:
 
-1. **Entf löscht nicht.** `picking.rs` → `clip_keys` schluckt die Taste auch ohne Auswahl. In `match action` vor
-   `ClipAction::Delete => self.remove(…)` einfügen: `ClipAction::Delete if pieces.is_empty() => return false,`. Dann
-   greift der Zweig in `ui.rs` (`handle_input`: `orders.extend(self.editor.remove_picked())`). Prüfen: Punkt anklicken,
-   Entf → weg; Strg+Z → wieder da.
-2. **Nicht im laufenden Editor geprüft:** Strg-Ziehen (Form dazu), Alt-Ziehen (ausschneiden), Kreis-Vorschau, Speichern
-   und Laden mit Regionen, Duplicate, Farbe ändern, Regionen im Test-Modus. Der Treiber kann keine Taste beim Ziehen
-   halten – Strg/Alt per Hand prüfen lassen oder im Treiber ergänzen.
-3. **Namen überlappen** (Punkt in Region): den Punkt-Namen nur zeichnen, wenn er gewählt ist oder die Maus nah ist –
-   oder ihn über den Punkt setzen. `regions.rs` → `draw_regions`.
-4. **Spielfeld als Region:** steht nur in der Liste (Klick = Werkzeug „Drag the border“). Reicht für jetzt; die
-   Trigger-Aktion „Spielfeld auf Region X“ kommt mit Schritt 5.
-5. **Doku:** `DESIGN.md` 12.9 Schritt 5 (*In the prototype:* …), README-Tabelle „Editor“ (Zeile Regions),
-   `src\mapfile.rs`-Kopfkommentar (regions, points), Memory `editor-egui-next-step`.
+1. **Von Hand zu prüfen:** Strg-Ziehen (Form dazu) und Alt-Ziehen (ausschneiden) – der Treiber kann keine Taste beim
+   Ziehen halten (Treiber ergänzen oder per Hand). Im laufenden Editor gesehen: Kreis, Punkt, Entf + Undo, Farbe,
+   Duplicate, Speichern und Laden, Test-Modus (F10) hin und zurück.
+2. **Spielfeld als Region:** steht nur in der Liste (Klick = Werkzeug „Drag the border“). Reicht für jetzt; die
+   Trigger-Aktion „Spielfeld auf Region X“ kommt mit 5.6.
 
 ### Schritt 7 – Map: fertig
 
@@ -149,7 +142,22 @@ Heute: `events_module` + `event_box` in `editor.rs` (eine Liste aufklappbarer K�
 ### Schritt 5 – Triggers (Tafel 4, `project/Triggers.dc.html`)
 
 Erst die Simulation, dann der Editor. Die Simulations-Schritte stehen in `docs\trigger-und-28yl.md` (2 Trigger als
-Daten, 3 Ausdruckssprache, 4 Ablauf, 5 Ereignisse) – jeder ist eine eigene Unterhaltung. Der Editor wächst mit:
+Daten, 3 Ausdruckssprache, 4 Ablauf, 5 Ereignisse) – jeder ist eine eigene Unterhaltung. Der Editor wächst mit.
+
+**Gebaut** (Punkte 1–5 und 7, mit 2–4 der Trigger-Doku): `src\editor\triggers.rs` (Seite, Baum, Mitte, Palette,
+`Module::FULL`), `src\story_panel\sentences.rs` (ein Satz je Aktion, `sentence` zeichnet, `edit_action` ändert – gleiche
+Wortnummern), `src\story_panel.rs` (Felder: Ereignis, Bedingungen, Ziele, Knopf, Variablen). Gesehen im laufenden
+Editor: Baum, neuer Trigger, Aktionen per Palette-Klick und „+ action“, Wort anklicken, Text-Umschalter. **Nicht von Hand
+geprüft:** Ziehen aus der Palette (der Treiber kann es nicht), Text bearbeiten und zurücklesen. Abweichungen vom Entwurf:
+- Die blauen Wörter öffnen ihr Feld **unter der Zeile** statt in einem Pop-up (Drop-down-Listen im Pop-up schließen es).
+- **Text** = der Trigger als JSON (die Datei-Form), keine eigene Sprache für ganze Aktionen; nur Ausdrücke und Code
+  haben eine (`expr.rs`).
+- Kopf: Name, an/aus, Ordner, **Notiz** (`Trigger::comment`); „Only once“ fehlt (die Sim kennt es nicht).
+- Baum: „Story“ = Goals, Command center button, Variables, Functions (keine eigenen Skripte für Start/Sieg/Niederlage –
+  das sind Trigger mit festem Ereignis, in den Ordnern); „Object scripts“ = neutrale Objekte mit Name-ID.
+- Palette ohne Gruppe „Map“ (Spielfeld, Kamera: kommen mit 6).
+
+Die ursprünglichen Punkte:
 
 1. **Nach Trigger-Doku 2** (Trigger als Daten, Variablen): Vollbild-Seite, **links der Baum** (Story: On start / On
    victory / On defeat / Command center button / Goals; Variables; Triggers in Ordnern; Object scripts = alle
@@ -164,7 +172,7 @@ Daten, 3 Ausdruckssprache, 4 Ablauf, 5 Ereignisse) – jeder ist eine eigene Unt
 4. **Nach Trigger-Doku 4:** Block, Loop / Exit loop, Wait, Bedingung je Option.
 5. **Rechts die Palette** (Flow, Zombies, Colony, Show, Map, End) mit Suche; Klick hängt die Aktion ans Ende, Ziehen
    in die Liste (egui `dnd_drag_source` / `dnd_drop_zone`) an die Stelle. Strg+Leertaste: Suchfeld mit Tippen.
-6. **Nach Trigger-Doku 5 + Regionen:** Ereignisse „unit enters / leaves region“, Aktionen „Spawn at region“,
+6. **(offen)** **Nach Trigger-Doku 5 + Regionen:** Ereignisse „unit enters / leaves region“, Aktionen „Spawn at region“,
    „Camera to region/point“, „Playing field to region“ – jede trägt sich in `zone_uses` ein (Schritt 6.5).
 7. Statuszeile: „Trigger: X · N conditions · M actions · No errors“.
 

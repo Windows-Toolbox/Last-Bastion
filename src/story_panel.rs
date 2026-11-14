@@ -1,141 +1,31 @@
-//! The editor's "Story" tab and its script editor (TAB's "Game Narrative", "Custom Commands", "Variables" –
-//! `sim/story.rs`): the triggers (SC2's: an event, conditions, actions); the goals; the command center's own button; the
-//! variables. An event's and a neutral thing's own triggers are edited where they are too (`linked_triggers`).
+//! The editor's story tools (TAB's "Game Narrative", "Custom Commands", "Variables" – `sim/story.rs`): the fields of a
+//! trigger (SC2's: an event, conditions, actions as sentences – `sentences.rs`), of the goals, the command center's own
+//! button and the variables. The Triggers page (`editor\triggers.rs`) puts them together; an event's and a neutral
+//! thing's own triggers are edited where they are too (`linked_triggers`).
 //!
-//! Like the rest of the panel it only reads the world: everything works on a copy, and if the copy differs at the end
+//! Like the rest of the editor it only reads the world: everything works on a copy, and if the copy differs at the end
 //! of the frame, one order sets it (`Order::SetStory`).
+
+mod sentences;
 
 use egui_macroquad::egui::{self, Color32, CollapsingHeader, ComboBox, DragValue, Frame, RichText, TextEdit, Ui};
 
-use crate::editor::{section, settled_text, wave_group, Places, BUILDINGS, MAX_AMOUNT};
-use crate::kinds::{BuildingKind, Resource, UnitKind};
+use crate::editor::{settled_text, Places};
 use crate::sim::{
-    code_text, parse_code, parse_condition, signature, Action, BreedCount, Condition, CustomCommand, Expr, ExprError, Goal, Order, Scope, Script,
-    Step, Story, Trigger, TriggerEvent, Ty, Value, VarKind, Variable, WaveFrom, WaveGroup, Weather, World, FUNCS,
+    parse_condition, parse_expr, signature, CustomCommand, Expr, ExprError, Goal, Order, Scope, Story, Trigger, TriggerEvent, Ty, Value,
+    VarKind, Variable, World, FUNCS,
 };
 
-/// The kinds of actions, for "+ action" – in TAB's order.
-const ACTIONS: [&str; 15] = [
-    "Zombies", "Resources", "Units", "Infect houses", "Notify", "Window", "Random", "Choose", "Code", "Join", "Reveal", "Weather", "Train",
-    "Win", "Lose",
-];
+pub use sentences::{action_help, add_from_palette, mark_top, script_ui, GROUPS};
 
-/// A new action of the kind named in `ACTIONS`, with values to start from.
-fn new_action(name: &str) -> Action {
-    match name {
-        "Zombies" => {
-            let group = WaveGroup { from: WaveFrom::Sides(1), breeds: vec![BreedCount::new(50, crate::sim::Breed::Runner)] };
-            Action::Zombies { groups: vec![group], dispersion: 0, storm: true }
-        }
-        "Resources" => Action::Resources { gold: 100, goods: Vec::new() },
-        "Units" => Action::Units { units: vec![(UnitKind::Soldier, 1)] },
-        "Infect houses" => Action::InfectHouses { count: 1 },
-        "Notify" => Action::Notify { text: "Something happened.".into() },
-        "Window" => Action::Window { title: "News".into(), text: "Something happened.".into() },
-        "Random" => Action::Random { options: vec![(1, Vec::new()), (1, Vec::new())] },
-        "Choose" => Action::Choose { text: "What now?".into(), options: vec![("Yes".into(), Vec::new()), ("No".into(), Vec::new())] },
-        "Code" => Action::Code,
-        "Join" => Action::Join { name_id: String::new() },
-        "Reveal" => Action::Reveal,
-        "Weather" => Action::Weather { weather: Weather::Snow },
-        "Train" => Action::Train { stop: true, reverse: false, on_arrival: Vec::new() },
-        "Win" => Action::Win,
-        _ => Action::Lose,
-    }
-}
-
-/// Its name in `ACTIONS`.
-fn action_name(action: &Action) -> &'static str {
-    match action {
-        Action::Zombies { .. } => "Zombies",
-        Action::Resources { .. } => "Resources",
-        Action::Units { .. } => "Units",
-        Action::InfectHouses { .. } => "Infect houses",
-        Action::Notify { .. } => "Notify",
-        Action::Window { .. } => "Window",
-        Action::Random { .. } => "Random",
-        Action::Choose { .. } => "Choose",
-        Action::Code => "Code",
-        Action::Join { .. } => "Join",
-        Action::Reveal => "Reveal",
-        Action::Weather { .. } => "Weather",
-        Action::Train { .. } => "Train",
-        Action::Win => "Win",
-        Action::Lose => "Lose",
-    }
-}
-
-/// What each action does, for its tooltip.
-fn action_help(name: &str) -> &'static str {
-    match name {
-        "Zombies" => "Zombies out of the spawners, now - storming the command center or idling where they come out",
-        "Resources" => "Gold and goods for the colony - below 0 taken away",
-        "Units" => "Units for the colony next to the command center",
-        "Infect houses" => "So many houses with colonists, picked at random, are infected",
-        "Notify" => "A line at the top of the screen",
-        "Window" => "A window with a text - the game pauses until it's closed",
-        "Random" => "One of the scripts below, each as likely as its weight",
-        "Choose" => "The player picks one in a window - its script runs",
-        "Code" => "Nothing but the code below: set variables, call functions (keys += 1; GiveGold(100))",
-        "Join" => "The neutral thing with this name ID joins the colony",
-        "Reveal" => "The whole map is shown from now on",
-        "Weather" => "Snow, rain or clear from now on - it fades in over a few seconds. A round starts with its landscape's (snow on Frozen Highlands, rain on Caustic Lands)",
-        "Train" => "A train comes along the railway (Objects > Railway): on the line closest to the command center, from its end nearer the edge of the map. It runs over everyone in its way",
-        "Win" => "The round is won",
-        _ => "The round is lost",
-    }
-}
-
-/// A script in the panel: one box per action – its fields, x to remove it, ^ to move it up – and "+ action". Works on
-/// `script` in place. `id`: egui tells the fields of different scripts apart by it.
-pub fn script_ui(ui: &mut Ui, id: egui::Id, script: &mut Script, places: Places) {
-    let mut gone = None;
-    let mut up = None;
-    let scope = Scope { variables: places.variables };
-    for (k, step) in script.iter_mut().enumerate() {
-        let id = id.with(k);
-        Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let name = action_name(&step.action);
-                ui.label(RichText::new(name).strong()).on_hover_text(action_help(name));
-                if ui.small_button("x").on_hover_text("Remove the action").clicked() {
-                    gone = Some(k);
-                }
-                if k > 0 && ui.small_button("^").on_hover_text("Earlier").clicked() {
-                    up = Some(k);
-                }
-            });
-            // TAB's two ZXCode fields: the condition (false: the action and the code are skipped) …
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("if").weak());
-                let shown = step.when.as_ref().map_or(String::new(), |e| e.to_string());
-                let parse = |t: &str| if t.trim().is_empty() { Ok(None) } else { parse_condition(t, scope).map(Some) };
-                if let Some(new) = code_field(ui, id.with("if"), &shown, "condition - empty: always", false, parse) {
-                    step.when = new;
-                }
-            });
-            action_ui(ui, id, &mut step.action, places);
-            // … and the code that runs after the action.
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("code").weak());
-                let shown = code_text(&step.code);
-                if let Some(new) = code_field(ui, id.with("code"), &shown, "code, e.g. keys += 1; GiveGold(100)", true, |t| parse_code(t, scope)) {
-                    step.code = new;
-                }
-            });
-        });
-    }
-    if let Some(k) = gone {
-        script.remove(k);
-    } else if let Some(k) = up {
-        script.swap(k - 1, k);
-    }
-    ComboBox::from_id_salt(id.with("add")).width(120.0).selected_text("+ action").show_ui(ui, |ui| {
-        for name in ACTIONS {
-            if ui.selectable_label(false, name).on_hover_text(action_help(name)).clicked() {
-                script.push(Step::new(new_action(name)));
-            }
+/// "if" and a field for an optional condition (empty: none), checked as it is typed.
+fn when_field(ui: &mut Ui, id: egui::Id, when: &mut Option<Expr>, scope: Scope, hint: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("if").weak());
+        let shown = when.as_ref().map_or(String::new(), |e| e.to_string());
+        let parse = |t: &str| if t.trim().is_empty() { Ok(None) } else { parse_condition(t, scope).map(Some) };
+        if let Some(new) = code_field(ui, id, &shown, hint, false, parse) {
+            *when = new;
         }
     });
 }
@@ -185,263 +75,112 @@ pub(crate) fn code_field<T>(ui: &mut Ui, id: egui::Id, shown: &str, hint: &str, 
     .inner
 }
 
-/// The fields of one action.
-fn action_ui(ui: &mut Ui, id: egui::Id, action: &mut Action, places: Places) {
-    match action {
-        Action::Zombies { groups, dispersion, storm } => {
-            let mut gone = None;
-            for (g, group) in groups.iter_mut().enumerate() {
-                if wave_group(ui, (id, g), group, places) {
-                    gone = Some(g);
-                }
-            }
-            if let Some(g) = gone {
-                groups.remove(g);
-            }
-            ui.horizontal_wrapped(|ui| {
-                if ui.small_button("+ group").clicked() {
-                    groups.push(WaveGroup { from: WaveFrom::Sides(1), breeds: vec![BreedCount::new(50, crate::sim::Breed::Runner)] });
-                }
-                ui.add(DragValue::new(dispersion).range(0..=200).prefix("spread ").suffix(" tiles"));
-                ui.checkbox(storm, "storm the CC");
-            });
-        }
-        Action::Resources { gold, goods } => {
-            ui.horizontal(|ui| {
-                ui.label("Gold");
-                ui.add(DragValue::new(gold).range(-(MAX_AMOUNT as i32)..=MAX_AMOUNT as i32).speed(10));
-            });
-            let mut gone = None;
-            for (k, (resource, n)) in goods.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    ComboBox::from_id_salt(id.with(("good", k))).width(90.0).selected_text(resource.name()).show_ui(ui, |ui| {
-                        for r in Resource::ALL {
-                            ui.selectable_value(resource, r, r.name());
-                        }
-                    });
-                    ui.add(DragValue::new(n).range(-100_000..=100_000));
-                    if ui.small_button("x").clicked() {
-                        gone = Some(k);
-                    }
-                });
-            }
-            if let Some(k) = gone {
-                goods.remove(k);
-            }
-            if ui.small_button("+ good").clicked() {
-                goods.push((Resource::Wood, 10));
-            }
-        }
-        Action::Units { units } => {
-            let mut gone = None;
-            for (k, (kind, n)) in units.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.add(DragValue::new(n).range(1..=100));
-                    ComboBox::from_id_salt(id.with(("unit", k))).width(110.0).selected_text(kind.stats().name.as_str()).show_ui(ui, |ui| {
-                        for u in UnitKind::ALL {
-                            ui.selectable_value(kind, u, u.stats().name.as_str());
-                        }
-                    });
-                    if ui.small_button("x").clicked() {
-                        gone = Some(k);
-                    }
-                });
-            }
-            if let Some(k) = gone {
-                units.remove(k);
-            }
-            if ui.small_button("+ unit").clicked() {
-                units.push((UnitKind::Soldier, 1));
-            }
-        }
-        Action::InfectHouses { count } => {
-            ui.add(DragValue::new(count).range(1..=100).suffix(" houses"));
-        }
-        Action::Notify { text } => text_field(ui, text, false),
-        Action::Window { title, text } => {
-            text_field(ui, title, false);
-            text_field(ui, text, true);
-        }
-        Action::Random { options } => {
-            let mut gone = None;
-            for (k, (weight, script)) in options.iter_mut().enumerate() {
-                Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(DragValue::new(weight).range(0..=1000).prefix("weight "));
-                        if ui.small_button("x").on_hover_text("Remove this option").clicked() {
-                            gone = Some(k);
-                        }
-                    });
-                    script_ui(ui, id.with(("random", k)), script, places);
-                });
-            }
-            if let Some(k) = gone {
-                options.remove(k);
-            }
-            if ui.small_button("+ option").clicked() {
-                options.push((1, Vec::new()));
-            }
-        }
-        Action::Choose { text, options } => {
-            text_field(ui, text, true);
-            let mut gone = None;
-            for (k, (label, script)) in options.iter_mut().enumerate() {
-                Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Button");
-                        if let Some(new) = settled_text(ui, label, false) {
-                            *label = new;
-                        }
-                        if ui.small_button("x").on_hover_text("Remove this option").clicked() {
-                            gone = Some(k);
-                        }
-                    });
-                    script_ui(ui, id.with(("choose", k)), script, places);
-                });
-            }
-            if let Some(k) = gone {
-                options.remove(k);
-            }
-            if ui.small_button("+ option").clicked() {
-                options.push(("Option".into(), Vec::new()));
-            }
-        }
-        Action::Join { name_id } => {
-            ui.horizontal(|ui| {
-                ui.label("Name ID");
-                if let Some(new) = settled_text(ui, name_id, false) {
-                    *name_id = new;
-                }
-            });
-        }
-        Action::Weather { weather } => {
-            ui.horizontal(|ui| {
-                for w in Weather::ALL {
-                    ui.selectable_value(weather, w, w.name());
-                }
-            });
-        }
-        Action::Train { stop, reverse, on_arrival } => {
-            ui.checkbox(reverse, "from the other end").on_hover_text("Off: it comes from the end of the line nearer the edge of the map");
-            ui.checkbox(stop, "stops at the command center").on_hover_text("It waits there 3 s - then the script below runs (TAB unloads colonists there)");
-            if *stop {
-                ui.label(RichText::new("When it's there:").weak());
-                script_ui(ui, id.with("arrival"), on_arrival, places);
-            }
-        }
-        Action::Reveal | Action::Win | Action::Lose | Action::Code => {}
-    }
-}
-
 /// A text of an action, changed once typing ends (`settled_text`).
-fn text_field(ui: &mut Ui, text: &mut String, multiline: bool) {
+pub(crate) fn text_field(ui: &mut Ui, text: &mut String, multiline: bool) {
     if let Some(new) = settled_text(ui, text, multiline) {
         *text = new;
     }
 }
 
-/// The kinds of conditions (goals, triggers), for the drop-down list.
-const CONDITIONS: [&str; 7] = ["Colonists", "Day", "Zombies killed", "Built", "Destroyed", "Variable", "Event done"];
-
-fn condition_name(condition: &Condition) -> &'static str {
-    match condition {
-        Condition::Colonists(_) => "Colonists",
-        Condition::Day(_) => "Day",
-        Condition::ZombiesKilled(_) => "Zombies killed",
-        Condition::Built { .. } => "Built",
-        Condition::Destroyed { .. } => "Destroyed",
-        Condition::Variable { .. } => "Variable",
-        Condition::EventDone { .. } => "Event done",
+/// The command center's button: its texts, how often, and the three expressions asked every tick.
+pub(crate) fn command_section(ui: &mut Ui, command: &mut Option<CustomCommand>, places: Places) {
+    let mut on = command.is_some();
+    if ui.checkbox(&mut on, "The command center has it").changed() {
+        *command = on.then(|| CustomCommand { label: "Command".into(), ..CustomCommand::default() });
     }
+    let Some(command) = command else {
+        return;
+    };
+    egui::Grid::new("command").num_columns(2).show(ui, |ui| {
+        ui.label("Name");
+        text_field(ui, &mut command.label, false);
+        ui.end_row();
+        ui.label("Tooltip");
+        text_field(ui, &mut command.text, false);
+        ui.end_row();
+        ui.label("Times");
+        ui.add(DragValue::new(&mut command.uses).range(0..=1000)).on_hover_text("How often it can be pressed - 0: as often as you like");
+        ui.end_row();
+    });
+    // TAB's three expressions, asked every tick - each empty: always yes / no number.
+    let scope = Scope { variables: places.variables };
+    let condition = |ui: &mut Ui, id: &str, label: &str, field: &mut Option<Expr>, hint: &str| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(label).weak());
+            let shown = field.as_ref().map_or(String::new(), |e| e.to_string());
+            let parse = |t: &str| if t.trim().is_empty() { Ok(None) } else { parse_condition(t, scope).map(Some) };
+            if let Some(new) = code_field(ui, egui::Id::new(("command", id)), &shown, hint, false, parse) {
+                *field = new;
+            }
+        });
+    };
+    condition(ui, "visible", "visible if", &mut command.visible, "condition - empty: always");
+    condition(ui, "enabled", "enabled if", &mut command.enabled, "condition - empty: always");
+    if command.enabled.is_some() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("when not").weak());
+            text_field(ui, &mut command.disabled_text, false);
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("counter").weak());
+        let shown = command.counter.as_ref().map_or(String::new(), |e| e.to_string());
+        let parse = |t: &str| if t.trim().is_empty() { Ok(None) } else { parse_expr(t, scope, Ty::Number).map(Some) };
+        if let Some(new) = code_field(ui, egui::Id::new(("command", "counter")), &shown, "a number shown on the button, e.g. keys - empty: none", false, parse) {
+            command.counter = new;
+        }
+    });
 }
 
-fn new_condition(name: &str) -> Condition {
-    match name {
-        "Colonists" => Condition::Colonists(100),
-        "Day" => Condition::Day(20),
-        "Zombies killed" => Condition::ZombiesKilled(1000),
-        "Built" => Condition::Built { kind: BuildingKind::Tent, count: 10 },
-        "Destroyed" => Condition::Destroyed { name_id: String::new() },
-        "Variable" => Condition::Variable { name: "count".into(), at_least: 1 },
-        _ => Condition::EventDone { name: String::new() },
+/// The variables: name, kind, value at the start – and what they hold now (in a test).
+pub(crate) fn variables_section(ui: &mut Ui, story: &mut Story, world: &World) {
+    let mut gone = None;
+    for (k, v) in story.variables.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            text_field(ui, &mut v.name, false);
+            ui.selectable_value(&mut v.kind, VarKind::Number, "No.").on_hover_text("A number");
+            ui.selectable_value(&mut v.kind, VarKind::Flag, "Y/N").on_hover_text("Yes or no");
+            ui.selectable_value(&mut v.kind, VarKind::Text, "Txt").on_hover_text("A text");
+            // The start value in the kind it must have (an older file may have a number for a yes/no one).
+            let mut start = v.start.as_ty(v.kind.ty());
+            match &mut start {
+                Value::Number(n) => {
+                    ui.add(DragValue::new(n).range(-1_000_000..=1_000_000));
+                }
+                Value::Flag(yes) => {
+                    ui.checkbox(yes, "yes");
+                }
+                Value::Text(t) => text_field(ui, t, false),
+            }
+            if start != v.start {
+                v.start = start;
+            }
+            if ui.small_button("x").clicked() {
+                gone = Some(k);
+            }
+        });
     }
-}
-
-/// The "Story" tab: the triggers, the goals, the command center's button, the variables – on a copy of the story;
-/// changed, one order sets it.
-pub fn story_tab(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
-    let mut story: Story = world.story.clone();
-    let places = Places::of(world);
-    let id = egui::Id::new("story");
-    section(ui, "Triggers", "an event, conditions that must all hold, and what happens then - in this order", |ui| {
-        triggers_ui(ui, id.with("triggers"), &mut story.triggers, places);
-    });
-    section(ui, "Goals", "all victory goals reached: won - any defeat goal reached: lost", |ui| goals_ui(ui, &mut story.goals));
-    section(ui, "Command center button", "a button of its own on the command center (V) - what it does: the triggers with the event Button", |ui| {
-        let mut on = story.command.is_some();
-        if ui.checkbox(&mut on, "The command center has it").changed() {
-            story.command = on.then(|| CustomCommand { label: "Command".into(), ..CustomCommand::default() });
+    if let Some(k) = gone {
+        story.variables.remove(k);
+    }
+    if ui.small_button("+ variable").clicked() {
+        story.variables.push(Variable { name: format!("variable {}", story.variables.len() + 1), kind: VarKind::Number, start: Value::Number(0) });
+    }
+    // A variable that changed its kind (or went) while code still uses it as the old kind: the round would turn the value.
+    if !story.variables.is_empty() {
+        let misfits = story.misfits();
+        if !misfits.is_empty() {
+            ui.label(RichText::new(format!("Doesn't fit the variables any more: {}", misfits.join(", "))).small().color(Color32::LIGHT_RED));
         }
-        if let Some(command) = &mut story.command {
-            egui::Grid::new("command").num_columns(2).show(ui, |ui| {
-                ui.label("Name");
-                text_field(ui, &mut command.label, false);
-                ui.end_row();
-                ui.label("Tooltip");
-                text_field(ui, &mut command.text, false);
-                ui.end_row();
-                ui.label("Times");
-                ui.add(DragValue::new(&mut command.uses).range(0..=1000)).on_hover_text("How often it can be pressed - 0: as often as you like");
-                ui.end_row();
-            });
-        }
-    });
-    section(ui, "Variables", "numbers, yes/no or texts the triggers change and ask - their value at the start", |ui| {
-        let mut gone = None;
-        for (k, v) in story.variables.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                text_field(ui, &mut v.name, false);
-                ui.selectable_value(&mut v.kind, VarKind::Number, "No.").on_hover_text("A number");
-                ui.selectable_value(&mut v.kind, VarKind::Flag, "Y/N").on_hover_text("Yes or no");
-                ui.selectable_value(&mut v.kind, VarKind::Text, "Txt").on_hover_text("A text");
-                // The start value in the kind it must have (an older file may have a number for a yes/no one).
-                let mut start = v.start.as_ty(v.kind.ty());
-                match &mut start {
-                    Value::Number(n) => {
-                        ui.add(DragValue::new(n).range(-1_000_000..=1_000_000));
-                    }
-                    Value::Flag(yes) => {
-                        ui.checkbox(yes, "yes");
-                    }
-                    Value::Text(t) => text_field(ui, t, false),
-                }
-                if start != v.start {
-                    v.start = start;
-                }
-                if ui.small_button("x").clicked() {
-                    gone = Some(k);
-                }
-            });
-        }
-        if let Some(k) = gone {
-            story.variables.remove(k);
-        }
-        if ui.small_button("+ variable").clicked() {
-            story.variables.push(Variable { name: format!("variable {}", story.variables.len() + 1), kind: VarKind::Number, start: Value::Number(0) });
-        }
-        if !world.variables.is_empty() {
-            let now: Vec<String> = world.variables.iter().map(|(n, v)| format!("{n} = {}", v.text())).collect();
-            ui.label(RichText::new(format!("Now: {}", now.join(", "))).small().weak());
-        }
-    });
-    section(ui, "Functions", "what the conditions and the code can use - names in any case", functions_help);
-    if story != world.story {
-        orders.push(Order::SetStory { story });
+    }
+    if !world.variables.is_empty() {
+        let now: Vec<String> = world.variables.iter().map(|(n, v)| format!("{n} = {}", v.text())).collect();
+        ui.label(RichText::new(format!("Now: {}", now.join(", "))).small().weak());
     }
 }
 
 /// The list of everything the language knows (`funcs.rs`): the way to write it, what it gives back, what it does.
-fn functions_help(ui: &mut Ui) {
+pub(crate) fn functions_help(ui: &mut Ui) {
     ui.label(RichText::new("Operators: | & = != < <= > >= + - * / ! - and ( ). Text in \"quotes\"; true / false. Code: x = 1; x += 2; GiveGold(5)").small().weak());
     for f in FUNCS {
         let gives = f.returns.map_or(String::new(), |t: Ty| format!(" -> {}", t.name()));
@@ -496,123 +235,86 @@ fn new_event(name: &str, old: &TriggerEvent) -> TriggerEvent {
     }
 }
 
-/// All triggers of the map, grouped by folder: the ones without a folder on top, one fold-away box per folder.
-fn triggers_ui(ui: &mut Ui, id: egui::Id, triggers: &mut Vec<Trigger>, places: Places) {
-    let mut folders: Vec<String> = Vec::new();
-    for t in triggers.iter() {
-        if !folders.contains(&t.folder) {
-            folders.push(t.folder.clone());
-        }
+/// What a trigger's event is called, short: "round starts", "event Wave 1", "Gate joins", "button" …
+pub(crate) fn event_label(event: &TriggerEvent) -> String {
+    match event {
+        TriggerEvent::Start => "round starts".to_owned(),
+        TriggerEvent::Won => "round won".to_owned(),
+        TriggerEvent::Lost => "round lost".to_owned(),
+        TriggerEvent::EventComes { event } => format!("event {event} comes"),
+        TriggerEvent::EventDone { event } => format!("event {event} done"),
+        TriggerEvent::Join { name_id } => format!("{name_id} joins"),
+        TriggerEvent::Button => "button".to_owned(),
     }
-    // The empty folder name first (`false` sorts before `true`; the sort keeps the rest in order).
-    folders.sort_by_key(|f| !f.is_empty());
-    let (mut gone, mut up) = (None, None);
-    for folder in &folders {
-        let count = triggers.iter().filter(|t| t.folder == *folder).count();
-        let mut list = |ui: &mut Ui| {
-            for k in 0..triggers.len() {
-                if triggers[k].folder != *folder {
-                    continue;
-                }
-                let earlier = triggers[..k].iter().rposition(|t| t.folder == *folder);
-                let act = trigger_ui(ui, id.with(k), &mut triggers[k], places, true, earlier.is_some());
-                if act.remove {
-                    gone = Some(k);
-                } else if act.up {
-                    up = earlier.map(|e| (e, k));
+}
+
+/// "When": the kind of event and the name it needs, as words on one line.
+pub(crate) fn trigger_event_ui(ui: &mut Ui, id: egui::Id, t: &mut Trigger) {
+    ui.horizontal_wrapped(|ui| {
+        let shown = event_name(&t.event);
+        ComboBox::from_id_salt(id.with("event")).width(120.0).selected_text(shown).show_ui(ui, |ui| {
+            for name in EVENTS {
+                if ui.selectable_label(name == shown, name).on_hover_text(event_help(name)).clicked() && name != shown {
+                    t.event = new_event(name, &t.event);
                 }
             }
-        };
-        if folder.is_empty() {
-            list(ui);
-        } else {
-            CollapsingHeader::new(format!("{folder} ({count})")).id_salt(id.with(("folder", folder))).default_open(true).show(ui, list);
+        });
+        match &mut t.event {
+            TriggerEvent::EventComes { event } | TriggerEvent::EventDone { event } => {
+                ui.label("named");
+                text_field(ui, event, false);
+            }
+            TriggerEvent::Join { name_id } => {
+                ui.label("name ID");
+                text_field(ui, name_id, false);
+            }
+            _ => {}
         }
+    });
+}
+
+/// "If" (the conditions, all of them) and "Then" (the actions as sentences) of a trigger.
+pub(crate) fn trigger_body(ui: &mut Ui, id: egui::Id, t: &mut Trigger, places: Places) {
+    ui.label(RichText::new("If (all of them):").weak());
+    let mut gone = None;
+    let scope = Scope { variables: places.variables };
+    for (k, condition) in t.conditions.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            if ui.small_button("x").on_hover_text("Remove the condition").clicked() {
+                gone = Some(k);
+            }
+            let shown = condition.to_string();
+            if let Some(new) = code_field(ui, id.with(("if", k)), &shown, "e.g. Day >= 3 & Gold > 200", false, |t| parse_condition(t, scope)) {
+                *condition = new;
+            }
+        });
     }
     if let Some(k) = gone {
-        triggers.remove(k);
-    } else if let Some((a, b)) = up {
-        triggers.swap(a, b);
+        t.conditions.remove(k);
     }
-    if ui.small_button("+ trigger").on_hover_text("A new trigger - it fires when the round starts, change its event").clicked() {
-        triggers.push(Trigger::new(&format!("Trigger {}", triggers.len() + 1), TriggerEvent::Start));
+    if ui.small_button("+ condition").on_hover_text("A yes/no expression, e.g. Day >= 3 & Gold > 200 - see Functions").clicked() {
+        t.conditions.push(Expr::yes());
     }
+    ui.label(RichText::new("Then:").weak());
+    let actions = id.with("actions");
+    mark_top(ui, actions);
+    script_ui(ui, actions, &mut t.actions, places);
 }
 
-/// What the buttons of a trigger asked for.
-struct TriggerAct {
-    remove: bool,
-    up: bool,
-}
-
-/// One trigger: on/off, name, (the event and folder,) the conditions, the actions. `with_event`: the event is chosen
-/// here; otherwise the trigger is shown where its event is (an event's window, a neutral thing's properties).
-fn trigger_ui(ui: &mut Ui, id: egui::Id, t: &mut Trigger, places: Places, with_event: bool, can_move_up: bool) -> TriggerAct {
-    let mut act = TriggerAct { remove: false, up: false };
+/// One trigger in a box (an event's window, a neutral thing's properties): on/off, name, x, the conditions, the
+/// actions. The event is not shown – the trigger is shown where its event is.
+fn trigger_ui(ui: &mut Ui, id: egui::Id, t: &mut Trigger, places: Places) -> bool {
+    let mut remove = false;
     Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.checkbox(&mut t.on, "").on_hover_text("Off: it never fires");
-            ui.label(RichText::new("Trigger").strong());
-            act.remove = ui.small_button("x").on_hover_text("Remove the trigger").clicked();
-            act.up = can_move_up && ui.small_button("^").on_hover_text("Earlier (it fires before the next one)").clicked();
-        });
-        ui.horizontal(|ui| {
-            ui.label("Name");
             text_field(ui, &mut t.name, false);
+            remove = ui.small_button("x").on_hover_text("Remove the trigger").clicked();
         });
-        if with_event {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Event");
-                let shown = event_name(&t.event);
-                ComboBox::from_id_salt(id.with("event")).width(120.0).selected_text(shown).show_ui(ui, |ui| {
-                    for name in EVENTS {
-                        if ui.selectable_label(name == shown, name).on_hover_text(event_help(name)).clicked() && name != shown {
-                            t.event = new_event(name, &t.event);
-                        }
-                    }
-                });
-                match &mut t.event {
-                    TriggerEvent::EventComes { event } | TriggerEvent::EventDone { event } => {
-                        ui.label("named");
-                        text_field(ui, event, false);
-                    }
-                    TriggerEvent::Join { name_id } => {
-                        ui.label("name ID");
-                        text_field(ui, name_id, false);
-                    }
-                    _ => {}
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Folder");
-                text_field(ui, &mut t.folder, false);
-            });
-        }
-        ui.label(RichText::new("If (all of them):").weak());
-        let mut gone = None;
-        let scope = Scope { variables: places.variables };
-        for (k, condition) in t.conditions.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("x").on_hover_text("Remove the condition").clicked() {
-                    gone = Some(k);
-                }
-                let shown = condition.to_string();
-                if let Some(new) = code_field(ui, id.with(("if", k)), &shown, "e.g. Day >= 3 & Gold > 200", false, |t| parse_condition(t, scope)) {
-                    *condition = new;
-                }
-            });
-        }
-        if let Some(k) = gone {
-            t.conditions.remove(k);
-        }
-        if ui.small_button("+ condition").on_hover_text("A yes/no expression, e.g. Day >= 3 & Gold > 200 - see Functions in the Story tab").clicked() {
-            t.conditions.push(Expr::yes());
-        }
-        ui.label(RichText::new("Then:").weak());
-        script_ui(ui, id.with("actions"), &mut t.actions, places);
+        trigger_body(ui, id, t, places);
     });
-    act
+    remove
 }
 
 /// The triggers with this event, edited where the event is (an event's window, a neutral thing's properties): the
@@ -628,7 +330,7 @@ pub fn linked_triggers(ui: &mut Ui, id: egui::Id, world: &World, orders: &mut Ve
             if story.triggers[k].event != *event {
                 continue;
             }
-            if trigger_ui(ui, id.with(k), &mut story.triggers[k], places, false, false).remove {
+            if trigger_ui(ui, id.with(k), &mut story.triggers[k], places) {
                 gone = Some(k);
             }
         }
@@ -647,16 +349,19 @@ pub fn linked_triggers(ui: &mut Ui, id: egui::Id, world: &World, orders: &mut Ve
 /// The goals alone (the Map page): a copy of the story's goals; changed, one order sets the story.
 pub fn goals_section(ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
     let mut story = world.story.clone();
-    goals_ui(ui, &mut story.goals);
+    goals_ui(ui, &mut story.goals, Places::of(world));
     if story != world.story {
         orders.push(Order::SetStory { story });
     }
 }
 
-/// The goals: per goal its text, victory or defeat, and when it's reached.
-fn goals_ui(ui: &mut Ui, goals: &mut Vec<Goal>) {
+/// The goals: per goal its text, victory or defeat, when it's reached and how far along it is (TAB's two ZXCode
+/// fields: a condition, and a number from 0 to 100).
+pub(crate) fn goals_ui(ui: &mut Ui, goals: &mut Vec<Goal>, places: Places) {
     let mut gone = None;
+    let scope = Scope { variables: places.variables };
     for (k, goal) in goals.iter_mut().enumerate() {
+        let id = egui::Id::new(("goal", k));
         Frame::group(ui.style()).inner_margin(4.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -668,58 +373,30 @@ fn goals_ui(ui: &mut Ui, goals: &mut Vec<Goal>) {
             ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut goal.defeat, false, "Victory");
                 ui.selectable_value(&mut goal.defeat, true, "Defeat");
-                let shown = condition_name(&goal.condition);
-                ComboBox::from_id_salt(("goal", k)).width(110.0).selected_text(shown).show_ui(ui, |ui| {
-                    for name in CONDITIONS {
-                        if ui.selectable_label(name == shown, name).clicked() && name != shown {
-                            goal.condition = new_condition(name);
-                        }
-                    }
-                });
             });
-            condition_ui(ui, egui::Id::new(("goal", k)), &mut goal.condition);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("reached if").weak());
+                let shown = goal.when.to_string();
+                if let Some(new) = code_field(ui, id.with("when"), &shown, "e.g. Day >= 20", false, |t| parse_condition(t, scope)) {
+                    goal.when = new;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("progress").weak());
+                let shown = goal.progress.as_ref().map_or(String::new(), |e| e.to_string());
+                let parse = |t: &str| if t.trim().is_empty() { Ok(None) } else { parse_expr(t, scope, Ty::Number).map(Some) };
+                if let Some(new) = code_field(ui, id.with("progress"), &shown, "0 to 100, e.g. Day * 100 / 20 - empty: none", false, parse) {
+                    goal.progress = new;
+                }
+            });
         });
     }
     if let Some(k) = gone {
         goals.remove(k);
     }
     if ui.small_button("+ goal").clicked() {
-        goals.push(Goal { text: "Survive".into(), condition: Condition::Day(20), defeat: false });
+        let when = parse_condition("Day >= 20", scope).unwrap_or_else(|_| Expr::yes());
+        let progress = parse_expr("Day * 100 / 20", scope, Ty::Number).ok();
+        goals.push(Goal { text: "Survive".into(), when, progress, defeat: false });
     }
 }
-
-/// The fields of a goal's condition.
-fn condition_ui(ui: &mut Ui, id: egui::Id, condition: &mut Condition) {
-    ui.horizontal_wrapped(|ui| match condition {
-        Condition::Colonists(n) => {
-            ui.add(DragValue::new(n).range(1..=100_000).prefix("at least ").suffix(" colonists"));
-        }
-        Condition::Day(day) => {
-            ui.add(DragValue::new(day).range(1..=1000).prefix("day "));
-        }
-        Condition::ZombiesKilled(n) => {
-            ui.add(DragValue::new(n).range(1..=10_000_000).prefix("at least ").suffix(" killed"));
-        }
-        Condition::Built { kind, count } => {
-            ui.add(DragValue::new(count).range(1..=1000).prefix("at least "));
-            ComboBox::from_id_salt(id.with("kind")).width(120.0).selected_text(kind.stats().name.as_str()).show_ui(ui, |ui| {
-                for &b in BUILDINGS {
-                    ui.selectable_value(kind, b, b.stats().name.as_str());
-                }
-            });
-        }
-        Condition::Destroyed { name_id } => {
-            ui.label("Name ID");
-            text_field(ui, name_id, false);
-        }
-        Condition::Variable { name, at_least } => {
-            text_field(ui, name, false);
-            ui.add(DragValue::new(at_least).range(-1_000_000..=1_000_000).prefix("at least "));
-        }
-        Condition::EventDone { name } => {
-            ui.label("Event");
-            text_field(ui, name, false);
-        }
-    });
-}
-

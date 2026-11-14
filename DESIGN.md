@@ -1068,10 +1068,15 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      North gate: 200 runners from spawner 2"). Checked in the simulation every tick in a fixed order – deterministic
      for co-op.
      *In the prototype:* TAB's story first (`sim/story.rs`, editor module "Triggers"): **triggers** (event, conditions
-     typed expressions, actions from a fixed list, each with a condition and code) stored as data in the map file
-     (format 9; older files are turned around when read). Events: round start, victory, defeat, a map event comes or is done, a neutral
-     thing joins (by name ID), the command center's own button. Goals from a fixed list with progress; variables
-     (number or yes/no). A player's choice comes as an order. More events (regions, "when …") build on it later.
+     typed expressions, actions with a condition and code – block, loop, exit loop, wait, random, choose among them) stored
+     as data in the map file (format 10; older files are turned around when read). Events: round start, victory, defeat, a
+     map event comes or is done, a neutral thing joins (by name ID), the command center's own button. Goals (condition and
+     progress as expressions) and the button (visible, enabled, counter as expressions); variables (number, yes/no, text).
+     A running script is data (`sim/script.rs`), a player's choice comes as an order. More events (regions, "when …") build
+     on it later. The editor page (`editor/triggers.rs`, `story_panel/sentences.rs`): a tree on the left (goals, button,
+     variables, functions, triggers in folders, the neutral things with a name ID), the chosen trigger as **sentences**
+     in the middle (blue words open their field right under the line – no pop-up, so drop-down lists work inside), or as
+     text (the trigger's JSON, not a language of its own), a palette of actions on the right (click or drag).
      *Planned* (steps in `docs\trigger-und-28yl.md`): SC2's layers.
      - **Triggers** (event + conditions + actions) are the main layer and are stored as data (done, step 2). Goals and
        the command center's button stay their own parts.
@@ -1081,8 +1086,8 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
        way; TAB's odd binding is the converter's job (it sets brackets).
      - **Functions** come from one list in Rust (`sim/funcs.rs`: name, parameter types, what they do). The language
        grows without touching the interpreter.
-     - **A running script** is only "which trigger, where in its tree, which local values". That is plain serde, so
-       saving mid-script, replays and rejoining in co-op just work, and **wait** is an action like any other.
+     - **A running script** is only "which trigger, where in its tree, what it waits for" (done, step 4). That is plain
+       serde, so saving mid-script, replays and rejoining in co-op just work, and **wait** is an action like any other.
      - **No embedded Lua/Rhai:** a running coroutine can't be saved, and Lua's `pairs` order would break lockstep.
        Maybe later as an extra layer for modding (handlers that never wait).
      - First real test: TAB's workshop campaign "28 Years Later" (20 maps) through a converter.

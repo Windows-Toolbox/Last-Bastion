@@ -5409,6 +5409,25 @@ fn trigger_of(event: TriggerEvent, actions: Script) -> Trigger {
     Trigger { actions, ..Trigger::new("test", event) }
 }
 
+/// A yes/no expression, read in the scope of this world's variables.
+fn cond(world: &World, text: &str) -> Expr {
+    parse_condition(text, Scope { variables: &world.story.variables }).unwrap_or_else(|e| panic!("{text}: {e}"))
+}
+
+/// Code, read in the scope of this world's variables.
+fn code_of(world: &World, text: &str) -> expr::Code {
+    parse_code(text, Scope { variables: &world.story.variables }).unwrap_or_else(|e| panic!("{text}: {e}"))
+}
+
+/// Runs a script now: as a trigger nobody fires by itself (the joining of a thing that isn't there), started at once.
+/// Returns the trigger's number.
+fn run_script(world: &mut World, steps: Script) -> usize {
+    world.story.triggers.push(trigger_of(TriggerEvent::Join { name_id: "<test>".into() }, steps));
+    let t = world.story.triggers.len() - 1;
+    world.run_trigger(t);
+    t
+}
+
 /// The map's story (`story.rs`): the start trigger fires in the first tick – gold, a message, a variable; a victory goal
 /// on the variable wins the round once a trigger raised it far enough – and then the victory trigger fires.
 #[test]
@@ -5428,8 +5447,13 @@ fn a_story_starts_counts_and_wins() {
             trigger_of(TriggerEvent::Won, script(vec![Action::Notify { text: "Well done".into() }])),
             trigger_of(TriggerEvent::Button, vec![var_step("keys", true, 1)]),
         ],
-        goals: vec![Goal { text: "Find 3 keys".into(), condition: Condition::Variable { name: "keys".into(), at_least: 3 }, defeat: false }],
-        command: Some(CustomCommand { label: "Dig".into(), text: String::new(), uses: 2 }),
+        goals: vec![Goal {
+            text: "Find 3 keys".into(),
+            when: Expr::bin(expr::Op::Ge, Expr::var("keys"), Expr::number(3)),
+            progress: Some(Expr::bin(expr::Op::Div, Expr::bin(expr::Op::Mul, Expr::var("keys"), Expr::number(100)), Expr::number(3))),
+            defeat: false,
+        }],
+        command: Some(CustomCommand { label: "Dig".into(), uses: 2, ..CustomCommand::default() }),
         variables: vec![Variable { name: "keys".into(), kind: VarKind::Number, start: Value::Number(0) }],
     };
     let (gold, stone) = (world.gold, world.stock.get(Resource::Stone));
@@ -5460,7 +5484,7 @@ fn the_weather_comes_with_the_landscape_and_scripts_change_it() {
     world.story.triggers = vec![trigger_of(TriggerEvent::Start, script(vec![Action::Weather { weather: Weather::Clear }]))];
     world.step(&[]);
     assert_eq!(world.weather, Weather::Clear, "the start script didn't stop the snow");
-    world.run(&script(vec![Action::Weather { weather: Weather::Rain }]));
+    run_script(&mut world, script(vec![Action::Weather { weather: Weather::Rain }]));
     assert_eq!(world.weather, Weather::Rain);
 }
 
@@ -5474,19 +5498,22 @@ fn a_story_lets_the_player_choose() {
     world.story.triggers = vec![trigger_of(
         TriggerEvent::Start,
         script(vec![
-            Action::Choose { text: "Pay the raiders?".into(), options: vec![("Pay".into(), gold(-50)), ("Fight".into(), script(vec![Action::Lose]))] },
-            Action::Random { options: vec![(1, gold(1)), (1, gold(2))] },
+            Action::Choose { text: "Pay the raiders?".into(), options: vec![Pick::new("Pay", gold(-50)), Pick::new("Fight", script(vec![Action::Lose]))] },
+            Action::Random { options: vec![Weighted::new(1, gold(1)), Weighted::new(1, gold(2))] },
         ]),
     )];
     world.tick = 0;
     let before = world.gold;
     world.step(&[]);
-    let rolled = world.gold - before;
-    assert!(rolled == 1 || rolled == 2, "the random action ran {rolled}");
-    assert_eq!(world.choices.len(), 1);
+    // The script waits at the choice (TAB's next action starts when the window is closed): the random action is after it.
+    assert_eq!(world.gold, before, "the random action ran before the pick");
+    assert!(world.choice_waiting());
+    assert_eq!(world.choice().map(|c| c.options), Some(vec!["Pay".to_owned(), "Fight".to_owned()]));
     world.step(&[Order::Choose { index: 0 }]);
-    assert!(world.choices.is_empty() && world.gold == before + rolled - 50, "the choice didn't run its script");
-    world.story.goals = vec![Goal { text: "Don't lose 2 units".into(), condition: Condition::Day(1), defeat: true }];
+    let rolled = world.gold + 50 - before;
+    assert!(rolled == 1 || rolled == 2, "the random action ran {rolled}");
+    assert!(!world.choice_waiting() && world.runs.is_empty(), "the choice didn't run its script");
+    world.story.goals = vec![Goal { text: "Day 1".into(), when: cond(&world, "Day >= 1"), progress: None, defeat: true }];
     world.step(&[]);
     assert!(matches!(world.outcome, Some(Outcome::Lost { .. })), "the defeat goal didn't lose");
 }
@@ -5537,9 +5564,9 @@ fn triggers_check_their_conditions_and_keep_their_order() {
     let mut off = trigger_of(TriggerEvent::Start, set("off", 1));
     off.on = false;
     let mut needs = trigger_of(TriggerEvent::Start, set("needs", 1));
-    needs.conditions = vec![Condition::Variable { name: "first".into(), at_least: 1 }.to_expr()];
+    needs.conditions = vec![Expr::bin(expr::Op::Ge, Expr::var("first"), Expr::number(1))];
     let mut never = trigger_of(TriggerEvent::Start, set("never", 1));
-    never.conditions = vec![Condition::Day(2).to_expr()];
+    never.conditions = vec![Expr::bin(expr::Op::Ge, Expr::call("Day", Vec::new()), Expr::number(2))];
     world.story = Story {
         triggers: vec![off, trigger_of(TriggerEvent::Start, set("first", 1)), needs, never, trigger_of(TriggerEvent::Start, set("flag", 5))],
         variables: vec![Variable { name: "flag".into(), kind: VarKind::Flag, start: Value::Flag(false) }],
@@ -5647,16 +5674,269 @@ fn steps_have_conditions_and_code() {
         Step { action: note("a"), when: when("n = 1"), code: code("n += 10") },
         Step { action: note("b"), when: None, code: code("n = n + 5") },
         Step { action: note("c"), when: when("n = 5"), code: code("n += 1") },
-        Step { action: Action::Random { options: vec![(1, vec![var_step("n", true, 100)])] }, when: None, code: code("n = n * 2") },
-        Step { action: Action::Choose { text: "?".into(), options: vec![("go".into(), vec![var_step("n", true, 1000)])] }, when: None, code: code("n += 7") },
+        Step { action: Action::Random { options: vec![Weighted::new(1, vec![var_step("n", true, 100)])] }, when: None, code: code("n = n * 2") },
+        Step { action: Action::Choose { text: "?".into(), options: vec![Pick::new("go", vec![var_step("n", true, 1000)])] }, when: None, code: code("n += 7") },
     ];
-    world.run(&steps);
+    run_script(&mut world, steps);
     assert!(!said(&world, "a") && said(&world, "b") && said(&world, "c"));
     // 0 -> 5 -> 6 -> (6 + 100) * 2: the code of the random action came after its script. The choice waits.
     assert_eq!(world.variable("n"), 212);
-    assert_eq!(world.choices.len(), 1);
+    assert!(world.choice_waiting());
     world.step(&[Order::Choose { index: 0 }]);
     assert_eq!(world.variable("n"), 212 + 1000 + 7, "the choice's code runs after the pick");
+}
+
+/// A world with number variables, for the tests of scripts.
+fn script_world(names: &[&str]) -> World {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    world.story.variables = names.iter().map(|n| Variable { name: (*n).into(), kind: VarKind::Number, start: Value::Number(0) }).collect();
+    // Not tick 0: that tick starts the story (and the variables with it).
+    world.tick = 1;
+    world
+}
+
+/// A step with this action, condition and code (both as text).
+fn step_of(world: &World, action: Action, when: &str, code: &str) -> Step {
+    Step { action, when: (!when.is_empty()).then(|| cond(world, when)), code: code_of(world, code) }
+}
+
+/// Block, loop and exit loop (TAB's `ZXAction_Block` / `_Loop` / `_ExitLoop`): the code of a block runs after its
+/// children, a false condition skips all of it, a loop goes round with a wait in it until the exit leaves it – the
+/// step after the loop goes on, and an exit of 2 leaves two loops.
+#[test]
+fn blocks_loops_and_exits_follow_tab() {
+    let mut world = script_world(&["n", "m", "done", "skipped", "inner", "after"]);
+    let w = &world;
+    let steps = vec![
+        // A block: its children, then its code (1 + 5, doubled).
+        step_of(w, Action::Block { steps: vec![var_step("n", false, 1), var_step("n", true, 5)] }, "", "n = n * 2"),
+        // A false condition skips the children and the code.
+        step_of(w, Action::Block { steps: vec![var_step("skipped", false, 1)] }, "n = 0", "skipped += 10"),
+        // A loop: count, leave when it's 3, wait a second between rounds; the code after the last round.
+        step_of(
+            w,
+            Action::Loop {
+                steps: vec![
+                    step_of(w, Action::Code, "", "m += 1"),
+                    step_of(w, Action::ExitLoop { loops: 1 }, "m >= 3", ""),
+                    step_of(w, Action::Wait { seconds: Expr::number(1) }, "", "inner += 1"),
+                ],
+            },
+            "",
+            "done = 1",
+        ),
+        // Two loops at once: the inner exit leaves both, the rest of the inner loop is skipped.
+        step_of(
+            w,
+            Action::Loop {
+                steps: vec![step_of(
+                    w,
+                    Action::Loop { steps: vec![step_of(w, Action::ExitLoop { loops: 2 }, "", "after += 1"), step_of(w, Action::Code, "", "after += 100")] },
+                    "",
+                    "after += 10",
+                )],
+            },
+            "",
+            "after += 1000",
+        ),
+        step_of(w, Action::Code, "", "after += 5"),
+    ];
+    let t = run_script(&mut world, steps);
+    // Until the first wait: the block, the skipped block, round 1 of the loop.
+    assert_eq!((world.variable("n"), world.variable("skipped"), world.variable("m")), (12, 0, 1));
+    assert_eq!(world.runs.len(), 1);
+    // Started before tick 1: the wait of a second (20 ticks) is over in tick 21.
+    for _ in 0..20 {
+        world.step(&[]);
+    }
+    assert_eq!((world.variable("m"), world.variable("inner")), (1, 0), "the wait lasts a second (20 ticks)");
+    world.step(&[]);
+    assert_eq!((world.variable("m"), world.variable("inner")), (2, 1));
+    for _ in 0..20 {
+        world.step(&[]);
+    }
+    // Round 3 leaves the loop: its code, then the nested loops, then the last step.
+    assert_eq!((world.variable("m"), world.variable("inner"), world.variable("done")), (3, 2, 1));
+    // 1 (inner exit's code) + 10 (the inner loop's code) + 1000 (the outer one's) + 5.
+    assert_eq!(world.variable("after"), 1016);
+    assert!(world.runs.is_empty(), "the script ended");
+    assert_eq!(world.story.triggers.len(), t + 1);
+}
+
+/// Loop, choice and "Back" make a menu: options whose condition is false are not shown, a choice with none shown
+/// doesn't ask, and the pick comes as an order.
+#[test]
+fn a_loop_with_a_choice_and_back_is_a_menu() {
+    let mut world = script_world(&["asked", "rare", "left", "none"]);
+    let w = &world;
+    let menu = Action::Choose {
+        text: "Anything else?".into(),
+        options: vec![
+            Pick::new("Ask", vec![var_step("asked", true, 1)]),
+            Pick { label: "Ask the rare one".into(), when: Some(cond(w, "asked >= 2")), steps: vec![var_step("rare", false, 1)] },
+            // Empty button text: TAB's standard text for an exit, "Back".
+            Pick::new("", vec![step_of(w, Action::ExitLoop { loops: 1 }, "", "")]),
+        ],
+    };
+    let nothing = Action::Choose { text: "?".into(), options: vec![Pick { label: "never".into(), when: Some(cond(w, "false")), steps: Vec::new() }] };
+    let steps = vec![step_of(w, nothing, "", "none = 1"), step_of(w, Action::Loop { steps: vec![Step::new(menu)] }, "", "left = 1")];
+    run_script(&mut world, steps);
+    assert_eq!(world.variable("none"), 1, "a choice with nothing to show goes on without a window");
+    let buttons = |w: &World| w.choice().map(|c| c.options).unwrap_or_default();
+    assert_eq!(buttons(&world), ["Ask", "Back"]);
+    world.step(&[Order::Choose { index: 0 }]);
+    assert_eq!((world.variable("asked"), buttons(&world)), (1, vec!["Ask".to_owned(), "Back".to_owned()]));
+    // A wrong index changes nothing.
+    world.step(&[Order::Choose { index: 7 }]);
+    assert_eq!(world.variable("asked"), 1);
+    world.step(&[Order::Choose { index: 0 }]);
+    assert_eq!(buttons(&world), ["Ask", "Ask the rare one", "Back"]);
+    world.step(&[Order::Choose { index: 1 }]);
+    assert_eq!((world.variable("rare"), world.variable("left")), (1, 0));
+    world.step(&[Order::Choose { index: 2 }]);
+    assert_eq!(world.variable("left"), 1, "Back leaves the loop, the loop's code runs");
+    assert!(world.runs.is_empty() && !world.choice_waiting());
+}
+
+/// The window shows the options whose condition holds – but the pick asks again (TAB): an option whose condition turned
+/// false while the window was open is skipped, the choice's own code and the steps after it still run.
+#[test]
+fn a_pick_whose_condition_turned_false_is_skipped() {
+    let mut world = script_world(&["open", "went", "after", "code"]);
+    world.story.variables[0].start = Value::Number(1);
+    let w = &world;
+    let choose = Action::Choose {
+        text: "?".into(),
+        options: vec![Pick { label: "go".into(), when: Some(cond(w, "open = 1")), steps: vec![var_step("went", true, 1)] }],
+    };
+    let steps = vec![step_of(w, choose, "", "code = 1"), var_step("after", true, 1)];
+    run_script(&mut world, steps);
+    assert!(world.choice_waiting());
+    world.variables.push(("open".into(), Value::Number(0)));
+    world.step(&[Order::Choose { index: 0 }]);
+    assert_eq!((world.variable("went"), world.variable("code"), world.variable("after")), (0, 1, 1));
+    assert!(world.runs.is_empty() && !world.choice_waiting());
+}
+
+/// A running script is only data: in the middle of a wait it can be written out and read back, and goes on as if
+/// nothing had happened – and so does one that waits for a choice.
+#[test]
+fn a_running_script_survives_being_saved() {
+    let mut world = script_world(&["a", "b", "c"]);
+    let w = &world;
+    let steps = vec![
+        step_of(w, Action::Block { steps: vec![step_of(w, Action::Wait { seconds: Expr::number(2) }, "", "a += 1")] }, "", "b += 1"),
+        Step::new(Action::Choose { text: "?".into(), options: vec![Pick::new("go", vec![var_step("c", true, 1)])] }),
+    ];
+    run_script(&mut world, steps);
+    assert_eq!(world.runs.len(), 1);
+    let saved = serde_json::to_string(&world.runs).unwrap();
+    let back: Vec<Run> = serde_json::from_str(&saved).unwrap();
+    assert_eq!(back, world.runs);
+    world.runs = back;
+    for _ in 0..41 {
+        world.step(&[]);
+    }
+    assert_eq!((world.variable("a"), world.variable("b")), (1, 1), "the wait ended after the reload, the block's code after it");
+    assert!(world.choice_waiting());
+    let saved = serde_json::to_string(&world.runs).unwrap();
+    world.runs = serde_json::from_str(&saved).unwrap();
+    world.step(&[Order::Choose { index: 0 }]);
+    assert_eq!((world.variable("c"), world.runs.len()), (1, 0));
+}
+
+/// Random: only the options whose condition holds are in the draw – none: nothing happens, the code still runs.
+/// An option written as in a file before format 10 (`[weight, steps]`) reads as before.
+#[test]
+fn random_options_have_conditions() {
+    let mut world = script_world(&["hit", "ran"]);
+    let w = &world;
+    let random = Action::Random {
+        options: vec![
+            Weighted { weight: 5, when: Some(cond(w, "false")), steps: vec![var_step("hit", false, 1)] },
+            Weighted::new(1, vec![var_step("hit", false, 2)]),
+        ],
+    };
+    let steps = vec![step_of(&world, random, "", "ran = 1")];
+    run_script(&mut world, steps);
+    assert_eq!((world.variable("hit"), world.variable("ran")), (2, 1), "the option out of the draw was picked");
+    let none = Action::Random { options: vec![Weighted { weight: 1, when: Some(cond(&world, "false")), steps: vec![var_step("hit", false, 9)] }] };
+    let steps = vec![step_of(&world, none, "", "ran += 1")];
+    run_script(&mut world, steps);
+    assert_eq!((world.variable("hit"), world.variable("ran")), (2, 2));
+    let old: Action = serde_json::from_str(r#"{"Random":{"options":[[3,[{"Notify":{"text":"x"}}]]]}}"#).unwrap();
+    assert!(matches!(&old, Action::Random { options } if options[0].weight == 3 && options[0].when.is_none() && options[0].steps.len() == 1));
+    let text = serde_json::to_string(&old).unwrap();
+    assert!(text.contains("[3,["), "an option without a condition is written the old way: {text}");
+}
+
+/// A goal asks its expressions every tick: reached, and how far along (a number from 0 to 100). The command center's
+/// button has its own: visible, enabled (not: it can't be pressed) and a number on it.
+#[test]
+fn goals_and_the_button_ask_expressions() {
+    let mut world = script_world(&["keys"]);
+    let scope = Scope { variables: &world.story.variables };
+    let number = |text: &str| parse_expr(text, scope, Ty::Number).unwrap();
+    let goal = Goal { text: "Keys".into(), when: cond(&world, "keys >= 4"), progress: Some(number("keys * 25")), defeat: false };
+    let command = CustomCommand {
+        label: "Dig".into(),
+        visible: Some(cond(&world, "Day >= 1")),
+        enabled: Some(cond(&world, "keys < 2")),
+        counter: Some(number("keys + 10")),
+        ..CustomCommand::default()
+    };
+    world.story.goals = vec![goal];
+    world.story.command = Some(command);
+    world.story.triggers = vec![trigger_of(TriggerEvent::Button, vec![var_step("keys", true, 1)])];
+    world.step(&[]);
+    assert_eq!((world.goal_progress(0), world.goal_reached(0)), (0, false));
+    assert_eq!((world.command_state.visible, world.command_state.enabled, world.command_state.counter), (true, true, Some(10)));
+    world.step(&[Order::CustomCommand]);
+    world.step(&[Order::CustomCommand]);
+    // Two presses: keys is 2, the button is switched off by its own condition.
+    assert_eq!((world.variable("keys"), world.goal_progress(0), world.command_state.enabled, world.command_state.counter), (2, 50, false, Some(12)));
+    world.step(&[Order::CustomCommand]);
+    assert_eq!(world.variable("keys"), 2, "a button that isn't enabled does nothing");
+    world.variables.iter_mut().for_each(|v| v.1 = Value::Number(4));
+    world.step(&[]);
+    assert_eq!((world.goal_progress(0), world.goal_reached(0)), (100, true));
+}
+
+/// Renaming an event or a name ID takes the texts in expressions and the action "Join" along.
+#[test]
+fn renames_reach_the_texts_in_expressions() {
+    let mut world = script_world(&["x"]);
+    world.units.clear();
+    let mut event = Event::new("Raid", 24, WaveFrom::Sides(1), Breed::Walker, 1);
+    event.name = "Raid".into();
+    world.events.push(event);
+    let goal = Goal { text: "g".into(), when: cond(&world, "EventDone(\"Raid\") & !IsDead(\"boss\")"), progress: None, defeat: false };
+    let steps = vec![step_of(&world, Action::Join { name_id: "boss".into() }, "IsDead(\"boss\") | EventDone(\"Raid\")", "x = Count(\"Tent\")")];
+    world.story.goals = vec![goal];
+    world.story.triggers = vec![trigger_of(TriggerEvent::Start, steps)];
+    world.rename_event_in_triggers("Raid", "Attack");
+    world.rename_name_id_in_triggers("boss", "chief");
+    assert_eq!(world.story.goals[0].when.to_string(), "EventDone(\"Raid\") & !IsDead(\"chief\")", "the event still has its name here");
+    let step = &world.story.triggers[0].actions[0];
+    assert_eq!(step.when.as_ref().map(|e| e.to_string()).as_deref(), Some("IsDead(\"chief\") | EventDone(\"Raid\")"));
+    assert_eq!(step.action, Action::Join { name_id: "chief".into() });
+    // Once no event has the old name any more, the texts follow it too.
+    world.events.clear();
+    world.rename_event_in_triggers("Raid", "Attack");
+    assert_eq!(world.story.goals[0].when.to_string(), "EventDone(\"Attack\") & !IsDead(\"chief\")");
+}
+
+/// A variable whose kind changed leaves code that no longer fits it: the editor finds the places.
+#[test]
+fn the_story_knows_where_code_stopped_fitting_its_variables() {
+    let mut world = script_world(&["n"]);
+    world.story.triggers = vec![trigger_of(TriggerEvent::Start, vec![step_of(&world, Action::Code, "n > 1", "n += 1")])];
+    assert!(world.story.misfits().is_empty());
+    world.story.variables[0].kind = VarKind::Text;
+    assert_eq!(world.story.misfits(), ["trigger \"test\""]);
+    world.story.variables.clear();
+    assert_eq!(world.story.misfits(), ["trigger \"test\""], "a variable that is gone");
 }
 
 /// Like TAB's: units and zombies heal themselves – `regen` of their full hit points (rounded up) every
@@ -6192,7 +6472,7 @@ fn a_train_stops_at_the_command_center_and_leaves_the_map() {
     let y = railway(&mut world);
     assert!(!world.map.in_play(4, y) && !world.map.in_play(world.map.size as i32 - 5, y));
     let arrived = vec![var_step("arrived", true, 1)];
-    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: arrived }]));
+    run_script(&mut world, script(vec![Action::Train { stop: true, reverse: false, on_arrival: arrived }]));
     assert_eq!(world.trains.len(), 1);
     let start = world.trains[0].line.point_at(0.0);
     let mut stood = None;
@@ -6226,7 +6506,7 @@ fn a_train_stays_at_the_end_of_a_line_on_the_map() {
     let x = world.base.x as i32;
     let y = railway_between(&mut world, x - 30, x + 30);
     assert!(world.map.in_play(x - 30, y) && world.map.in_play(x + 30, y));
-    world.run(&script(vec![Action::Train { stop: false, reverse: false, on_arrival: Vec::new() }]));
+    run_script(&mut world, script(vec![Action::Train { stop: false, reverse: false, on_arrival: Vec::new() }]));
     for _ in 0..3000 {
         world.step(&[]);
         if !world.trains[0].running {
@@ -6244,12 +6524,12 @@ fn a_train_stays_at_the_end_of_a_line_on_the_map() {
 fn a_second_train_doesnt_take_the_first_ones_place() {
     let (mut world, _) = quiet_world();
     railway(&mut world);
-    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: Vec::new() }]));
+    run_script(&mut world, script(vec![Action::Train { stop: true, reverse: false, on_arrival: Vec::new() }]));
     for _ in 0..60 {
         world.step(&[]);
     }
     let first = world.trains[0].offset;
-    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: Vec::new() }]));
+    run_script(&mut world, script(vec![Action::Train { stop: true, reverse: false, on_arrival: Vec::new() }]));
     assert_eq!(world.trains.len(), 2);
     assert_eq!(world.trains[0].offset, first, "the first one was sent back");
     assert!(world.trains[1].offset < first);
@@ -6262,7 +6542,7 @@ fn a_train_runs_over_who_is_in_its_way() {
     world.events.clear();
     let y = railway(&mut world);
     let arrived = vec![var_step("arrived", true, 1)];
-    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: arrived }]));
+    run_script(&mut world, script(vec![Action::Train { stop: true, reverse: false, on_arrival: arrived }]));
     // Until it runs at full speed.
     while world.trains[0].speed < data::get().trains.max_speed {
         world.step(&[]);

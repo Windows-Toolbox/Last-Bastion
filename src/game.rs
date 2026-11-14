@@ -200,7 +200,7 @@ impl Game {
 
         // A question, a script's window or choice, or the end screen in front: only their buttons count – no Esc menu, no
         // input on the map, no time passing (TAB pauses for them too).
-        let story = !self.windows.is_empty() || (!self.world.choices.is_empty() && !self.chosen);
+        let story = !self.windows.is_empty() || (self.world.choice_waiting() && !self.chosen);
         let modal = self.leaving.is_some() || self.end_screen_shown() || story;
         // The editor's panel first (egui): what it takes – a click, a field being typed into – the map and the keys
         // below don't get. Greyed out while the menu or a question is in front.
@@ -297,7 +297,7 @@ impl Game {
             self.story_dialog();
         }
         // The pick went through: the next choice may show.
-        if self.world.choices.is_empty() || !self.orders.iter().any(|o| matches!(o, Order::Choose { .. })) {
+        if !self.world.choice_waiting() || !self.orders.iter().any(|o| matches!(o, Order::Choose { .. })) {
             self.chosen = false;
         }
         if self.end_screen_shown() {
@@ -664,13 +664,13 @@ impl Game {
             }
             return;
         }
-        let Some(choice) = self.world.choices.first().cloned() else {
+        let Some(choice) = self.world.choice() else {
             return;
         };
         let mut col = Column::centered("Your choice", choice.options.len() + 3, 620.0);
         col.wrap(&choice.text);
         col.gap();
-        for (index, (label, _)) in choice.options.iter().enumerate() {
+        for (index, label) in choice.options.iter().enumerate() {
             if button(col.row(), label, true) {
                 self.orders.push(Order::Choose { index });
                 self.chosen = true;

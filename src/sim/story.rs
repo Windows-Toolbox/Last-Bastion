@@ -8,6 +8,10 @@
 //! conditions) win or lose the round; **variables** (TAB's user variables: a number or yes/no) let scripts count and
 //! triggers and goals ask.
 //!
+//! A script is a tree: **block**, **loop** (with **exit loop**), **random** and **choose** have scripts of their own,
+//! **wait** lets time pass. A running script is only data (`script.rs`: `Run` – which trigger, where in its tree, what it
+//! waits for), so it can be saved in the middle, replayed and joined again.
+//!
 //! Everything is deterministic like the rest of the simulation (DESIGN.md 12.8): the dice of a random action are the
 //! world's, and a choice of the player comes as an order (`Order::Choose`), not straight from the mouse.
 
@@ -15,12 +19,12 @@ use macroquad::math::vec2;
 use serde::{Deserialize, Serialize};
 
 use super::events::{Notice, Request};
-use super::expr::{Assign, Code, Expr, Op, Stmt, Value};
-use super::neutral::{Tag, ThingRef};
+use super::expr::{code_text, parse_code, parse_condition, parse_expr, Assign, Code, Expr, Op, Scope, Stmt, Ty, Value};
+use super::neutral::ThingRef;
 use super::spawning::WaveGroup;
 use super::terrain::free_point_near;
 use super::zombies::Breed;
-use super::{Weather, World, DAY_TICKS};
+use super::{Weather, World};
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 
 /// `true` – for values that are on when they're left out.
@@ -28,12 +32,16 @@ fn yes() -> bool {
     true
 }
 
+fn one() -> u32 {
+    1
+}
+
 /// A script: steps one after the other (TAB's `ZXScript`).
 pub type Script = Vec<Step>;
 
-/// One step of a script (TAB's `ZXAction` with its two ZXCode fields): `when` is a condition – false: the action and
-/// the code are skipped; the action; then the code (for "Random" after the option's script, for "Choose" after the
-/// player's pick and its script).
+/// One step of a script (TAB's `ZXAction` with its two ZXCode fields): `when` is a condition – false: the action, its
+/// children and the code are skipped; the action; then the code – **after all the children** (a block's steps, a
+/// loop's last round, the option of a random action or the player's pick and its script, the wait).
 ///
 /// In the file a step without condition and code is just the action – as it was before there were any; older files
 /// read as they are.
@@ -128,10 +136,23 @@ pub enum Action {
     Notify { text: String },
     /// A window with a title and a text – the game pauses until it's closed ("Display Window Message").
     Window { title: String, text: String },
-    /// One of these scripts, each as likely as its weight ("Execute Random Action").
-    Random { options: Vec<(u32, Script)> },
-    /// The player picks one of these in a window – its script runs ("Choose Option").
-    Choose { text: String, options: Vec<(String, Script)> },
+    /// Steps one after the other, as one ("Block") – with its own condition and code.
+    Block { steps: Script },
+    /// The steps again and again until an exit loop leaves it ("Loop"). Without one it never ends: put a wait or a
+    /// choice in it.
+    Loop { steps: Script },
+    /// Leaves the innermost loop – or, with `loops` above 1, that many ("Exit Loop"). Outside any loop it does nothing.
+    ExitLoop {
+        #[serde(default = "one")]
+        loops: u32,
+    },
+    /// Time passes before the next step: this many seconds (`Wait(5)` in a loop makes a timer).
+    Wait { seconds: Expr },
+    /// One of these scripts, each as likely as its weight – only those whose condition holds ("Execute Random Action").
+    Random { options: Vec<Weighted> },
+    /// The player picks one of these in a window – only those whose condition holds; none: no window, on with the next
+    /// step. The pick's script runs ("Choose Option").
+    Choose { text: String, options: Vec<Pick> },
     /// Nothing but the step's code ("Execute Code" in TAB): `keys += 1; GiveGold(100)`.
     Code,
     /// The neutral thing with this name ID joins the colony.
@@ -156,7 +177,134 @@ pub enum Action {
     Lose,
 }
 
-/// When a goal is reached (TAB's conditions, as a fixed list). Each one also says how far along it is.
+impl Action {
+    /// The script of child `k`: the steps of a block or loop (0), an option of a random action or a choice, the arrival
+    /// of a train (0). A running script finds its place by these numbers (`script.rs`).
+    pub fn child(&self, k: usize) -> Option<&Script> {
+        match self {
+            Action::Block { steps } | Action::Loop { steps } => (k == 0).then_some(steps),
+            Action::Random { options } => options.get(k).map(|o| &o.steps),
+            Action::Choose { options, .. } => options.get(k).map(|o| &o.steps),
+            Action::Train { on_arrival, .. } => (k == 0).then_some(on_arrival),
+            _ => None,
+        }
+    }
+
+    /// All the scripts inside it, mutable.
+    fn children_mut(&mut self) -> Vec<&mut Script> {
+        match self {
+            Action::Block { steps } | Action::Loop { steps } => vec![steps],
+            Action::Random { options } => options.iter_mut().map(|o| &mut o.steps).collect(),
+            Action::Choose { options, .. } => options.iter_mut().map(|o| &mut o.steps).collect(),
+            Action::Train { on_arrival, .. } => vec![on_arrival],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// An option of a random action: its weight, a condition (false: it's out of the draw) and its steps (TAB: a child
+/// action with its weight). In the file without a condition just `[weight, steps]`, as before there was one.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(from = "WeightedRepr", into = "WeightedRepr")]
+pub struct Weighted {
+    pub weight: u32,
+    pub when: Option<Expr>,
+    pub steps: Script,
+}
+
+impl Weighted {
+    pub fn new(weight: u32, steps: Script) -> Weighted {
+        Weighted { weight, when: None, steps }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum WeightedRepr {
+    Full {
+        weight: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<Expr>,
+        steps: Script,
+    },
+    Plain((u32, Script)),
+}
+
+impl From<WeightedRepr> for Weighted {
+    fn from(repr: WeightedRepr) -> Weighted {
+        match repr {
+            WeightedRepr::Full { weight, when, steps } => Weighted { weight, when, steps },
+            WeightedRepr::Plain((weight, steps)) => Weighted { weight, when: None, steps },
+        }
+    }
+}
+
+impl From<Weighted> for WeightedRepr {
+    fn from(o: Weighted) -> WeightedRepr {
+        match o.when {
+            None => WeightedRepr::Plain((o.weight, o.steps)),
+            when => WeightedRepr::Full { weight: o.weight, when, steps: o.steps },
+        }
+    }
+}
+
+/// An option of a choice: the text of its button, a condition (false: the button isn't shown) and its steps. In the
+/// file without a condition just `[label, steps]`, as before there was one.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(from = "PickRepr", into = "PickRepr")]
+pub struct Pick {
+    pub label: String,
+    pub when: Option<Expr>,
+    pub steps: Script,
+}
+
+impl Pick {
+    pub fn new(label: &str, steps: Script) -> Pick {
+        Pick { label: label.to_owned(), when: None, steps }
+    }
+
+    /// The text of its button: empty, it is TAB's standard text – "Back" for an option that leaves a loop.
+    pub fn shown(&self, k: usize) -> String {
+        match (self.label.trim(), self.steps.first().map(|s| &s.action)) {
+            ("", Some(Action::ExitLoop { .. })) => "Back".to_owned(),
+            ("", _) => format!("Option {}", k + 1),
+            (label, _) => label.to_owned(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum PickRepr {
+    Full {
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<Expr>,
+        steps: Script,
+    },
+    Plain((String, Script)),
+}
+
+impl From<PickRepr> for Pick {
+    fn from(repr: PickRepr) -> Pick {
+        match repr {
+            PickRepr::Full { label, when, steps } => Pick { label, when, steps },
+            PickRepr::Plain((label, steps)) => Pick { label, when: None, steps },
+        }
+    }
+}
+
+impl From<Pick> for PickRepr {
+    fn from(o: Pick) -> PickRepr {
+        match o.when {
+            None => PickRepr::Plain((o.label, o.steps)),
+            when => PickRepr::Full { label: o.label, when, steps: o.steps },
+        }
+    }
+}
+
+/// The goals' kind of condition up to format 8 (a fixed list), kept to read older files: a goal reads one as its
+/// expression (`to_expr`, `progress_expr`).
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Condition {
     /// At least this many colonists live in your houses.
@@ -177,18 +325,56 @@ pub enum Condition {
     EventDone { name: String },
 }
 
-/// A goal (TAB's `ZXLevelCondition`): its text for the player, when it's reached, and whether reaching it wins (all
-/// victory goals reached) or loses (any defeat goal reached) the round.
+/// A goal (TAB's `ZXLevelCondition`): its text for the player, when it's reached (a yes/no expression), how far along
+/// it is (a number from 0 to 100 – left out: 0, and 100 once reached), and whether reaching it wins (all victory goals
+/// reached) or loses (any defeat goal reached) the round.
+///
+/// In a file before format 10 the condition was one of a fixed list (`Condition`): it is read as the expressions that
+/// say the same.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(from = "GoalRepr", into = "GoalRepr")]
 pub struct Goal {
     pub text: String,
-    pub condition: Condition,
-    #[serde(default)]
+    pub when: Expr,
+    pub progress: Option<Expr>,
     pub defeat: bool,
 }
 
+#[derive(Serialize, Deserialize)]
+struct GoalRepr {
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<Expr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    progress: Option<Expr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    condition: Option<Condition>,
+    #[serde(default)]
+    defeat: bool,
+}
+
+impl From<GoalRepr> for Goal {
+    fn from(r: GoalRepr) -> Goal {
+        let (when, progress) = match (r.when, r.condition) {
+            (Some(when), _) => (when, r.progress),
+            (None, Some(old)) => (old.to_expr(), r.progress.or_else(|| old.progress_expr())),
+            (None, None) => (Expr::yes(), r.progress),
+        };
+        Goal { text: r.text, when, progress, defeat: r.defeat }
+    }
+}
+
+impl From<Goal> for GoalRepr {
+    fn from(g: Goal) -> GoalRepr {
+        GoalRepr { text: g.text, when: Some(g.when), progress: g.progress, condition: None, defeat: g.defeat }
+    }
+}
+
 /// The command center's own button (TAB's "Command Center – Custom Command"): its name, its tooltip, and how often it
-/// can be pressed (0: as often as you like). What it does: the triggers with the event `Button`.
+/// can be pressed (0: as often as you like). What it does: the triggers with the event `Button`. Three expressions
+/// are asked every tick like a goal's: is it visible, is it enabled (not: grey, with `disabled_text` in the tooltip),
+/// and a number shown on it (a counter) – each left out: always yes, no number. (TAB's resource cost is missing:
+/// `GiveGold(-100)` in the trigger and `Gold >= 100` as the condition do it.)
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct CustomCommand {
     pub label: String,
@@ -196,6 +382,14 @@ pub struct CustomCommand {
     pub text: String,
     #[serde(default)]
     pub uses: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<Expr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<Expr>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub disabled_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<Expr>,
 }
 
 /// When a trigger fires – each event is checked in its own place of the simulation (`fire`).
@@ -230,6 +424,9 @@ pub struct Trigger {
     /// Off: it never fires.
     #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub on: bool,
+    /// A note for whoever edits the map – the round ignores it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
     pub event: TriggerEvent,
     /// All of these must be true when the event comes – none: always. Before format 9 they were the goals' kind of
     /// condition (`Condition`), read as the expression it stands for.
@@ -259,7 +456,7 @@ fn conditions<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Expr>, D::Er
 
 impl Trigger {
     pub fn new(name: &str, event: TriggerEvent) -> Trigger {
-        Trigger { name: name.to_owned(), folder: String::new(), on: true, event, conditions: Vec::new(), actions: Vec::new() }
+        Trigger { name: name.to_owned(), folder: String::new(), on: true, comment: String::new(), event, conditions: Vec::new(), actions: Vec::new() }
     }
 }
 
@@ -309,6 +506,13 @@ impl Story {
             t.conditions.iter().for_each(|c| c.variables(&mut names));
             names_in_script(&t.actions, &mut names);
         }
+        for g in &self.goals {
+            g.when.variables(&mut names);
+            g.progress.iter().for_each(|p| p.variables(&mut names));
+        }
+        for e in self.command.iter().flat_map(|c| [&c.visible, &c.enabled, &c.counter]).flatten() {
+            e.variables(&mut names);
+        }
         for name in names {
             if !self.variables.iter().any(|v| v.name == name) {
                 self.variables.push(Variable { name, kind: VarKind::Number, start: Value::Number(0) });
@@ -333,8 +537,20 @@ fn names_in_script(script: &Script, names: &mut Vec<String>) {
             }
         }
         match &step.action {
-            Action::Random { options } => options.iter().for_each(|o| names_in_script(&o.1, names)),
-            Action::Choose { options, .. } => options.iter().for_each(|o| names_in_script(&o.1, names)),
+            Action::Block { steps } | Action::Loop { steps } => names_in_script(steps, names),
+            Action::Wait { seconds } => seconds.variables(names),
+            Action::Random { options } => {
+                for o in options {
+                    o.when.iter().for_each(|w| w.variables(names));
+                    names_in_script(&o.steps, names);
+                }
+            }
+            Action::Choose { options, .. } => {
+                for o in options {
+                    o.when.iter().for_each(|w| w.variables(names));
+                    names_in_script(&o.steps, names);
+                }
+            }
             Action::Train { on_arrival, .. } => names_in_script(on_arrival, names),
             _ => {}
         }
@@ -355,15 +571,42 @@ impl Condition {
             Condition::EventDone { name } => Expr::call("EventDone", vec![Expr::text(name)]),
         }
     }
+
+    /// How far along it was, as an expression (`value * 100 / target`; shown as 0 to 100): what the old condition
+    /// showed on the goals list. None for the ones that were only reached or not.
+    pub fn progress_expr(&self) -> Option<Expr> {
+        let share = |value: Expr, n: i64| (n > 0).then(|| Expr::bin(Op::Div, Expr::bin(Op::Mul, value, Expr::number(100)), Expr::number(n.min(i32::MAX as i64) as i32)));
+        match self {
+            Condition::Colonists(n) => share(Expr::call("Colonists", Vec::new()), *n as i64),
+            Condition::Day(n) => share(Expr::call("Day", Vec::new()), *n as i64),
+            Condition::ZombiesKilled(n) => share(Expr::call("Kills", Vec::new()), *n as i64),
+            Condition::Built { kind, count } => share(Expr::call("Count", vec![Expr::text(&kind.stats().name)]), *count as i64),
+            Condition::Variable { name, at_least } => share(Expr::var(name), *at_least as i64),
+            Condition::Destroyed { .. } | Condition::EventDone { .. } => None,
+        }
+    }
 }
 
-/// A choice the player has to make (`Action::Choose`), waiting for `Order::Choose`.
-#[derive(Clone, PartialEq, Debug)]
-pub struct Choice {
-    pub text: String,
-    pub options: Vec<(String, Script)>,
-    /// The step's code – it runs after the option the player picked.
-    pub then: Code,
+/// How far a goal is: reached, and a number from 0 to 99 – 100 once it is reached. Worked out every tick
+/// (`refresh_story_view`) so the screen only reads it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct GoalState {
+    pub reached: bool,
+    pub progress: u32,
+}
+
+/// What the command center's button looks like right now (`CustomCommand`'s expressions, worked out every tick).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CommandState {
+    pub visible: bool,
+    pub enabled: bool,
+    pub counter: Option<i32>,
+}
+
+impl Default for CommandState {
+    fn default() -> CommandState {
+        CommandState { visible: true, enabled: true, counter: None }
+    }
 }
 
 /// What a script asked to happen to the round – checked with the rest of the end of the round (`round.rs`).
@@ -373,14 +616,152 @@ pub enum Ending {
     Lost,
 }
 
-/// At most this many actions per script run – a script can't call itself, but a careless one could be very long.
-const MOST_ACTIONS: usize = 10_000;
+/// One part of the story that holds an expression, code or an action: what `Story::walk` hands out.
+pub enum Part<'a> {
+    /// A yes/no expression: a condition.
+    Flag(&'a mut Expr),
+    /// A number: how long to wait, a goal's progress, a button's counter.
+    Number(&'a mut Expr),
+    Code(&'a mut Code),
+    Action(&'a mut Action),
+}
+
+impl Part<'_> {
+    /// Each expression in it (the ones in code too).
+    pub fn exprs(&mut self, f: &mut dyn FnMut(&mut Expr)) {
+        match self {
+            Part::Flag(e) | Part::Number(e) => f(e),
+            Part::Code(code) => {
+                for s in code.iter_mut() {
+                    match s {
+                        Stmt::Set { value, .. } => f(value),
+                        Stmt::Do(e) => f(e),
+                    }
+                }
+            }
+            Part::Action(_) => {}
+        }
+    }
+}
+
+fn walk_script(script: &mut Script, f: &mut dyn FnMut(Part)) {
+    for step in script {
+        if let Some(w) = &mut step.when {
+            f(Part::Flag(w));
+        }
+        f(Part::Action(&mut step.action));
+        f(Part::Code(&mut step.code));
+        match &mut step.action {
+            Action::Wait { seconds } => f(Part::Number(seconds)),
+            Action::Random { options } => options.iter_mut().filter_map(|o| o.when.as_mut()).for_each(|w| f(Part::Flag(w))),
+            Action::Choose { options, .. } => options.iter_mut().filter_map(|o| o.when.as_mut()).for_each(|w| f(Part::Flag(w))),
+            _ => {}
+        }
+        for child in step.action.children_mut() {
+            walk_script(child, f);
+        }
+    }
+}
+
+impl Trigger {
+    pub fn walk(&mut self, f: &mut dyn FnMut(Part)) {
+        self.conditions.iter_mut().for_each(|c| f(Part::Flag(c)));
+        walk_script(&mut self.actions, f);
+    }
+}
+
+impl Goal {
+    pub fn walk(&mut self, f: &mut dyn FnMut(Part)) {
+        f(Part::Flag(&mut self.when));
+        if let Some(p) = &mut self.progress {
+            f(Part::Number(p));
+        }
+    }
+}
+
+impl CustomCommand {
+    pub fn walk(&mut self, f: &mut dyn FnMut(Part)) {
+        self.visible.iter_mut().chain(self.enabled.iter_mut()).for_each(|e| f(Part::Flag(e)));
+        self.counter.iter_mut().for_each(|e| f(Part::Number(e)));
+    }
+}
+
+impl Story {
+    /// Every expression, code and action of the story, in the order of the file (to rename things in them, to check
+    /// them).
+    pub fn walk(&mut self, f: &mut dyn FnMut(Part)) {
+        self.triggers.iter_mut().for_each(|t| t.walk(f));
+        self.goals.iter_mut().for_each(|g| g.walk(f));
+        if let Some(c) = &mut self.command {
+            c.walk(f);
+        }
+    }
+
+    /// Where an expression or code no longer fits the variables – a variable that changed its kind (number to text) or
+    /// went: it would be turned into the other kind when the round runs (`Value::as_ty`), probably not as meant. The
+    /// places, for the editor to warn about.
+    pub fn misfits(&self) -> Vec<String> {
+        let scope = Scope { variables: &self.variables };
+        let bad = |part: Part| match part {
+            Part::Flag(e) => parse_condition(&e.to_string(), scope).is_err(),
+            Part::Number(e) => parse_expr(&e.to_string(), scope, Ty::Number).is_err(),
+            Part::Code(c) => parse_code(&code_text(c), scope).is_err(),
+            Part::Action(_) => false,
+        };
+        let mut places = Vec::new();
+        for t in &self.triggers {
+            let (mut copy, mut found) = (t.clone(), false);
+            copy.walk(&mut |p| found |= bad(p));
+            if found {
+                places.push(format!("trigger \"{}\"", t.name));
+            }
+        }
+        for g in &self.goals {
+            let (mut copy, mut found) = (g.clone(), false);
+            copy.walk(&mut |p| found |= bad(p));
+            if found {
+                places.push(format!("goal \"{}\"", g.text));
+            }
+        }
+        if let Some(c) = &self.command {
+            let (mut copy, mut found) = (c.clone(), false);
+            copy.walk(&mut |p| found |= bad(p));
+            if found {
+                places.push("the command center's button".to_owned());
+            }
+        }
+        places
+    }
+}
+
+impl Expr {
+    /// In the calls of these functions (any case) whose first value is the text `old`: `new` instead – a thing was
+    /// renamed in the editor.
+    fn rename_text(&mut self, funcs: &[&str], old: &str, new: &str) {
+        match self {
+            Expr::Call { name, args } => {
+                if funcs.iter().any(|f| f.eq_ignore_ascii_case(name)) && matches!(args.first(), Some(Expr::Lit(Value::Text(t))) if t == old) {
+                    args[0] = Expr::text(new);
+                }
+                args.iter_mut().for_each(|a| a.rename_text(funcs, old, new));
+            }
+            Expr::Not(e) | Expr::Neg(e) => e.rename_text(funcs, old, new),
+            Expr::Bin(_, l, r) => {
+                l.rename_text(funcs, old, new);
+                r.rename_text(funcs, old, new);
+            }
+            Expr::Lit(_) | Expr::Var(_) => {}
+        }
+    }
+}
 
 impl World {
     /// The round starts (its first tick): the variables get their starting values, the start triggers fire.
     pub(super) fn start_story(&mut self) {
         self.variables = self.story.variables.iter().map(|v| (v.name.clone(), v.start.as_ty(v.kind.ty()))).collect();
+        self.runs.clear();
         self.fire(&TriggerEvent::Start);
+        self.refresh_story_view();
     }
 
     /// An event of the round: every trigger for it that is on and whose conditions hold runs its actions, in the
@@ -391,43 +772,16 @@ impl World {
             if !trigger.on || trigger.event != *event {
                 continue;
             }
-            let (conditions, script) = (trigger.conditions.clone(), trigger.actions.clone());
+            let conditions = trigger.conditions.clone();
             if conditions.iter().all(|c| self.holds(c)) {
-                self.run(&script);
+                self.run_trigger(t);
             }
         }
     }
 
-    /// Runs a script, action after action, now (in this tick).
-    pub fn run(&mut self, script: &Script) {
-        let mut done = 0;
-        self.run_counted(script, &mut done);
-    }
-
-    fn run_counted(&mut self, script: &Script, done: &mut usize) {
-        for step in script {
-            *done += 1;
-            if *done > MOST_ACTIONS {
-                return;
-            }
-            if step.when.as_ref().is_some_and(|w| !self.holds(w)) {
-                continue;
-            }
-            match &step.action {
-                // The code of a choice runs after the pick: with the choice, not now.
-                Action::Choose { text, options } if !options.is_empty() => {
-                    self.choices.push(Choice { text: text.clone(), options: options.clone(), then: step.code.clone() });
-                }
-                action => {
-                    self.act(action, done);
-                    self.exec(&step.code);
-                }
-            }
-        }
-    }
-
-    /// One action.
-    fn act(&mut self, action: &Action, done: &mut usize) {
+    /// One action that happens at once (`script.rs` takes care of the ones with steps of their own, of time and of
+    /// the player's choice).
+    pub(super) fn act(&mut self, action: &Action) {
         match action {
             Action::Zombies { groups, dispersion, storm } => self.send_script_zombies(groups, *dispersion, *storm),
             Action::Resources { gold, goods } => {
@@ -461,23 +815,6 @@ impl World {
             }
             Action::Notify { text } => self.notices.push(Notice::Message { text: text.clone() }),
             Action::Window { title, text } => self.notices.push(Notice::Window { title: title.clone(), text: text.clone() }),
-            Action::Random { options } => {
-                let total: u32 = options.iter().map(|o| o.0).sum();
-                if total == 0 {
-                    return;
-                }
-                let mut roll = self.rng.below(total);
-                for (weight, script) in options {
-                    if roll < *weight {
-                        let script = script.clone();
-                        self.run_counted(&script, done);
-                        return;
-                    }
-                    roll -= weight;
-                }
-            }
-            // A choice is made in `run_counted` (and with no option there is nothing to pick).
-            Action::Choose { .. } | Action::Code => {}
             Action::Join { name_id } => {
                 let found = self.neutral.iter().find(|n| n.tag.as_ref().is_some_and(|t| t.name_id == *name_id)).map(|n| n.id);
                 if let Some(id) = found {
@@ -486,14 +823,22 @@ impl World {
             }
             Action::Reveal => self.revealed = true,
             Action::Weather { weather } => self.weather = *weather,
-            Action::Train { stop, reverse, on_arrival } => self.send_train(*stop, *reverse, on_arrival),
             Action::Win => self.ending = self.ending.or(Some(Ending::Won)),
             Action::Lose => self.ending = Some(Ending::Lost),
+            // These are steps of their own (`script.rs`); the code of a step runs there too.
+            Action::Code
+            | Action::Block { .. }
+            | Action::Loop { .. }
+            | Action::ExitLoop { .. }
+            | Action::Wait { .. }
+            | Action::Random { .. }
+            | Action::Choose { .. }
+            | Action::Train { .. } => {}
         }
     }
 
-    /// An event of the map got another name (the editor): the triggers for it follow – unless another event still has
-    /// the old name.
+    /// An event of the map got another name (the editor): the triggers for it follow, and so do the texts in the
+    /// expressions that ask for it (`EventDone("old")`) – unless another event still has the old name.
     pub(super) fn rename_event_in_triggers(&mut self, old: &str, new: &str) {
         if old.is_empty() || old == new || self.events.iter().any(|e| e.name == old) {
             return;
@@ -504,9 +849,11 @@ impl World {
                 _ => {}
             }
         }
+        self.story.walk(&mut |mut part| part.exprs(&mut |e| e.rename_text(&["EventDone"], old, new)));
     }
 
-    /// A neutral thing got another name ID (the editor): the triggers for its joining follow.
+    /// A neutral thing got another name ID (the editor): the triggers for its joining follow, and the action "Join"
+    /// and the expressions that ask for it (`IsDead("old")`).
     pub(super) fn rename_name_id_in_triggers(&mut self, old: &str, new: &str) {
         for t in &mut self.story.triggers {
             if let TriggerEvent::Join { name_id } = &mut t.event
@@ -515,38 +862,62 @@ impl World {
                 *name_id = new.to_owned();
             }
         }
-    }
-
-    /// The player picked option `index` of the oldest waiting choice (`Order::Choose`): its script runs. A wrong
-    /// index, or no choice waiting: nothing.
-    pub(super) fn choose(&mut self, index: usize) {
-        if self.choices.is_empty() {
-            return;
-        }
-        let choice = self.choices.remove(0);
-        if let Some((_, script)) = choice.options.get(index) {
-            let script = script.clone();
-            self.run(&script);
-            self.exec(&choice.then);
-        }
+        self.story.walk(&mut |mut part| {
+            part.exprs(&mut |e| e.rename_text(&["IsDead"], old, new));
+            if let Part::Action(Action::Join { name_id }) = &mut part
+                && name_id == old
+            {
+                *name_id = new.to_owned();
+            }
+        });
     }
 
     /// The command center's own button was pressed (`Order::CustomCommand`): the triggers for it fire – as long as it
     /// may still be pressed and a command center stands.
     pub(super) fn custom_command(&mut self) {
-        let Some(command) = self.story.command.clone() else {
-            return;
-        };
-        if (command.uses > 0 && self.command_used >= command.uses) || !self.buildings.iter().any(|b| b.kind == BuildingKind::CommandCenter) {
+        if !self.command_ready() || !self.buildings.iter().any(|b| b.kind == BuildingKind::CommandCenter) {
             return;
         }
         self.command_used += 1;
         self.fire(&TriggerEvent::Button);
     }
 
-    /// Can the command center's own button still be pressed?
+    /// Can the command center's own button be pressed? It must be there, visible and enabled (as of the last tick) and
+    /// not used up.
     pub fn command_ready(&self) -> bool {
-        self.story.command.as_ref().is_some_and(|c| c.uses == 0 || self.command_used < c.uses)
+        let state = &self.command_state;
+        self.story.command.as_ref().is_some_and(|c| (c.uses == 0 || self.command_used < c.uses) && state.visible && state.enabled)
+    }
+
+    /// The goals' and the button's expressions, asked once a tick (the screen only reads the answers: `goal_progress`,
+    /// `command_state`). Before the end of the tick's check of the round (`check_outcome`).
+    pub(super) fn refresh_story_view(&mut self) {
+        let mut goals = Vec::with_capacity(self.story.goals.len());
+        for g in 0..self.story.goals.len() {
+            let (when, progress) = (self.story.goals[g].when.clone(), self.story.goals[g].progress.clone());
+            let reached = self.holds(&when);
+            let progress = if reached { 100 } else { progress.map_or(0, |p| self.eval(&p).number().clamp(0, 99) as u32) };
+            goals.push(GoalState { reached, progress });
+        }
+        self.goal_states = goals;
+        self.command_state = match self.story.command.clone() {
+            None => CommandState::default(),
+            Some(c) => CommandState {
+                visible: c.visible.as_ref().is_none_or(|e| self.holds(e)),
+                enabled: c.enabled.as_ref().is_none_or(|e| self.holds(e)),
+                counter: c.counter.as_ref().map(|e| self.eval(e).number()),
+            },
+        };
+    }
+
+    /// How far along goal `g` is: 0 to 100 (100: reached).
+    pub fn goal_progress(&self, g: usize) -> u32 {
+        self.goal_states.get(g).map_or(0, |s| s.progress)
+    }
+
+    /// Is goal `g` reached?
+    pub fn goal_reached(&self, g: usize) -> bool {
+        self.goal_states.get(g).is_some_and(|s| s.reached)
     }
 
     /// Zombies of a script (`Action::Zombies`): like an event's, every group's sides picked now, per breed a count in
@@ -579,51 +950,5 @@ impl World {
                 }
             }
         }
-    }
-
-    /// How far along goal `g` is: 0 to 100 (100: reached).
-    pub fn goal_progress(&self, g: usize) -> u32 {
-        self.condition_progress(&self.story.goals[g].condition)
-    }
-
-    /// How far along a condition (a goal's, a trigger's) is: 0 to 100 (100: reached).
-    pub fn condition_progress(&self, condition: &Condition) -> u32 {
-        // 0 to 100 – a target of 0 is reached at once.
-        let share = |now: u64, target: u64| (now.min(target) * 100).checked_div(target).map_or(100, |p| p as u32);
-        match condition {
-            Condition::Colonists(n) => {
-                let colonists: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().colonists).sum();
-                share(colonists as u64, *n as u64)
-            }
-            Condition::Day(day) => share(self.tick / DAY_TICKS + 1, *day as u64),
-            Condition::ZombiesKilled(n) => share(self.score.zombies_killed as u64, *n as u64),
-            Condition::Built { kind, count } => {
-                let standing = self.buildings.iter().filter(|b| b.kind == *kind && b.is_built() && !b.infected).count();
-                share(standing as u64, *count as u64)
-            }
-            Condition::Destroyed { name_id } => {
-                let tagged = |tag: &Option<Box<Tag>>| tag.as_ref().is_some_and(|t| t.name_id == *name_id);
-                let there = self.buildings.iter().any(|b| tagged(&b.tag)) || self.units.iter().any(|u| tagged(&u.tag));
-                if there { 0 } else { 100 }
-            }
-            Condition::Variable { name, at_least } => {
-                let now = self.variable(name);
-                match () {
-                    _ if now >= *at_least => 100,
-                    _ if *at_least <= 0 => 0,
-                    _ => share(now.max(0) as u64, *at_least as u64),
-                }
-            }
-            Condition::EventDone { name } => match self.events.iter().find(|e| e.name == *name) {
-                Some(e) if e.is_done() => 100,
-                Some(e) => e.repeats().map_or(0, |n| share(e.fired() as u64, n as u64)),
-                None => 0,
-            },
-        }
-    }
-
-    /// Is goal `g` reached?
-    pub fn goal_reached(&self, g: usize) -> bool {
-        self.goal_progress(g) >= 100
     }
 }

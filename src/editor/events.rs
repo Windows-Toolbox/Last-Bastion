@@ -545,7 +545,7 @@ fn zone_checks(ui: &mut Ui, ids: &mut Vec<u32>, zones: &[Zone]) {
 }
 
 /// Where a group of a wave comes from, as a short text.
-fn from_label(from: &WaveFrom) -> &'static str {
+pub(crate) fn from_label(from: &WaveFrom) -> &'static str {
     match from {
         WaveFrom::OneSpawner => "1 random spawner",
         WaveFrom::Sides(1) => "1 random side",

@@ -27,8 +27,8 @@
 //! - **Zombies** – brush, drop, giant, spawners, the houses of a village of doom (TAB's three sizes).
 //! - **Regions** (`editor\regions.rs`) – named regions (rectangles, circles, painted tiles, put together) and points,
 //!   like SC2's: what triggers and events talk about. With the playing field, the base and the spawners in its lists.
-//! - **Triggers** – TAB's "Game Narrative": scripts at the start, victory and defeat, goals, the command center's own
-//!   button, counters (`story_panel.rs`).
+//! - **Triggers** (`editor\triggers.rs`, `story_panel\sentences.rs`) – a full page: the tree of triggers, goals, the
+//!   command center's own button and variables; the chosen trigger as sentences; the palette of actions.
 //! - **Events** – the map's **events** like TAB's: each comes by itself at its day and hour (plus a random offset),
 //!   maybe again and again growing each time, announced or silent, with groups of several breeds from sides or chosen
 //!   spawners – the stragglers, the swarms, the final wave and the victory are all events. On the right: send waves now.
@@ -61,8 +61,9 @@ mod objects;
 mod regions;
 mod terrain;
 mod thumbs;
+mod triggers;
 
-pub(crate) use events::wave_group;
+pub(crate) use events::{from_label, wave_group};
 pub use regions::Picked;
 pub use terrain::{fill_tiles, rect_tiles, PaintShape};
 
@@ -102,8 +103,6 @@ const TESTING_FILL: Color32 = Color32::from_rgb(122, 72, 24);
 fn small_breeds() -> Vec<Breed> {
     Breed::ALL.into_iter().filter(|&b| b != Breed::Giant).collect()
 }
-/// Every building a script can ask for (`story_panel.rs`).
-pub(crate) const BUILDINGS: &[BuildingKind] = &BuildingKind::ALL;
 
 /// Editing the map (no time passes) or testing it (the round runs).
 #[derive(Clone, Copy, PartialEq)]
@@ -130,7 +129,7 @@ impl Module {
     const ON_MAP: [Module; 4] = [Module::Terrain, Module::Objects, Module::Zombies, Module::Regions];
     const PAGES: [Module; 3] = [Module::Triggers, Module::Events, Module::Map];
     /// Pages that fill the whole room between the bars (no panels, no map): the map is covered and takes no clicks.
-    const FULL: [Module; 2] = [Module::Events, Module::Map];
+    const FULL: [Module; 3] = [Module::Triggers, Module::Events, Module::Map];
 
     fn name(self) -> &'static str {
         match self {
@@ -150,7 +149,7 @@ impl Module {
             Module::Objects => "Units, buildings, loot - and the list of all placed",
             Module::Zombies => "Zombies by brush or by the crowd, spawners, villages of doom",
             Module::Regions => "Named regions and points - what triggers and events talk about",
-            Module::Triggers => "TAB's game narrative: scripts, goals, counters",
+            Module::Triggers => "TAB's game narrative the SC2 way: triggers as sentences, goals, the button, variables",
             Module::Events => "Waves, the final wave, victory - at their day and hour",
             Module::Map => "Name, info, landscape, the round, difficulty, goals",
         }
@@ -458,6 +457,7 @@ pub struct Editor {
     thumbs: thumbs::Thumbs,
     /// What the Events page keeps (`events.rs`).
     events_page: events::EventsPage,
+    triggers_page: triggers::TriggersPage,
     /// What map this is (generator, seed, days) – set by `game.rs`.
     pub map_info: String,
     /// What came of the last "Save" – set by `game.rs`.
@@ -555,6 +555,7 @@ impl Editor {
             place_owner: Owner::Colony,
             thumbs: thumbs::Thumbs::default(),
             events_page: events::EventsPage::default(),
+            triggers_page: triggers::TriggersPage::default(),
             zone_asked: None,
             map_info: String::new(),
             status: None,
@@ -737,6 +738,7 @@ impl Editor {
             let map = ctx.available_rect();
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.add_enabled_ui(enabled, |ui| match self.module {
+                    Module::Triggers => self.triggers_page(ui, world, orders),
                     Module::Events => self.events_page(ui, world, orders),
                     _ => self.map_page(ui, world, orders),
                 });
@@ -766,7 +768,7 @@ impl Editor {
                     Module::Objects => self.objects_module(ui, world),
                     Module::Zombies => self.zombies_module(ui, world),
                     Module::Regions => self.regions_module(ui, world),
-                    Module::Triggers => crate::story_panel::story_tab(ui, world, orders),
+                    Module::Triggers => {} // a full page (`Module::FULL`), above
                     Module::Events => {} // a full page (`Module::FULL`), above
                     Module::Map => {} // a full page (`Module::FULL`), above
                 });
@@ -977,6 +979,10 @@ impl Editor {
             if self.module == Module::Regions {
                 ui.separator();
                 ui.label(count);
+            }
+            if self.module == Module::Triggers {
+                ui.separator();
+                ui.label(self.trigger_status(world));
             }
             ui.separator();
             ui.label(format!("Selected: {}", self.selection_text(world)));

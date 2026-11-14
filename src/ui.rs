@@ -761,7 +761,7 @@ impl Ui {
                 // In the editor the command center can be removed like anything else.
                 None if self.editor.editing() && !self.editor.testing() => [COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Demolish]].concat(),
                 // The map's own button, if its story has one (`sim/story.rs`).
-                None if world.story.command.is_some() => [COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Custom]].concat(),
+                None if world.story.command.is_some() && world.command_state.visible => [COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Custom]].concat(),
                 None => COMMAND_CENTER_BUTTONS.to_vec(),
                 Some(menu) => menu_buttons(menu),
             },

@@ -435,7 +435,10 @@ impl World {
             Order::SetHealth { thing, percent } => self.set_health(*thing, *percent),
             Order::SetMark { thing, on } => self.set_mark(*thing, *on),
             Order::RemoveThing { thing } => self.remove_thing(*thing),
-            Order::SetStory { story } => self.story = story.clone(),
+            Order::SetStory { story } => {
+                self.story = story.clone();
+                self.drop_lost_runs();
+            }
             Order::Choose { index } => self.choose(*index),
             Order::CustomCommand => self.custom_command(),
             Order::ResizeMap { size } => self.resize(*size),

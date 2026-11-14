@@ -2086,6 +2086,9 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
             let price = cost.to_string();
             let x = r.right() - 3.0 - text_width(&price, 10.0);
             draw_shadowed(&price, x, r.bottom() - 4.0, 10.0, if affordable { KEY } else { TOO_DEAR });
+        } else if let (Button::Custom, Some(n)) = (button, world.command_state.counter) {
+            // The map's own number on its button (the counter expression).
+            draw_shadowed(&n.to_string(), r.right() - 3.0 - text_width(&n.to_string(), 10.0), r.bottom() - 4.0, 10.0, KEY);
         } else if planned && !plate {
             draw_right("soon", r.right() - 3.0, r.y + 11.0, 9.0, BORDER);
         } else if matches!(button, Button::Open(_)) && picture.is_none() {
@@ -2121,6 +2124,7 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
             (None, _) => format!("{} ({})", button.title(), key),
         };
         let help = match (button, &world.story.command) {
+            (Button::Custom, Some(command)) if !world.command_state.enabled && !command.disabled_text.is_empty() => command.disabled_text.as_str(),
             (Button::Custom, Some(command)) if !command.text.is_empty() => command.text.as_str(),
             _ => button.help(),
         };

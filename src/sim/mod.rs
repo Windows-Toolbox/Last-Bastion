@@ -69,6 +69,7 @@ mod regen;
 mod research;
 mod round;
 mod scan;
+mod script;
 mod sleep;
 mod sound;
 mod spawning;
@@ -111,9 +112,12 @@ pub use fx::{Fallen, Fx, Struck};
 pub use landscaping::{Area, Patch, TerrainClip};
 pub use neutral::{Neutral, Owner, Tag, Thing, ThingRef};
 pub use regions::{Form, Shape, Spot, Zone, MOST_SHAPES, ZONE_COLORS};
-pub use expr::{code_text, parse_code, parse_condition, Expr, ExprError, Scope, Ty, Value};
+pub use expr::{code_text, parse_code, parse_condition, parse_expr, Expr, ExprError, Scope, Ty, Value};
 pub use funcs::{signature, FUNCS};
-pub use story::{Action, Choice, Condition, CustomCommand, Goal, Script, Step, Story, Trigger, TriggerEvent, VarKind, Variable};
+pub use script::{Place, Run};
+pub use story::{
+    Action, CommandState, CustomCommand, Goal, GoalState, Pick, Script, Step, Story, Trigger, TriggerEvent, VarKind, Variable, Weighted,
+};
 pub use weather::{Weather, LOOKS};
 pub use ranged::Spit;
 pub use research::{researched_in, tech};
@@ -293,10 +297,13 @@ pub struct World {
     pub notices: Vec<Notice>,
     /// The map's story (`story.rs`): triggers, goals, the command center's button, the variables' starting values.
     pub story: Story,
-    /// While the round runs: the variables, the choices waiting for the player (oldest first), what a script decided
-    /// about the round, how often the command center's button was pressed.
+    /// While the round runs: the variables, the scripts that run (`script.rs`: they wait for a time or for the
+    /// player's pick – oldest first), how the goals and the command center's button look (`story.rs`), what a script
+    /// decided about the round, how often the button was pressed.
     pub variables: Vec<(String, Value)>,
-    pub choices: Vec<Choice>,
+    pub runs: Vec<Run>,
+    pub goal_states: Vec<GoalState>,
+    pub command_state: CommandState,
     ending: Option<story::Ending>,
     command_used: u32,
     rng: Rng,
@@ -530,7 +537,9 @@ impl World {
             notices: Vec::new(),
             story: Story::default(),
             variables: Vec::new(),
-            choices: Vec::new(),
+            runs: Vec::new(),
+            goal_states: Vec::new(),
+            command_state: CommandState::default(),
             ending: None,
             command_used: 0,
             // Not `Rng::new(seed)`: the map generator already uses that one – this way the two don't repeat each other.
@@ -627,6 +636,7 @@ impl World {
         }
         self.apply_orders(orders); // orders.rs
         self.update_events(); // events.rs
+        self.update_runs(); // script.rs – scripts whose wait is over go on
         self.update_spawners(); // spawning.rs
         self.wake_sleepers(); // sleep.rs – near your eyes, and after the final wave's call
         self.move_fallen(); // fallen.rs – the thrown dead slide on, the dying zombies' death ends
@@ -649,6 +659,7 @@ impl World {
         self.regenerate(); // regen.rs – units and zombies heal themselves
         let command_center_fell = self.remove_dead();
         self.fade_sound(); // sound.rs
+        self.refresh_story_view(); // story.rs – the goals and the command center's button
         self.check_outcome(command_center_fell); // round.rs
         self.update_vision();
         self.tick += 1;

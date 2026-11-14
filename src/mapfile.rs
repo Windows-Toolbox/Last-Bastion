@@ -38,7 +38,10 @@ use crate::sim::{
 /// and the command center's button, and counters – `triggers_from_scripts` turns an older file around when it's read.
 /// 9: a small typed language (`sim/expr.rs`): steps of a script have a condition and code, triggers have expressions
 /// as conditions, variables can be yes/no or text. Older files read as they are (`Story::declare_unknown`).
-const VERSION: u32 = 9;
+/// 10: scripts as trees – block, loop, exit loop, wait, conditions on the options of a random action and a choice
+/// (`sim/story.rs`, `sim/script.rs`); goals and the command center's button with expressions. Older files read as they
+/// are (a goal's old condition becomes its expressions).
+const VERSION: u32 = 10;
 
 /// The fields in the order they are in the file: the short ones on top, the terrain at the end.
 /// `#[serde(default …)]`: a field a file from version 1 doesn't have yet gets this value instead of an error.
@@ -1074,6 +1077,7 @@ mod tests {
         file.setup = Some(MapSetup::default());
         (file.author, file.description, file.picture, file.regenerate) = ("Me".into(), "A test, \"quoted\".".into(), "pic.png".into(), true);
         file.story.triggers = vec![crate::sim::Trigger {
+            comment: "Greets the player.".into(),
             actions: vec![crate::sim::Action::Window { title: "Hi".into(), text: "Welcome.".into() }.into()],
             ..crate::sim::Trigger::new("Welcome", crate::sim::TriggerEvent::Start)
         }];
@@ -1229,8 +1233,9 @@ mod tests {
             ]
         );
         assert_eq!(story.variables, [crate::sim::Variable { name: "keys".into(), kind: crate::sim::VarKind::Number, start: crate::sim::Value::Number(0) }]);
-        assert!(matches!(story.goals[0].condition, crate::sim::Condition::Variable { .. }), "a goal's Counter isn't read as a variable");
-        assert_eq!(story.command, Some(crate::sim::CustomCommand { label: "Dig".into(), text: String::new(), uses: 2 }));
+        assert_eq!(story.goals[0].when.to_string(), "keys >= 3", "a goal's Counter isn't read as a variable");
+        assert_eq!(story.goals[0].progress.as_ref().map(|p| p.to_string()).as_deref(), Some("keys * 100 / 3"));
+        assert_eq!(story.command, Some(crate::sim::CustomCommand { label: "Dig".into(), text: String::new(), uses: 2, ..Default::default() }));
         assert_eq!(file.neutral[0].tag.as_ref().map(|t| t.name_id.as_str()), Some("join 1"));
         assert!(file.neutral[2].tag.is_none(), "a thing without a script got a tag");
         // It plays: the start trigger sets the variable.
@@ -1281,6 +1286,62 @@ mod tests {
         let mut world = old.to_world().unwrap();
         world.step(&[]);
         assert_eq!(world.variable("keys"), 0, "Day >= 3 doesn't hold on the first day");
+    }
+
+    /// Format 10: scripts are trees (block, loop, wait, options with conditions), goals and the button have expressions.
+    /// A file of format 9 – options as `[weight, steps]` / `[label, steps]`, a goal with one of the fixed conditions –
+    /// reads as the same in the new kind, and what is written reads back the same.
+    #[test]
+    fn scripts_as_trees_are_written_and_format_9_is_read() {
+        use crate::sim::Action;
+        let old = r#"{"version":9,"name":"Old","seed":7,"size":2,"border":0,"terrain":["..",".."],"spawners":[],"buildings":[],"units":[],"zombies":[],
+            "story":{"triggers":[{"name":"t","event":"Start","actions":[
+                {"Random":{"options":[[2,["Reveal"]],[1,[]]]}},
+                {"Choose":{"text":"?","options":[["Yes",["Win"]],["No",[]]]}}]}],
+              "goals":[{"text":"Hold","condition":{"Day":5},"defeat":false},{"text":"Tents","condition":{"Built":{"kind":"Tent","count":4}},"defeat":true},
+                       {"text":"Boss","condition":{"Destroyed":{"name_id":"boss"}}}],
+              "command":{"label":"Dig","text":"","uses":0}}}"#;
+        let file = MapFile::parse(old).unwrap();
+        assert_eq!(file.version, VERSION);
+        let story = &file.story;
+        let goals: Vec<(String, Option<String>, bool)> =
+            story.goals.iter().map(|g| (g.when.to_string(), g.progress.as_ref().map(|p| p.to_string()), g.defeat)).collect();
+        assert_eq!(
+            goals,
+            [
+                ("Day >= 5".to_owned(), Some("Day * 100 / 5".to_owned()), false),
+                ("Count(\"Tent\") >= 4".to_owned(), Some("Count(\"Tent\") * 100 / 4".to_owned()), true),
+                ("IsDead(\"boss\")".to_owned(), None, false),
+            ]
+        );
+        let Action::Random { options } = &story.triggers[0].actions[0].action else {
+            panic!("not a random action");
+        };
+        assert_eq!((options[0].weight, options[0].steps.len(), options[1].weight), (2, 1, 1));
+        let Action::Choose { options, .. } = &story.triggers[0].actions[1].action else {
+            panic!("not a choice");
+        };
+        assert_eq!((options[0].label.as_str(), options[1].label.as_str(), options[0].when.is_none()), ("Yes", "No", true));
+
+        // New things: a loop with a wait and a choice whose button has a condition; the goal and the button with expressions.
+        use crate::sim::{Expr, Pick, Step, Trigger};
+        let mut file = file;
+        let back = Pick { label: "Back".into(), when: Some(Expr::yes()), steps: vec![Step::new(Action::ExitLoop { loops: 1 })] };
+        let menu = Action::Choose { text: "Again?".into(), options: vec![back] };
+        let steps = vec![Step::new(Action::Wait { seconds: Expr::number(3) }), Step::new(menu)];
+        let mut trigger = Trigger::new("menu", TriggerEvent::Start);
+        trigger.actions = vec![Step::new(Action::Loop { steps }), Step::new(Action::Block { steps: vec![Step::new(Action::Reveal)] })];
+        file.story.triggers = vec![trigger];
+        file.story.command = Some(crate::sim::CustomCommand { label: "Dig".into(), visible: Some(Expr::yes()), counter: Some(Expr::number(4)), ..Default::default() });
+        let text = serde_json::to_string(&file).unwrap();
+        assert!(!text.contains("\"condition\""), "the old kind of condition is not written any more: {text}");
+        let again = MapFile::parse(&pretty(&text)).unwrap();
+        assert_eq!(again, file);
+        // And it plays: the loop waits, the block after it waits for the loop.
+        let mut world = again.to_world().unwrap();
+        world.step(&[]);
+        assert_eq!(world.runs.len(), 1);
+        assert!(!world.revealed);
     }
 
     /// A round from its file starts with the command center's gold as the income – nobody has paid yet, but it will at

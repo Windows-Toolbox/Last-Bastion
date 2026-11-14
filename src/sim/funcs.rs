@@ -180,6 +180,7 @@ impl World {
     }
 
     /// A variable as a number – 0 if nobody set it yet.
+    #[cfg(test)]
     pub fn variable(&self, name: &str) -> i32 {
         self.variable_value(name).number()
     }

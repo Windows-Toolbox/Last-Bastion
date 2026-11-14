@@ -14,7 +14,7 @@ use macroquad::math::{vec2, Vec2};
 use super::events::Notice;
 use super::fx::Fx;
 use super::rails::RailLine;
-use super::{after_armor, Script, World, UNIT_RADIUS};
+use super::{after_armor, Place, World, UNIT_RADIUS};
 use crate::data::{self, TrainValues};
 
 /// What a car of a train is – TAB's `TypeOfCarriage`.
@@ -52,7 +52,8 @@ pub enum Motion {
 #[derive(Clone, Debug, PartialEq)]
 struct Stop {
     offset: f32,
-    script: Option<Script>,
+    /// The script of the story that runs when it's there (`Action::Train`'s arrival).
+    script: Option<Place>,
 }
 
 /// A train on a line of track.
@@ -162,13 +163,13 @@ impl World {
 
     /// A train sets off (`Action::Train`, `train_plan`). `stop`: it stops next to the command center and `on_arrival`
     /// runs there. Trains already on that line run on – TAB's `SetTrainToOrigin` sent its one train back to the start.
-    pub(super) fn send_train(&mut self, stop: bool, reverse: bool, on_arrival: &Script) {
+    pub(super) fn send_train(&mut self, stop: bool, reverse: bool, on_arrival: Place) {
         let Some(plan) = self.train_plan(reverse) else {
             return;
         };
         let mut stops = Vec::new();
         if stop {
-            stops.push(Stop { offset: plan.stop, script: Some(on_arrival.clone()) });
+            stops.push(Stop { offset: plan.stop, script: Some(on_arrival) });
         }
         stops.push(Stop { offset: plan.end, script: None });
         stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
@@ -251,7 +252,7 @@ impl World {
             // TAB's `ZXAction_TrainUnloadColonists`: the event "the train has arrived" and the officer – then the
             // arrival's script.
             self.notices.push(Notice::TrainArrived { at });
-            self.run(&script);
+            self.begin(script);
         }
     }
 
