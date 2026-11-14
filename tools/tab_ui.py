@@ -56,6 +56,8 @@ ICONS = [
     # Buildings
     "IconSetRallyPoint", "IconRepair", "IconDestroyBuilding", "IconExtractAll", "IconFResourcesToGold", "IconFWatchRange",
     "IconPause", "IconPlay", "IconBack", "CustomCommandGear",
+    # The mine's delay (TAB's DelayActivation 0-3)
+    "CommandDelay0", "CommandDelay1", "CommandDelay2", "CommandDelay3",
     # The command center's build menus
     "IconDwellings", "IconResources", "IconEnergy", "IconIndustry", "IconMilitary", "IconDeffense", "IconWonders",
     # The stock and the clock
@@ -96,7 +98,7 @@ PORTRAITS = {
     "StoneWorkshop": "StoneWorkshop", "MunitionsFactory": "WareHouse", "Foundry": "Foundry", "StoneHouse": "StoneHouse",
     "StoneWall": "WallStone", "StoneTower": "WatchTowerStone", "Ballista": "Ballista", "MachineGunTower": "MachineGun",
     "Stakes": "TrapStakes", "Market": "Market", "Bank": "Bank", "Inn": "TheInn", "Barrel": "ExplosiveBarrel",
-    # TAB's late buildings (docs\tab-assets.md steps 5-7)
+    # TAB's late buildings (DESIGN.md 2)
     "WoodHouse": "CottageHouse", "PowerPlant": "PowerPlant", "OilPlatform": "OilPlatform", "Quarry": "Quarry",
     "BigQuarry": "AdvancedQuarry", "BigFarm": "AdvancedFarm", "BigMill": "MillIron", "Warehouse": "WareHouse",
     "EngineeringCenter": "AdvancedUnitCenter", "ShockingTower": "ShockingTower", "Executor": "Executor",
@@ -106,6 +108,7 @@ PORTRAITS = {
     # The houses of the villages of doom (by their size) and the loot
     "DoomSmall": "DoomBuildingSmall", "DoomMedium": "DoomBuildingMedium", "DoomBig": "DoomBuildingLarge",
     "LootGold": "PickableGold", "LootWood": "PickableWood", "LootStone": "PickableStone", "LootIron": "PickableIron",
+    "LootCoal": "PickableOil", "LootFood": "PickableFood", "LootEnergy": "PickableEnergy",
 }
 # Units and zombies: TAB's 375 x 500 portraits, made 150 x 200. Buildings: TAB's square pictures, 200 x 200.
 PORTRAIT_SIDE = 200

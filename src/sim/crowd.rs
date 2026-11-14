@@ -128,7 +128,7 @@ impl World {
                     }
                     let others = unit_near[u].iter().map(|&z| (before[z as usize], radius[z as usize], weight[z as usize], self.zombies[z as usize].id));
                     let fix = push_out((me, UNIT_RADIUS, unit_weight[u], !unit.id), others);
-                    out_of_blocked(me + fix, UNIT_RADIUS, |x, y| map.blocks_unit(x, y))
+                    map.out_of_oil(out_of_blocked(me + fix, UNIT_RADIUS, |x, y| map.blocks_unit_body(x, y)), UNIT_RADIUS)
                 })
                 .collect();
             at = next;
@@ -137,7 +137,7 @@ impl World {
         // There – but never with its middle into a blocked tile, nor through the corner between two walls standing
         // diagonally (`slide` goes along x and y one after the other).
         for ((zombie, to), _) in self.zombies.iter_mut().zip(at).zip(solving).filter(|&(_, &s)| s) {
-            zombie.pos = slide(zombie.pos, to - zombie.pos, |x, y| map.is_blocked(x, y));
+            zombie.pos = map.out_of_oil(slide(zombie.pos, to - zombie.pos, |x, y| map.is_blocked_body(x, y)), zombie.radius);
         }
         for (unit, to) in self.units.iter_mut().zip(unit_at) {
             unit.shove = to - unit.pos;

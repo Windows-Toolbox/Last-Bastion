@@ -58,7 +58,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0xb900_98d6_0200_d1a4;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0x4c73_3046_2f23_4df3;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -119,6 +119,8 @@ fn quiet_world() -> (World, u32) {
 /// `quiet_world` with another seed.
 fn quiet_world_of(seed: u64) -> (World, u32) {
     let mut world = World::new(seed);
+    // Research is its own test (`research_unlocks_and_goes_once`) – here everything is researched.
+    world.research_all();
     let houses = world.doom.iter().map(|d| d.tile);
     let loot = world.loot.iter().map(|l| (l.pos.x.floor() as i32, l.pos.y.floor() as i32));
     let tiles = houses.chain(loot).collect();
@@ -258,6 +260,50 @@ fn zombies_kill_a_lone_unit() {
         world.step(&[]);
     }
     assert_eq!(world.find_unit(id), None);
+}
+
+/// Zombies wind up like your units (TAB's `TimeAction × TimeFactorAction`): a walker's blow lands `windup_seconds`
+/// after its swing starts – on a unit that stayed, not on one that got out of its reach meanwhile (kiting).
+#[test]
+fn a_zombie_winds_up_and_misses_who_walked_off() {
+    let windup = Breed::Walker.stats().windup;
+    assert!(windup >= 2, "the walker needs a wind-up for this test");
+    for walks_off in [false, true] {
+        let (mut world, id) = quiet_world();
+        no_more_zombies(&mut world);
+        // Alone, away from the others – the walker goes for the nearest.
+        let far = world.base + vec2(8.0, 8.0);
+        world.step(&[Order::Command { units: vec![id], command: Command::Move(far), queue: false, formation: None }]);
+        for _ in 0..200 {
+            world.step(&[]);
+        }
+        world.step(&[Order::Command { units: vec![id], command: Command::Hold, queue: false, formation: None }]);
+        let at = world.units[world.find_unit(id).unwrap()].pos;
+        world.spawn_zombie_as(at + vec2(0.3, 0.0), Breed::Walker, true);
+        let zombie = world.zombies.last().unwrap().id;
+        let swinging = |w: &World| w.find_zombie(zombie).is_some_and(|z| w.zombies[z].swing.is_some());
+        let mut ticks = 0;
+        while !swinging(&world) {
+            world.step(&[]);
+            ticks += 1;
+            assert!(ticks < 100, "the walker never swung");
+        }
+        let u = world.find_unit(id).unwrap();
+        let hp = world.units[u].hp;
+        if walks_off {
+            world.units[u].pos += vec2(0.0, 1.0);
+        }
+        for _ in 1..windup {
+            world.step(&[]);
+            assert_eq!(world.units[world.find_unit(id).unwrap()].hp, hp, "hit before the end of the wind-up");
+        }
+        world.step(&[]);
+        let after = world.units[world.find_unit(id).unwrap()].hp;
+        match walks_off {
+            false => assert!(after < hp, "the blow didn't land at the end of the wind-up"),
+            true => assert_eq!(after, hp, "hit although it walked out of reach"),
+        }
+    }
 }
 
 /// Three units sent with a dragged line: at the end they stand side by side on that line, from one end to
@@ -883,6 +929,60 @@ fn a_removed_spawner_leaves_the_events() {
     assert_eq!(world.events.last().unwrap().groups[0].from, WaveFrom::Spawners(vec![ids[1]]));
 }
 
+/// A group out of regions (`WaveFrom::Zones`): its zombies come out on tiles of the region – a ring (circle minus
+/// circle) leaves its hole empty. A removed region leaves the group (nobody comes then), the region says who uses it.
+#[test]
+fn a_group_comes_out_of_a_region() {
+    use crate::sim::{Form, Shape, Zone};
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.events.clear();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    let center = (bx + 14, by + 14);
+    clear_ground(&mut world, center, 8);
+    let mut ring = Zone::new("Ring", 1, Form::Circle { center, radius: 7 });
+    ring.shapes.push(Shape { form: Form::Circle { center, radius: 3 }, cut: true });
+    let id = world.next_zone_id();
+    world.step(&[Order::AddZone { zone: ring }]);
+    let hour = next_hour(&world);
+    let mut event = one_group(hour, WaveFrom::Zones(vec![id]), &[(Breed::Runner, 60)]);
+    event.name = "Ring wave".into();
+    event.notify_hours = Some(0);
+    world.step(&[Order::AddEvent(event)]);
+    assert_eq!(world.zone_uses(id), vec!["Ring wave (day 1), group 1".to_owned()]);
+    let appeared = step_until_it_comes(&mut world, hour);
+    assert_eq!(appeared.len(), 60, "not all of them came");
+    let zone = world.zones[0].clone();
+    for (_, p) in &appeared {
+        assert!(zone.contains((p.x.floor() as i32, p.y.floor() as i32)), "a zombie came out at {p}, outside the region");
+    }
+    // Once the region is gone nobody comes: the group names none.
+    world.step(&[Order::RemoveZone { zone: id }]);
+    assert_eq!(world.events[0].groups[0].from, WaveFrom::Zones(Vec::new()));
+    assert!(world.zone_uses(id).is_empty() || world.zones.is_empty());
+}
+
+/// The map file keeps a group's regions (format 7), and an event knows how many zombies it brings in all.
+#[test]
+fn regions_in_a_group_are_saved_and_events_count_their_zombies() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let mut event = one_group(24, WaveFrom::Zones(vec![3, 4]), &[(Breed::Runner, 100)]);
+    event.groups.push(WaveGroup { from: WaveFrom::Sides(2), breeds: vec![BreedCount { count: 10, up_to: 30, breed: Breed::Fat }] });
+    world.step(&[Order::AddEvent(event.clone())]);
+    let file = crate::mapfile::MapFile::from_world(&world, "Test");
+    let text = serde_json::to_string(&file).unwrap();
+    let back: crate::mapfile::MapFile = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.events[0].groups[0].from, WaveFrom::Zones(vec![3, 4]));
+    // Once: 100 out of the regions + 2 sides of about 20.
+    assert_eq!(event.total(100 * 24), 140);
+    // Every 24 hours, 3 times, +50 % each: 140, 210, 280.
+    let growing = Event { every_hours: 24, times: 3, growth: 0.5, ..event.clone() };
+    assert_eq!(growing.total(100 * 24), 140 + 210 + 280);
+    // Only what comes until the end of the round counts: the second time is after day 2.
+    assert_eq!(growing.total(30), 140);
+}
+
 /// An event with a spread (TAB's `MaxCellDispersionGeneration`): every side's zombies come out of one square that big,
 /// not along the whole side – and all its breeds out of the same square.
 #[test]
@@ -1210,8 +1310,9 @@ fn production_queue_is_limited() {
 
 /// Plain grass in a square of radius `r` around `center` – no tree in the test's way.
 fn clear_ground(world: &mut World, center: (i32, i32), r: i32) {
-    let tiles = (center.1 - r..=center.1 + r).flat_map(|y| (center.0 - r..=center.0 + r).map(move |x| (x, y))).collect();
-    world.step(&[Order::PaintTerrain { terrain: Terrain::Grass, tiles }]);
+    let tiles: Vec<(i32, i32)> = (center.1 - r..=center.1 + r).flat_map(|y| (center.0 - r..=center.0 + r).map(move |x| (x, y))).collect();
+    // The ore too: the plain test map has its start patches right by the base (`mapgen/ores.rs`).
+    world.step(&[Order::PaintTerrain { terrain: Terrain::Grass, tiles: tiles.clone() }, Order::PaintOre { ore: None, tiles }]);
 }
 
 /// A unit that stays put and never shoots – so the zombies stay alive in the test.
@@ -1267,8 +1368,10 @@ fn a_shot_zombie_comes_for_the_shooter() {
     world.zombies[0].speed = 0.0;
     world.spawn_unit(UnitKind::Sniper, p);
     let sniper = world.units[0].id;
-    // The sniper first looks around, turns, raises its rifle and aims (`data\units.json`) – then it shoots.
+    // The sniper first looks around, turns, raises its rifle and aims (`data\units.json`) – then it shoots. (Healing
+    // itself, the zombie would fall back to its own hit points – it has to live through the shot.)
     for _ in 0..80 {
+        world.zombies[0].hp = 100_000;
         world.step(&[]);
         if world.zombies[0].aim.is_some() {
             break;
@@ -1488,6 +1591,7 @@ fn units_walk_straight_at_any_angle() {
 fn orders_in_the_pause_are_the_same_as_with_the_next_tick() {
     let run = |paused: bool| {
         let mut world = World::new(9);
+        world.research_all();
         let barracks = barracks(&mut world);
         let ids: Vec<u32> = world.units.iter().map(|u| u.id).collect();
         let orders = vec![
@@ -1526,8 +1630,11 @@ fn editor_builds_anywhere_but_on_buildings() {
     world.step(&[Order::PaintTerrain { terrain: Terrain::Water, tiles: vec![water] }, Order::SpawnZombiesAt { count: 5, point: vec2(5.5, 5.5) }]);
     let place = |tile| Order::PlaceBuilding { kind: BuildingKind::Wall, tile, turned: false, editor: true };
     let before = world.buildings.len();
-    world.step(&[place(water), place((4, 4)), place(unit_tile), place(world.buildings[0].tile)]);
-    assert_eq!(world.buildings.len(), before + 3, "on the command center it must not go");
+    // In the ring outside the world border it may go – in a corner of the grid past the map's edge not.
+    let ring = (world.base.x as i32, world.base.y as i32 - world.map.size as i32 / 2 + crate::map::BORDER as i32 / 2);
+    assert!(world.map.on_map(ring.0, ring.1) && !world.map.in_play(ring.0, ring.1) && !world.map.on_map(4, 4));
+    world.step(&[place(water), place(ring), place((4, 4)), place(unit_tile), place(world.buildings[0].tile)]);
+    assert_eq!(world.buildings.len(), before + 3, "not off the map, not on the command center");
     assert_eq!(world.map.terrain(water.0, water.1), Terrain::Water, "the water under it has to stay water");
     assert!(nobody_on_blocked_ground(&world), "the unit wasn't pushed aside");
     // The game's rules still apply without the editor.
@@ -1708,7 +1815,7 @@ fn a_zombie_goes_where_it_last_saw_a_unit_and_stays() {
         let (mut world, _) = quiet_world();
         world.units.clear();
         let p = world.base + vec2(-14.0, 12.0);
-        clear_ground(&mut world, (p.x as i32, p.y as i32), 20);
+        clear_ground(&mut world, (p.x as i32, p.y as i32), 32);
         world.spawn_zombie_as(p, Breed::Walker, wander);
         let id = bait(&mut world, UnitKind::Ranger, p + vec2(3.0, 0.0));
         for _ in 0..Breed::Walker.stats().watch + 2 {
@@ -1716,7 +1823,7 @@ fn a_zombie_goes_where_it_last_saw_a_unit_and_stays() {
         }
         assert_eq!(world.zombies[0].aim, Some(Aim::Unit(id)), "it didn't see the unit");
         // The unit runs off, out of its sight.
-        world.step(&[Order::Command { units: vec![id], command: Command::Move(p + vec2(0.0, 18.0)), queue: false, formation: None }]);
+        world.step(&[Order::Command { units: vec![id], command: Command::Move(p + vec2(0.0, 30.0)), queue: false, formation: None }]);
         let mut seen = None;
         for _ in 0..400 {
             world.step(&[]);
@@ -1726,11 +1833,17 @@ fn a_zombie_goes_where_it_last_saw_a_unit_and_stays() {
             }
         }
         let seen = seen.expect("it never lost sight of the unit");
-        for _ in 0..500 {
+        // Gone for good – else, if it lost sight only once the unit had stopped (when it looks depends on its number),
+        // it would walk right up to the unit and find it again.
+        world.units.retain(|u| u.id != id);
+        // A walker walks slowly – on open ground it loses sight of the unit late, and far from where it stands.
+        for _ in 0..1500 {
             world.step(&[]);
         }
         let zombie = &world.zombies[0];
-        (zombie.pos, seen, zombie.lure.is_none() && zombie.aim.is_none(), !zombie.siege, world.base)
+        // Done with the unit: nothing it heads for – a wave zombie may be at the command center already, hitting it.
+        let done = zombie.lure.is_none() && zombie.aim.is_none_or(|a| matches!(a, Aim::Building(_)));
+        (zombie.pos, seen, done, !zombie.siege, world.base)
     };
     let (pos, seen, done, idle, _) = run(true);
     assert!(done && idle, "the roamer doesn't idle where it lost the unit");
@@ -2209,10 +2322,14 @@ fn a_giant_walks_through_walkers() {
     world.zombies[giant].speed = Breed::Giant.stats().speed;
     let start = world.zombies[giant].pos;
     // Time for 10 tiles at its speed: through the walkers (6 tiles), not yet at the command center (20 tiles away) –
-    // TAB's giant runs 4 tiles a second.
+    // TAB's giant runs 4 tiles a second. Not counting its roar (every 12 s, when depends on its number): it stands then.
     let ticks = (10.0 / (Breed::Giant.stats().speed * TICK)).ceil() as u32;
-    for _ in 0..ticks {
+    let mut walking = 0;
+    while walking < ticks {
         world.step(&[]);
+        if world.zombies.iter().any(|z| z.breed == Breed::Giant && z.roar == 0) {
+            walking += 1;
+        }
     }
     let giant = world.zombies.iter().find(|z| z.breed == Breed::Giant).unwrap();
     let walked = giant.pos.distance(start);
@@ -3082,18 +3199,12 @@ fn a_crowd_spreads_its_fire() {
     assert!(a != b, "both snipers aim at the same walker");
 }
 
-/// Not a real test – a tool for balancing the mini round (DESIGN.md 13, step 4): plays it at full size, once with a
-/// player who does nothing, once with a very simple one (every hour: a tent while there are fewer than 12, then a
-/// barracks, then soldiers – all of them simply stand at the base). Prints every half day how it's going and how the round ends – up
-/// to two days after the last one: the final wave can take a while to arrive, through narrow passes one by one.
-/// In the fast build, it takes a minute or two:
-/// `cargo test --release balance_mini_round -- --ignored --nocapture`
 /// A new round starts with what its difficulty says (`data\game_difficulties.json`) – units, gold and wood, nothing
 /// else in store. Every difficulty, every house of a village of doom as full as its population and size say.
 #[test]
 fn a_new_round_starts_with_the_difficulty_values() {
     for difficulty in &data::get().difficulties.difficulties {
-        let mut setup = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
+        let mut setup = MapSetup { generator: Generator::Blank, ..MapSetup::default() };
         setup.common.size = 128.0;
         setup.round.difficulty = difficulty.name.clone();
         let world = World::generate(3, &setup);
@@ -3116,7 +3227,7 @@ fn a_new_round_starts_with_the_difficulty_values() {
 #[test]
 fn a_harder_difficulty_brings_more() {
     let make = |name: &str| {
-        let mut setup = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
+        let mut setup = MapSetup { generator: Generator::Blank, ..MapSetup::default() };
         setup.common.size = 128.0;
         setup.round.difficulty = name.to_owned();
         World::generate(3, &setup)
@@ -3134,6 +3245,29 @@ fn a_harder_difficulty_brings_more() {
     let closest = |w: &World, breed: Breed| w.sleep.iter().filter(|s| s.breed == breed).map(|s| s.pos.distance(w.base)).fold(f32::INFINITY, f32::min);
     assert!(closest(&easy, Breed::Fat) >= easy.keep_out.fat, "a fat one too close on Easy");
     assert!(closest(&brutal, Breed::Fat) < closest(&easy, Breed::Fat), "Brutal's fat ones aren't closer");
+}
+
+/// The editor's difficulty (`Order::SetDifficulty`): how close the breeds may come changes, the gold and wood and what
+/// is placed stay – and the choice is in the map file.
+#[test]
+fn setting_the_difficulty_changes_keep_out_only() {
+    let (mut world, _) = quiet_world();
+    world.step(&[Order::SetGold { gold: 321 }, Order::SetWood { wood: 45 }]);
+    let before = (world.zombies.len() + world.sleep.len(), world.buildings.len(), world.units.len(), world.events.clone());
+    world.step(&[Order::SetDifficulty { name: "Brutal".into() }]);
+    let brutal = data::get().difficulty("Brutal");
+    assert_eq!((world.difficulty.as_str(), world.keep_out), ("Brutal", brutal.keep_out));
+    assert_ne!(brutal.keep_out, data::get().difficulty("Easy").keep_out);
+    assert_eq!((world.gold, world.stock.get(Resource::Wood)), (321, 45));
+    assert_eq!(before, (world.zombies.len() + world.sleep.len(), world.buildings.len(), world.units.len(), world.events.clone()));
+    // Saved and loaded.
+    let file = crate::mapfile::MapFile::from_world(&world, "Test");
+    assert_eq!(file.round.difficulty, "Brutal");
+    let loaded = file.to_world().unwrap();
+    assert_eq!((loaded.difficulty.as_str(), loaded.keep_out), ("Brutal", brutal.keep_out));
+    // A name nobody knows is the default difficulty.
+    world.step(&[Order::SetDifficulty { name: "nonsense".into() }]);
+    assert_eq!(world.difficulty, data::get().difficulty("").name);
 }
 
 /// Idle like TAB (`next_idle`): rolled with the weights 1300 stand / 150 growl / 150 roam – and a roam goes `stroll`
@@ -3415,6 +3549,54 @@ fn a_mine_digs_the_ore_under_itself() {
     assert_eq!(world.stock.get(Resource::IronOre), (under.len() as f32 * per_tile * 10.0).round() as u32);
 }
 
+/// On ore only defence and what digs it (ours – TAB builds nothing on ore): a house can't stand on it, a wall, a tower and
+/// the mine can. On oil nothing but the oil platform – not even a wall.
+#[test]
+fn only_defence_and_mines_go_on_ore() {
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    let spot = (bx - 9, by - 9);
+    clear_ground(&mut world, spot, 6);
+    let seam: Vec<(i32, i32)> = (0..2).flat_map(|dy| (0..2).map(move |dx| (spot.0 + dx, spot.1 + dy))).collect();
+    let oil: Vec<(i32, i32)> = seam.iter().map(|&(x, y)| (x + 3, y)).collect();
+    world.apply_orders(&[Order::PaintOre { ore: Some(Ore::Iron), tiles: seam }, Order::PaintOre { ore: Some(Ore::Oil), tiles: oil }]);
+    assert!(!world.can_place(BuildingKind::Tent, spot, false), "a house on the ore");
+    for kind in [BuildingKind::Wall, BuildingKind::Tower, BuildingKind::Mine] {
+        assert!(world.can_place(kind, spot, false), "no {kind:?} on the ore");
+    }
+    let node = (spot.0 + 3, spot.1);
+    for kind in [BuildingKind::Wall, BuildingKind::Tower, BuildingKind::Mine, BuildingKind::Tent] {
+        assert!(!world.can_place(kind, node, false), "a {kind:?} on the oil");
+    }
+    assert!(world.can_place(BuildingKind::OilPlatform, node, false), "the oil platform doesn't go on its oil");
+}
+
+/// Nobody walks into an oil pool: a unit sent right through the middle of a node goes round it – its middle never
+/// comes closer than the pool and its own radius – and arrives.
+#[test]
+fn units_walk_round_oil() {
+    let (mut world, id) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    let spot = (bx - 12, by + 6);
+    clear_ground(&mut world, spot, 8);
+    let node: Vec<(i32, i32)> = (0..2).flat_map(|dy| (0..2).map(move |dx| (spot.0 + dx, spot.1 + dy))).collect();
+    world.apply_orders(&[Order::PaintOre { ore: Some(Ore::Oil), tiles: node }]);
+    let middle = vec2(spot.0 as f32 + 1.0, spot.1 as f32 + 1.0);
+    let u = world.find_unit(id).unwrap();
+    world.units[u].pos = middle + vec2(-4.0, 0.0);
+    world.units[u].prev = world.units[u].pos;
+    let goal = middle + vec2(4.0, 0.0);
+    world.step(&[Order::Command { units: vec![id], command: Command::Move(goal), queue: false, formation: None }]);
+    let closest = (crate::map::OIL_POOL + UNIT_RADIUS).min(1.0) - 0.01;
+    for _ in 0..400 {
+        world.step(&[]);
+        let pos = world.units[world.find_unit(id).unwrap()].pos;
+        assert!(pos.distance(middle) >= closest, "walked into the oil: {pos} – the middle at {middle}");
+    }
+    let pos = world.units[world.find_unit(id).unwrap()].pos;
+    assert!(pos.distance(goal) < 1.0, "never got round the oil: at {pos}, sent to {goal}");
+}
+
 /// The barracks costs wood and stone besides its gold: one short, and it isn't built; enough, and both are paid.
 #[test]
 fn buildings_cost_wood_and_stone() {
@@ -3693,10 +3875,10 @@ fn firearms_need_the_munitions_factory() {
     world.apply_orders(&[Order::Train { building: id, kind: UnitKind::Ranger }]);
     assert_eq!(world.buildings.last().unwrap().production.len(), 1, "no ranger");
 
-    assert!(!world.unlocked(BuildingKind::StoneWorkshop) && !world.unlocked(BuildingKind::MunitionsFactory));
+    assert!(!world.unlocked(BuildingKind::MunitionsFactory));
     let at = |dx: i32| (tile.0 + dx, tile.1 + 4);
     world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::WoodWorkshop, tile: at(0), turned: false, editor: true }]);
-    assert!(world.unlocked(BuildingKind::StoneWorkshop) && !world.unlocked(BuildingKind::MunitionsFactory));
+    assert!(!world.unlocked(BuildingKind::MunitionsFactory), "the munitions factory needs the stone workshop");
     world.step(&[Order::PlaceBuilding { kind: BuildingKind::StoneWorkshop, tile: at(3), turned: false, editor: false }]);
     let coal = world.stock.get(Resource::Coal);
     world.step(&[Order::PlaceBuilding { kind: BuildingKind::MunitionsFactory, tile: at(6), turned: false, editor: false }]);
@@ -3705,6 +3887,46 @@ fn firearms_need_the_munitions_factory() {
     world.apply_orders(&[Order::Train { building: id, kind: UnitKind::Soldier }]);
     let b = world.find_building(id).unwrap();
     assert_eq!(world.buildings[b].production.len(), 2, "no soldier with the munitions factory");
+}
+
+/// Research like TAB (`research.rs`): the stone house is locked until the stone workshop has researched it. The
+/// research costs its gold at once, takes its time in the workshop (one at a time – a second one is refused), and
+/// is done for good: its button goes, the stone house can be built – and a second time it can't be researched.
+/// Cancelled, all of the gold comes back.
+#[test]
+fn research_unlocks_and_goes_once() {
+    let (mut world, _) = quiet_world();
+    world.researched.clear();
+    world.extra_power = 1000;
+    let t = data::get().research.index("TechStoneHouse").unwrap();
+    let other = data::get().research.index("TechBank").unwrap();
+    let workshop_tile = cleared_spot(&mut world, -10, 6, 6);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::StoneWorkshop, tile: workshop_tile, turned: false, editor: true }]);
+    let w = world.buildings.len() - 1;
+    let id = world.buildings[w].id;
+    assert!(world.stands(Some(BuildingKind::StoneWorkshop)));
+    assert!(!world.unlocked(BuildingKind::StoneHouse), "the stone house before its research");
+    // Cancelled: the gold back.
+    world.gold = 10_000;
+    world.apply_orders(&[Order::Research { building: id, tech: t }]);
+    assert_eq!(world.gold, 10_000 - tech(t).gold);
+    assert!(world.researching(t) && !world.tech_offered(t));
+    world.apply_orders(&[Order::CancelTrain { building: id, index: 0 }]);
+    assert_eq!(world.gold, 10_000, "cancelled – the gold back");
+    // Started again, and a second one in the same workshop is refused.
+    world.apply_orders(&[Order::Research { building: id, tech: t }, Order::Research { building: id, tech: other }]);
+    assert_eq!(world.buildings[w].production.len(), 1, "two at once");
+    let ticks = tech(t).ticks(&data::get().research);
+    for _ in 0..ticks + 2 {
+        world.step(&[]);
+    }
+    assert!(world.researched(t), "not done after {ticks} ticks");
+    assert!(world.unlocked(BuildingKind::StoneHouse) && !world.tech_offered(t));
+    assert!(world.notices.iter().any(|n| matches!(n, Notice::Researched { .. })), "no notice");
+    // Once is enough.
+    let gold = world.gold;
+    world.apply_orders(&[Order::Research { building: id, tech: t }]);
+    assert_eq!(world.gold, gold, "researched twice");
 }
 
 /// The stone buildings go on their wooden ones – an upgrade on the spot: the tent becomes a stone house, the wall a
@@ -4009,7 +4231,7 @@ fn a_few_giants_lie_far_out() {
     let mut difficulty = data::get().difficulty("").clone();
     difficulty.roaming_zombies = 0.0;
     difficulty.giants_percent = 100;
-    let mut big_setup = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
+    let mut big_setup = MapSetup { generator: Generator::Blank, ..MapSetup::default() };
     big_setup.common.giants = 4.0;
     let count = |world: &World| world.sleep.iter().filter(|s| s.breed == Breed::Giant).count()
         + world.zombies.iter().filter(|z| z.breed == Breed::Giant).count();
@@ -4343,6 +4565,10 @@ fn loot_is_picked_up_and_its_guards_come_out() {
     world.step(&[Order::Command { units: vec![id], command: Command::Move(spot + vec2(0.0, 4.0)), queue: true, formation: None }]);
     let mut guards_out = false;
     for _ in 0..400 {
+        // Healing itself between the guards' blows, it would fall back to its own hit points.
+        if let Some(u) = world.find_unit(id) {
+            world.units[u].hp = 1_000_000;
+        }
         world.step(&[]);
         guards_out |= world.zombies.len() == 12;
         if world.loot.is_empty() {
@@ -4354,6 +4580,33 @@ fn loot_is_picked_up_and_its_guards_come_out() {
     assert_eq!(world.gold, gold + 500);
     assert_eq!(world.stock.get(Resource::Stone), stone + 10);
     assert_eq!(world.score.loot_found, 2);
+}
+
+/// TAB's supplies: picked up, the command center makes that much more food per payout and power for the rest of the
+/// round.
+#[test]
+fn supplies_make_the_command_center_make_more() {
+    let (mut world, id) = quiet_world();
+    world.extra_power = 0;
+    let spot = world.base + vec2(-6.5, 0.5);
+    clear_ground(&mut world, (spot.x as i32, spot.y as i32), 4);
+    world.add_loot(spot, LootKind::Food, 20, 0);
+    world.add_loot(spot + vec2(0.0, 1.0), LootKind::Energy, 20, 0);
+    let center = world.buildings.iter().position(|b| b.kind == BuildingKind::CommandCenter).unwrap();
+    let grid = world.power().grid_of[center].unwrap();
+    let (power, food) = (world.power().made[grid], world.food_made(&world.buildings[center]));
+    world.step(&[Order::Command { units: vec![id], command: Command::Move(spot), queue: false, formation: None }]);
+    world.step(&[Order::Command { units: vec![id], command: Command::Move(spot + vec2(0.0, 1.0)), queue: true, formation: None }]);
+    for _ in 0..400 {
+        world.step(&[]);
+        if world.loot.is_empty() {
+            break;
+        }
+    }
+    assert!(world.loot.is_empty(), "the supplies weren't picked up");
+    assert_eq!((world.found_food, world.found_power), (20, 20));
+    assert_eq!(world.power().made[grid], power + 20);
+    assert_eq!(world.food_made(&world.buildings[center]), food + 20);
 }
 
 /// A spitter spits acid at a unit in its range: it flies a moment and burns everyone around where the unit stood – a
@@ -4397,7 +4650,8 @@ fn spitter_acid_flies_and_splashes() {
     while !world.spits.is_empty() {
         world.step(&[]);
     }
-    assert_eq!(hp(&world, a), before, "the acid followed the unit");
+    // Not hit – it may only have healed a little meanwhile (`regen.rs`).
+    assert!(hp(&world, a) >= before, "the acid followed the unit");
 }
 
 /// The infested shoots back like StarCraft's infested marine: from a little less far than your soldiers, at once
@@ -4515,10 +4769,6 @@ fn a_new_round_has_villages_loot_and_dirt() {
         .filter(|&(x, y)| !world.map.blocks_unit(x, y) && !world.map.is_built(x, y) && !seen[(y * n + x) as usize])
         .count();
     assert_eq!(cut, 0, "{cut} tiles cut off by the houses");
-    let open = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).filter(|&(x, y)| world.map.in_play(x, y) && !world.map.terrain(x, y).is_solid());
-    let (all, dirt) = open.fold((0, 0), |(all, dirt), (x, y)| (all + 1, dirt + (world.map.terrain(x, y) == Terrain::Dirt) as u32));
-    let share = dirt as f32 / all as f32;
-    assert!((share - MapSetup::default().common.dirt).abs() < 0.05, "{:.0} % dirt", share * 100.0);
 }
 
 /// A round on a map of TAB's generator (the default now): the command center stands where it put the base, its
@@ -4548,8 +4798,8 @@ fn a_tab_map_round() {
     assert!(brutal.map.same_terrain(&world.map), "the difficulty changed the land");
 }
 
-/// The start area (DESIGN.md 9.1, `mapgen/start.rs`) on every map of ours in `data\game_maps.json` (TAB's generator
-/// keeps only TAB's promises – `mapgen/tab.rs`), ten seeds each – checked
+/// The start area (DESIGN.md 9.1, `mapgen/start.rs`) on the plain map (TAB's generator keeps only TAB's promises –
+/// `mapgen/tab.rs`), ten seeds – checked
 /// with the game's own rules (`worked_tiles`), zombies aside (the start units clear them):
 /// - a sawmill finds 20 forest tiles where the power reaches – in the command center's grid, or one tesla tower
 ///   further if the clearing is wider than the grid – and a hunter cottage 15 (`MIN_FOREST` in `start.rs`),
@@ -4581,11 +4831,12 @@ fn the_start_area_works_on_every_map() {
     // No roaming zombies: placing 65,000 of them only makes the test slow.
     let mut difficulty = data::get().difficulty("").clone();
     difficulty.roaming_zombies = 0.0;
-    for map in data::get().maps.maps.iter().filter(|m| m.setup.generator != Generator::Tab) {
-        let wood_reach = if map.setup.common.base_clear + 2.0 <= grid { grid } else { grid + relay };
+    let plain = MapSetup { generator: Generator::Blank, ..MapSetup::default() };
+    for setup in [plain] {
+        let wood_reach = if setup.common.base_clear + 2.0 <= grid { grid } else { grid + relay };
         for seed in 1..=10 {
-            let world = World::generate_with(seed, &map.setup, &difficulty);
-            let name = &map.name;
+            let world = World::generate_with(seed, &setup, &difficulty);
+            let name = "Blank";
             let sawmill = best(&world, BuildingKind::Sawmill, wood_reach, None);
             let hunter = best(&world, BuildingKind::HunterCottage, wood_reach, None);
             let stone = best(&world, BuildingKind::Mine, grid + relay, Some(Ore::Stone));
@@ -4596,6 +4847,10 @@ fn the_start_area_works_on_every_map() {
     }
 }
 
+/// Not a real test – a tool for balancing the mini round (DESIGN.md 13, step 4): plays it at full size with a player
+/// who does nothing and prints every half day how it's going and how the round ends – up to two days after the last
+/// one: the final wave can take a while to arrive, through narrow passes one by one.
+/// `cargo test --release balance_mini_round -- --ignored --nocapture`
 /// The default difficulty. With `$env:POPULATION = "1.5"` first, TAB's zombie population is that (more zombies, bigger
 /// waves). With `$env:ROAMERS = "0"` no zombies roam the map at the start – to look at the economy alone (only on our
 /// generators – TAB's lays out its own).
@@ -4610,151 +4865,23 @@ fn balance_mini_round() {
     if let Some(roamers) = std::env::var("ROAMERS").ok().and_then(|r| r.parse().ok()) {
         difficulty.roaming_zombies = roamers;
     }
-    for simple_player in [false, true] {
-        let mut world = World::generate_with(1, &setup, &difficulty);
-        println!("--- {} ---", if simple_player { "simple player" } else { "player does nothing" });
-        let end = (world.days as u64 + 3) * DAY_TICKS;
-        while world.tick < end && world.outcome.is_none() {
-            let orders = if simple_player && world.tick % HOUR_TICKS == 0 { simple_orders(&world) } else { Vec::new() };
-            world.step(&orders);
-            if world.tick % (12 * HOUR_TICKS) == 0 {
-                let (day, hour) = world.clock();
-                let cc = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter).map_or(0, |b| b.hp);
-                let tents = world.buildings.iter().filter(|b| b.kind == BuildingKind::Tent && !b.infected).count();
-                let barracks = world.buildings.iter().any(|b| b.kind == BuildingKind::Barracks);
-                let power = world.power();
-                let (made, used): (u32, u32) = (power.made.iter().sum(), power.used.iter().sum());
-                let stock = |r: Resource| world.stock.get(r);
-                println!(
-                    "day {day:2} {hour:02}:00  zombies {:5}  units {:3}  tents {tents:2}  gold {:5} (+{}/h)  wood {:3} stone {:3} \
-                     food {:3}  power {used}/{made}  barracks {}  CC {cc}",
-                    world.zombies.len(),
-                    world.units.len(),
-                    world.gold,
-                    world.income(),
-                    stock(Resource::Wood),
-                    stock(Resource::Stone),
-                    stock(Resource::Food),
-                    if barracks { "yes" } else { "no" },
-                );
-            }
-        }
-        println!("{:?}  {:?}", world.outcome, world.score);
-    }
-}
-
-/// The simple player of `balance_mini_round`, once an hour, one thing at a time: a sawmill; food before every tent
-/// (a hunter cottage when the food would run short); a charcoal burner when the power runs short; 4 tents; the wood
-/// workshop; a mine on stone (a tesla tower first if no stone is in reach); the barracks; a second sawmill; the stone
-/// workshop; a mine on coal if there's none, the munitions factory; then tents up to 12. Besides, once the barracks
-/// stands: a unit whenever the gold is there – soldiers once the munitions factory stands, rangers before.
-fn simple_orders(world: &World) -> Vec<Order> {
-    use BuildingKind::*;
-    if !world.buildings.iter().any(|b| b.kind == CommandCenter) {
-        return Vec::new();
-    }
-    let count = |kind: BuildingKind| world.buildings.iter().filter(|b| b.kind == kind).count();
-    let power = world.power();
-    let flow = world.flow(&power);
-    let (made, used): (u32, u32) = (power.made.iter().sum(), power.used.iter().sum());
-    let food_after_tent = flow[Resource::Food.index()] - Tent.stats().food as i64 * 1000;
-    let coal_short = world.stock.get(Resource::Coal) < MunitionsFactory.stats().cost_coal && flow[Resource::Coal.index()] == 0;
-    // Which ore the next mine is for.
-    let mut ore = Ore::Stone;
-    let build = if count(Sawmill) == 0 {
-        Sawmill
-    } else if count(Tent) < 12 && food_after_tent < 0 {
-        HunterCottage
-    } else if used + 4 > made {
-        CharcoalBurner
-    } else if count(Tent) < 4 {
-        Tent
-    } else if count(WoodWorkshop) == 0 {
-        WoodWorkshop
-    } else if count(Mine) == 0 {
-        Mine
-    } else if count(Barracks) == 0 {
-        Barracks
-    } else if count(Sawmill) < 2 {
-        Sawmill
-    } else if count(StoneWorkshop) == 0 {
-        StoneWorkshop
-    } else if count(MunitionsFactory) == 0 && coal_short {
-        ore = Ore::Coal;
-        Mine
-    } else if count(MunitionsFactory) == 0 {
-        MunitionsFactory
-    } else {
-        Tent
-    };
-    let mut orders = build_order(world, build, ore);
-    // A unit with what the gold leaves over.
-    let unit = if world.unit_unlocked(UnitKind::Soldier) { UnitKind::Soldier } else { UnitKind::Ranger };
-    let spent = orders.first().map_or(0, |_| build.stats().cost);
-    let barracks = world.buildings.iter().find(|b| b.kind == Barracks);
-    if let Some(b) = barracks.filter(|b| b.production.len() < 2 && world.gold >= spent + unit.stats().cost) {
-        orders.push(Order::Train { building: b.id, kind: unit });
-    }
-    orders
-}
-
-/// The order that places `build` (or a tesla tower towards `ore`, `best_spot`) – if it's affordable.
-fn build_order(world: &World, build: BuildingKind, ore: Ore) -> Vec<Order> {
-    use BuildingKind::*;
-    if build == Tent && world.buildings.iter().filter(|b| b.kind == Tent).count() >= 12 {
-        return Vec::new();
-    }
-    // No spot for the mine inside the grid: a tesla tower towards the nearest patch of that ore first.
-    let build = if build == Mine && best_spot(world, Mine, ore).is_none() { TeslaTower } else { build };
-    let affordable = world.gold >= build.stats().cost && world.can_afford_goods(build);
-    if !affordable || !world.unlocked(build) || world.free_workers() < build.stats().worker_cost {
-        return Vec::new();
-    }
-    match best_spot(world, build, ore) {
-        Some(tile) => vec![Order::PlaceBuilding { kind: build, tile, turned: false, editor: false }],
-        None => Vec::new(),
-    }
-}
-
-/// Where the simple player puts a building: on rings around the base, a gathering building where it works the most
-/// tiles (a mine: tiles of `ore`; none: nowhere), a tesla tower as close as it gets to the nearest `ore`, anything else
-/// on the first free spot.
-fn best_spot(world: &World, build: BuildingKind, ore: Ore) -> Option<(i32, i32)> {
-    let (bx, by) = (world.base.x as i32, world.base.y as i32);
-    let (w, h) = build.footprint(false);
-    let nearest = world
-        .map
-        .all_deposits()
-        .filter(|(_, _, d)| d.ore == ore)
-        .map(|(x, y, _)| vec2(x as f32, y as f32))
-        .min_by(|a, b| a.distance(world.base).total_cmp(&b.distance(world.base)));
-    // (score, tile) – the higher the score, the better.
-    let mut best: Option<(f32, (i32, i32))> = None;
-    for r in 4..30 {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                let tile = (bx + dx, by + dy);
-                if (dx.abs() != r && dy.abs() != r) || !world.can_place(build, tile, false) {
-                    continue;
-                }
-                let center = vec2(tile.0 as f32 + w as f32 / 2.0, tile.1 as f32 + h as f32 / 2.0);
-                let worked = || world.worked_tiles(build, tile, world.buildings.len());
-                let score = if build == BuildingKind::Mine {
-                    worked().into_iter().filter(|&(x, y)| world.map.deposit(x, y).is_some_and(|d| d.ore == ore)).count() as f32
-                } else if build.gathers().is_some() {
-                    worked().len() as f32
-                } else if let (BuildingKind::TeslaTower, Some(nearest)) = (build, nearest) {
-                    -center.distance(nearest)
-                } else {
-                    return Some(tile);
-                };
-                if best.is_none_or(|(most, _)| score > most) {
-                    best = Some((score, tile));
-                }
-            }
+    let mut world = World::generate_with(1, &setup, &difficulty);
+    let end = (world.days as u64 + 3) * DAY_TICKS;
+    while world.tick < end && world.outcome.is_none() {
+        world.step(&[]);
+        if world.tick.is_multiple_of(12 * HOUR_TICKS) {
+            let (day, hour) = world.clock();
+            let cc = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter).map_or(0, |b| b.hp);
+            println!(
+                "day {day:2} {hour:02}:00  zombies {:5}  units {:3}  gold {:5} (+{}/h)  CC {cc}",
+                world.zombies.len(),
+                world.units.len(),
+                world.gold,
+                world.income(),
+            );
         }
     }
-    best.filter(|&(score, _)| build.gathers().is_none() || score > 0.0).map(|(_, tile)| tile)
+    println!("{:?}  {:?}", world.outcome, world.score);
 }
 
 /// The houses around a market pay half again as much gold – one outside its area doesn't. At the payout it sells what
@@ -4895,33 +5022,79 @@ fn mercenaries_come_from_the_inn_and_leave_first() {
     assert_eq!(world.units.iter().filter(|u| !u.stats().mercenary).count(), others, "someone else deserted");
 }
 
-/// The scan shows a far circle of the map at once and for a while – then it's dark again. It uses a charge, which
-/// comes back after a while – and while it charges, the command center's grid needs more power.
+/// Editor, before the round: the command center made neutral and taken back counts with its payout again at once –
+/// not only the upkeep until a payout that never comes in the editor.
 #[test]
-fn the_scan_shows_a_circle_and_costs_power() {
+fn a_building_taken_back_counts_its_payout_in_the_editor() {
+    let mut world = World::new(3);
+    world.settle();
+    assert_eq!(world.tick, 0);
+    let cc = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter).expect("no command center");
+    let (id, paid) = (cc.id, cc.paid);
+    assert!(paid > 0, "the command center pays nothing at the start");
+    world.apply_orders(&[Order::SetOwner { thing: ThingRef::Building(id), owner: Owner::Neutral }]);
+    let n = world.neutral.last().expect("not neutral").id;
+    world.apply_orders(&[Order::SetOwner { thing: ThingRef::Neutral(n), owner: Owner::Colony }]);
+    let back = world.buildings.iter().find(|b| b.kind == BuildingKind::CommandCenter).expect("not back");
+    assert_eq!(back.paid, paid, "back in the colony it counts only its upkeep");
+}
+
+/// Editor, "Placing: owner": a building or a unit put down as neutral is neutral right away – and where nothing can
+/// be put down, the thing placed before it isn't touched.
+#[test]
+fn the_editor_places_things_with_an_owner() {
+    let (mut world, _) = quiet_world();
+    let tile = (world.base.x as i32 + 12, world.base.y as i32);
+    let (buildings, units) = (world.buildings.len(), world.units.len());
+    let tent = Order::PlaceBuilding { kind: BuildingKind::Tent, tile, turned: false, editor: true };
+    world.apply_orders(&[Order::PlaceAs { owner: Owner::Joinable, order: Box::new(tent.clone()) }]);
+    assert_eq!(world.buildings.len(), buildings, "the tent is the colony's");
+    assert!(matches!(world.neutral.last(), Some(n) if n.joinable && matches!(n.thing, Thing::Building { kind: BuildingKind::Tent, .. })));
+    let point = world.base + vec2(12.0, 6.0);
+    world.apply_orders(&[Order::PlaceAs { owner: Owner::Neutral, order: Box::new(Order::SpawnUnit { kind: UnitKind::Soldier, point }) }]);
+    assert_eq!(world.units.len(), units, "the soldier is the colony's");
+    assert!(matches!(world.neutral.last(), Some(n) if !n.joinable && matches!(n.thing, Thing::Unit { kind: UnitKind::Soldier, .. })));
+    // The same spot again: no room – nothing new, and nobody else changes hands.
+    world.apply_orders(&[Order::PlaceAs { owner: Owner::Neutral, order: Box::new(tent) }]);
+    assert_eq!((world.buildings.len(), world.units.len(), world.neutral.len()), (buildings, units, 2));
+}
+
+/// The scan is the radar's: without one nothing happens. A radar charges its scans (none at the start), and while one
+/// charges its grid needs more power. The scan shows a far circle of the map at once and for a while – a bit wider than
+/// its ring – then it's dark again. It uses a charge, which comes back after a while.
+#[test]
+fn the_radar_scans_a_circle_and_costs_power() {
     let (mut world, _) = quiet_world();
     let scan = &data::get().buildings.scan;
     let far = world.base + vec2(30.0, -30.0);
+    // Inside the scan's light, outside its ring: the soft edge lies beyond the ring.
+    let edge = far + vec2(scan.radius + 0.5, 0.0);
     assert!(!world.vision.sees(far));
-    let used = |world: &World| world.power().used.iter().sum::<u32>();
-    let before = used(&world);
     world.apply_orders(&[Order::Scan { at: far }]);
-    assert!(world.vision.sees(far), "the scan shows nothing");
-    assert_eq!(world.scan_charges, scan.charges - 1);
-    assert_eq!(used(&world), before + scan.power, "charging costs no power");
+    assert!(!world.vision.sees(far) && world.scans.is_empty(), "a scan without a radar");
+    let tile = (world.base.x as i32 + 4, world.base.y as i32 + 4);
+    clear_ground(&mut world, tile, 2);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::Radar, tile, turned: false, editor: true }]);
+    assert!(world.scanner().is_some(), "the radar doesn't work");
+    let used = |world: &World| world.power().used.iter().sum::<u32>();
+    assert_eq!(world.scan_charges, 0, "a new radar is charged already");
+    let charging = used(&world);
+    for _ in 0..scan.every {
+        world.step(&[]);
+    }
+    assert_eq!(world.scan_charges, 1, "the radar didn't charge a scan");
+    world.apply_orders(&[Order::Scan { at: far }]);
+    assert!(world.vision.sees(far) && world.vision.sees(edge), "the scan shows nothing, or not past its ring");
+    assert_eq!(world.scan_charges, 0);
+    assert_eq!(used(&world), charging, "charging costs no power");
     for _ in 0..scan.time + 1 {
         world.step(&[]);
     }
     assert!(!world.vision.sees(far), "still shown after the scan is over");
-    for _ in 0..scan.every {
-        world.step(&[]);
-    }
-    assert_eq!(world.scan_charges, scan.charges, "the charge didn't come back");
-    assert_eq!(used(&world), before);
-    // Without a charge nothing happens.
-    world.scan_charges = 0;
-    world.apply_orders(&[Order::Scan { at: far }]);
-    assert!(world.scans.iter().all(|s| s.until <= world.tick) && world.scan_charges == 0);
+    // All charged: the radar takes no more for it.
+    world.scan_charges = scan.charges;
+    world.step(&[]);
+    assert_eq!(used(&world) + scan.power, charging, "it still charges with all charges there");
 }
 
 /// Barrels: made in the munitions factory, set from the store. Hit, one goes off – and sets off the one next to it,
@@ -5220,29 +5393,50 @@ fn the_owner_can_change_and_back() {
     assert!(back.veteran && back.hp == back.max_hp() * 40 / 100 && back.tag.as_deref() == Some(&tag));
 }
 
-/// The map's story (`story.rs`): the start script runs in the first tick – gold, a message, a counter; a victory goal
-/// on the counter wins the round once a script raised it far enough – and then the victory script runs.
+/// A script of these actions, none with a condition or code.
+fn script(actions: Vec<Action>) -> Script {
+    actions.into_iter().map(Step::new).collect()
+}
+
+/// A step that sets a variable to a number, or adds it – code like `name = value` / `name += value`.
+fn var_step(name: &str, add: bool, value: i32) -> Step {
+    let how = if add { expr::Assign::Add } else { expr::Assign::Set };
+    Step::code(vec![expr::Stmt::Set { name: name.into(), how, value: Expr::number(value) }])
+}
+
+/// A trigger with these actions for this event.
+fn trigger_of(event: TriggerEvent, actions: Script) -> Trigger {
+    Trigger { actions, ..Trigger::new("test", event) }
+}
+
+/// The map's story (`story.rs`): the start trigger fires in the first tick – gold, a message, a variable; a victory goal
+/// on the variable wins the round once a trigger raised it far enough – and then the victory trigger fires.
 #[test]
 fn a_story_starts_counts_and_wins() {
     let mut world = World::new(3);
     world.events.clear();
     world.story = Story {
-        on_start: vec![
-            Action::Resources { gold: 500, goods: vec![(Resource::Stone, 7)] },
-            Action::Notify { text: "Hold the line".into() },
-            Action::Counter { name: "keys".into(), add: false, value: 1 },
+        triggers: vec![
+            trigger_of(
+                TriggerEvent::Start,
+                vec![
+                    Step::new(Action::Resources { gold: 500, goods: vec![(Resource::Stone, 7)] }),
+                    Step::new(Action::Notify { text: "Hold the line".into() }),
+                    var_step("keys", false, 1),
+                ],
+            ),
+            trigger_of(TriggerEvent::Won, script(vec![Action::Notify { text: "Well done".into() }])),
+            trigger_of(TriggerEvent::Button, vec![var_step("keys", true, 1)]),
         ],
-        on_won: vec![Action::Notify { text: "Well done".into() }],
-        goals: vec![Goal { text: "Find 3 keys".into(), condition: Condition::Counter { name: "keys".into(), at_least: 3 }, defeat: false }],
-        command: Some(CustomCommand { label: "Dig".into(), text: String::new(), script: vec![Action::Counter { name: "keys".into(), add: true, value: 1 }], uses: 2 }),
-        counters: vec![("keys".into(), 0)],
-        on_lost: Vec::new(),
+        goals: vec![Goal { text: "Find 3 keys".into(), condition: Condition::Variable { name: "keys".into(), at_least: 3 }, defeat: false }],
+        command: Some(CustomCommand { label: "Dig".into(), text: String::new(), uses: 2 }),
+        variables: vec![Variable { name: "keys".into(), kind: VarKind::Number, start: Value::Number(0) }],
     };
     let (gold, stone) = (world.gold, world.stock.get(Resource::Stone));
     world.step(&[]);
     assert_eq!((world.gold, world.stock.get(Resource::Stone)), (gold + 500, stone + 7));
     assert!(world.notices.iter().any(|n| matches!(n, Notice::Message { text } if text == "Hold the line")));
-    assert_eq!((world.counter("keys"), world.goal_progress(0)), (1, 33));
+    assert_eq!((world.variable("keys"), world.goal_progress(0)), (1, 33));
     // The command center's button, twice – a third time does nothing.
     world.step(&[Order::CustomCommand]);
     assert_eq!(world.outcome, None);
@@ -5252,17 +5446,38 @@ fn a_story_starts_counts_and_wins() {
     assert!(!world.command_ready());
 }
 
+/// The weather (`weather.rs`): a round starts with its landscape's – snow on AL, rain on VO, clear on the others –, and
+/// a script changes it (here the start script, so it never snows on this AL map).
+#[test]
+fn the_weather_comes_with_the_landscape_and_scripts_change_it() {
+    let mut world = World::new(3);
+    for (look, weather) in [("AL", Weather::Snow), ("VO", Weather::Rain), ("BR", Weather::Clear), ("", Weather::Clear)] {
+        world.set_look(look);
+        assert_eq!(world.weather, weather, "on {look:?}");
+    }
+    world.set_look("AL");
+    world.events.clear();
+    world.story.triggers = vec![trigger_of(TriggerEvent::Start, script(vec![Action::Weather { weather: Weather::Clear }]))];
+    world.step(&[]);
+    assert_eq!(world.weather, Weather::Clear, "the start script didn't stop the snow");
+    world.run(&script(vec![Action::Weather { weather: Weather::Rain }]));
+    assert_eq!(world.weather, Weather::Rain);
+}
+
 /// A choice of a script waits for the player: their pick comes as an order and runs its script. A random action
 /// runs exactly one of its scripts. A defeat goal loses the round.
 #[test]
 fn a_story_lets_the_player_choose() {
     let (mut world, _) = quiet_world();
     world.events.clear();
-    let gold = |n: i32| vec![Action::Resources { gold: n, goods: Vec::new() }];
-    world.story.on_start = vec![
-        Action::Choose { text: "Pay the raiders?".into(), options: vec![("Pay".into(), gold(-50)), ("Fight".into(), vec![Action::Lose])] },
-        Action::Random { options: vec![(1, gold(1)), (1, gold(2))] },
-    ];
+    let gold = |n: i32| script(vec![Action::Resources { gold: n, goods: Vec::new() }]);
+    world.story.triggers = vec![trigger_of(
+        TriggerEvent::Start,
+        script(vec![
+            Action::Choose { text: "Pay the raiders?".into(), options: vec![("Pay".into(), gold(-50)), ("Fight".into(), script(vec![Action::Lose]))] },
+            Action::Random { options: vec![(1, gold(1)), (1, gold(2))] },
+        ]),
+    )];
     world.tick = 0;
     let before = world.gold;
     world.step(&[]);
@@ -5276,33 +5491,172 @@ fn a_story_lets_the_player_choose() {
     assert!(matches!(world.outcome, Some(Outcome::Lost { .. })), "the defeat goal didn't lose");
 }
 
-/// An event's script runs every time it comes, its "done" script once when it has come every time. A neutral
-/// thing's script runs when it joins.
+/// An event's triggers fire every time it comes, its "done" triggers once when it has come every time. A neutral
+/// thing's triggers fire when it joins.
 #[test]
-fn events_and_joins_run_their_scripts() {
+fn events_and_joins_fire_their_triggers() {
     let (mut world, _) = quiet_world();
     world.units.clear();
     world.events.clear();
-    let add = |n: i32| vec![Action::Counter { name: "n".into(), add: true, value: n }];
+    let add = |n: i32| vec![var_step("n", true, n)];
     let hour = next_hour(&world);
     let mut event = Event { every_hours: 1, times: 2, ..one_group(hour, WaveFrom::Sides(1), &[(Breed::Walker, 1)]) };
-    (event.script, event.script_done) = (add(1), add(100));
-    world.step(&[Order::AddEvent(event)]);
+    event.name = "Raid".into();
+    let mut story = world.story.clone();
+    story.triggers = vec![
+        trigger_of(TriggerEvent::EventComes { event: "Raid".into() }, add(1)),
+        trigger_of(TriggerEvent::EventDone { event: "Raid".into() }, add(100)),
+    ];
+    world.step(&[Order::AddEvent(event), Order::SetStory { story }]);
     for _ in 0..3 * HOUR_TICKS {
         world.step(&[]);
     }
-    assert_eq!(world.counter("n"), 102);
+    assert_eq!(world.variable("n"), 102);
 
     let p = world.base + vec2(10.5, 0.5);
     clear_ground(&mut world, (p.x as i32, p.y as i32), 3);
-    world.add_neutral(Thing::Unit { kind: UnitKind::Soldier, pos: (p.x, p.y) }, true, 100, false, None);
-    let id = world.neutral[0].id;
-    world.step(&[Order::SetJoinScript { neutral: id, script: add(1000) }]);
+    let tag = Tag { name_id: "hostage".into(), ..Tag::default() };
+    world.add_neutral(Thing::Unit { kind: UnitKind::Soldier, pos: (p.x, p.y) }, true, 100, false, Some(Box::new(tag)));
+    let mut story = world.story.clone();
+    story.triggers.push(trigger_of(TriggerEvent::Join { name_id: "hostage".into() }, add(1000)));
+    world.step(&[Order::SetStory { story }]);
     bait(&mut world, UnitKind::Ranger, p + vec2(0.0, 1.0));
     for _ in 0..20 {
         world.step(&[]);
     }
-    assert!(world.neutral.is_empty() && world.counter("n") == 1102, "the join script didn't run");
+    assert!(world.neutral.is_empty() && world.variable("n") == 1102, "the join script didn't run");
+}
+
+/// A trigger fires only when it is on and all its conditions hold; triggers of one event run in the order of the list,
+/// so a later one sees what an earlier one did. A yes/no variable stays 0 or 1.
+#[test]
+fn triggers_check_their_conditions_and_keep_their_order() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let set = |name: &str, value: i32| vec![var_step(name, false, value)];
+    let mut off = trigger_of(TriggerEvent::Start, set("off", 1));
+    off.on = false;
+    let mut needs = trigger_of(TriggerEvent::Start, set("needs", 1));
+    needs.conditions = vec![Condition::Variable { name: "first".into(), at_least: 1 }.to_expr()];
+    let mut never = trigger_of(TriggerEvent::Start, set("never", 1));
+    never.conditions = vec![Condition::Day(2).to_expr()];
+    world.story = Story {
+        triggers: vec![off, trigger_of(TriggerEvent::Start, set("first", 1)), needs, never, trigger_of(TriggerEvent::Start, set("flag", 5))],
+        variables: vec![Variable { name: "flag".into(), kind: VarKind::Flag, start: Value::Flag(false) }],
+        ..Story::default()
+    };
+    world.tick = 0;
+    world.step(&[]);
+    let got: Vec<i32> = ["off", "first", "needs", "never", "flag"].iter().map(|n| world.variable(n)).collect();
+    assert_eq!(got, [0, 1, 1, 0, 1], "off / first / needs / never / flag");
+}
+
+/// Renaming an event or a name ID in the editor takes its triggers along – unless another one still has the old name.
+#[test]
+fn triggers_follow_the_names_of_events_and_things() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.events.clear();
+    let mut event = Event::new("Raid", 24, WaveFrom::Sides(1), Breed::Walker, 1);
+    world.step(&[Order::AddEvent(event.clone())]);
+    let tag = Tag { name_id: "boss".into(), ..Tag::default() };
+    world.add_neutral(Thing::Unit { kind: UnitKind::Soldier, pos: (5.5, 5.5) }, false, 100, false, Some(Box::new(tag)));
+    let id = world.neutral[0].id;
+    let mut story = world.story.clone();
+    story.triggers = vec![
+        Trigger::new("a", TriggerEvent::EventComes { event: "Raid".into() }),
+        Trigger::new("b", TriggerEvent::EventDone { event: "Raid".into() }),
+        Trigger::new("c", TriggerEvent::Join { name_id: "boss".into() }),
+    ];
+    world.step(&[Order::SetStory { story }]);
+    event.name = "Assault".into();
+    world.step(&[Order::SetEvent { index: 0, event }, Order::SetTag { thing: ThingRef::Neutral(id), tag: Tag { name_id: "chief".into(), ..Tag::default() } }]);
+    let events: Vec<&TriggerEvent> = world.story.triggers.iter().map(|t| &t.event).collect();
+    assert_eq!(
+        events,
+        [
+            &TriggerEvent::EventComes { event: "Assault".into() },
+            &TriggerEvent::EventDone { event: "Assault".into() },
+            &TriggerEvent::Join { name_id: "chief".into() }
+        ]
+    );
+}
+
+/// Code and expressions work on the world: the variables keep their kind, a division by 0 gives 0, the built-in values
+/// and functions of `funcs.rs` read and change the colony.
+#[test]
+fn code_and_expressions_run_in_the_world() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let v = |name: &str, kind| Variable { name: name.into(), kind, start: Value::default() };
+    world.story.variables = vec![v("keys", VarKind::Number), v("met", VarKind::Flag), v("who", VarKind::Text)];
+    let run = |w: &mut World, text: &str| {
+        let variables = w.story.variables.clone();
+        let code = parse_code(text, Scope { variables: &variables }).unwrap_or_else(|e| panic!("{text}: {e}"));
+        w.exec(&code);
+    };
+    let holds = |w: &mut World, text: &str| {
+        let variables = w.story.variables.clone();
+        let e = parse_condition(text, Scope { variables: &variables }).unwrap_or_else(|e| panic!("{text}: {e}"));
+        w.holds(&e)
+    };
+    run(&mut world, "keys = 7; keys += 3; keys -= 1; keys = keys * 2 / 3; who = \"a\"; who += \"b\"; met = true");
+    assert_eq!((world.variable("keys"), world.variable_value("who"), world.variable_value("met")), (6, Value::Text("ab".into()), Value::Flag(true)));
+    run(&mut world, "keys = 5 / (keys - 6)");
+    assert_eq!(world.variable("keys"), 0, "a division by 0 gives 0");
+    assert!(holds(&mut world, "met & who = \"ab\" & keys = 0") && !holds(&mut world, "!met | keys > 0"));
+
+    // The clock.
+    world.tick = DAY_TICKS * 2 + HOUR_TICKS * 5;
+    assert!(holds(&mut world, "Day = 3 & Hour = 5 & TotalHours = 77"));
+    // The colony: gold and goods change, below 0 they're taken, units and tagged things are counted.
+    let (gold, wood) = (world.gold, world.stock.get(Resource::Wood));
+    run(&mut world, "GiveGold(50); GiveWood(7)");
+    assert_eq!((world.gold, world.stock.get(Resource::Wood)), (gold + 50, wood + 7));
+    run(&mut world, "GiveGold(-50); GiveWood(-1000000)");
+    assert_eq!((world.gold, world.stock.get(Resource::Wood)), (gold, 0));
+    let units = world.units.len();
+    assert!(holds(&mut world, &format!("Count(\"Unit\") = {units} & Gold = {gold}")));
+    assert!(holds(&mut world, "IsDead(\"hero\")"));
+    let unit = world.units[0].id;
+    world.step(&[Order::SetTag { thing: ThingRef::Unit(unit), tag: Tag { name_id: "hero".into(), ..Tag::default() } }]);
+    assert!(!holds(&mut world, "IsDead(\"hero\")") && holds(&mut world, "!EventDone(\"nothing\")"));
+    // The dice are the world's: a roll is in its range.
+    for _ in 0..50 {
+        assert!(holds(&mut world, "D100 >= 1 & D100 <= 100 & Random(3) <= 3 & Random(-2, 2) >= -2 & Random(-2, 2) <= 2"));
+    }
+    run(&mut world, "EndGameWon()");
+    assert_eq!(world.ending, Some(story::Ending::Won));
+}
+
+/// A step's condition skips its action and its code; the code runs after the action – after the option's script of a
+/// random action, after the player's pick of a choice.
+#[test]
+fn steps_have_conditions_and_code() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    world.story.variables = vec![Variable { name: "n".into(), kind: VarKind::Number, start: Value::Number(0) }];
+    let scope = |w: &World| w.story.variables.clone();
+    let variables = scope(&world);
+    let sc = Scope { variables: &variables };
+    let when = |t: &str| Some(parse_condition(t, sc).unwrap());
+    let code = |t: &str| parse_code(t, sc).unwrap();
+    let said = |w: &World, what: &str| w.notices.iter().any(|n| matches!(n, Notice::Message { text } if text == what));
+    let note = |text: &str| Action::Notify { text: text.into() };
+    let steps = vec![
+        Step { action: note("a"), when: when("n = 1"), code: code("n += 10") },
+        Step { action: note("b"), when: None, code: code("n = n + 5") },
+        Step { action: note("c"), when: when("n = 5"), code: code("n += 1") },
+        Step { action: Action::Random { options: vec![(1, vec![var_step("n", true, 100)])] }, when: None, code: code("n = n * 2") },
+        Step { action: Action::Choose { text: "?".into(), options: vec![("go".into(), vec![var_step("n", true, 1000)])] }, when: None, code: code("n += 7") },
+    ];
+    world.run(&steps);
+    assert!(!said(&world, "a") && said(&world, "b") && said(&world, "c"));
+    // 0 -> 5 -> 6 -> (6 + 100) * 2: the code of the random action came after its script. The choice waits.
+    assert_eq!(world.variable("n"), 212);
+    assert_eq!(world.choices.len(), 1);
+    world.step(&[Order::Choose { index: 0 }]);
+    assert_eq!(world.variable("n"), 212 + 1000 + 7, "the choice's code runs after the pick");
 }
 
 /// Like TAB's: units and zombies heal themselves – `regen` of their full hit points (rounded up) every
@@ -5361,6 +5715,7 @@ fn hunters_hunt_on_forest_grass_and_dirt() {
     let tile = (world.base.x as i32, world.base.y as i32 + 16);
     let kind = BuildingKind::HunterCottage;
     let range = kind.stats().gather_range;
+    clear_ground(&mut world, tile, range + 2);
     let food = |world: &World| world.gather_rate(kind, tile, world.buildings.len(), 1000)[Resource::Food.index()];
     let per_tile = (kind.stats().gather_per_tile * 1000.0).round() as u64;
     let m = world.modifiers;
@@ -5486,7 +5841,7 @@ fn landscape_modifiers_change_the_round() {
     let cold = data::Modifiers { building_energy: 130, ..data::Modifiers::default() };
     assert_eq!([1, 3, 4, 5, 10].map(|n| cold.energy(n)), [1, 4, 5, 7, 13]);
 
-    let mut setup = MapSetup { generator: Generator::Wild, ..MapSetup::default() };
+    let mut setup = MapSetup { generator: Generator::Blank, ..MapSetup::default() };
     setup.common.size = 128.0;
     setup.modifiers = data::Modifiers { zombie_hearing: 50, zombie_sight: 110, zombie_speed: 80, unit_speed: 80, ..data::Modifiers::default() };
     let mut world = World::generate(4, &setup);
@@ -5505,7 +5860,8 @@ fn landscape_modifiers_change_the_round() {
     assert_eq!(plain.modifiers, data::Modifiers::default());
 }
 
-/// TAB's generator puts its ornaments down (`ornaments.rs`): a treasure ruin under every pile of loot it makes, and its
+/// TAB's generator puts its ornaments down (`ornaments.rs`): a treasure ruin under every pile of loot it makes, a
+/// medium power line tower next to every energy supply and a burning truck next to every food supply, and its high
 /// power line towers in the middle of a 5 × 5 forest.
 #[test]
 fn tab_maps_have_ruins_round_their_loot_and_towers_in_the_forest() {
@@ -5515,13 +5871,29 @@ fn tab_maps_have_ruins_round_their_loot_and_towers_in_the_forest() {
     let world = World::generate_with(42, &map.setup, &difficulty);
     let ruins: Vec<(i32, i32)> = world.ornaments.iter().filter(|o| o.kind == OrnamentKind::Ruin).map(|o| o.tile).collect();
     assert!(!ruins.is_empty(), "no ruins");
+    // Is the tile on or right next to an ornament of these kinds?
+    let next_to = |kinds: &[OrnamentKind], (x, y): (i32, i32)| {
+        world.ornaments.iter().filter(|o| kinds.contains(&o.kind)).any(|o| {
+            let (w, h) = o.kind.footprint();
+            (o.tile.0 - 1..=o.tile.0 + w).contains(&x) && (o.tile.1 - 1..=o.tile.1 + h).contains(&y)
+        })
+    };
     for loot in &world.loot {
         let (x, y) = (loot.pos.x as i32, loot.pos.y as i32);
-        let inside = ruins.iter().any(|&(rx, ry)| x >= rx && y >= ry && x < rx + 4 && y < ry + 4);
-        // The generator's loot lies in ruins; loot dropped by houses of doom elsewhere – there are none at tick 0.
-        assert!(inside, "loot at {x}, {y} outside every ruin {ruins:?}");
+        // The generator's loot lies in ruins, the supplies by their tower or truck; loot dropped by houses of doom
+        // elsewhere – there are none at tick 0.
+        match loot.kind {
+            LootKind::Energy => assert!(next_to(&[OrnamentKind::PowerTowerMedium, OrnamentKind::PowerTowerMediumFlip], (x, y)), "energy at {x}, {y}"),
+            LootKind::Food => assert!(next_to(&[OrnamentKind::Truck], (x, y)), "food at {x}, {y}"),
+            _ => {
+                let inside = ruins.iter().any(|&(rx, ry)| x >= rx && y >= ry && x < rx + 3 && y < ry + 3);
+                assert!(inside, "loot at {x}, {y} outside every ruin {ruins:?}");
+            }
+        }
     }
-    for tower in world.ornaments.iter().filter(|o| o.kind != OrnamentKind::Ruin) {
+    assert!(world.loot.iter().any(|l| l.kind == LootKind::Energy), "no energy supply");
+    assert!(world.loot.iter().any(|l| l.kind == LootKind::Food), "no food supply");
+    for tower in world.ornaments.iter().filter(|o| matches!(o.kind, OrnamentKind::PowerTower | OrnamentKind::PowerTowerFlip)) {
         let (x, y) = tower.tile;
         assert!((-2..=2).all(|d| world.map.terrain(x + d, y) == Terrain::Forest && world.map.terrain(x, y + d) == Terrain::Forest));
     }
@@ -5584,6 +5956,32 @@ fn a_mine_goes_off_under_a_zombie() {
     assert_eq!(world.zombies[0].hp, hp, "the far one was hurt");
 }
 
+/// TAB's mine delay (`DelayActivation`): set to 2, a mine waits 2 × 0.5 s after the zombie steps on it – still there
+/// a little before, gone after.
+#[test]
+fn a_mine_waits_its_delay() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let t = cleared_spot(&mut world, 10, 10, 6);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::MineTrap, tile: t, turned: false, editor: true }]);
+    let id = world.buildings.last().unwrap().id;
+    world.apply_orders(&[Order::SetMineDelay { buildings: vec![id], delay: 2 }]);
+    assert_eq!(world.buildings.last().unwrap().delay, 2);
+    let on = vec2(t.0 as f32 + 0.5, t.1 as f32 + 0.5);
+    frozen_zombies(&mut world, &[on], Breed::Walker);
+    let wait = 2 * data::get().buildings.mine_trap.mine.as_ref().unwrap().delay_step;
+    let trap_every = data::get().buildings.trap_every;
+    let mine_there = |world: &World| world.buildings.iter().any(|b| b.kind == BuildingKind::MineTrap);
+    for _ in 0..trap_every + wait - 2 {
+        world.step(&[]);
+    }
+    assert!(mine_there(&world), "went off before its delay");
+    for _ in 0..trap_every + 4 {
+        world.step(&[]);
+    }
+    assert!(!mine_there(&world), "didn't go off after its delay");
+}
+
 /// Lucifer: its flame hits every zombie in its cone and sets some alight – and burns your own unit standing in it.
 #[test]
 fn lucifer_burns_zombies_and_friends_in_its_cone() {
@@ -5643,7 +6041,7 @@ fn thanatos_blows_up_crowds_and_hits_close_up() {
     assert!(world.zombies.first().is_none_or(|z| z.hp < hp), "no blow close up");
 }
 
-/// The new economy: the power plant burns coal (none, no power), the oil platform only on oil and pumps it, the
+/// The new economy: the power plant burns wood like TAB's (none, no power), the oil platform only on oil and pumps it, the
 /// warehouse makes room, the Transmutator turns goods into oil.
 #[test]
 fn power_plant_oil_warehouse_transmutator() {
@@ -5654,14 +6052,14 @@ fn power_plant_oil_warehouse_transmutator() {
     world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::PowerPlant, tile: t, turned: false, editor: true }]);
     let plant = world.buildings.len() - 1;
     assert_eq!(world.buildings[plant].kind, BuildingKind::PowerPlant);
-    world.stock.set(Resource::Coal, 0);
+    world.stock.set(Resource::Wood, 0);
     world.economy_payout();
     let without: u32 = world.power().made.iter().sum();
-    world.stock.set(Resource::Coal, 100);
+    world.stock.set(Resource::Wood, 100);
     world.economy_payout();
     let with: u32 = world.power().made.iter().sum();
-    assert_eq!(with - without, BuildingKind::PowerPlant.stats().energy, "coal makes the power");
-    assert_eq!(world.stock.get(Resource::Coal), 100 - BuildingKind::PowerPlant.stats().burns_coal);
+    assert_eq!(with - without, BuildingKind::PowerPlant.stats().energy, "wood makes the power");
+    assert_eq!(world.stock.get(Resource::Wood), 100 - BuildingKind::PowerPlant.stats().burns_wood);
 
     // The oil platform: not beside the oil, right on it.
     let o = cleared_spot(&mut world, -12, 4, 4);
@@ -5695,7 +6093,9 @@ fn power_plant_oil_warehouse_transmutator() {
     }
     world.stock.set(Resource::Oil, 0);
     world.economy_payout();
-    assert_eq!(world.stock.get(Resource::Wood), 80, "it took no wood");
+    // 20 for the Transmutator – and the power plant from above burns its wood too.
+    let burned = BuildingKind::PowerPlant.stats().burns_wood;
+    assert_eq!(world.stock.get(Resource::Wood), 80 - burned, "it took no wood");
     assert!(world.stock.get(Resource::Oil) >= 40, "it made no oil");
 }
 
@@ -5763,3 +6163,142 @@ fn a_copy_keeps_everything_and_a_cut_takes_it_away() {
     assert!(world.sleep.iter().all(|s| s.pos != sleeper), "the zombie is still there");
     assert!(!world.map.is_built(tile.0, tile.1 + 4), "the house's tiles are still taken");
 }
+
+/// A straight line of track below the command center, west to east across the map with a buffer stop at each end
+/// (`rails.rs`) – both outside the world border – and its row.
+fn railway(world: &mut World) -> i32 {
+    let n = world.map.size as i32;
+    railway_between(world, 4, n - 5)
+}
+
+/// `railway` from buffer stop `from` to buffer stop `to` (columns).
+fn railway_between(world: &mut World, from: i32, to: i32) -> i32 {
+    let y = world.base.y as i32 + 9;
+    world.ornaments.push(Ornament { kind: OrnamentKind::Rail(rails::RailShape::EndW), tile: (from, y) });
+    for x in from + 1..to {
+        world.ornaments.push(Ornament { kind: OrnamentKind::Rail(rails::RailShape::X), tile: (x, y) });
+    }
+    world.ornaments.push(Ornament { kind: OrnamentKind::Rail(rails::RailShape::EndE), tile: (to, y) });
+    y
+}
+
+/// TAB's train (`trains.rs`): sent by a script, it comes in from the end of the line nearer the edge of the map,
+/// stops below the command center, waits, runs the arrival's script there (and says so), then goes on to the end of
+/// the line – outside the world border, so there it's gone.
+#[test]
+fn a_train_stops_at_the_command_center_and_leaves_the_map() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let y = railway(&mut world);
+    assert!(!world.map.in_play(4, y) && !world.map.in_play(world.map.size as i32 - 5, y));
+    let arrived = vec![var_step("arrived", true, 1)];
+    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: arrived }]));
+    assert_eq!(world.trains.len(), 1);
+    let start = world.trains[0].line.point_at(0.0);
+    let mut stood = None;
+    let mut last = None;
+    for _ in 0..3000 {
+        world.step(&[]);
+        let Some(train) = world.trains.first() else {
+            break;
+        };
+        if world.variable("arrived") == 1 && stood.is_none() {
+            stood = Some((world.tick, train.line.point_at(train.offset)));
+        }
+        last = Some((world.tick, train.line.point_at(train.offset), train.line.point_at(train.line.length())));
+    }
+    let (when, at) = stood.expect("it never stopped at the command center");
+    assert!((at.x - world.base.x).abs() < 1.0, "it stopped at {at}, the base is at {}", world.base);
+    assert!(world.trains.is_empty(), "it's still there");
+    // Gone with the locomotive's front at the buffer stop: its middle half its length before the end.
+    let (gone, middle, end) = last.unwrap();
+    assert!(end.distance(start) > 50.0);
+    let front = middle.distance(end);
+    assert!((front - CarKind::Locomotive.length() / 2.0).abs() < 0.5, "{front}");
+    assert!(gone > when + data::get().trains.stop as u64, "it didn't wait at the stop");
+    assert_eq!(world.variable("arrived"), 1, "the arrival ran more than once");
+}
+
+/// A line that ends on the playing field: there the train stays, like TAB's, its front at the buffer stop.
+#[test]
+fn a_train_stays_at_the_end_of_a_line_on_the_map() {
+    let (mut world, _) = quiet_world();
+    let x = world.base.x as i32;
+    let y = railway_between(&mut world, x - 30, x + 30);
+    assert!(world.map.in_play(x - 30, y) && world.map.in_play(x + 30, y));
+    world.run(&script(vec![Action::Train { stop: false, reverse: false, on_arrival: Vec::new() }]));
+    for _ in 0..3000 {
+        world.step(&[]);
+        if !world.trains[0].running {
+            break;
+        }
+    }
+    let train = &world.trains[0];
+    assert!(!train.running && train.speed == 0.0);
+    let front = train.line.point_at(train.offset).distance(train.line.point_at(train.line.length()));
+    assert!((front - CarKind::Locomotive.length() / 2.0).abs() < 0.2, "{front}");
+}
+
+/// Sent again while the first is still on the line, a second train comes – the first runs on.
+#[test]
+fn a_second_train_doesnt_take_the_first_ones_place() {
+    let (mut world, _) = quiet_world();
+    railway(&mut world);
+    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: Vec::new() }]));
+    for _ in 0..60 {
+        world.step(&[]);
+    }
+    let first = world.trains[0].offset;
+    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: Vec::new() }]));
+    assert_eq!(world.trains.len(), 2);
+    assert_eq!(world.trains[0].offset, first, "the first one was sent back");
+    assert!(world.trains[1].offset < first);
+}
+
+/// Running, a train runs over whoever is in its way; standing (at its stop), it pushes them out to its side.
+#[test]
+fn a_train_runs_over_who_is_in_its_way() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let y = railway(&mut world);
+    let arrived = vec![var_step("arrived", true, 1)];
+    world.run(&script(vec![Action::Train { stop: true, reverse: false, on_arrival: arrived }]));
+    // Until it runs at full speed.
+    while world.trains[0].speed < data::get().trains.max_speed {
+        world.step(&[]);
+    }
+    let train = &world.trains[0];
+    let ahead = train.line.point_at(train.offset + 6.0);
+    world.spawn_zombie_as(ahead, Breed::Walker, true);
+    let id = world.zombies.last().unwrap().id;
+    for _ in 0..20 {
+        world.step(&[]);
+    }
+    assert!(world.find_zombie(id).is_none(), "the zombie on the track is still there");
+    // At the command center it stands: a unit put inside it is pushed out to the side, off the track's row – unhurt.
+    while world.variable("arrived") == 0 {
+        world.step(&[]);
+    }
+    let train = &world.trains[0];
+    let middle = train.line.point_at(train.offset);
+    world.spawn_unit(UnitKind::Soldier, middle + vec2(0.0, 0.1));
+    world.step(&[]);
+    let unit = world.units.last().unwrap();
+    assert!(unit.hp == unit.max_hp(), "a standing train hurt it");
+    assert!((unit.pos.y - (y as f32 + 0.5)).abs() >= 1.0, "it's still inside the train at {}", unit.pos);
+}
+
+/// Like TAB: nothing is built on the railway or right next to it – only a gate across it, its middle on the track.
+#[test]
+fn nothing_is_built_on_or_next_to_the_railway() {
+    let (mut world, _) = quiet_world();
+    let y = railway(&mut world);
+    let x = world.base.x as i32 + 4;
+    assert!(!world.can_place(BuildingKind::Wall, (x, y), false), "on the track");
+    assert!(!world.can_place(BuildingKind::Wall, (x, y + 1), false), "right next to it");
+    assert!(world.can_place(BuildingKind::Wall, (x, y + 2), false), "two tiles away");
+    // A gate turned across the track (1 × 3): its middle tile on it.
+    assert!(world.can_place(BuildingKind::Gate, (x, y - 1), true), "a gate across the track");
+    assert!(!world.can_place(BuildingKind::Gate, (x, y), true), "a gate with its end on the track");
+}
+

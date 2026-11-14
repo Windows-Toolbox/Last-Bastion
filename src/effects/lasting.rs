@@ -1,6 +1,7 @@
 //! Effects that last as long as what causes them – drawn from the world as it is in every frame, not from something
 //! that happened in a tick (`sim::Fx`):
-//! - fire, smoke and the fire's glow on badly damaged buildings (ours – TAB's buildings only burn from fire damage),
+//! - fire, smoke and the fire's glow on badly damaged buildings – shield gone and hit points lost (ours – TAB's
+//!   buildings only burn from fire damage),
 //! - green smoke over infected ones (TAB's `CInfected`: `Infection_A` as big as the building),
 //! - the weather of a landscape (TAB's `ZXMapThemeAL` / `ZXMapThemeVO`: snow on the Alpine, rain on the Volcanic
 //!   landscape), leaves falling from trees (`ZXMapThemeFA.AddLeave`) and the shimmer on water,
@@ -11,18 +12,32 @@
 
 use super::*;
 use crate::map::{to_frame, Region, Terrain};
+use crate::sim::Weather;
 
-/// Below this share of its hit points a building burns: one fire …
-const BURNS: f32 = 0.5;
-/// … below this one up to three, bigger.
+/// A building burns once its shield is gone and it has lost hit points: one fire … below this share of its hit
+/// points up to three, bigger.
 const BLAZES: f32 = 0.25;
 /// A fire this big (`size` of the effect – TAB's burning things: 1.3 × their width, for a figure 0.4).
 const FIRE_SIZE: f32 = 0.7;
-/// The orange glow round a fire (TAB's `Fire._OBright`: `LightWhite_A`, orange, added, 20 % opaque).
-const FIRE_GLOW: Color = Color::new(1.0, 0.65, 0.0, 0.2);
-/// TAB's weather (`EntityTemplates.Water.Snow_B` / `Rain_A`): turned this much on screen (degrees, TAB's `Angle`).
-const SNOW_ANGLE: f32 = 320.0;
-const RAIN_ANGLE: f32 = 15.0;
+/// The orange glow round a fire (TAB's `Fire._OBright`: `LightWhite_A`, orange, added – TAB 20 % opaque, here much
+/// less: through TAB's bloom (`post.rs`) a few burning walls lit up the whole screen).
+const FIRE_GLOW: Color = Color::new(1.0, 0.65, 0.0, 0.07);
+/// The fire itself a bit see-through – added, it's still bright.
+const FIRE_COLOR: Color = Color::new(1.0, 1.0, 1.0, 0.85);
+/// The fire on a burning truck: this big (TAB's `FireOrnamentA`: one tile), this high up on it (tile widths).
+const WRECK_FIRE: f32 = 1.0;
+const WRECK_LIFT: f32 = 0.3;
+/// A building without a shield (walls, gates, towers) burns only below this share of its hit points – otherwise every
+/// wall would burn from its first scratch: its shield is always "gone". Just before it falls (below `BLAZES` too,
+/// so it burns big at once).
+const SHIELDLESS_BURNS: f32 = 0.05;
+/// TAB's weather (`EntityTemplates.Water.Snow_B` / `Rain_A`): its picture, turned this much on screen (degrees, TAB's
+/// `Angle`) – in the order of `Effects::weather`.
+const WEATHERS: [(Weather, &str, f32); 2] = [(Weather::Snow, "effects/snow_b", 320.0), (Weather::Rain, "effects/rain_a", 15.0)];
+/// The weather changing (`Action::Weather`): the old one fades out, the new one in over this many seconds.
+const WEATHER_FADE: f32 = 4.0;
+/// The empty border round every frame of a weather sheet (like `WATER_PAD`).
+const WEATHER_PAD: f32 = 2.5;
 /// Every this many forest tiles of a hundred drop leaves (TAB: 10 %) …
 const LEAF_TREES: u32 = 10;
 /// … each falls 4 × 1 s (4 bends), waits 1–8 s, then falls again; it fades in and out over 2 s.
@@ -34,14 +49,18 @@ const SCENE: f32 = std::f32::consts::FRAC_1_SQRT_2;
 const WATER_SHINE: f32 = 0.12;
 /// How far the water's shimmer picture reaches: this many tiles (TAB's `Water_A`: an entity 5 tiles wide).
 const WATER_TILES: f32 = 5.0;
+/// The empty border round every frame of the shimmer's sheet (pixels, `tools\tab_effects.py` packs them 2 apart) –
+/// and half a pixel more, so the smoothing between pixels never reaches into it.
+const WATER_PAD: f32 = 2.5;
 /// The range circle turns this many degrees per second (TAB: 90 in 20 s).
 const RANGE_TURN: f32 = 90.0 / 20.0;
 /// At most this many quads in one mesh – macroquad draws at most 5000 indices at once (6 per quad).
 const QUADS_PER_MESH: usize = 800;
 
 /// The effects this file draws – loaded in `Effects::update`, since drawing only looks them up.
-pub(super) const NAMES: [&str; 9] = [
+pub(super) const NAMES: [&str; 10] = [
     "effects/fire",
+    "effects/fire_ornament",
     "effects/smoke_b",
     "effects/light_white_a",
     "effects/infection",
@@ -94,7 +113,11 @@ impl Effects {
                 continue;
             }
             let share = building.hp as f32 / stats.hp.max(1) as f32;
-            if !building.is_built() || share >= BURNS || stats.trap_damage > 0 {
+            let badly_damaged = match stats.max_shield() {
+                0 => share < SHIELDLESS_BURNS,
+                _ => building.shield == 0 && building.hp < stats.hp,
+            };
+            if !building.is_built() || !badly_damaged || stats.trap_damage > 0 {
                 continue;
             }
             let (fires, size) = if share < BLAZES { ((w * h).min(3) as u32, FIRE_SIZE * 1.3) } else { (1, FIRE_SIZE) };
@@ -107,11 +130,29 @@ impl Effects {
                 // The glow: the light's middle on the fire's foot.
                 if let Some(light) = self.sheet("effects/light_white_a") {
                     let feet = camera.world_to_screen(at) - vec2(0.0, lift * TILE_W * camera.zoom);
-                    light.draw_frame(camera, 0, feet, size * 2.0, 0.0, FIRE_GLOW);
+                    light.draw_frame(camera, 0, feet, size * 1.5, 0.0, FIRE_GLOW);
                 }
-                self.draw_looping(camera, "effects/fire", at, lift, size, now, phase, WHITE);
+                self.draw_looping(camera, "effects/fire", at, lift, size, now, phase, FIRE_COLOR);
                 self.draw_looping(camera, "effects/smoke_b", at, lift + size * 0.6, size, now, phase, WHITE);
             }
+        }
+    }
+
+    /// The burning trucks of the food supplies (`OrnamentKind::Truck`): TAB's `FireOrnamentA` and `Smoke_B` on the
+    /// truck's second tile (`ZXLevelGenerator`: one tile down from its corner), with the glow of a burning building.
+    pub fn draw_wrecks(&self, world: &World, camera: &Camera, now: f32, shows: impl Fn(Vec2) -> bool) {
+        for (k, truck) in world.ornaments.iter().enumerate().filter(|(_, o)| o.kind == crate::sim::OrnamentKind::Truck) {
+            let middle = vec2(truck.tile.0 as f32 + 0.5, truck.tile.1 as f32 + 1.5);
+            if !shows(middle) {
+                continue;
+            }
+            let phase = hash(k as u32, 7);
+            if let Some(light) = self.sheet("effects/light_white_a") {
+                light.draw_frame(camera, 0, camera.world_to_screen(middle), WRECK_FIRE * 1.5, 0.0, FIRE_GLOW);
+            }
+            let corner = middle - Vec2::splat(WRECK_FIRE / 2.0);
+            self.draw_looping(camera, "effects/fire_ornament", corner, WRECK_LIFT, WRECK_FIRE, now, phase, FIRE_COLOR);
+            self.draw_looping(camera, "effects/smoke_b", corner, WRECK_LIFT + WRECK_FIRE * 0.6, WRECK_FIRE, now, phase, WHITE);
         }
     }
 
@@ -134,14 +175,29 @@ impl Effects {
         effect.draw_flat(camera, at, range, turn, WHITE);
     }
 
-    /// The weather of a landscape (`look`, like `World::look`): its picture over and over across the screen, turned
-    /// like TAB's, fixed to the map – it moves when you scroll. Only TAB's snowy and rainy landscapes have one.
-    pub fn draw_weather(&self, look: &str, camera: &Camera, now: f32) {
-        let (name, degrees) = match look {
-            "AL" => ("effects/snow_b", SNOW_ANGLE),
-            "VO" => ("effects/rain_a", RAIN_ANGLE),
-            _ => return,
-        };
+    /// Every frame: snow and rain fade towards `weather` (`WEATHER_FADE`) – the first frame takes it at once.
+    pub(super) fn fade_weather(&mut self, weather: Weather, dt: f32) {
+        let target = WEATHERS.map(|(w, _, _)| if w == weather { 1.0 } else { 0.0 });
+        let step = dt / WEATHER_FADE;
+        let now = self.weather.get_or_insert(target);
+        for (strength, goal) in now.iter_mut().zip(target) {
+            *strength += (goal - *strength).clamp(-step, step);
+        }
+    }
+
+    /// The weather (`World::weather`, faded by `fade_weather`): each one's picture over and over across the screen,
+    /// turned like TAB's, fixed to the map – it moves when you scroll.
+    pub fn draw_weather(&self, camera: &Camera, now: f32) {
+        let strengths = self.weather.unwrap_or_default();
+        for (&(_, name, degrees), strength) in WEATHERS.iter().zip(strengths) {
+            if strength > 0.0 {
+                self.draw_one_weather(name, degrees, strength, camera, now);
+            }
+        }
+    }
+
+    /// One weather's picture, `strength` of its own opacity.
+    fn draw_one_weather(&self, name: &str, degrees: f32, strength: f32, camera: &Camera, now: f32) {
         let Some(effect) = self.sheet(name) else {
             return;
         };
@@ -150,7 +206,8 @@ impl Effects {
         };
         let s = &effect.sheet;
         let scale = TILE_W / s.pixels_per_tile * camera.zoom;
-        let side = vec2(s.frame[0], s.frame[1]) * scale;
+        // Without the empty border round every frame – the pictures lie edge to edge.
+        let side = (vec2(s.frame[0], s.frame[1]) - 2.0 * WEATHER_PAD) * scale;
         if side.x < 4.0 || side.y < 4.0 {
             return;
         }
@@ -169,14 +226,16 @@ impl Effects {
         if (hi.x - lo.x) * (hi.y - lo.y) > 2000.0 {
             return;
         }
-        let color = Color { a: s.opacity.unwrap_or(1.0), ..WHITE };
+        let color = Color { a: s.opacity.unwrap_or(1.0) * strength, ..WHITE };
+        let r = effect.source(frame);
+        let source = Rect::new(r.x + WEATHER_PAD, r.y + WEATHER_PAD, r.w - 2.0 * WEATHER_PAD, r.h - 2.0 * WEATHER_PAD);
         let draw = || {
             for i in lo.x as i32..=hi.x as i32 {
                 for j in lo.y as i32..=hi.y as i32 {
                     let middle = origin + turn(vec2(i as f32, j as f32) * side);
                     let params = DrawTextureParams {
                         dest_size: Some(side + 1.0),
-                        source: Some(effect.source(frame)),
+                        source: Some(source),
                         rotation: angle,
                         pivot: Some(middle),
                         ..Default::default()
@@ -250,7 +309,10 @@ impl Effects {
             return;
         };
         let area = screen_part(camera, area);
+        // Only the inside of the frame: the sheet keeps an empty border round every frame (`WATER_PAD`) – laid tile to
+        // tile, those borders showed as a dark grid across the water.
         let r = effect.source(frame);
+        let r = Rect::new(r.x + WATER_PAD, r.y + WATER_PAD, r.w - 2.0 * WATER_PAD, r.h - 2.0 * WATER_PAD);
         let (tw, th) = (effect.texture.width(), effect.texture.height());
         let color = Color { a: WATER_SHINE, ..WHITE };
         let mut vertices = Vec::new();

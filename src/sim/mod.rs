@@ -26,8 +26,10 @@
 //! - `market.rs`: markets – the houses around them pay more, and they sell what the stock has too much of.
 //! - `debt.rs`: upkeep and debt – what debt does to the army, deserters, the banks' credit.
 //! - `blast.rs`: explosive barrels – making them, carrying them, and what happens when one goes off.
-//! - `scan.rs`: the command center's scan – a circle of the map shown for a while.
+//! - `scan.rs`: the radar's scan – a circle of the map shown for a while.
 //! - `terrain.rs`: when the map changes – recompute what depends on it, push everyone off new terrain.
+//! - `rails.rs`: the railway – pieces of track and the lines they make, like TAB's.
+//! - `trains.rs`: the train a script sends along a line – it stops at the command center and runs over who's in its way.
 //! - `story.rs`: the map's story like TAB's – scripts of actions, goals, counters, the command center's own button.
 //! - `regen.rs`: units and zombies healing themselves, like TAB's.
 //! - `fallen.rs`: the dead – zombies dying, units lying there, and how a giant's blow throws them.
@@ -49,16 +51,22 @@ mod debt;
 mod doom;
 mod economy;
 mod events;
+mod expr;
 mod fallen;
 mod fire;
 mod fx;
+mod funcs;
 mod landscape;
+mod landscaping;
 mod market;
 mod neutral;
 mod orders;
 mod ornaments;
+mod rails;
 mod ranged;
+mod regions;
 mod regen;
+mod research;
 mod round;
 mod scan;
 mod sleep;
@@ -67,8 +75,10 @@ mod spawning;
 mod story;
 mod terrain;
 mod towers;
+mod trains;
 mod units;
 mod veterans;
+mod weather;
 mod zombies;
 #[cfg(test)]
 mod tests;
@@ -97,16 +107,27 @@ pub use doom::{DoomHouse, Loot, LootKind, Nest};
 pub use economy::{Power, Stock};
 pub use events::{plan_events, Event, Notice};
 pub use fallen::Dying;
-pub use fx::{Fallen, Fx};
+pub use fx::{Fallen, Fx, Struck};
+pub use landscaping::{Area, Patch, TerrainClip};
 pub use neutral::{Neutral, Owner, Tag, Thing, ThingRef};
-pub use story::{Action, Choice, Condition, CustomCommand, Goal, Script, Story};
+pub use regions::{Form, Shape, Spot, Zone, MOST_SHAPES, ZONE_COLORS};
+pub use expr::{code_text, parse_code, parse_condition, Expr, ExprError, Scope, Ty, Value};
+pub use funcs::{signature, FUNCS};
+pub use story::{Action, Choice, Condition, CustomCommand, Goal, Script, Step, Story, Trigger, TriggerEvent, VarKind, Variable};
+pub use weather::{Weather, LOOKS};
 pub use ranged::Spit;
+pub use research::{researched_in, tech};
 use arrows::Arrow;
 pub use arrows::MUZZLE;
 pub use orders::{Order, MAP_SIZES, MOST_PER_TILE};
 pub use ornaments::{Ornament, OrnamentKind};
+pub use rails::{extensions, joined, line_start, open_ends, rail_pieces, snap as snap_rail, Connector, Extension, RailPiece, Side, Turn};
+#[cfg(test)]
+pub use rails::RailShape;
+pub use trains::{CarAt, CarKind, Motion, Train};
 pub use round::{Outcome, Score};
 pub use scan::Scanned;
+pub use sound::CELL as SOUND_CELL;
 pub use sleep::{Sleep, Sleeper};
 pub use spawning::{corners as spawner_corners, tiles as spawner_tiles, Axes, BreedCount, Corpse, SpawnMode, Spawner, WaveFrom, WaveGroup};
 pub use units::Unit;
@@ -165,6 +186,8 @@ pub struct World {
     pub loot: Vec<Loot>,
     /// Treasure ruins and power line towers – only to be looked at (`ornaments.rs`).
     pub ornaments: Vec<Ornament>,
+    /// Trains on the railway (`trains.rs`) – a script sends them.
+    pub trains: Vec<Train>,
     /// Spitters' acid in flight (`ranged.rs`).
     pub spits: Vec<Spit>,
     /// Your rangers' arrows in flight (`arrows.rs`).
@@ -187,14 +210,20 @@ pub struct World {
     on_credit: bool,
     /// Barrels in the munitions factories' store (`blast.rs`) – set from the defence menu, carried off by units.
     pub barrels: u32,
+    /// The researches done (`research.rs`, indices into `data\research.json`), in the order they were done.
+    pub researched: Vec<u16>,
     /// Barrels going off this tick and a little after – only for drawing (where, ticks left).
     pub blasts: Vec<Blast>,
-    /// The command center's scan (`scan.rs`): charges ready, ticks the next one has charged, scans showing right now.
+    /// The radar's scan (`scan.rs`): charges ready, ticks the next one has charged, scans showing right now.
     pub scan_charges: u32,
     pub scan_charge: u32,
     pub scans: Vec<Scanned>,
     /// Wood, stone, ore, food (`economy.rs`): the gathering buildings bring them in, buildings cost them.
     pub stock: Stock,
+    /// The supplies of food and energy picked up (`LootKind::Food`, `Energy`): the command center makes this much more
+    /// food per payout and power, for the rest of the round (TAB's `CommandCenterExtraFood` / `…Energy`).
+    pub found_food: u32,
+    pub found_power: u32,
     /// Tests: workers that come from no building (`workers` in `buildings.rs`) – like the gold of `World::new`, so
     /// tests that build and train don't depend on how many workers things take.
     #[cfg(test)]
@@ -221,14 +250,20 @@ pub struct World {
     pub keep_out: KeepOut,
     /// What the map's landscape does to the whole round (`data::Modifiers`) – kept in the map file.
     pub modifiers: Modifiers,
-    /// Which of TAB's landscapes the map is drawn as (`MapSetup::look`) – the simulation never looks at it.
+    /// Which of TAB's landscapes the map is drawn as (`MapSetup::look`) – the simulation never looks at it. Set with
+    /// `set_look`, which brings the landscape's weather.
     pub look: String,
+    /// Snow, rain or clear right now (`weather.rs`) – only for the picture and the sound; scripts change it.
+    pub weather: Weather,
     /// How the round ended (`round.rs`) – `None` while it's still going.
     pub outcome: Option<Outcome>,
     /// What happened in the round so far – for the end screen.
     pub score: Score,
     /// Where the zombies come from.
     pub spawners: Vec<Spawner>,
+    /// The map's named regions and points (`regions.rs`) – what triggers and events talk about. Players don't see them.
+    pub zones: Vec<Zone>,
+    pub spots: Vec<Spot>,
     /// How loud it is where (`sound.rs`).
     sound: Sound,
     /// The colony's unrest: all the noise your units and buildings ever made – shots, machines, blasts, building. It
@@ -256,11 +291,11 @@ pub struct World {
     requests: Vec<events::Request>,
     /// What the screen should say about the events – the game takes them (`std::mem::take`).
     pub notices: Vec<Notice>,
-    /// The map's story (`story.rs`): scripts, goals, the command center's button, the counters' starting values.
+    /// The map's story (`story.rs`): triggers, goals, the command center's button, the variables' starting values.
     pub story: Story,
-    /// While the round runs: the counters, the choices waiting for the player (oldest first), what a script decided
+    /// While the round runs: the variables, the choices waiting for the player (oldest first), what a script decided
     /// about the round, how often the command center's button was pressed.
-    pub counters: Vec<(String, i32)>,
+    pub variables: Vec<(String, Value)>,
     pub choices: Vec<Choice>,
     ending: Option<story::Ending>,
     command_used: u32,
@@ -293,6 +328,8 @@ pub struct World {
     next_unit_id: u32,
     next_building_id: u32,
     next_spawner_id: u32,
+    /// Regions and points count together.
+    next_zone_id: u32,
     next_doom_id: u32,
     next_loot_id: u32,
     next_neutral_id: u32,
@@ -316,7 +353,7 @@ impl World {
         world.set_difficulty(difficulty);
         // Before the first zombie: their speed is rolled with it.
         world.modifiers = setup.modifiers;
-        world.look = setup.look.clone();
+        world.set_look(&setup.look);
         world.days = setup.round.days.round() as u32;
         world.gold = difficulty.start_gold;
         world.stock.set(Resource::Wood, difficulty.start_wood);
@@ -385,7 +422,7 @@ impl World {
     /// 4 rangers – whatever the default difficulty says now.
     #[cfg(test)]
     pub fn new(seed: u64) -> World {
-        let mut setup = MapSetup { generator: mapgen::Generator::Wild, ..MapSetup::default() };
+        let mut setup = MapSetup { generator: mapgen::Generator::Blank, ..MapSetup::default() };
         setup.common.size = 128.0;
         let mut difficulty = data::get().difficulty("").clone();
         (difficulty.start_soldiers, difficulty.start_snipers, difficulty.start_rangers) = (8, 4, 4);
@@ -433,6 +470,7 @@ impl World {
             neutral: Vec::new(),
             loot: Vec::new(),
             ornaments: Vec::new(),
+            trains: Vec::new(),
             spits: Vec::new(),
             arrows: Vec::new(),
             gold: difficulty.start_gold,
@@ -444,8 +482,9 @@ impl World {
             storage_seen: data::get().colony.storage_gold,
             on_credit: false,
             barrels: 0,
+            researched: Vec::new(),
             blasts: Vec::new(),
-            scan_charges: data::get().buildings.scan.charges,
+            scan_charges: 0,
             scan_charge: 0,
             scans: Vec::new(),
             stock: {
@@ -453,6 +492,8 @@ impl World {
                 stock.set(Resource::Wood, difficulty.start_wood);
                 stock
             },
+            found_food: 0,
+            found_power: 0,
             #[cfg(test)]
             extra_workers: 0,
             #[cfg(test)]
@@ -468,9 +509,12 @@ impl World {
             keep_out: difficulty.keep_out,
             modifiers: Modifiers::default(),
             look: String::new(),
+            weather: Weather::Clear,
             outcome: None,
             score: Score::default(),
             spawners: Vec::new(),
+            zones: Vec::new(),
+            spots: Vec::new(),
             sound: Sound::new(size),
             unrest: 0,
             lures: Vec::new(),
@@ -485,7 +529,7 @@ impl World {
             requests: Vec::new(),
             notices: Vec::new(),
             story: Story::default(),
-            counters: Vec::new(),
+            variables: Vec::new(),
             choices: Vec::new(),
             ending: None,
             command_used: 0,
@@ -497,6 +541,7 @@ impl World {
             next_unit_id: 0,
             next_building_id: 0,
             next_spawner_id: 0,
+            next_zone_id: 0,
             next_doom_id: 0,
             next_loot_id: 0,
             next_neutral_id: 0,
@@ -565,7 +610,7 @@ impl World {
             self.vision.reveal_circle(b.center(), b.stats().sight * reach);
         }
         // The scans on top – they see over forests too, like StarCraft's.
-        let radius = data::get().buildings.scan.radius;
+        let radius = scan::scan_reach();
         for scan in &self.scans {
             self.vision.reveal_circle(scan.at, radius);
         }
@@ -592,6 +637,7 @@ impl World {
         self.fly_spits(); // ranged.rs
         self.fly_arrows(); // arrows.rs – before the units choose: a zombie an arrow killed is no target
         self.update_units(); // units.rs, shooting in combat.rs
+        self.run_trains(); // trains.rs – after everyone moved: whoever is in a train's way now is hit or pushed out
         self.join_neutrals(); // neutral.rs
         self.fire_towers(); // towers.rs – the ballista, the machine gun tower, the shocking tower, the executor
         self.burn(); // fire.rs – zombies Lucifer set alight
@@ -662,6 +708,9 @@ impl World {
             mix(b.construction);
             mix(b.reload);
         }
+        for &t in &self.researched {
+            mix(t as u32);
+        }
         for c in &self.corpses {
             mix(c.pos.x.to_bits());
             mix(c.pos.y.to_bits());
@@ -681,6 +730,9 @@ impl World {
         }
         for s in &self.spits {
             mix(s.left);
+        }
+        for t in &self.trains {
+            mix(t.offset.to_bits());
         }
         for left in self.arrows_left() {
             mix(left);

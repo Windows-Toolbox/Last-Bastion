@@ -84,6 +84,28 @@ pub struct Settings {
     pub overlay_folded: Vec<String>,
     /// Which key does what (`keys.rs`) – only the changed ones are in the file.
     pub keys: Bindings,
+    /// How loud (`audio.rs`) – TAB's seven sliders.
+    pub volume: Volumes,
+}
+
+/// TAB's volumes (`ZXGameConfiguration`), in percent: everything, and each kind of sound on its own – each kind is
+/// played at its own share of the whole.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Volumes {
+    pub global: f32,
+    pub music: f32,
+    pub interface: f32,
+    pub effects: f32,
+    pub ambient: f32,
+    pub voices: f32,
+    pub notifications: f32,
+}
+
+impl Default for Volumes {
+    fn default() -> Volumes {
+        Volumes { global: 100.0, music: 100.0, interface: 100.0, effects: 100.0, ambient: 100.0, voices: 100.0, notifications: 100.0 }
+    }
 }
 
 impl Default for Settings {
@@ -100,6 +122,7 @@ impl Default for Settings {
             // At first only the measurements and the switches are open – the key help is there, one click away.
             overlay_folded: ["select", "commands", "buildings", "groups", "keys"].map(String::from).to_vec(),
             keys: Bindings::default(),
+            volume: Volumes::default(),
         }
     }
 }

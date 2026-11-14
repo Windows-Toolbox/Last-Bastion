@@ -12,7 +12,7 @@ use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use super::events::Notice;
-use super::story::Script;
+use super::story::TriggerEvent;
 use super::World;
 use crate::kinds::{BuildingKind, UnitKind};
 
@@ -69,8 +69,6 @@ pub struct Neutral {
     pub hp_percent: u32,
     pub veteran: bool,
     pub tag: Option<Box<Tag>>,
-    /// Runs when it joins the colony (TAB's "Script On Join", `story.rs`).
-    pub on_join: Script,
 }
 
 impl Neutral {
@@ -132,7 +130,7 @@ impl World {
         }
         self.next_neutral_id += 1;
         let hp_percent = hp_percent.clamp(1, 100);
-        self.neutral.push(Neutral { id: self.next_neutral_id, thing, joinable, hp_percent, veteran, tag, on_join: Vec::new() });
+        self.neutral.push(Neutral { id: self.next_neutral_id, thing, joinable, hp_percent, veteran, tag });
     }
 
     /// The number the next neutral thing gets – the editor selects it right after making one.
@@ -156,10 +154,12 @@ impl World {
         for id in joining {
             if let Some(n) = self.find_neutral(id) {
                 let name = self.neutral[n].name().to_owned();
-                let script = self.neutral[n].on_join.clone();
+                let name_id = self.neutral[n].tag.as_ref().map(|t| t.name_id.clone()).unwrap_or_default();
                 self.join_colony(n);
                 self.notices.push(Notice::Joined { name });
-                self.run(&script);
+                if !name_id.is_empty() {
+                    self.fire(&TriggerEvent::Join { name_id });
+                }
             }
         }
     }
@@ -236,13 +236,6 @@ impl World {
         }
     }
 
-    /// Editor: the script a neutral thing runs when it joins the colony.
-    pub(super) fn set_join_script(&mut self, id: u32, script: &Script) {
-        if let Some(n) = self.neutral.iter_mut().find(|n| n.id == id) {
-            n.on_join = script.clone();
-        }
-    }
-
     /// Editor: the tag of `thing` – an empty one takes it off.
     pub(super) fn set_tag(&mut self, thing: ThingRef, tag: &Tag) {
         let tag = (!tag.is_empty()).then(|| Box::new(tag.clone()));
@@ -259,7 +252,14 @@ impl World {
             }
             ThingRef::Neutral(id) => {
                 if let Some(n) = self.neutral.iter_mut().find(|n| n.id == id) {
+                    let old = n.tag.as_ref().map(|t| t.name_id.clone()).unwrap_or_default();
+                    let new = tag.as_ref().map(|t| t.name_id.clone()).unwrap_or_default();
                     n.tag = tag;
+                    // The triggers for "joins" follow the name ID – unless another thing still has the old one.
+                    let kept = self.neutral.iter().any(|o| o.tag.as_ref().is_some_and(|t| t.name_id == old));
+                    if !old.is_empty() && old != new && !kept {
+                        self.rename_name_id_in_triggers(&old, &new);
+                    }
                 }
             }
         }

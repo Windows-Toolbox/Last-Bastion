@@ -11,7 +11,10 @@ default-run = "last_bastion"
 # The game doesn't show it (yet, DESIGN.md 12.6).
 egui-macroquad = "0.17.3"
 libm = "0.2.16"
-macroquad = "0.4.16"
+# Decodes TAB's .ogg sounds on a thread of their own (`src/audio.rs`) – the same version macroquad's mixer uses.
+lewton = "0.9.4"
+# `audio`: macroquad's sound (its mixer, `quad-snd`) – off unless asked for.
+macroquad = { version = "0.4.16", features = ["audio"] }
 # The zombies think side by side on all cores (`src\sim\zombies.rs`) – every one comes out as if worked out alone.
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }

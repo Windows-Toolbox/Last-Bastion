@@ -11,7 +11,7 @@ What it does:
 1. Takes TAB's folders as they are: `Effects` (shots, buildings working, zombies, explosions ...), `UnitVoices`
    ("Yes", "What", "Attack" of every unit), `Notifications` (the officer: "Infected from the north" ...), `Interface`
    (clicks, windows), `Ambient` (forest, wind, the horde far away - one per landscape), `Music`.
-2. Leaves out what we don't build (docs\\tab-assets.md): the heroes' voices (`HA_`, `HB_`) and the mutant.
+2. Leaves out what we don't build (DESIGN.md 2): the heroes' voices (`HA_`, `HB_`) and the mutant.
    The campaign's sounds and the trains' are in (for the editor's maps and scripts).
 3. macroquad only plays `.ogg` and `.wav` - TAB's `.mp3` become `.ogg` (with ffmpeg, which has to be installed). A space
    in a name becomes `_` (`Zombie Ambience.mp3` -> `Zombie_Ambience.ogg`).

@@ -309,7 +309,8 @@ impl World {
         let map = &self.map;
         for (unit, intent) in self.units.iter_mut().zip(&intents) {
             unit.prev = unit.pos;
-            unit.pos = slide(unit.pos, intent.velocity, |x, y| map.blocks_unit(x, y));
+            // Not into a blocked tile, nor into an oil pool (`Map::out_of_oil`) – round it, it slides.
+            unit.pos = map.out_of_oil(slide(unit.pos, intent.velocity, |x, y| map.blocks_unit_body(x, y)), UNIT_RADIUS);
             unit.moving = intent.walking;
             unit.still = if intent.walking { 0 } else { unit.still.saturating_add(1) };
             // Walking turns it towards where it goes – it doesn't wait for that, like most units in StarCraft.

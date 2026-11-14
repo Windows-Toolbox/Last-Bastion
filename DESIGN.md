@@ -78,6 +78,28 @@ grid, seen **isometrically**. That's the heart of the game; the StarCraft contro
 | **Factorio** | Ore patches, simple production chains, power grid, pollution for nest/zombie attacks (in that sense units firing should produce pollution too) | Belts, hundreds of items, megabase scale, saves that last for days or weeks |
 | **Anno** *(bonus)* | Houses that upgrade by being supplied with goods | Trade routes, ships, diplomacy |
 
+**TAB's pictures, sounds and values are all in** (units, buildings, wonders, effects, sounds, trains, loot sites,
+water cliffs – `tools\tab_*.py`). Left out on purpose: the mutant, the heroes, campaign-only buildings and pictures,
+the workers walking around (their pictures are ready, 5.6). Where we decided to differ from TAB:
+
+- **Research like TAB** in the workshops (`data\research.json`); ours (munitions factory, charcoal burner, mine …)
+  need none. Soldier and sniper also need the munitions factory, the MG tower the foundry (decisions 26, 32).
+- **Fire doesn't spread (yet):** only what Lucifer hits burns (TAB: everything in the fire catches it).
+- **Academy:** a veteran stays one when it falls (TAB: only while it stands). **Veterans** at 100 experience, and
+  everyone nearby learns, from towers and traps too (TAB: only the shooter, 60/80/140).
+- **Buildings burn** (ours, only the look) once their shield is gone and they lost hit points; without a shield
+  below 5 %.
+- **Shocking tower** charges 4.5 s (TAB's 4 s + 0.5 s shot), no charge bar. **Mine:** TAB's delay (0–3 × 0.5 s).
+- **Ravens and rats** only to look at; rats sit at ruins and houses of doom (TAB: only in its campaign).
+- **Train:** at the command center it runs a free arrival script (TAB unloads colonists into empty houses). The game
+  picks the line; it isn't routed round a standing train. Every send is a train of its own (TAB's one train started
+  over), and at a line's end outside the world border it's gone (TAB's stayed there).
+- **Water cliffs:** below their shore tile they only show over water, so a small pond's far cliff doesn't stick out
+  onto the land in front (TAB's lakes are big enough). FA's are coloured like its earth (TAB's colouring turned
+  them black).
+- **Sounds:** loudness by distance only, no left/right (macroquad has no panning).
+- **Loot sites:** TAB's supplies of food and energy lie with hidden guards like all our loot (TAB: none).
+
 ---
 
 ## 3. Core loops
@@ -149,12 +171,12 @@ would pull the focus away from the army.
 |---|---|---|---|
 | Raw | **Wood** | Sawmill (forest) | Early buildings, walls, charcoal burner |
 | Raw | **Stone** | Mine on a stone patch (question 28) | Barracks, walls, towers |
-| Raw | **Iron ore** | Mine on an iron patch | → Iron |
-| Raw | **Coal** | Mine on a coal patch | Power plant, smelter fuel |
+| Raw | **Iron ore** | Mine next to an iron patch | → Iron |
+| Raw | **Coal** | Mine on a coal patch | Smelter fuel, a coal plant later |
 | Raw | **Food** | Hunter cottage (forest, grass, dirt – like TAB's, each its own share by the map), fishing hut (water), farm (grass – nothing grows on dirt) | Houses |
 | Raw | **Oil** | Oil pump on an oil node (2 × 2, 2026-10-18) | Oil burning generator, later more ❓ |
 | 1 | **Iron** | Foundry (ore + coal, decision 32) | Buildings (the machine gun tower first), tools |
-| 1 | **Energy** | Command center (a little), charcoal burner (early, burns wood), windmill (big, costs upkeep), coal plant / solar later | Machines, houses, towers |
+| 1 | **Energy** | Command center (a little), charcoal burner (early, burns wood), windmill (big, costs upkeep), TAB's power plant (burns wood like TAB's), coal plant / solar later | Machines, houses, towers |
 | 2 | **Tools** | Workshop (iron + wood) | Tier 2 houses, units |
 | 2 | ~~Ammo~~ | ~~Armory (iron + coal)~~ | **Free for now** (open question 6, 2026-10-15) – ammo as an item is parked |
 | 3 | **Medicine** | Lab – recipe later (tier 3 is far away) | Tier 3 houses, healing |
@@ -271,13 +293,13 @@ Costs and stats live in `data\buildings.json` (12.4).
 |---|---|---|
 | **Core** | Command center | Start building, small storage, losing it = losing the game – infected (shield broken, half its life, like TAB's) or destroyed. Builds everything, trains nothing |
 | **Housing** | Tent → wooden house (TAB's) → stone house → apartment | Upgrade when the materials and the next tier's goods are there (5.3) |
-| **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – and TAB's gold: 20 times as much, straight into the gold), TAB's quarry and advanced quarry (stone), oil platform (TAB's oil pump), farm and TAB's advanced farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where ore lies in rock. A later stone mine can simply get a bigger range |
-| **Production** | Foundry (smelter), wood workshop, stone workshop, lab | Take inputs from the colony stock (5.4). The workshops make nothing yet: like TAB's, they unlock buildings (wood → stone → munitions) |
+| **Gathering** | Hunter cottage, fishing hut, sawmill, mine (every ore patch: iron, coal, stone – and TAB's gold: 20 times as much, straight into the gold), TAB's quarry and advanced quarry (stone), oil platform (TAB's oil pump), farm and TAB's advanced farm | Work the fitting tiles in a square: their site plus `gather_range` tiles on every side (like TAB: the mine 2 → 6 × 6, 2026-10-21); two of a kind share the tiles they both reach. With `gather_below` the tiles under it count too: the mine stands on the ore and digs it (like Factorio's drill) – not like TAB, where nothing stands on ore. A later stone mine can simply get a bigger range |
+| **Production** | Foundry (smelter), wood workshop, stone workshop, lab | Take inputs from the colony stock (5.4). The workshops make nothing: like TAB's, they research what unlocks buildings and units (wood → stone → foundry) |
 | **Logistics and trade** | Warehouse, market, bank, road | Warehouse = storage; market = houses around it pay more, sells the surplus (5.3); bank = gold storage + credit (Dispo, 7.2); road = **units and zombies** faster |
-| **Power** | Tesla tower (pole), charcoal burner (wood), windmill and TAB's advanced mill, oil burning generator, coal plant (TAB's power plant), solar, battery | Charcoal burner early, eats wood; windmill big but with upkeep; solar quieter but weaker |
+| **Power** | Tesla tower (pole), charcoal burner (wood), windmill and TAB's advanced mill, oil burning generator, TAB's power plant (burns wood like TAB's), coal plant later, solar, battery | Charcoal burner early, eats wood; windmill big but with upkeep; solar quieter but weaker |
 | **Military** | Barracks, munitions factory, inn, engineering center (TAB's: Thanatos, Titan), siege factory (vehicles), tech lab | Barracks from the start. The munitions factory is a tech gate for firearms (question 26) and makes explosive barrels; the inn hires mercenaries (7.2); the foundry later the second weapon tier (MG tower, vehicles) |
 | **Defence** | Wall, gate, tower (4 units inside), stone wall, stone tower, stake trap, TAB's blade trap and mine, explosive barrel, ballista tower, MG tower, TAB's shocking tower and executor, flame tower | Stone ones go on the wooden ones (upgrade). Stake trap like TAB's: walked over, hurts zombies, wears out, everyone on it walks half as fast. Barrel (next to TAB's mine): any damage sets it off, blasts chain, hurt everyone, loud; set like a trap or carried by units |
-| **Special** | Radar (TAB's), lookout tower (TAB's), sound dampener, cleanser (removes creep/noise) | No menu yet. The command center scans like StarCraft's (2026-10-21). The beacon is out: a free, endless lure into the kill zone is too strong – a barrel lures once and costs |
+| **Special** | Radar (TAB's), lookout tower (TAB's), sound dampener, cleanser (removes creep/noise) | The radar scans like StarCraft's orbital (2026-11-12; before, the command center did) – so the scan comes with its research. The beacon is out: a free, endless lure into the kill zone is too strong – a barrel lures once and costs |
 | **Wonders** | TAB's: Spire, Academy, Victorious, Transmutator, Crystal Palace (29) | Most expensive, very strong buffs – TAB's effects and values |
 
 - **Building like TAB** (open question 5): placed, paid at once, builds itself. No worker units.
@@ -306,11 +328,12 @@ Costs and stats live in `data\buildings.json` (12.4).
 your units), tower (up to 4 units, +2 range and sight, can't be hit), sawmill, mine, hunter cottage, fishing hut,
 farm (3 × 3, only on grass: plants the grass around it, dirt and ore give nothing), windmill, charcoal burner, tesla
 tower (the mine and the tesla tower need no workshop, like TAB – the barracks needs stone, 2026-10-24), wood
-workshop (unlocks farm, windmill, stake trap, ballista, stone workshop), stone workshop (unlocks munitions factory,
-foundry, stone house, stone wall, stone tower), munitions factory (unlocks soldier and sniper – the ranger's bow needs
-nothing; makes barrels), **foundry** (2026-10-24: unlocks the machine gun tower, smelts 2 iron ore + 1 coal into 1 iron,
-up to 3 per payout), stone house, stone wall, stone tower, stake trap, market, bank, inn (mercenaries), explosive barrel,
-the command center's scan (`src/sim/market.rs`, `debt.rs`, `blast.rs`, `scan.rs`), and the towers that shoot by
+workshop, stone workshop and **foundry** with **TAB's research** (`data/research.json`, `src/sim/research.rs`: each
+research once, paid in gold – wonders also goods –, 70 s × its factor while the workshop has power; what it unlocks
+also needs what it `requires`, TAB's `BuildingRequisite`), munitions factory (ours, no research: unlocks soldier and
+sniper – the ranger's bow needs nothing; makes barrels), the foundry also smelts 2 iron ore + 1 coal into 1 iron, up to
+3 per payout, and the machine gun tower needs it (decision 32), stone house, stone wall, stone tower, stake trap, market, bank, inn (mercenaries), explosive barrel,
+the radar's scan (`src/sim/market.rs`, `debt.rs`, `blast.rs`, `scan.rs`), and the towers that shoot by
 themselves (2026-10-24, `src/sim/towers.rs`, a `weapon` block each): **ballista** (a heavy bolt at the toughest zombie in
 range, no iron) and **machine gun tower** (fast fire at the nearest, power, 10 iron). Start (2026-10-20,
 different from TAB): 4 rangers, 1 soldier, 100 gold, 20 wood. Prices, hit points, build times like TAB's `Entities`
@@ -318,7 +341,10 @@ different from TAB): 4 rangers, 1 soldier, 100 gold, 20 wood. Prices, hit points
 soldier 2 smelted iron). Every payout (28 s, like TAB's `CResourceGenerator`): burners take wood, gatherers deliver,
 tents eat 4 food, soldiers 1 – fed, they pay gold (× power share), hungry, nothing. Placement rules all in `src/placement.rs`:
 drag a line (walls diagonal, 1 wide like TAB), gate over walls (walls refund 50 %, never a saving), 1 free tile between
-towers, no zombie within 4 tiles. Your own units may stand on the site – they're pushed off to the nearest free
+towers, no zombie within 4 tiles, **on ore only defence and what digs it** – walls, gates, towers, the ones that
+shoot, traps, the mine and the quarries (2026-11-12; TAB builds nothing on ore) – **on oil only the oil platform**.
+Nobody walks into an oil pool: ways go round the whole node, bodies keep out of a circle in its middle. The pavement
+round a building reaches 1 tile (TAB: 2 from 3 tiles on – too much) and never onto ore. Your own units may stand on the site – they're pushed off to the nearest free
 spot (like StarCraft). Costs gold and workers (5.6). **Build time** like TAB (2026-10-24, `build_seconds` per building):
 short, longer the bigger and the higher in the tech tree; it starts at 20 % of its hit points and grows, gets its shield
 when finished, does nothing until then (no workers given, no gold, power or training) but takes its workers already and
@@ -422,8 +448,9 @@ nothing.
   `XP × own share / sum of shares`.
 - Makes losing a squad hurt; veterans are less likely to desert (7.2).
 - **In the prototype (2026-10-24, `src/sim/veterans.rs`):** walker 1, riot/spitter/infested/harpy 3, fat 10, giant
-  100 XP, shared within 8 tiles of where the zombie fell; at 20 a unit is a veteran: +25 % HP, +20 % damage, a silver
-  mark. Mercenaries take no share – they are better than veterans already.
+  100 XP, shared within 8 tiles of where the zombie fell; at 100 a unit is a veteran: +25 % HP, +20 % damage, a silver
+  mark. Mercenaries take no share – they are better than veterans already. (TAB: only the killer learns, ranger 60,
+  soldier 80, sniper 140 – ours also learn from what towers and traps kill nearby, hence the higher mark.)
 
 ---
 
@@ -591,6 +618,15 @@ Written down on purpose: if the zombies seem to behave strangely in a test, chec
   4. **The final wave** wakes everyone, at least 2,000 a tick, the nearest to the base first. The round isn't won before
      the last one is awake and dead.
   5. **A wave walking over them:** the contagion (8.1) wakes a sleeper and takes it along.
+- **TAB's rhythm (2026-11-12):** TAB's units and zombies think every 4th of its 30 AI frames (`CBehaviour`, 133 ms):
+  every wait of an attack ends only then, and the next attack starts one step after the last ended. The times in
+  `data\` are those as played (rounded once, no rhythm in the code – the user wants every wait as a number to change):
+  the soldier shoots every 0.8 s, not 0.5.
+- **Hitting like TAB (2026-11-12):** a zombie winds up (`windup_seconds` – TAB's `TimeAction × TimeFactorAction`,
+  a walker 0.5 s) and stands for its whole attack (`attack_seconds`, TAB's `StopMovement`). Its claw lands at the end of
+  the wind-up – on a unit only if it's still within its reach (TAB's `ZombieClaw` check), so a ranger kiting through
+  walkers isn't hit. A shot flies anyway; the giant's sweep hits its whole arc. The picture's swing starts with the
+  wind-up.
 - **Seen:** in the picture a zombie fades in over 0.6 s when it comes into sight and fades out over 0.8 s when it
   leaves it – nobody pops up at the edge of sight (like TAB).
 - **Idle, without a radius (TAB):** stand or growl as long as its animations (walker 2.35 / 2 s) or roam – rolled
@@ -624,11 +660,10 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 
 **In the prototype:**
 
-- **Generators:** **TAB** (the default), Wild (Factorio-like noise), Regions (TAB-like, walls with passes), Rings,
-  Canyons, Blank – each with its own sliders. Same seed + same values = same map. The maps of `data\game_maps.json`
-  are presets of them, like Factorio's: TAB's six landscapes (FA, BR, TM, AL, DS, VO – TAB's names and score
-  factors 80–175 %), then ours – **Peaceful
-  Lowlands** (2026-10-24, after TAB's) is Wild with small groves, smooth lakes and lots of dry land.
+- **Only TAB's generator:** the maps of `data\game_maps.json` are TAB's six landscapes (FA, BR, TM, AL, DS, VO –
+  TAB's names and score factors 80–175 %), in the game and in the editor's "New map". Same seed + same values = same
+  map. Our own generators (Wild, Regions, Rings, Canyons) are deleted; map files made with them open as TAB maps (their
+  terrain is in the file). "Blank" (only grass, with the shared steps below) is left as the tests' plain map.
 - **TAB's generator** (`mapgen/tab.rs`, rebuilt from its code, `docs\tab-nachbau.md` step 6): one generator, the
   landscapes only other numbers – TAB's own (its `MapThemes` table). Noise layers like TAB's (`mapgen/layer.rs`,
   TAB's simplex noise in `noise.rs`) cut at thresholds: land/water, mountains in 2 × 2 blocks, grass, forest on grass
@@ -650,16 +685,13 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   the whole map – zombies' hearing, sight, speed; your units' speed, your sight; power buildings need; the hunters'
   game on forest/grass/dirt. TAB's strengths: AL hearing 50 %, everyone 80 % speed, power 130 %; DS hearing 130 %,
   all sight 110 %. The home screen shows them under the preview. Later maybe per region; no editor page yet.
-- **Wild like Factorio (2026-10-24):** one moisture noise decides – wet = forest ("Forest size": big forests or many
-  groves), next to it green meadow, the driest open ground dirt. Lakes from a height noise ("Shore detail": smooth to
-  frayed).
 - **Start area like Factorio's (2026-10-24, `mapgen/start.rs`):** first look, then help – if a sawmill inside the
   command center's grid would work fewer than 20 forest tiles, groves grow at the edge of the grid until it does (the
   clearing stays free; is it wider than the grid, one tesla tower further). The start patches of ore are planned with
-  the grid too: stone one tesla tower out (the barracks needs it), iron ore and coal one or two. A test checks every
-  map with 10 seeds.
+  the grid too: stone one tesla tower out (the barracks needs it), iron ore and coal one or two. Only on the tests'
+  plain map now (TAB's has its own rules); a test checks it with 10 seeds.
 - **World border:** straight on screen like TAB's – the playing field is a rectangle √2 times as wide as high (a
-  diamond in the grid), the minimap too. Around it a ring of open ground (16 steps, ≈ 11 tiles); the grid corners
+  diamond in the grid), the minimap too. Around it a ring of open ground (24 steps, ≈ 17 tiles: spawners at its outer edge, room for incoming track); the grid corners
   beyond are off the map. Units and the camera stop at the border. Spawners are rectangles on screen as well – in the
   editor also slanted like the tiles. Like SC2's map bounds inside its map size, the playing field is a rectangle of
   its own: a new map has it in the middle, the editor drags it anywhere on the grid (any size, the ground stays);
@@ -721,10 +753,9 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
 
 - **Endless** (nice to have): the round goes on after the final wave.
 - **Co-op** (wanted): one player hosts, see 12.8.
-- **Campaign** (wanted, far off): like TAB's – research inside the round (at the workshops) and **in-between tech**:
-  weaker early versions of buildings that research makes into the full ones (e.g. a small windmill first). The
-  survival mode (what's being built now) has none of it: everything comes at its **standard strength**, which keeps
-  development simple.
+- **Campaign** (wanted, far off): like TAB's – **in-between tech**: weaker early versions of buildings that research
+  makes into the full ones (e.g. a small windmill first). The survival mode (what's being built now) has none of it:
+  everything comes at its **standard strength** – only TAB's research inside the round, at the workshops (6).
   - **Story arc (setting, 1):** opening mission like SC2's *Legacy of the Void*: you're handed a big modern army and
     live through the collapse. Then rebuilding from the ruins, claiming land, trade with other outposts.
   - **Twist for the final missions:** the virus is man-made and can be steered, e.g. by radio waves. The player learns
@@ -956,14 +987,20 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
 - **Layout like SC2's editor** (steps in `docs\editor.md`): a module bar (Terrain, Objects, Zombies, Regions |
   Triggers, Events, Map, later Data), tools left, properties right, the map in between, a status line – every TAB
   function stays.
-  *In the prototype:* the frame – menu bar, module bar (Terrain, Objects, Zombies | Triggers, Events, Map; Regions and
-  Data come with their logic), fixed egui panels left and right, a status line, bars floating over the map (sight,
+  *In the prototype:* the frame – menu bar, module bar (Terrain, Objects, Zombies, Regions | Triggers, Events, Map; Data
+  comes with its logic), fixed egui panels left and right, a status line, bars floating over the map (sight,
   grid, zoom, what the mouse does), badges TAB / SC2 / new. The map only uses the room between the panels: the camera,
   clicks, TAB's bar and its minimap go through one view rectangle (`src\view.rs`); in the game it's the window.
   Also: zoomed out the zombies are tiles in a colour per breed (TAB paints them as cells) – over the pictures on top of
   everything, in the grid view inside its cells; a box in Edit selects everything, Ctrl+C/X/V copy, cut and paste it
   with all the map file keeps of it (`src\picking.rs`, `src\sim\clipboard.rs`, orders `Paste` / `RemovePieces`);
   houses of doom in TAB's three sizes.
+  The **Objects** module (`src\editor\objects.rs`): a catalog of every kind with its picture, in groups, with search
+  and filters; "Placing" sets the owner of what's put down next (order `PlaceAs`: the order inside, and what it made
+  changes hands at once); one click places one thing, Shift keeps it in hand. Below the map TAB's entity list as a
+  table (kind, name ID, tile, owner, life, scripts – houses of doom and loot too): a click selects on the map, a double
+  click moves the camera. The list has no selection of its own – it's the map's. Several things selected: the
+  properties they share, and a change goes to all of them.
 
 - **Events today:** a new round turns TAB's survival plan (`spawning.json`) + days + population into its `events` (map
   format 5: hour, random offset, repeat, growth, notice, spread, final, reveal, victory, groups). From then on the file
@@ -985,6 +1022,9 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      around it (grows or shrinks on every side through the map file, new ground is grass) – like SC2's map bounds and
      map size; waves with **groups** (several breeds, chosen spawners by name), stages of the constant spawn with
      spawners of their own (map format 4). Later a trigger action "playing field to region X" makes missions in parts.
+     The **Map page** (`src\editor\map_page.rs`) is a full page in three columns (info and world; round, difficulty,
+     players; victory and defeat): the difficulty is chosen from `game_difficulties.json` (`SetDifficulty`: how close
+     each breed may come, what new villages hold – zombies already placed stay), the players are shown, not edited.
   3. **Properties of what's placed (TAB's Entities):** select one or many and edit – zombies per house and their breeds,
      loot, a zombie's breed and state, HP, owner; move, copy, delete.
      *In the prototype:* a right click on a spawner opens its properties (name, straight or slanted, mode, remove); Del
@@ -995,23 +1035,52 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      the scripts, a name and text the player sees, a mark on the minimap); locate, clone, delete. Neutral things wait in
      a list of their own and take part in nothing (`sim/neutral.rs`) – step 7's owner, without the ally AIs.
   4. **Painter:** line, rectangle, fill, noise brush, a generator on a part of the map, copy and paste areas.
+     *In the prototype* (`src\editor\terrain.rs`): every painting tool (ground, ore, eraser, zombie brush) as a
+     brush, a line, a rectangle or a fill of the patch clicked, and a density below 100 % that leaves tiles out,
+     scattered – the same ones within a stroke. They only pick tiles; the orders are the old ones. On the right what
+     lies under the mouse. Smoothing (`SmoothTerrain`: a tile takes what 5 of its 8 neighbours are), an area of tiles
+     whose ground is copied and pasted (`PasteTerrain`) or filled by TAB's generator from a seed (`Generate`: forest,
+     lake, mountains in 2 × 2 blocks, an ore field, a village of doom – `src\sim\landscaping.rs`), "keep buildings
+     and tracks free", the landscape switched (`SetLook`), and per tile a choice of pictures for forest, rock and ore
+     (`Map::picture`, the look's lists in three groups; map file `pictures`, in runs – only the look, so no new
+     format number). On the right a minimap and SC2's layers (`draw::Layers`: ground, cover, things, zombies, the
+     zombies' ways, noise as a heat map).
   5. **Regions and points (SC2):** named areas and spots – what triggers talk about ("north gate", "village 3").
+     *In the prototype* (`src\sim\regions.rs`, `src\editor\regions.rs`, map file `regions` / `points`, format 6): a
+     region is a name, a colour and shapes – rectangles, circles, painted tiles; a shape can cut (`cut`) instead of
+     add, so a ring is a circle minus a circle – a point is a name and one tile. Orders `AddZone` / `SetZone` /
+     `PaintZone` / `RemoveZone`, `AddSpot` / `SetSpot` / `RemoveSpot`. In the editor: tools Rectangle, Circle, Paint
+     and Point, lists with search, properties on the right (shapes with numbers, Locate, Duplicate, Delete); on the
+     map click to select, drag to move, drag a rectangle's border; with a region selected Ctrl-drag adds a shape,
+     Alt-drag cuts one. The playing field is a special region in the list (the border tool). "Used by" comes with the
+     Events module (below); the trigger action "playing field to region X" with the Triggers module.
+     *In the prototype* (`src\editor\events.rs`, map format 7): the Events module is a full page - a
+     timeline of the whole round (rows Waves, Final, Notices, Reveal, Victory; bar height = zombies on a square-root
+     scale; click picks, dragging a bar sets a new hour), below it the picked event's values and its groups, on the
+     right "Plan from rules" (order `PlanEvents`: TAB's plan for the days with a difficulty's population, asked
+     twice) and "Send now" (`SendEvent`: one event's zombies at once). A group can come from **chosen regions**
+     (`WaveFrom::Zones`: a random free tile of one of them); the Regions module lists what uses a region
+     (`World::zone_uses`) and asks before deleting a used one. Left out: "Jump to day" (no fast-forward in the
+     sim), "Constant spawn" (TAB's stragglers are events).
   6. **Triggers (SC2):** events + conditions + actions, variables. Events: a time, a unit in a region, built/destroyed,
      zombies killed, a wave, noise in a region, a house razed. Actions: waves and zombies at a region, messages and
      objectives, reveal, resources, wait, victory/defeat, orders to allies. Edited as sentences ("When a unit enters
      North gate: 200 runners from spawner 2"). Checked in the simulation every tick in a fixed order – deterministic
      for co-op.
-     *In the prototype:* TAB's story first (`sim/story.rs`, editor module "Triggers"): scripts of actions from a fixed list
-     (no free code) at the start, victory and defeat, when an event comes or is done, when a neutral thing joins, from
-     the command center's own button; goals from a fixed list with progress; counters. A player's choice comes as an
-     order. SC2's triggers (regions, "when …") build on it later.
+     *In the prototype:* TAB's story first (`sim/story.rs`, editor module "Triggers"): **triggers** (event, conditions
+     typed expressions, actions from a fixed list, each with a condition and code) stored as data in the map file
+     (format 9; older files are turned around when read). Events: round start, victory, defeat, a map event comes or is done, a neutral
+     thing joins (by name ID), the command center's own button. Goals from a fixed list with progress; variables
+     (number or yes/no). A player's choice comes as an order. More events (regions, "when …") build on it later.
      *Planned* (steps in `docs\trigger-und-28yl.md`): SC2's layers.
-     - **Triggers** (event + conditions + actions) are the main layer and are stored as data. Today's scripts, goals
-       and the command center's button become parts of them.
-     - Conditions and code are a small **typed expression language**: number, yes/no and text, later unit, region and
-       point. It is typed as text in the editor, checked at once and stored as a fixed tree.
-     - **Functions** come from one list in Rust (name, parameter types, what they do). The language grows without
-       touching the interpreter.
+     - **Triggers** (event + conditions + actions) are the main layer and are stored as data (done, step 2). Goals and
+       the command center's button stay their own parts.
+     - Conditions and code are a small **typed expression language** (`sim/expr.rs`, done, step 3): number, yes/no and
+       text, later unit, region and point. It is typed as text in the editor, checked at once (a mistake says where) and
+       stored as a fixed tree. Every step of a script has a condition and code, like TAB's actions. It binds the usual
+       way; TAB's odd binding is the converter's job (it sets brackets).
+     - **Functions** come from one list in Rust (`sim/funcs.rs`: name, parameter types, what they do). The language
+       grows without touching the interpreter.
      - **A running script** is only "which trigger, where in its tree, which local values". That is plain serde, so
        saving mid-script, replays and rejoining in co-op just work, and **wait** is an action like any other.
      - **No embedded Lua/Rhai:** a running coroutine can't be saved, and Lua's `pairs` order would break lockstep.
@@ -1052,7 +1121,12 @@ before step 6.
 | **9. Noise and creep** | Noise attracts waves, nests spread creep | Expanding is a decision | Noise like TAB (adds up, lures, villages) – creep missing |
 | **10. Full round** | Section 4 timeline, save and load | A 40-day round playable | |
 | **11. Home screen and meta** | Regions, setup, score %, research | "One more round" | |
-| **12. Polish** | Sounds, effects, alerts, balancing, tutorial | Someone else can play it | |
+| **12. Polish** | Sounds, effects, alerts, balancing, tutorial | Someone else can play it | TAB's sounds and effects in (`src/audio.rs`, `src/effects.rs`); balancing, tutorial missing |
+
+**Next, in this order:** 1. fine-tuning and logic (balance, check estimated values); 2. features – trains
+(`docs\trains.md`), the editor like SC2 (`docs\editor.md`, `docs\trigger-und-28yl.md`), the old map generators,
+console/chat with pings like Factorio, co-op, unit abilities, people walking around (5.6), creep (8.4); 3. our own
+pictures instead of TAB's (questions 21, 22).
 
 ---
 
@@ -1088,7 +1162,12 @@ before step 6.
 Ideas that don't serve a pillar yet, or are too big for now.
 
 - **Day/night cycle:** more zombies at night, lights cost energy.
-- **Weather:** fog cuts sight, storms knock out solar.
+- **Weather** that does something: fog cuts sight, storms knock out solar.
+- **Vehicles** (decided 2026-11-12, not built): a scrappy MG car midgame, a heavy tank late – bigger than 1 × 1.
+  Steered like StarCraft (short ways, giving way, instant answers – lockstep-safe), plus two things of Beyond All
+  Reason: a turn rate and acceleration (it turns before it drives off), and ways by size (BAR's move classes: a
+  2-tile tank only plans through gaps it fits). Through hordes they push by weight like the giant (`crowd.rs`). (Snow and rain are in as pictures and
+  sound – a script's `Weather` action, 9.)
 - **Trains** between distant ore fields, **drones** delivering items.
 - **Refugees** mid-round – maybe infected. 😈
 - **Mutations:** a random horde modifier per round.

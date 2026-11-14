@@ -43,6 +43,7 @@ use super::sound::{cell_xy, CELL};
 use super::terrain::nearest_free_tile;
 use super::crowd::{rock_ticks, UNIT_MASS};
 use super::fallen::Fling;
+use super::fx::{Fx, Struck};
 use super::{after_armor, clear_line, Building, World, TICK, TICKS_PER_SECOND, UNIT_RADIUS};
 use crate::data::{self, BreedStats};
 use crate::kinds::BuildingKind;
@@ -122,7 +123,11 @@ pub struct Zombie {
     /// How big it is (tiles) – that of its breed. Kept here like `speed`: the crowd asks for it thousands of times
     /// per tick.
     pub radius: f32,
+    /// Ticks until it can start its next attack (`attack_seconds`) – it stands meanwhile, like TAB's zombie, which
+    /// stops for its whole attack action.
     pub(super) cooldown: u32,
+    /// Its blow on the way (`Swing`) – `None`: it isn't swinging.
+    pub(super) swing: Option<Swing>,
     pub breed: Breed,
     /// What it's after (TAB's watcher target) – decided when it looks around (`watch`), or when it's shot
     /// (`zombie_hit_by`).
@@ -174,6 +179,16 @@ pub(super) enum Aim {
     /// A building: one with people in it (TAB's `HasPeople`: the command center, a house, one with workers, a tower
     /// with units inside – `Building::has_people`), or a wall in its way (`wall_in_way`).
     Building(u32),
+}
+
+/// A zombie's attack under way, like TAB's attack action: the animation runs, the blow lands after `windup_seconds`
+/// (TAB's `TimeAction × TimeFactorAction`). By number, not index – the lists change in between.
+#[derive(Clone, Copy)]
+pub(super) struct Swing {
+    /// What it swings at.
+    at: Aim,
+    /// Ticks until the blow lands.
+    left: u32,
 }
 
 /// What an aim is right now: its index in its list.
@@ -268,7 +283,7 @@ impl Lure {
 /// (`mapfile.rs`) and named in `data\` – by these names, whatever `name` the game shows. TAB's breeds are ours like
 /// this: WeakA/B/C → walker, WorkerA/B and MediumA/B → runner, DressedA → riot, StrongA (Chubby) → fat, Venom →
 /// spitter, Harpy → harpy, Giant → giant.
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Breed {
     /// The weakest and slowest: lies scattered over the map from the start, and comes out of infected houses.
     Walker,
@@ -464,6 +479,7 @@ impl World {
             speed,
             radius,
             cooldown: 0,
+            swing: None,
             breed,
             aim: None,
             attacked: false,
@@ -686,12 +702,14 @@ impl World {
         // many busy ones on all cores at once. A resting one walks on as it decided.
         let world = &*self;
         let busy = resting.iter().filter(|&&r| !r).count();
-        // A harpy in the air flies on; one at a wall that can leap over it takes off (the last: where it lands).
-        let intents: Vec<(Vec2, Option<Hit>, Option<Vec2>)> = world.per_zombie(busy, |(i, zombie)| {
+        // A harpy in the air flies on; one at a wall that can leap over it takes off (the last: where it lands). One in
+        // the middle of an attack stands (TAB's `StopMovement` for the whole action). The middle: whom it starts to
+        // swing at – by number, the blow lands ticks later.
+        let intents: Vec<(Vec2, Option<Aim>, Option<Vec2>)> = world.per_zombie(busy, |(i, zombie)| {
             if resting[i] {
                 return (zombie.step, None, None);
             }
-            if zombie.leap.is_some() {
+            if zombie.leap.is_some() || zombie.cooldown > 0 {
                 return (Vec2::ZERO, None, None);
             }
             let (dir, hit, goal) = world.zombie_intent(zombie);
@@ -699,7 +717,7 @@ impl World {
                 return (Vec2::ZERO, None, Some(to));
             }
             // On stakes it wades (`ground_pace`).
-            (dir * zombie.speed * TICK * world.ground_pace(zombie.pos), hit.filter(|_| zombie.cooldown == 0), None)
+            (dir * zombie.speed * TICK * world.ground_pace(zombie.pos), hit.map(|h| world.aim_of(h)), None)
         });
         // Who is in the crowd this tick (`move_crowd`): not resting, not in the air, not taking off.
         let solving: Vec<bool> = self
@@ -717,17 +735,10 @@ impl World {
             .map(|((&(want, _, _), z), &r)| if r || want == Vec2::ZERO || z.step == Vec2::ZERO { want } else { want.lerp(z.step, TURN) })
             .collect();
 
-        // 4. Deal damage and take off – writing. Walking comes after, all at once (`move_crowd`).
-        let tick = self.tick;
-        // Buildings whose shield breaks this tick – they let their zombies out after the loop (`infect`).
-        let mut infected = Vec::new();
-        // The shots of the ranged zombies – fired after the loop (`ranged.rs`), they need all of `self`.
-        let mut shots = Vec::new();
-        // Every hit makes noise (`sound.rs`) – a crowd tearing at a wall gets loud, a harpy alone does.
-        let mut hits = Vec::new();
-        // The blows that sweep (the giant's, `sweep`) – dealt after the loop, they hit everyone around.
-        let mut sweeps = Vec::new();
-        for (i, (zombie, ((_, hit, leap), &want))) in self.zombies.iter_mut().zip(intents.into_iter().zip(&wants)).enumerate() {
+        // 4. Swing, and take off – writing. The blows that land are dealt after (`blow`), walking comes after that, all
+        // at once (`move_crowd`).
+        let mut blows = Vec::new();
+        for (i, (zombie, ((_, swing_at, leap), &want))) in self.zombies.iter_mut().zip(intents.into_iter().zip(&wants)).enumerate() {
             zombie.roar = zombie.roar.saturating_sub(1);
             zombie.prev = zombie.pos;
             // Over a wall: takes off, flies on in a straight line – over the wall and whoever stands there – and lands
@@ -752,41 +763,92 @@ impl World {
             zombie.still = if want == Vec2::ZERO { zombie.still.saturating_add(1) } else { 0 };
             zombie.calm_for = if calm.get(i) == Some(&true) { zombie.calm_for.saturating_add(1) } else { 0 };
             zombie.cooldown = zombie.cooldown.saturating_sub(1);
-            if hit.is_some() {
-                zombie.cooldown = zombie.breed.attack_ticks();
-                hits.push((zombie.pos, zombie.breed.hit_noise()));
+            // A new attack: the animation starts now (`since_hit`), the blow lands after its wind-up – always before
+            // the next attack could start.
+            if let Some(at) = swing_at {
+                let attack = zombie.breed.attack_ticks();
+                zombie.cooldown = attack;
+                zombie.swing = Some(Swing { at, left: zombie.breed.stats().windup.min(attack - 1) });
             }
-            match hit {
-                Some(hit) if zombie.breed.is_ranged() => shots.push((zombie.pos, zombie.breed, hit)),
-                Some(hit) if zombie.breed.stats().sweep_radius > 0.0 => sweeps.push((i, hit)),
-                Some(Hit::Unit(u)) => self.units[u].take_hit(zombie.breed.stats().damage, tick),
-                Some(Hit::Building(b)) => {
-                    if self.buildings[b].take_damage(zombie.breed.stats().damage) {
-                        infected.push(b);
-                    }
+            if let Some(swing) = zombie.swing.as_mut() {
+                if swing.left == 0 {
+                    blows.push((i, swing.at));
+                    zombie.swing = None;
+                } else {
+                    swing.left -= 1;
                 }
-                None => {}
             }
         }
-        for (z, hit) in sweeps {
-            self.sweep(z, hit, &mut infected);
-        }
-        // 5. Everyone walks at once, the crowd pushes and flows (`crowd.rs`). Before the infected houses let their people
-        // out – those are in none of the lists yet, they walk the next tick.
+        // 5. Everyone walks at once, the crowd pushes and flows (`crowd.rs`). Then the blows that land: damage, noise,
+        // sounds (a noise can wake sleepers – new zombies in the list, so not before the crowd walked). After that the
+        // infected houses let their people out – they walk the next tick –, and the ranged ones' shots fly.
         self.move_crowd(&wants, &solving);
+        let mut infected = Vec::new();
+        let mut shots = Vec::new();
+        for (z, at) in blows {
+            self.blow(z, at, &mut infected, &mut shots);
+        }
         for b in infected {
             self.infect(b);
         }
         for (from, breed, hit) in shots {
             self.zombie_shoots(from, breed, hit);
         }
-        // The zombies' noise: it brings them and wakes the sleepers around like any sound, but it doesn't add to your
-        // colony's unrest.
-        for (at, loud) in hits {
-            self.make_sound(at, loud);
-        }
         // The grid now matches the new positions – the units look up their zombies in it afterwards.
         self.fill_zombie_grid();
+    }
+
+    /// What a zombie swings at, by number (`Swing`).
+    fn aim_of(&self, hit: Hit) -> Aim {
+        match hit {
+            Hit::Unit(u) => Aim::Unit(self.units[u].id),
+            Hit::Building(b) => Aim::Building(self.buildings[b].id),
+        }
+    }
+
+    /// Zombie `z`'s blow at `at` lands now, at the end of its wind-up – like TAB's `PerformEffect`. Gone meanwhile (dead,
+    /// up in a tower, the building infected): nothing. A unit that got out of its reach isn't hit either – only a claw
+    /// checks that (TAB: `ZombieClaw` on a unit); a shot flies anyway, the giant's sweep covers far more than its reach.
+    /// The blow makes its noise (`sound.rs`: it brings zombies and wakes sleepers, but doesn't add to your colony's
+    /// unrest) and its sound (`audio.rs`). Buildings whose shield breaks go into `infected`, the ranged ones' shots into
+    /// `shots` – both need all of `self`, after the crowd walked.
+    fn blow(&mut self, z: usize, at: Aim, infected: &mut Vec<usize>, shots: &mut Vec<(Vec2, Breed, Hit)>) {
+        let (pos, breed, radius) = (self.zombies[z].pos, self.zombies[z].breed, self.zombies[z].radius);
+        let stats = breed.stats();
+        let hit = match at {
+            Aim::Unit(id) => match self.unit_index(id) {
+                Some(u) if self.units[u].hp > 0 && !self.units[u].is_inside() => Hit::Unit(u),
+                _ => return,
+            },
+            Aim::Building(id) => match self.building_index(id) {
+                Some(b) if !self.buildings[b].zombies_ignore() => Hit::Building(b),
+                _ => return,
+            },
+        };
+        let claw = !breed.is_ranged() && stats.sweep_radius <= 0.0;
+        if let Hit::Unit(u) = hit
+            && claw
+            && self.units[u].pos.distance(pos) > UNIT_RADIUS + radius + ARM
+        {
+            return;
+        }
+        self.make_sound(pos, breed.hit_noise());
+        let what = match hit {
+            Hit::Unit(_) => Struck::Unit,
+            Hit::Building(b) if self.buildings[b].kind.is_wall() => Struck::Wall,
+            Hit::Building(_) => Struck::Building,
+        };
+        self.fx.push(Fx::ZombieStruck { at: pos, breed, what });
+        match hit {
+            _ if breed.is_ranged() => shots.push((pos, breed, hit)),
+            _ if stats.sweep_radius > 0.0 => self.sweep(z, hit, infected),
+            Hit::Unit(u) => self.units[u].take_hit(stats.damage, self.tick),
+            Hit::Building(b) => {
+                if self.buildings[b].take_damage(stats.damage) {
+                    infected.push(b);
+                }
+            }
+        }
     }
 
     /// A blow that sweeps (TAB's giant: `Arc120`, `EffectRadius` 3.5, `FriendlyDamage`): zombie `z` hits its target and

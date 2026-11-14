@@ -5,7 +5,7 @@ use macroquad::math::{vec2, Vec2};
 
 use super::buildings::NO_BUILDING;
 use super::zombies::BUILDING_DETOUR;
-use super::World;
+use super::{World, UNIT_RADIUS};
 use crate::flow::{FlowField, Walker};
 use crate::kinds::BuildingKind;
 use crate::map::Map;
@@ -39,20 +39,31 @@ impl World {
         self.to_base = FlowField::to_area(&self.map, &goals, self.base, zombie);
     }
 
+    /// The way a zombie at `pos` walks to the command center: a step of length 1 – or none where there is no way
+    /// (solid ground, shut in). For the editor's layer "Paths of the zombies" (`draw::Layers`).
+    pub fn zombie_way(&self, pos: Vec2) -> Vec2 {
+        self.to_base.direction(pos)
+    }
+
     /// Whoever now stands on painted terrain or a new building moves to the nearest free spot – you may build on
     /// your own units, like in StarCraft they get out of the way (zombies can't be that close: `can_place`). Several
     /// pushed onto the same tile push each other apart afterwards (`unit_separation`).
     pub(super) fn push_out_of_terrain(&mut self) {
         let map = &self.map;
+        // Oil painted under someone: out of its pool (`Map::out_of_oil`).
         for zombie in &mut self.zombies {
-            if let Some(free) = push_out(zombie.pos, |x, y| map.is_blocked(x, y)) {
+            let free = push_out(zombie.pos, |x, y| map.is_blocked_body(x, y)).unwrap_or(zombie.pos);
+            let free = map.out_of_oil(free, zombie.radius);
+            if free != zombie.pos {
                 zombie.pos = free;
                 zombie.prev = free; // don't draw it sliding through the obstacle
             }
         }
         // Units in a tower stand on a building on purpose.
         for unit in self.units.iter_mut().filter(|u| !u.is_inside()) {
-            if let Some(free) = push_out(unit.pos, |x, y| map.blocks_unit(x, y)) {
+            let free = push_out(unit.pos, |x, y| map.blocks_unit_body(x, y)).unwrap_or(unit.pos);
+            let free = map.out_of_oil(free, UNIT_RADIUS);
+            if free != unit.pos {
                 unit.pos = free;
                 unit.prev = free;
             }

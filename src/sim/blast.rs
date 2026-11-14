@@ -120,13 +120,13 @@ impl World {
         }
     }
 
-    /// A zombie stepped on mine trap `b` (`spring_traps`): its fuse is lit – `delay` ticks, then it goes off
-    /// (`detonate`). Once lit, nothing stops it.
+    /// A zombie stepped on mine trap `b` (`spring_traps`): its fuse is lit – its delay (0–3) × `delay_step` ticks,
+    /// then it goes off (`detonate`). Once lit, nothing stops it.
     pub(super) fn light_mine(&mut self, b: usize) {
         let mine = &mut self.buildings[b];
         if let Some(stats) = mine.stats().mine.as_ref().filter(|_| !mine.blown && mine.is_built()) {
             mine.blown = true;
-            mine.reload = stats.delay;
+            mine.reload = stats.delay_step * mine.delay as u32;
         }
     }
 
@@ -161,6 +161,6 @@ impl World {
         }
         self.make_colony_sound(at, blast.noise);
         self.blasts.push(Blast { at, left: SHOWN });
-        self.fx.push(Fx::Blast { at, radius });
+        self.fx.push(Fx::Blast { at, radius, by: None });
     }
 }

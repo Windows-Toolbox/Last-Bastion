@@ -107,7 +107,11 @@ impl World {
     ///   (`replaces`),
     /// - a farm: every tile on grass – nothing grows on dirt (`BuildingKind::needs_fertile`),
     /// - the oil platform: every tile on oil (`BuildingKind::needs_oil`); a wonder: none of it stands yet (`only_one`),
-    /// - far enough from other buildings (`gap`),
+    /// - on ore only defence and the mines (`BuildingKind::on_ore`) – TAB builds nothing on ore at all –, on oil
+    ///   nothing but the oil platform,
+    /// - not on the railway or next to it (TAB's `ReasonClearTerrain`) – only a gate goes across it, its middle tile on
+///   the track (`clear_of_rails`),
+/// - far enough from other buildings (`gap`),
     /// - no zombie on the site or within `build_clearance` tiles around it (`build_zone`),
     /// - a building that makes, takes or carries power (`BuildingKind::on_grid`): its middle inside a grid
     ///   (`in_grid`) – the command center's reach or a tesla tower's.
@@ -123,22 +127,42 @@ impl World {
         let fertile = !kind.needs_fertile() || site.tiles().all(|(x, y)| self.map.terrain(x, y).is_fertile());
         // The oil platform right on an oil node – every tile of it oil (TAB's `OilSource`).
         let oil = !kind.needs_oil() || site.tiles().all(|(x, y)| self.map.deposit(x, y).is_some_and(|d| d.ore == Ore::Oil));
+        // On ore (stone, iron, coal, gold) only defence and the mines (`on_ore`), on oil only the oil platform.
+        let ore = site.tiles().all(|(x, y)| match self.map.deposit(x, y) {
+            None => true,
+            Some(d) if d.ore == Ore::Oil => kind.needs_oil(),
+            Some(_) => kind.on_ore(),
+        });
         // A wonder only once (TAB's `MaxInstances`).
         let first = !kind.stats().only_one || !self.buildings.iter().any(|b| b.kind == kind);
         let powered = !kind.on_grid() || self.in_grid(site.center());
-        let rules = ground && fertile && oil && first && powered;
+        let rules = ground && fertile && oil && ore && first && powered && self.clear_of_rails(kind, site);
         rules && self.far_enough(kind, site) && !self.zombies_in_build_zone(kind, tile, turned)
+    }
+
+    /// Like TAB (`ZXEntity.CanBeBuiltAtCell`, `IsCellAreaNextToTerrain(Railway)`): no tile on the railway or right
+    /// next to it (not counting corners) – a gate only with its middle tile on it, so it can close the track.
+    fn clear_of_rails(&self, kind: BuildingKind, site: Site) -> bool {
+        let pieces = crate::sim::rail_pieces(&self.ornaments);
+        if pieces.is_empty() {
+            return true;
+        }
+        let on = |tile: (i32, i32)| pieces.iter().any(|p| p.covers(tile));
+        if kind == BuildingKind::Gate {
+            let middle = (site.x + site.w / 2, site.y + site.h / 2);
+            return site.tiles().all(|t| t == middle || !on(t));
+        }
+        site.tiles().all(|(x, y)| [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)].iter().all(|(dx, dy)| !on((x + dx, y + dy))))
     }
 
     /// Editor: can a building go here without the rules of the game? Only on the map and not onto another building
     /// (except one it may replace) – terrain, zombies, units, distances and the world border don't matter.
     pub fn can_place_anywhere(&self, kind: BuildingKind, tile: (i32, i32), turned: bool) -> bool {
         let site = Site::new(kind, tile, turned);
-        let size = self.map.size as i32;
         site.tiles().all(|(x, y)| {
-            let on_map = x >= 0 && y >= 0 && x < size && y < size;
-            // The map knows at once – the building index only after all orders of the tick. Never on a house of doom.
-            on_map && !self.map.is_doom(x, y) && (!self.map.is_built(x, y) || self.replaceable_at(kind, site, (x, y)))
+            // On the map – the playing field and the ring, not a corner of the grid past it (`Map::on_map`). The map
+            // knows at once – the building index only after all orders of the tick. Never on a house of doom.
+            self.map.on_map(x, y) && !self.map.is_doom(x, y) && (!self.map.is_built(x, y) || self.replaceable_at(kind, site, (x, y)))
         })
     }
 

@@ -89,7 +89,7 @@ impl World {
         let killed = self.zombies.iter().filter(|z| !z.is_alive());
         let bodies = killed.map(|z| Dying { pos: z.pos, prev: z.pos, id: z.id, breed: z.breed, look: z.look, died: tick, fling: z.fling });
         self.dying.extend(bodies);
-        let deaths = self.zombies.iter().filter(|z| !z.is_alive()).map(|z| Fx::ZombieDied { at: z.pos });
+        let deaths = self.zombies.iter().filter(|z| !z.is_alive()).map(|z| Fx::ZombieDied { at: z.pos, breed: z.breed });
         self.fx.extend(deaths);
     }
 }

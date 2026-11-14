@@ -13,6 +13,8 @@
 //!   Shot down, it drops loot; whatever it hadn't let out yet is gone.
 //! - **Loot**: piles of gold or goods lying around. A unit walking onto one picks it up. Zombies lie hidden in the
 //!   ground around it – they all come out at once when one of your units comes close or a sound is loud enough there.
+//!   TAB's supplies of food and energy (`PickableFood`, `PickableEnergy`) aren't goods: picked up, the command center
+//!   makes that much more food and power for the rest of the round (TAB's `CommandCenterExtraFood` / `…Energy`).
 //!
 //! The numbers are in `data\doom.json` and `data\loot.json`; the breeds of the loot's guards come from `mix` in
 //! `data\roaming.json`.
@@ -199,7 +201,8 @@ fn grown(r: (i32, i32, i32, i32), by: i32) -> (i32, i32, i32, i32) {
     (r.0 - by, r.1 - by, r.2 + by, r.3 + by)
 }
 
-/// What lies in a pile of loot: gold, or one of the goods of the stock.
+/// What lies in a pile of loot: gold, one of the goods of the stock – or a supply of food or energy for the command
+/// center.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum LootKind {
     Gold,
@@ -207,16 +210,19 @@ pub enum LootKind {
     Stone,
     Iron,
     Coal,
+    /// TAB's food and energy supplies: the command center makes `amount` more food per payout / power from now on.
+    Food,
+    Energy,
 }
 
 impl LootKind {
     /// The goods – gold is apart (`gold_share` in `data\loot.json`).
     pub const GOODS: [LootKind; 4] = [LootKind::Wood, LootKind::Stone, LootKind::Iron, LootKind::Coal];
 
-    /// Where it goes in the stock – `None` for gold (`World::gold`).
+    /// Where it goes in the stock – `None` for gold (`World::gold`) and the supplies (`World::found_food`, `found_power`).
     pub fn resource(self) -> Option<Resource> {
         match self {
-            LootKind::Gold => None,
+            LootKind::Gold | LootKind::Food | LootKind::Energy => None,
             LootKind::Wood => Some(Resource::Wood),
             LootKind::Stone => Some(Resource::Stone),
             LootKind::Iron => Some(Resource::IronOre),
@@ -225,9 +231,11 @@ impl LootKind {
     }
 
     pub fn name(self) -> &'static str {
-        match self.resource() {
-            Some(r) => r.name(),
-            None => "Gold",
+        match self {
+            LootKind::Gold => "Gold",
+            LootKind::Food => "Food supply",
+            LootKind::Energy => "Energy supply",
+            _ => self.resource().map_or("", Resource::name),
         }
     }
 }
@@ -384,9 +392,16 @@ impl World {
             let at = self.loot[l].pos;
             self.raise_guards(l, Bound::To(Lure::seen(at, tick)));
             let loot = self.loot.remove(l);
-            match loot.kind.resource() {
-                Some(r) => self.stock.add(r, loot.amount, self.storage(r)),
-                None => self.earn(loot.amount),
+            self.fx.push(Fx::Picked { at });
+            match loot.kind {
+                LootKind::Gold => self.earn(loot.amount),
+                LootKind::Food => self.found_food += loot.amount,
+                LootKind::Energy => self.found_power += loot.amount,
+                _ => {
+                    if let Some(r) = loot.kind.resource() {
+                        self.stock.add(r, loot.amount, self.storage(r));
+                    }
+                }
             }
             self.score.loot_found += 1;
         }

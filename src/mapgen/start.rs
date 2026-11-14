@@ -78,15 +78,7 @@ fn plant_grove(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context) {
     let shape = Noise::new(rng.next_u64() as u32);
     let radius = GROVE_RADIUS + rng.unit_f32() * 1.5;
     let distance = ctx.grid.max(ctx.keep_out + 2.0);
-    // A spot away from the ways in – after 40 tries any spot, the ways in stay open anyway (below).
-    let mut center = ctx.center;
-    for attempt in 0..40 {
-        center = ctx.center + tools::random_direction(rng) * (distance + rng.unit_f32() * 2.5);
-        let (x, y) = (center.x.floor() as i32, center.y.floor() as i32);
-        if attempt == 39 || ctx.lanes.clearance(x, y) > radius + 1.0 {
-            break;
-        }
-    }
+    let center = ctx.center + tools::random_direction(rng) * (distance + rng.unit_f32() * 2.5);
     let reach = (radius * 1.45).ceil() as i32 + 1;
     let (cx, cy) = (center.x.floor() as i32, center.y.floor() as i32);
     for y in cy - reach..=cy + reach {
@@ -94,7 +86,7 @@ fn plant_grove(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context) {
             let middle = vec2(x as f32 + 0.5, y as f32 + 0.5);
             let edge = radius * (0.55 + 0.9 * shape.fractal(x as f32, y as f32, 5.0, 3));
             let in_clearing = middle.distance(ctx.center) <= ctx.keep_out;
-            if middle.distance(center) <= edge && !in_clearing && !tiles.get(x, y).is_solid() && !ctx.lanes.is_open(x, y) {
+            if middle.distance(center) <= edge && !in_clearing && !tiles.get(x, y).is_solid() {
                 tiles.set(x, y, Terrain::Forest);
             }
         }

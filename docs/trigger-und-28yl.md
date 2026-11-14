@@ -21,11 +21,11 @@ steht in `DESIGN.md` 12.9 Schritt 6 (Englisch), der Editor dazu in `docs\editor.
 ## Was es schon gibt
 
 `src\sim\story.rs` + `src\story_panel.rs` (Editor-Modul „Triggers“) – TABs „Game Narrative“ ohne Code:
-- **Skripte** beim Start, Sieg, Niederlage, wenn ein Event kommt / fertig ist, beim Beitreten eines neutralen Objekts,
-  vom Knopf der Kommandozentrale.
+- **Trigger** (Ereignis, Bedingungen als Ausdrücke, Aktionen mit Bedingung und Code) für Start, Sieg, Niederlage, Event kommt / fertig, Beitreten eines
+  neutralen Objekts, Knopf der Kommandozentrale.
 - **Aktionen** aus einer festen Liste: Zombies, Ressourcen, Einheiten, Häuser infizieren, Meldung, Fenster, Zufall,
   Auswahl, Zähler, Beitreten, Aufdecken, Sieg, Niederlage.
-- **Ziele** aus einer festen Liste (Kolonisten, Tag, Kills, Gebäude, Objekt zerstört, Zähler, Event fertig), **Zähler**.
+- **Ziele** aus einer festen Liste (Kolonisten, Tag, Kills, Gebäude, Objekt zerstört, Zähler, Event fertig), **Variablen**.
 
 ## Was TAB mehr hat (aus dem Decompile)
 
@@ -62,12 +62,12 @@ speichern nichts füreinander: frühere Entscheidungen fragt die Karte am Start 
 | # | Was | Status |
 |---|---|---|
 | 1 | **Karten auslesen:** `tools\tab_levels.py` öffnet `CustomLevel.TABLevel` (ZIP mit ZipCrypto, Passwort `crypted_zip_password("CustomLevel.TABLevel")` – für alle Karten gleich, siehe README des Decompiles), liest `Info` und `Data` (SharpSerializer-XML, Wurzel `ZXModFileCustomLevel`), dekodiert die Ebenen (`"<B>\|<H>\|<Base64>"`, 32 Bit je Zelle). Ausgabe nur lokal: je Karte JSON + eine Liste, welche Aktionen, Funktionen, Variablen und Ereignisse wirklich vorkommen. Klärt auch, welche Workshop-Ordner 28YL sind (lokal nennen die `Strings.csv` nur 29YL Phase 13–24 – 28YL evtl. erst abonnieren) | offen |
-| 2 | **Trigger als Daten:** `Trigger { name, ordner, an, ereignis, bedingungen, aktionen }` in der Karten-Datei. Die heutigen Skripte werden Trigger mit festem Ereignis (Start, Sieg, Niederlage, Event kommt/fertig, Beitreten, Knopf); Ziele und Knopf bleiben eigene Teile. Alte Dateien werden beim Laden umgebaut. Zähler → **Variablen** (Zahl, Ja/Nein, Startwert) | offen |
-| 3 | **Ausdruckssprache:** Typen Zahl, Ja/Nein, Text (später Einheit, Region, Punkt). Als Text getippt, sofort geprüft (Typfehler mit Stelle), gespeichert als fester Baum. **Funktionen aus einer Liste in Rust** (Name, Parametertypen, Rückgabe, Satz für den Editor, Wirkung) – die Sprache wächst, ohne den Interpreter anzufassen. TABs eingebaute Variablen und Funktionen von oben als erste Einträge. Jede Aktion bekommt **Bedingung + Code** wie in TAB | offen |
+| 2 | **Trigger als Daten:** `Trigger { name, ordner, an, ereignis, bedingungen, aktionen }` in der Karten-Datei. Die heutigen Skripte werden Trigger mit festem Ereignis (Start, Sieg, Niederlage, Event kommt/fertig, Beitreten, Knopf); Ziele und Knopf bleiben eigene Teile. Alte Dateien werden beim Laden umgebaut (Format 8, `triggers_from_scripts` in `src\mapfile.rs`). Zähler → **Variablen** (Zahl, Ja/Nein, Startwert). Bedingungen sind vorerst die der Ziele (`Condition`) – Schritt 3 ersetzt sie durch Ausdrücke. Trigger zu Event / neutralem Objekt hängen an Name bzw. Name-ID (Umbenennen im Editor zieht sie mit) | fertig |
+| 3 | **Ausdruckssprache:** Typen Zahl, Ja/Nein, Text (später Einheit, Region, Punkt). Als Text getippt, sofort geprüft (Typfehler mit Stelle), gespeichert als fester Baum (`src\sim\expr.rs`: Parser, Typprüfung, Ausgabe als Text; normale Bindung, die Klammern nach TABs Eigenheit setzt der Konverter). **Funktionen aus einer Liste in Rust** (`src\sim\funcs.rs`: Name, Parametertypen, Rückgabe, Satz für den Editor, Wirkung; der Editor zeigt die Liste). Erste Einträge aus TAB: `Day`, `Hour`, `TotalHours`, `D100`, `Random`, Rohstoffe, `Workers`, `WorkersAvailable`, `Colonists`, `Count(Typ)`, `IsDead(ID)`, `EndGameWon/Lost()`, `Give<Rohstoff>`; dazu `Kills`, `EventDone`, `FoodStock`. Entity-Typen und IDs sind vorerst Text. Jeder Schritt einer Aktionsliste hat **Bedingung + Code** (`Step`; falsch → Aktion und Code übersprungen, Code danach – bei „Choose“ nach der Wahl); Aktion „Variable“ ist weg (Code `x += 1`), neue Aktion „Code“. Trigger-Bedingungen sind Ausdrücke; Variablen auch Ja/Nein und Text. Karten-Datei Format 9, alte Dateien lesen sich weiter. **Noch nicht:** Ziele und Knopf mit Ausdrücken (Schritt 4), `{Ausdruck}` in Texten (6), `Energy`/`Food`/`…Production`, `CountDeads`, `CountBonus`, `IsInfected`, `GiveEntities`, `ApplyRules`, `DamageAll`, `CureAll` (7) | fertig |
 | 4 | **Ablauf wie TAB:** Block, Loop / Exit Loop (n), Auswahl mit Bedingung je Option, Zufall nach Gewicht, **Warten** als Aktion. Ein laufendes Skript ist nur „welcher Trigger, wo im Baum, welche lokalen Werte“ (serde) → Speichern mitten im Skript, Replays und Wiedereinstieg im Koop gehen von selbst. Sieg/Niederlage und Knopf (sichtbar, aktiv, Zähler) über Ausdrücke | offen |
 | 5 | **Ereignisse:** TABs **Betreten** an Objekten (alle 20 Frames = alle 10 Takte, einmal, Bedingung, Kamera, Lärm). Dazu SC2s: Zeit, gebaut/zerstört, Zombies getötet, Welle kommt, Haus fällt; mit Regionen (`docs\editor.md` Schritt 4): Einheit betritt/verlässt Region, Lärm in Region. Feste Reihenfolge je Takt | offen |
-| 6 | **Texte, Fenster, Sound:** Fenster mit Bild, Titel, Stimmung, eigenem Sound; Sound abspielen/stoppen; Meldung mit Farbe und Symbol; `{Ausdruck}` in Texten; **Strings.csv** (Sprachen, Varianten nach ID-Anfang). Braucht den Ton (`docs\tab-assets.md` Schritt 12) | offen |
-| 7 | **Restliche TAB-Aktionen:** Technologien schenken (braucht die Forschung), Zug schicken/entladen (`docs\tab-assets.md` Schritt 13), `GiveEntities`, `ApplyRules`, `DamageAll`, `CureAll`, `CountDeads`, `CountBonus`, `IsInfected` | offen |
+| 6 | **Texte, Fenster, Sound:** Fenster mit Bild, Titel, Stimmung, eigenem Sound; Sound abspielen/stoppen; Meldung mit Farbe und Symbol; `{Ausdruck}` in Texten; **Strings.csv** (Sprachen, Varianten nach ID-Anfang). Baut auf dem Ton auf (`src\audio.rs`) | offen |
+| 7 | **Restliche TAB-Aktionen:** Technologien schenken (`World::researched`, `src\sim\research.rs`), Zug entladen (schicken gibt es: Aktion „Train“ mit Ankunfts-Skript), `GiveEntities`, `ApplyRules`, `DamageAll`, `CureAll`, `CountDeads`, `CountBonus`, `IsInfected` | offen |
 | 8 | **Konverter:** `.TABLevel` → unsere Karten-Datei: Gelände, Objekte (Name-ID, Besitzer, Betreten-Skripte), Zombie-Ebene, Events, Story. ZXCode → unsere Sprache mit **TABs Bindung** (der Konverter setzt die Klammern, unsere Sprache bindet normal). Was er nicht kennt, meldet er mit Karte und Stelle, statt es zu verschlucken | offen |
 | 9 | **Test an 28YL:** alle 20 Karten ohne Meldung umwandeln, die ersten drei durchspielen (Dialogbäume, Betreten, Sieg). Danach: eine **Kampagne** bei uns trägt Variablen von Karte zu Karte (DESIGN 9, Story-Bogen) – die Abfragen am Kartenstart fallen dann weg | offen |
 
@@ -77,5 +77,5 @@ speichern nichts füreinander: frühere Entscheidungen fragt die Karte am Start 
 - 2 → 3 → 4 nacheinander; 5 geht ohne Regionen (Betreten, Zeit, Kills), der Regionen-Teil nach `docs\editor.md`
   Schritt 4.
 - Der Editor dazu (`docs\editor.md` Schritt 5: Sätze / Text, Baum, Aktionen zum Hineinziehen) baut auf 2–5 auf.
-- 6 nach dem Ton, 7 nach Forschung und Zügen, 8–9 zum Schluss.
+- 7 nach den Zügen, 8–9 zum Schluss.
 - Die Karten und alles daraus bleiben lokal, nie in git (wie TABs Bilder).

@@ -7,15 +7,15 @@ Alle Bilder des Spiels – vorgerenderte **Sprite-Sheets** wie in TAB (DESIGN.md
 | `units\` | Unsere Einheiten (Ranger, Soldat, Scharfschütze, Medic, Speerträger) und TABs Lucifer, Thanatos, Titan | `tools\tab_skins.py` | `src\sprites.rs` |
 | `zombies\` | Die Zombies (15 Skins mit den Einheiten zusammen) | `tools\tab_skins.py` | `src\sprites.rs` |
 | `buildings\` | Gebäude, Mauerstücke, Dorfhäuser, Fässer | `tools\tab_buildings.py` | `src\building_sprites.rs` |
-| `terrain\<BR\|TM\|AL\|DS\|FA\|VO>\` | Boden, Wasser, Bäume, Felsen, Kräuter, Erz je Landschaft | `tools\tab_terrain.py` | `src\ground.rs` |
+| `terrain\<BR\|TM\|AL\|DS\|FA\|VO>\` | Boden, Wasser, Bäume, Felsen, Kräuter, Erz, Klippen am Wasser je Landschaft | `tools\tab_terrain.py` | `src\ground.rs` |
 | `effects\` | Blut, Mündungsfeuer, Explosionen, Trümmer, Flecken am Boden | `tools\tab_effects.py` | `src\effects.rs` |
 | `projectiles\` | Pfeil und Ballista-Bolzen | `tools\tab_effects.py` | `src\effects.rs` |
 | `ui\` | Die Leiste: ihr Bild, Knöpfe, Zahnrad, `icons\`, `portraits\`, `events\`, `cursors\`; `backgrounds\` (Menü) | `tools\tab_ui.py` | `src\ui_art.rs`, `src\hud.rs` |
 | `logo\` | **Unser eigenes Logo** (`last_bastion.png`) – nicht von TAB, darum in git | `tools\make_logo.py` | `src\home.rs` (Startbildschirm) |
 | `animals\` | Raben und Ratten (Deko) | `tools\tab_skins.py` | `src\critters.rs`, `src\sprites.rs` |
-| `decor\` | Weizen, Beute, Schatz-Ruinen, Strommasten, Zelt- und Brunnenruinen, Schienen | `tools\tab_buildings.py` | `src\draw.rs` (Weizen, Beute, Ruinen, Strommasten; der Rest noch keiner) |
-| `trains\` | Lok, Panzer-, Kolonisten-, Güterwagen, Räder | `tools\tab_trains.py` | – noch keiner |
-| `sounds\` | `Effects\`, `UnitVoices\`, `Notifications\`, `Interface\`, `Ambient\`, `Music\` (alles `.ogg`/`.wav`) | `tools\tab_sounds.py` | – noch keiner |
+| `decor\` | Weizen, Beute, Schatz-Ruinen, Strommasten, brennender Lastwagen, Zelt- und Brunnenruinen, Schienen | `tools\tab_buildings.py` | `src\draw.rs` (alles außer Zelt- und Brunnenruinen) |
+| `trains\` | Lok, Panzer-, Kolonisten-, Güterwagen, Räder | `tools\tab_trains.py` | `src\train_sprites.rs` |
+| `sounds\` | `Effects\`, `UnitVoices\`, `Notifications\`, `Interface\`, `Ambient\`, `Music\` (alles `.ogg`/`.wav`) | `tools\tab_sounds.py` | `src\audio.rs` (welcher zu wem: `data\audio.json`) |
 | `test\` | Unser graues Testbild (in git) | `examples\test_sprites.rs` | `src\sprites.rs` |
 
 - **TABs Bilder** (alle Ordner außer `test\`): urheberrechtlich geschützt – nur auf diesem PC, **nie in git**
@@ -59,18 +59,19 @@ Alle Bilder des Spiels – vorgerenderte **Sprite-Sheets** wie in TAB (DESIGN.md
   `quarry`, `big_quarry`, `big_farm`, `big_mill`, `warehouse`, `engineering_center`, `shocking_tower`, `executor` –
   dreht sich wie die Ballista –, `radar`, `lookout_tower`, die Wunder `spire`, `academy`, `victorious`,
   `transmutator`, `crystal_palace`), Fallen (`blade_trap_1..4`, `mine_trap`) und `stone_gate` (noch keins). In `decor\` dieselbe
-  Gebäude-JSON: `wheat`, `loot_*`, `treasure_ruin_<Landschaft>`, `power_tower_*`, `tent_ruin_*`, `well_ruin` und die Bahn: `rail_x`/`rail_y` (ein Stück Gleis), `rail_end_n|e|s|w` (Prellbock), `rail_curve_ne|nw|se|sw` (Kurve, 6 × 6), `rail_arch_a|b|c` (Bögen einer Bahnbrücke, nicht quadratisch: `site` = [x, y] Kacheln, `size` = die x-Seite), `rail_barrier_a|b`, `rail_crossing`, `rail_trolley`, `mine_wagon_a|b`, `train_lamp`. In
+  Gebäude-JSON: `wheat`, `loot_*`, `treasure_ruin_<Landschaft>`, `power_tower_*`, `truck` (2 × 4: `site`), `tent_ruin_*`, `well_ruin` und die Bahn: `rail_x`/`rail_y` (ein Stück Gleis), `rail_end_n|e|s|w` (Prellbock), `rail_curve_ne|nw|se|sw` (Kurve, 6 × 6), `rail_arch_a|b|c` (Bögen einer Bahnbrücke, nicht quadratisch: `site` = [x, y] Kacheln, `size` = die x-Seite), `rail_barrier_a|b`, `rail_crossing`, `rail_trolley`, `mine_wagon_a|b`, `train_lamp`. In
   `effects\`: Feuer, Rauch, Infektion, Tesla- und Schockkugel, Schockstrahl, Wasser, Blätter, Regen und Schnee
   (`rain_*`, `snow_*`: TABs GIFs, addiert), Lichter, Reichweitenkreis (grün gedreht wie TAB), Rauchwolken, Lava;
-  `projectiles\missile` (Thanatos). In `animals\`: `raven` (mit `take_off` und `fly`), `rat`. Noch ungenutzt: die
-  Bahn, Zelt- und Brunnenruinen, Lava, Rauchwolken, `electric_sphere`/`electric_halo`.
+  `projectiles\missile` (Thanatos). In `animals\`: `raven` (mit `take_off` und `fly`), `rat`. Noch ungenutzt:
+  Zelt- und Brunnenruinen, Lava, Rauchwolken, `electric_sphere`/`electric_halo`.
 - **Wann welcher bleibende Effekt** (`src\effects\lasting.rs`): Gebäude unter 50 % HP brennen und rauchen (`fire`,
   `smoke_b`, orangener Schein `light_white_a` – unsere Idee, TABs Gebäude brennen nur von Feuer), infizierte
   qualmen grün (`infection`, TABs `CInfected`), brennende Zombies tragen `fire`, Wasser schimmert (`water_a`), Schnee
   auf AL (`snow_b`, 320°), Regen auf VO (`rain_a`, 15°), Blätter fallen auf FA von jedem zehnten Baum (`leaf`, TABs
   `ZXMapThemeFA.AddLeave`). Der Reichweitenkreis liegt unter ausgewählten Türmen und beim Bauen.
 - **Töne** (`tab_sounds.py`): TABs Ordner und Namen (Leerzeichen → `_`), `.mp3` als `.ogg` (macroquad spielt nur ogg
-  und wav; braucht ffmpeg). Ohne Helden und Mutant (Kampagne und Züge sind drin). Etwa 190 MB.
+  und wav; braucht ffmpeg). Ohne Helden und Mutant (Kampagne und Züge sind drin). Etwa 190 MB. Das Spiel lädt jeden
+  Ton erst, wenn er gebraucht wird (auf einem eigenen Thread) – Musik und Umgebung lässt es danach wieder los.
 - **Leiste** (`tab_ui.py`): einzelne PNGs, keine JSON. Icons, Ereignisse und Mauszeiger heißen wie in TAB
   (`icons\IconAttack.png`), die **Porträts wie unsere Arten in Rust** (`portraits\Soldier.png`,
   `portraits\MachineGunTower.png`, `portraits\Walker.png`) – so findet das Spiel sie ohne Tabelle. Sanitäter und

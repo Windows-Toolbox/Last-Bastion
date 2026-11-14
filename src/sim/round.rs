@@ -4,7 +4,7 @@
 //! (`check_outcome`, `story.rs`) – and what happened in it along the way (`Score`, for the end screen). Its events are
 //! in `events.rs`.
 
-use super::story::Ending;
+use super::story::{Ending, TriggerEvent};
 use super::zombies::Zombie;
 use super::World;
 use crate::kinds::BuildingKind;
@@ -86,11 +86,10 @@ impl World {
     /// The round ends like this – and the story's script for it runs (TAB's "On Game Won" / "On Game Lost").
     fn decide(&mut self, outcome: Outcome) {
         self.outcome = Some(outcome);
-        let script = match outcome {
-            Outcome::Won { .. } => self.story.on_won.clone(),
-            Outcome::Lost { .. } => self.story.on_lost.clone(),
-        };
-        self.run(&script);
+        self.fire(&match outcome {
+            Outcome::Won { .. } => TriggerEvent::Won,
+            Outcome::Lost { .. } => TriggerEvent::Lost,
+        });
     }
 
     /// The round lasts `days` days (at least 1) – the events that win the round move to the end of the new last day.

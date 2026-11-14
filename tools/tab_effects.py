@@ -59,8 +59,8 @@ EFFECTS = {
     "stone_medium": ("Explosion_Stone_A", 2.4),
     "stone_big": ("Explosion_Stone_B", 5.2),
     "crystal": ("Explosion_Crystal_A", 3.0),
-    # Used by the lasting effects and TAB's late buildings and units (src\effects\lasting.rs, docs\tab-assets.md
-    # steps 3-7): fire and smoke on damaged buildings, the shocking tower's ray, water, the infection's green smoke.
+    # Used by the lasting effects and TAB's late buildings and units (src\effects\lasting.rs): fire and smoke on
+    # damaged buildings and burning trucks, the shocking tower's ray, water, the infection's green smoke.
     # Not used yet: the transmutator's cosmic blast, snow flakes.
     "fire": ("Fire", 1.5),
     "fire_ornament": ("FireOrnamentA", 1.0),
@@ -102,6 +102,13 @@ ANIMATIONS = {
     "water_b": ("Water_B", 10, 33),
     "water_shine": ("Water_Animated_A", 10, 33),
     "explosion_a": ("Explosion_A", 3, 33),
+}
+# The weather covers the whole screen - thinned out it stutters (the snow's 300 frames to 48 were 5 a second). These
+# keep every frame: ours -> (at most this many frames, no frame wider than this - None: MAX_FRAME). Smaller frames keep
+# the sheet in MAX_SIDE.
+WEATHER = {
+    "rain_a": (60, None),
+    "snow_b": (300, 200),
 }
 # More single pictures in Images\Effects: ours -> (TAB's name, tile widths, meta). `ground`: lies flat.
 PICTURES = {
@@ -173,9 +180,11 @@ def thin(items, most):
     return [items[i * len(items) // most] for i in range(most)]
 
 
-def save(folder, key, frames, feet, meta, tiles):
+def save(folder, key, frames, feet, meta, tiles, max_frame=None):
     """Frames (all the same size, TAB's pixels) cut to what they show, made smaller and put side by side - `feet`: where
-    the effect stands in a frame, `tiles`: how wide a frame is drawn for size 1. Writes `<key>.json` + `.png`."""
+    the effect stands in a frame, `tiles`: how wide a frame is drawn for size 1, `max_frame`: no frame bigger than that
+    (default MAX_FRAME). Writes `<key>.json` + `.png`."""
+    max_frame = max_frame or MAX_FRAME
     box = None
     for f in frames:
         b = f.getchannel("A").getbbox()
@@ -187,10 +196,10 @@ def save(folder, key, frames, feet, meta, tiles):
     full_w = frames[0].width
     tab_ppt = full_w / tiles  # TAB's pixels per tile width, drawn at size 1
     # As sharp as PIXELS_PER_TILE where it's mostly drawn `typical` tile widths wide (the whole frame) - never bigger
-    # than TAB's, never a frame over MAX_FRAME.
+    # than TAB's, never a frame over `max_frame`.
     typical = meta.pop("typical_tiles")
     w, h = box[2] - box[0], box[3] - box[1]
-    scale = min(1.0, PIXELS_PER_TILE * typical / full_w, MAX_FRAME / max(w, h))
+    scale = min(1.0, PIXELS_PER_TILE * typical / full_w, max_frame / max(w, h))
     while True:
         fw, fh = max(1, round(w * scale)) + 2 * PAD, max(1, round(h * scale)) + 2 * PAD
         _, width, height = layout([(fw, fh)] * len(frames))
@@ -233,7 +242,11 @@ def effect(tab, project, folder, key, template, typical):
         print(f"  {key}: no frames of {clip['Name']} - left out")
         return
     look = (num(state.get("Saturation"), 1), num(state.get("Contrast"), 1), num(state.get("Brightness"), 1), num(state.get("HueRotation")))
-    add = state.get("BlendMode") == "Add"
+    # LightAndBright: drawn normally and once more as a light - a picture on black (FireOrnamentA) then is added like
+    # one; one with see-through pixels (ShockRay_A, LightFlare_A) stays as it is.
+    blend = state.get("BlendMode")
+    opaque = Image.open(paths[0]).convert("RGBA").getchannel("A").getextrema()[0] == 255
+    add = blend == "Add" or (blend == "LightAndBright" and opaque)
     frames = []
     for path in thin(paths, MAX_FRAMES):
         f = tinted(Image.open(path).convert("RGBA"), look, argb(state.get("ColorHue")))
@@ -301,10 +314,11 @@ def animation(tab, folder, key, name, tiles, frame_ms):
         print(f"  {key}: no Animations\\{name} - left out")
         return
     files = sorted(os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith(".png"))
-    frames = [as_light(Image.open(f).convert("RGBA")) for f in thin(files, MAX_FRAMES)]
+    most, max_frame = WEATHER.get(key, (MAX_FRAMES, MAX_FRAME))
+    frames = [as_light(Image.open(f).convert("RGBA")) for f in thin(files, most)]
     w, h = frames[0].size
     meta = {"typical_tiles": tiles, "duration": round(len(files) * frame_ms / 1000, 3), "loop": True, "add": True}
-    save(folder, key, frames, (w / 2, h / 2), meta, tiles)
+    save(folder, key, frames, (w / 2, h / 2), meta, tiles, max_frame)
 
 
 def main():

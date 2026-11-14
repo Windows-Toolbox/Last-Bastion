@@ -161,6 +161,11 @@ impl Action {
             Card(Button::Open(menu)) => format!("menu_{}", snake(&format!("{menu:?}"))),
             Card(Button::Place(kind)) => format!("build_{}", snake(&format!("{kind:?}"))),
             Card(Button::Train(kind)) => format!("train_{}", snake(&format!("{kind:?}"))),
+            Card(Button::Delay(d)) => format!("mine_delay_{d}"),
+            Card(Button::Research(t)) => {
+                let id = &crate::sim::tech(t).id;
+                format!("research_{}", snake(id.strip_prefix("Tech").unwrap_or(id)))
+            }
             Card(button) => snake(&format!("{button:?}")),
             other => snake(&format!("{other:?}")),
         }
@@ -193,6 +198,8 @@ impl Action {
             Card(Button::Unload) => "Unload (tower)".to_owned(),
             Card(Button::MakeBarrel) => "Barrel (munitions factory)".to_owned(),
             Card(Button::Sell) => "Selling on/off (market)".to_owned(),
+            Card(Button::Delay(d)) => format!("Delay {d} (mine trap)"),
+            Card(Button::Research(t)) => format!("Research {}", crate::sim::tech(t).name.to_lowercase()),
             Card(Button::Switch) => "On/Off (buildings that run)".to_owned(),
             Card(Button::Demolish) => "Demolish (buildings; editor: remove)".to_owned(),
             Card(button) => button.title().to_owned(),

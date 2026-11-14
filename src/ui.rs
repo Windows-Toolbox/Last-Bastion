@@ -8,7 +8,11 @@ use macroquad::prelude::*;
 use crate::cursor::Cursor;
 use crate::data;
 use crate::draw::{draw_diamond, draw_ring, mark_color, ore_color, terrain_color, SpawnerShape, TESLA_GLOW, ZOMBIE};
-use crate::editor::{Editor, Sight, Tool};
+use crate::draw::draw_ornament_ghost;
+use crate::editor::{fill_tiles, ornament_spot, rect_tiles, Editor, Module, PaintShape, Picked, Sight, Tool};
+use crate::sim::Area;
+use crate::rail_planner::{draw_train_plan, RailPlanner};
+use crate::sprites::Sprites;
 use crate::effects::Effects;
 use crate::formation::{self, Formation, Shape, MIN_DRAG};
 use crate::hud::{building_buttons, menu_buttons, Button, HudHit, Layout, Submenu, COMMAND_CENTER_BUTTONS, UNIT_BUTTONS};
@@ -20,7 +24,8 @@ use crate::placement::{grid_line, placement_line, placement_tile};
 use crate::settings::Settings;
 use crate::ui_art::{self, Pointer};
 use crate::sim::{
-    spawner_corners, Axes, Breed, Command, Mark, Nest, Order, Piece, Prey, Rally, SwitchBlock, ThingRef, World, MAX_PRODUCTION, UNIT_RADIUS,
+    spawner_corners, Axes, Breed, Command, Mark, Nest, Order, Ornament, OrnamentKind, Piece, Prey, RailPiece, Rally, SwitchBlock,
+    World, MAX_PRODUCTION, UNIT_RADIUS,
 };
 
 /// One entry of the selection, as an index into the world's list of units or buildings.
@@ -95,6 +100,8 @@ enum Short {
     Income,
     /// This building has to stand first (`requires`).
     Locked(BuildingKind),
+    /// This research has to be done first (`sim/research.rs`).
+    Research(u16),
 }
 
 impl Short {
@@ -112,6 +119,10 @@ impl Short {
             Short::Power => "Not enough power - build a windmill or a charcoal burner".to_owned(),
             Short::Income => "Not enough gold income for its upkeep - build houses".to_owned(),
             Short::Locked(needed) => format!("Build a {} first", needed.stats().name.to_lowercase()),
+            Short::Research(t) => {
+                let text = crate::hud::research_first(t);
+                text[..1].to_uppercase() + &text[1..]
+            }
         }
     }
 }
@@ -195,6 +206,8 @@ enum Dragged {
     Spawner(u32),
     /// The playing field – the world border (`Tool::PlayArea`).
     PlayArea,
+    /// A rectangle of a region (the region's number, which of its shapes) – `editor\regions.rs`.
+    ZoneShape(u32, usize),
 }
 
 /// A rectangle being dragged in the editor – a spawner or the playing field: one or two of its edges, or the whole of
@@ -251,6 +264,9 @@ pub enum Place {
 }
 
 pub struct Ui {
+    /// What the selection says this frame (`audio.rs`): picked anew (`What`), ordered (`Yes`), sent to attack
+    /// (`Attack`) – said at the end of `handle_input`, where the world is at hand.
+    say: Option<&'static str>,
     /// The selected units (their `id`).
     pub selected: Vec<u32>,
     /// The selected buildings (their `id`) – alone or together with units.
@@ -311,12 +327,18 @@ pub struct Ui {
     form_drag: Option<FormDrag>,
     /// A spawner or the playing field being dragged in the editor.
     rect_drag: Option<RectDrag>,
+    /// A region or a point being dragged to another place (Regions module), and the tile the mouse went down on.
+    zone_drag: Option<(Picked, (i32, i32))>,
+    /// The editor's rail planner while it's in hand (`rail_planner.rs`).
+    rail: RailPlanner,
     /// While building with the left mouse button down: the tile where it started. On release the whole
     /// line from there to the mouse is built.
     place_start: Option<(i32, i32)>,
     /// While painting terrain with the left mouse button down: the tile painted last. If the mouse moves
     /// quickly, the line in between is painted too, so the stroke has no holes.
     paint_last: Option<(i32, i32)>,
+    /// A line or a rectangle being drawn with a painting tool: the tile where the button went down (`PaintShape`).
+    shape_start: Option<(i32, i32)>,
     /// Control groups: index 0 belongs to key 1, …, index 9 to key 0.
     pub groups: [Group; 10],
     /// Which group key was pressed last, and when – for the double press.
@@ -362,6 +384,7 @@ impl Ui {
             overlay: None,
             placing: None,
             free_placing: false,
+            say: None,
             alert: None,
             events: Vec::new(),
             open_menu: false,
@@ -369,8 +392,11 @@ impl Ui {
             formation: Shape::Line,
             form_drag: None,
             rect_drag: None,
+            zone_drag: None,
+            rail: RailPlanner::default(),
             place_start: None,
             paint_last: None,
+            shape_start: None,
             groups: Default::default(),
             last_group: None,
             last_click: None,
@@ -458,8 +484,12 @@ impl Ui {
         let power = world.power();
         let mut taken = vec![0u32; power.made.len()];
         let (w, h) = kind.footprint(self.turned);
-        if let Some(needed) = stats.requires.filter(|_| !free && !world.unlocked(kind)) {
+        if let Some(needed) = stats.requires.filter(|&n| !free && !world.stands(Some(n))) {
             plan.short = Some(Short::Locked(needed));
+            return plan;
+        }
+        if let Some(t) = world.missing_research(kind).filter(|_| !free) {
+            plan.short = Some(Short::Research(t));
             return plan;
         }
         for &tile in tiles {
@@ -536,6 +566,7 @@ impl Ui {
     /// A short message in the middle at the top, for a few seconds.
     pub fn alert(&mut self, text: &str) {
         self.alert = Some((text.to_owned(), 2.5));
+        crate::audio::interface("Invalid");
     }
 
     /// A line in TAB's event list, with its picture (`assets\ui\events\<icon>.png`: `EventSwarm`, `EventInfo` …).
@@ -545,6 +576,7 @@ impl Ui {
             self.events.remove(0);
         }
         self.events.push(EventLine { icon, text: text.to_owned(), time_left: EVENT_SECONDS });
+        crate::audio::interface("MapNotification");
     }
 
     /// Nothing selected anymore, the control groups empty – the editor's test runs on a copy of the map, whose units
@@ -644,6 +676,8 @@ impl Ui {
             || self.form_drag.is_some()
             || self.submenu.is_some()
             || self.editor.spawner.is_some()
+            || self.editor.picked.is_some()
+            || self.editor.area.is_some()
             || self.editor.is_typing()
     }
 
@@ -691,6 +725,29 @@ impl Ui {
         if !self.has_selection() || self.selection_view(world).is_empty() {
             return Vec::new();
         }
+        let mut card = self.full_card(world);
+        card.retain(|&button| self.shown(world, button));
+        card
+    }
+
+    /// Is this button on the card now? Not what you can't use yet: a building or unit that isn't unlocked (its research,
+    /// the building it needs – `World::unlocked`), the planned ones, a build menu with nothing in it yet. They come
+    /// once they can be used. In the editor (not testing) everything shows.
+    fn shown(&self, world: &World, button: Button) -> bool {
+        if self.editor.editing() && !self.editor.testing() {
+            return true;
+        }
+        match button {
+            Button::Place(kind) => world.unlocked(kind),
+            Button::Train(kind) => world.unit_unlocked(kind),
+            Button::Planned(_) => false,
+            Button::Open(menu) => menu_buttons(menu).into_iter().any(|b| matches!(b, Button::Place(kind) if world.unlocked(kind))),
+            _ => true,
+        }
+    }
+
+    /// The card of the selection with everything on it – `card` leaves out what can't be used yet.
+    fn full_card(&self, world: &World) -> Vec<Button> {
         match self.active {
             Some(Sub::Unit(_)) => {
                 let mut card = UNIT_BUTTONS.to_vec();
@@ -708,7 +765,11 @@ impl Ui {
                 None => COMMAND_CENTER_BUTTONS.to_vec(),
                 Some(menu) => menu_buttons(menu),
             },
-            Some(Sub::Building(kind)) => building_buttons(kind),
+            // The workshops: only the researches still to do – not the ones going on (their queue shows them).
+            Some(Sub::Building(kind)) => {
+                let offered = |b: &Button| !matches!(*b, Button::Research(t) if !world.tech_offered(t));
+                building_buttons(kind).into_iter().filter(offered).collect()
+            }
             None => Vec::new(),
         }
     }
@@ -716,6 +777,9 @@ impl Ui {
     /// A new selection: these units and buildings, nothing on the mouse anymore. A build menu of the command center
     /// closes – selecting it again (click, group key) shows its main buttons.
     pub(crate) fn set_selection(&mut self, units: Vec<u32>, buildings: Vec<u32>) {
+        if !units.is_empty() || !buildings.is_empty() {
+            self.say = Some("What");
+        }
         self.selected = units;
         self.selected_buildings = buildings;
         self.selected_zombie = None;
@@ -738,15 +802,11 @@ impl Ui {
     pub fn handle_input(&mut self, world: &World, camera: &mut Camera, orders: &mut Vec<Order>, dt: f32) {
         self.forget_dead(world);
         self.sync_pieces(world);
-        // One building, one unit or one neutral thing selected: the editor shows its properties.
-        let selected = match (self.selected.as_slice(), self.selected_buildings.as_slice(), self.picked.as_slice()) {
-            ([unit], [], []) => Some(ThingRef::Unit(*unit)),
-            ([], [building], []) => Some(ThingRef::Building(*building)),
-            ([], [], [Piece::Neutral(id)]) => Some(ThingRef::Neutral(*id)),
-            _ => None,
-        };
-        let counts = (self.selected.len(), self.selected_buildings.len());
-        self.editor.sync(self.placing, tile_of(camera.screen_to_world(Vec2::from(mouse_position()))), selected, counts);
+        self.editor.sync(self.placing, tile_of(camera.screen_to_world(Vec2::from(mouse_position()))));
+        // A line of the editor's table clicked, or a thing that changed hands: that's the selection now.
+        if let Some((pieces, add)) = self.editor.select.take() {
+            self.select_pieces(pieces, add);
+        }
         // What the editor's panel did this frame (it ran before, `Game::frame`): a building button hangs the building
         // on the mouse; a tool taken in hand takes off whatever is on it – a building, a command waiting for its target.
         if let Some(place) = self.editor.place.take() {
@@ -785,11 +845,18 @@ impl Ui {
         // anything below cancels something: one press does one thing.
         let esc_deselects = !typing && is_key_pressed(KeyCode::Escape) && !self.has_pending();
         if !typing && is_key_pressed(KeyCode::Escape) {
-            // Esc: first put the tool away, then deselect the spawner.
-            if self.editor.tool.is_some() {
+            // Esc: first stop the rail planner building on, then put the tool away, then deselect the spawner.
+            if self.rail.is_building() {
+                self.rail.stop();
+            } else if self.editor.tool.is_some() {
                 self.editor.tool = None;
-            } else {
+            } else if self.editor.spawner.is_some() {
                 self.editor.select_spawner(None);
+            } else if self.editor.picked.is_some() {
+                self.editor.picked = None;
+            } else {
+                // Nothing else to put away: the Terrain module's area goes.
+                self.editor.area = None;
             }
             self.form_drag = None;
         }
@@ -798,6 +865,8 @@ impl Ui {
         if !typing && !clipped && is_key_pressed(KeyCode::Delete) {
             if let Some(spawner) = self.editor.spawner.take() {
                 orders.push(Order::RemoveSpawner { spawner });
+            } else if self.editor.module == Module::Regions && self.editor.editing() {
+                orders.extend(self.editor.remove_picked());
             }
         }
         let card = self.card(world);
@@ -837,6 +906,23 @@ impl Ui {
             event.time_left -= dt;
             event.time_left > 0.0
         });
+        if let Some(what) = self.say.take() {
+            self.speak(world, what);
+        }
+    }
+
+    /// TAB's `PlaySelectionSound` and the answer to an order: the most advanced selected unit says it (TAB's
+    /// `CurrentEntitySelectedWithHighestLevel` – here the dearest); no unit: a selected building plays its own sound.
+    fn speak(&self, world: &World, what: &str) {
+        let units = self.selected.iter().filter_map(|&id| world.find_unit(id)).map(|u| world.units[u].kind);
+        if let Some(kind) = units.max_by_key(|k| k.stats().cost) {
+            crate::audio::voice(kind, what);
+            return;
+        }
+        let building = self.selected_buildings.first().and_then(|&id| world.find_building(id));
+        if let Some(b) = building.filter(|_| what == "What") {
+            crate::audio::building_selected(world.buildings[b].kind);
+        }
     }
 
     /// Strike dead units from the selection and the control groups. Units in a tower can't be selected (like in
@@ -888,6 +974,10 @@ impl Ui {
         shift: bool,
         ctrl: bool,
     ) {
+        // Another tool in hand: the rail planner forgets where it built.
+        if self.editor.tool != Some(Tool::RailPlanner) {
+            self.rail.stop();
+        }
         let view = self.selection_view(world);
         // The production queue is only shown (and clickable) when one building alone is selected.
         let building = self.single_building(world);
@@ -945,6 +1035,8 @@ impl Ui {
                 match hit {
                     // In the editor a click can grab a spawner – otherwise it starts the selection box.
                     None if self.editor.editing() && self.spawner_press(world, camera, point) => {}
+                    // In the Regions module a region or a point – to select, move or resize it.
+                    None if self.region_press(world, camera, point) => {}
                     None => self.drag_start = Some(mouse),
                     Some(HudHit::Minimap(p)) => {
                         camera.center = p;
@@ -973,17 +1065,40 @@ impl Ui {
                     camera.center = p;
                 }
             }
+            // The rail planner held: on towards the mouse.
+            if let (Some(Tool::RailPlanner), None) = (self.editor.tool, hit) {
+                self.rail.drag(world, point, orders);
+            }
             // Painting terrain or ore, erasing: every frame the mouse is on another tile, paint the way there.
             if let (Some(tool), Some(last), None) = (self.editor.tool, self.paint_last, hit) {
                 let now = tile_of(point);
                 if tool.paints() && now != last {
-                    self.paint(tool, last, now, orders);
+                    self.paint(world, tool, last, now, orders);
+                } else if tool == Tool::ZonePaint && now != last {
+                    self.editor.paint_region(self.line_tiles(last, now), orders);
+                    self.paint_last = Some(now);
                 }
             }
         }
         if is_mouse_button_released(MouseButton::Left) {
             self.minimap_drag = false;
             self.paint_last = None;
+            // A line or a rectangle let go: paint it – one order. A tool put away in between paints nothing.
+            if let (Some(start), Some(tool)) = (self.shape_start.take(), self.editor.tool) {
+                let end = tile_of(camera.screen_to_world(mouse));
+                if tool == Tool::Area {
+                    // "Select area": the rectangle dragged is the area from now on – no order, nothing on the map changes.
+                    self.editor.area = Some(Area::between(start, end));
+                } else if matches!(tool, Tool::ZoneRect | Tool::ZoneCircle) {
+                    // A region's shape: new, or with Ctrl / Alt added to / cut out of the selected region.
+                    let alt = is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt);
+                    let form = self.editor.region_form(tool, start, end);
+                    self.editor.add_shape(world, form, ctrl, alt, orders);
+                } else {
+                    let tiles = self.shape_tiles(tool, start, end);
+                    self.editor.paint_orders(world, tool, tiles, orders);
+                }
+            }
             if let (Some(start), Some(kind)) = (self.place_start.take(), self.placing) {
                 // Build the whole line – every piece that has room and that the gold pays for. The building stays on
                 // the mouse for the next line, until right click or Esc. In the editor without the rules of the game.
@@ -992,8 +1107,19 @@ impl Ui {
                 let plan = self.affordable(world, kind, &placement_line(kind, start, end), shift);
                 for tile in plan.built {
                     let order = Order::PlaceBuilding { kind, tile, turned, editor };
-                    // With Shift the gold may go into the banks' credit.
-                    orders.push(if shift && !editor { Order::Credit(Box::new(order)) } else { order });
+                    // With Shift the gold may go into the banks' credit. From the editor's catalog it gets the owner
+                    // "Placing" says.
+                    orders.push(if self.free_placing {
+                        self.editor.owned(order)
+                    } else if shift && !editor {
+                        Order::Credit(Box::new(order))
+                    } else {
+                        order
+                    });
+                }
+                // From the editor's catalog: one click, one building (or line) – with Shift it stays on the mouse.
+                if self.free_placing && !shift {
+                    self.placing = None;
                 }
                 if let Some(short) = plan.short {
                     self.alert(&short.alert());
@@ -1006,11 +1132,17 @@ impl Ui {
             if let Some(drag) = self.rect_drag.take() {
                 let (min, size) = drag.rect_at(point);
                 if (min, size) != (drag.min, drag.size) {
-                    orders.push(match drag.what {
-                        Dragged::Spawner(spawner) => Order::ResizeSpawner { spawner, min, size },
-                        Dragged::PlayArea => Order::SetPlayArea { min, size },
+                    orders.extend(match drag.what {
+                        Dragged::Spawner(spawner) => Some(Order::ResizeSpawner { spawner, min, size }),
+                        Dragged::PlayArea => Some(Order::SetPlayArea { min, size }),
+                        Dragged::ZoneShape(zone, shape) => self.editor.resize_order(world, zone, shape, min, size),
                     });
                 }
+            }
+            // A region or a point let go: it lies there now.
+            if let Some((what, start)) = self.zone_drag.take() {
+                let end = tile_of(point);
+                orders.extend(self.editor.move_order(world, what, (end.0 - start.0, end.1 - start.1)));
             }
         }
 
@@ -1023,6 +1155,11 @@ impl Ui {
         }
 
         if is_mouse_button_pressed(MouseButton::Right) {
+            // The rail planner building on: stop there first – the next right click puts it away.
+            if self.rail.is_building() {
+                self.rail.stop();
+                return;
+            }
             if self.is_waiting() || self.form_drag.is_some() {
                 // Right click cancels the waiting command or puts the editor tool away.
                 self.targeting = None;
@@ -1143,10 +1280,31 @@ impl Ui {
     /// Left click on the map with an editor tool in hand.
     fn use_tool(&mut self, tool: Tool, world: &World, camera: &Camera, orders: &mut Vec<Order>, point: Vec2) {
         match tool {
-            Tool::Paint(_) | Tool::Ore(_) | Tool::Remove | Tool::ZombieBrush => {
+            Tool::RailPlanner => self.rail.press(world, point, orders),
+            // A new stroke: the brush paints right away, a line or a rectangle starts here (painted when the button
+            // is let go), a fill takes the whole patch at once.
+            Tool::Paint(_) | Tool::Ore(_) | Tool::Smooth | Tool::Remove | Tool::ZombieBrush => {
                 let tile = tile_of(point);
-                self.paint(tool, tile, tile, orders);
+                self.editor.new_stroke();
+                match self.editor.shape_of(tool) {
+                    PaintShape::Brush => self.paint(world, tool, tile, tile, orders),
+                    PaintShape::Line | PaintShape::Rect => self.shape_start = Some(tile),
+                    PaintShape::Fill => self.editor.paint_orders(world, tool, fill_tiles(world, tool, tile), orders),
+                }
             }
+            // The area's first corner – its other one is where the button is let go. The same for a region's
+            // rectangle; a circle starts at its middle.
+            Tool::Area | Tool::ZoneRect | Tool::ZoneCircle => self.shape_start = Some(tile_of(point)),
+            // The brush into a region (Alt: out of it) – dragged on in `mouse_buttons`.
+            Tool::ZonePaint => {
+                let alt = is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt);
+                let tile = tile_of(point);
+                self.editor.start_region_paint(world, self.editor.brush_tiles(tile), alt, orders);
+                self.paint_last = Some(tile);
+            }
+            Tool::Spot => self.editor.add_point(world, tile_of(point), orders),
+            // The copied ground down, its middle on the tile clicked. It stays in hand for the next click.
+            Tool::PasteArea => orders.extend(self.editor.paste_order(tile_of(point))),
             Tool::ZombieDrop => orders.push(self.editor.drop_order(point)),
             // One giant on the tile: the brush with one giant on one tile.
             Tool::Giant => {
@@ -1160,7 +1318,7 @@ impl Ui {
                     self.rect_drag = Some(RectDrag { what: Dragged::PlayArea, edges, start: point, min, size, axes: Axes::Screen });
                 }
             }
-            Tool::Unit(kind) => orders.push(Order::SpawnUnit { kind, point }),
+            Tool::Unit(kind) => orders.push(self.editor.owned(Order::SpawnUnit { kind, point })),
             // A house of its size with its middle tile under the mouse.
             Tool::Doom(nest) => {
                 let (tile, size) = doom_spot(nest, point);
@@ -1168,6 +1326,7 @@ impl Ui {
             }
             Tool::Loot => orders.push(Order::PlaceLoot { point }),
             Tool::BigRock(size) => orders.push(Order::PlaceBigRock(self.editor.big_rock(size, tile_of(point)))),
+            Tool::Ornament(kind) => orders.push(Order::PlaceOrnament(Ornament { kind, tile: ornament_spot(world, kind, point) })),
             Tool::Spawner => {
                 // Select the new spawner right away, so its edge can be dragged. Which number it will get:
                 // the next free one – plus the spawners placed while the game is paused (orders still waiting).
@@ -1180,11 +1339,43 @@ impl Ui {
             // Never in the editor's hand – it goes onto the mouse as `placing` right away.
             Tool::Building(_) => {}
         }
+        // A thing out of the catalog: one click, one thing – with Shift it stays in hand for the next.
+        let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        if tool.once() && !shift {
+            self.editor.tool = None;
+        }
     }
 
     /// Paints with the brush along the line from `from` to `to` – one order for the whole stroke.
     /// `tool`: terrain, ore or the eraser – anything else doesn't paint.
-    fn paint(&mut self, tool: Tool, from: (i32, i32), to: (i32, i32), orders: &mut Vec<Order>) {
+    /// Regions module, a press on the map with no tool in hand: an edge of one of the selected region's rectangles is
+    /// grabbed (like a spawner's), or a region or point is selected – and moves with the mouse until it's let go.
+    /// `false`: nothing of the kind there, the click is the map's.
+    fn region_press(&mut self, world: &World, camera: &Camera, point: Vec2) -> bool {
+        if self.editor.module != Module::Regions || !self.editor.editing() || self.editor.testing() {
+            return false;
+        }
+        if let Some(Picked::Zone(id)) = self.editor.picked {
+            // `rev`: the shape added last lies on top.
+            for (k, min, size) in self.editor.picked_rects(world).into_iter().rev() {
+                if let Some(edges) = grab(min, size, Axes::Tiles, point, camera).filter(|&e| e != Edges::ALL) {
+                    self.rect_drag = Some(RectDrag { what: Dragged::ZoneShape(id, k), edges, start: point, min, size, axes: Axes::Tiles });
+                    return true;
+                }
+            }
+        }
+        self.editor.picked = self.editor.pick_at(world, camera, point);
+        match self.editor.picked {
+            Some(what) => {
+                self.editor.select_spawner(None);
+                self.zone_drag = Some((what, tile_of(point)));
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn paint(&mut self, world: &World, tool: Tool, from: (i32, i32), to: (i32, i32), orders: &mut Vec<Order>) {
         // Oil isn't painted but stamped: one node of 2 × 2 tiles, whatever the brush. Dragged, the next one only comes
         // where it doesn't touch the last one – nodes never touch (`mapgen/ores.rs`).
         if tool == Tool::Ore(Some(Ore::Oil)) {
@@ -1195,17 +1386,25 @@ impl Ui {
             self.paint_last = Some(to);
             return;
         }
+        let tiles = self.line_tiles(from, to);
+        self.editor.paint_orders(world, tool, tiles, orders);
+        self.paint_last = Some(to);
+    }
+
+    /// The tiles the brush covers on its way from `from` to `to`, each once.
+    fn line_tiles(&self, from: (i32, i32), to: (i32, i32)) -> Vec<(i32, i32)> {
         let mut tiles: Vec<(i32, i32)> = grid_line(from, to).into_iter().flat_map(|t| self.editor.brush_tiles(t)).collect();
         tiles.sort();
         tiles.dedup(); // neighbouring brush squares overlap
-        match tool {
-            Tool::Paint(terrain) => orders.push(Order::PaintTerrain { terrain, tiles }),
-            Tool::Ore(ore) => orders.push(Order::PaintOre { ore, tiles }),
-            Tool::Remove => orders.push(Order::RemoveAt { tiles }),
-            Tool::ZombieBrush => orders.push(self.editor.brush_order(tiles)),
-            _ => {}
+        tiles
+    }
+
+    /// The tiles of a line or a rectangle drawn from `start` to `end` with `tool` (`PaintShape`).
+    fn shape_tiles(&self, tool: Tool, start: (i32, i32), end: (i32, i32)) -> Vec<(i32, i32)> {
+        match self.editor.shape_of(tool) {
+            PaintShape::Rect => rect_tiles(start, end),
+            _ => self.line_tiles(start, end),
         }
-        self.paint_last = Some(to);
     }
 
     /// The selected buildings that have a rally point (barracks, tower) – `active`: only those of the active
@@ -1295,6 +1494,11 @@ impl Ui {
             return;
         }
         orders.push(Order::Command { units: self.selected.clone(), command, queue, formation });
+        // TAB: an attack gets "attack", everything else "yes".
+        self.say = Some(match command {
+            Command::AttackMove(_) | Command::Attack(_) => "Attack",
+            _ => "Yes",
+        });
         let mark = match command {
             Command::Move(_) | Command::Follow(_) => Mark::Move,
             Command::Patrol(_) => Mark::Patrol,
@@ -1307,6 +1511,7 @@ impl Ui {
     /// The formation buttons only choose the shape – a command that is waiting keeps waiting.
     /// Training and barrels: `ctrl` 5 at once, `shift` the gold may go into the banks' credit.
     fn press(&mut self, button: Button, world: &World, orders: &mut Vec<Order>, shift: bool, ctrl: bool) {
+        crate::audio::interface("ButtonConsoleClick");
         if let Some(shape) = button.formation() {
             self.formation = shape;
             return;
@@ -1318,7 +1523,10 @@ impl Ui {
         self.editor.tool = None;
         let buildings = self.active_buildings(world);
         match button {
-            Button::Stop => orders.push(Order::Stop { units: self.selected.clone() }),
+            Button::Stop => {
+                orders.push(Order::Stop { units: self.selected.clone() });
+                self.say = Some("Yes");
+            }
             Button::Hold => {
                 let units = self.selected.clone();
                 orders.push(Order::Command { units, command: Command::Hold, queue: shift, formation: None });
@@ -1343,6 +1551,42 @@ impl Ui {
                 let on = !self.selling(world);
                 let buildings = buildings.iter().map(|&b| world.buildings[b].id).collect();
                 orders.push(Order::SetSelling { buildings, on });
+            }
+            // The first selected workshop that isn't busy starts it (one research at a time per workshop). In the
+            // editor's Edit mode no time passes.
+            Button::Research(t) => {
+                if self.editor.editing() && !self.editor.testing() {
+                    self.alert(&format!("No time passes while editing - research in a test ({})", self.settings.keys.label(Action::EditTest)));
+                    return;
+                }
+                let tech = crate::sim::tech(t);
+                let gold = if shift { world.spendable_on_credit() } else { world.gold };
+                if gold < tech.gold {
+                    let credit = !shift && world.spendable_on_credit() >= tech.gold;
+                    self.alert(&if credit { Short::GoldCredit } else { Short::Gold }.alert());
+                    return;
+                }
+                if let Some(&(r, _)) = tech.goods().iter().find(|&&(r, n)| world.stock.get(r) < n) {
+                    let short = match r {
+                        Resource::Wood => Short::Wood,
+                        Resource::Stone => Short::Stone,
+                        Resource::Iron => Short::Iron,
+                        _ => Short::Oil,
+                    };
+                    self.alert(&short.alert());
+                    return;
+                }
+                let Some(&b) = buildings.iter().find(|&&b| world.buildings[b].production.is_empty() && world.buildings[b].is_built()) else {
+                    self.alert("The workshop is busy - one research at a time");
+                    return;
+                };
+                let order = Order::Research { building: world.buildings[b].id, tech: t };
+                orders.push(if shift { Order::Credit(Box::new(order)) } else { order });
+            }
+            // All selected mine traps get this delay.
+            Button::Delay(delay) => {
+                let buildings = buildings.iter().map(|&b| world.buildings[b].id).collect();
+                orders.push(Order::SetMineDelay { buildings, delay });
             }
             // Like training: each barrel to the factory with the shortest queue, Ctrl 5 at once, as many as the gold
             // (with Shift also the credit) and the coal pay for.
@@ -1421,8 +1665,12 @@ impl Ui {
                     self.alert(&format!("No time passes while editing - train units in a test ({})", self.settings.keys.label(Action::EditTest)));
                     return;
                 }
-                if let Some(needed) = kind.stats().requires.filter(|_| !world.unit_unlocked(kind)) {
+                if let Some(needed) = kind.stats().requires.filter(|&n| !world.stands(Some(n))) {
                     self.alert(&Short::Locked(needed).alert());
+                    return;
+                }
+                if let Some(t) = world.missing_unit_research(kind) {
+                    self.alert(&Short::Research(t).alert());
                     return;
                 }
                 let mut queued: Vec<(usize, u32)> =
@@ -1452,6 +1700,13 @@ impl Ui {
             }
             Button::FormLine | Button::FormBox | Button::FormCircle => {} // handled above
         }
+    }
+
+    /// The delay all selected mine traps share – its button is lit. `None`: they differ.
+    pub fn mine_delay(&self, world: &World) -> Option<u8> {
+        let mines: Vec<usize> = self.active_buildings(world);
+        let first = world.buildings[*mines.first()?].delay;
+        mines.iter().all(|&b| world.buildings[b].delay == first).then_some(first)
     }
 
     /// Do all selected markets sell (Q)? Then their button is lit.
@@ -1980,8 +2235,12 @@ impl Ui {
 
     /// Selection box, highlights, target marker and the waiting command or tool on the mouse.
     /// `effects`: TAB's effects (`effects.rs`) – the range circle of a tower being placed.
-    pub fn draw(&self, world: &World, camera: &Camera, effects: &Effects) {
+    pub fn draw(&self, world: &World, camera: &Camera, effects: &Effects, sprites: &Sprites) {
         let mouse = Vec2::from(mouse_position());
+        // Editing the railway or the scripts: what a train sent now would do (`rail_planner.rs`).
+        if self.editor.editing() && matches!(self.editor.module, Module::Objects | Module::Triggers) {
+            draw_train_plan(world, camera);
+        }
 
         if let Some(start) = self.drag_start {
             let min = start.min(mouse);
@@ -2136,7 +2395,7 @@ impl Ui {
                 Some(Short::Iron) => text += &format!(" - not enough iron ({})", world.stock.get(Resource::Iron)),
                 Some(Short::Oil) => text += &format!(" - not enough oil ({})", world.stock.get(Resource::Oil)),
                 Some(Short::Workers) => text += &format!(" - not enough workers ({} free)", world.free_workers()),
-                Some(short @ (Short::Locked(_) | Short::Power | Short::Income)) => text += &format!(" - {}", short.alert().to_lowercase()),
+                Some(short @ (Short::Locked(_) | Short::Research(_) | Short::Power | Short::Income)) => text += &format!(" - {}", short.alert().to_lowercase()),
                 None => {}
             }
             if kind == BuildingKind::Gate {
@@ -2146,12 +2405,63 @@ impl Ui {
             draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, color);
             self.draw_economy_hints(world, camera, kind, here, mouse);
         }
+        // The regions and points – one being dragged where it would land.
+        let dragged = self.zone_drag.map(|(what, start)| {
+            let now = tile_of(camera.screen_to_world(mouse));
+            (what, (now.0 - start.0, now.1 - start.1))
+        });
+        self.editor.draw_regions(world, camera, dragged);
+        // The Terrain module's area: its frame and its size, as long as it's selected.
+        if let Some(area) = self.editor.area.filter(|_| self.editor.module == Module::Terrain && self.editor.editing()) {
+            let (w, h) = area.size();
+            let corner = vec2(area.min.0 as f32, area.min.1 as f32);
+            crate::picking::frame(camera, corner, vec2(w as f32, h as f32));
+            let at = camera.world_to_screen(corner + vec2(w as f32, h as f32));
+            draw_text(format!("{w} x {h}"), at.x - 20.0, at.y + 18.0, 18.0, Color::new(1.0, 0.85, 0.3, 1.0));
+        }
         // Editor tool on the mouse: the brush in the colour of the terrain, or the name of what gets spawned.
         if let Some(tool) = self.editor.tool.filter(|_| !self.editor.has_mouse()) {
             match tool {
-                Tool::Paint(_) | Tool::Ore(_) | Tool::Remove | Tool::ZombieBrush => {
+                // An area being dragged: its frame so far. Before the press: the tile it would start on.
+                Tool::Area => {
+                    let tile = tile_of(camera.screen_to_world(mouse));
+                    let area = Area::between(self.shape_start.unwrap_or(tile), tile);
+                    let (w, h) = area.size();
+                    crate::picking::frame(camera, vec2(area.min.0 as f32, area.min.1 as f32), vec2(w as f32, h as f32));
+                    draw_text(format!("{w} x {h}"), mouse.x + 14.0, mouse.y + 14.0, 20.0, WHITE);
+                }
+                // A region's rectangle or circle being dragged: its tiles' frame. Before the press: the tile it starts on.
+                Tool::ZoneRect | Tool::ZoneCircle => {
+                    let tile = tile_of(camera.screen_to_world(mouse));
+                    let form = self.editor.region_form(tool, self.shape_start.unwrap_or(tile), tile);
+                    if let Some(area) = form.bounds() {
+                        let (w, h) = area.size();
+                        let (corner, size) = (vec2(area.min.0 as f32, area.min.1 as f32), vec2(w as f32, h as f32));
+                        if tool == Tool::ZoneCircle {
+                            draw_ground_circle(camera, corner + size / 2.0, w as f32 / 2.0, 2.0, WHITE);
+                        } else {
+                            crate::picking::frame(camera, corner, size);
+                        }
+                        draw_text(format!("{w} x {h}"), mouse.x + 14.0, mouse.y + 14.0, 20.0, WHITE);
+                    }
+                }
+                Tool::ZonePaint => {
+                    for (x, y) in self.editor.brush_tiles(tile_of(camera.screen_to_world(mouse))) {
+                        draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, Color::new(1.0, 1.0, 1.0, 0.25));
+                    }
+                }
+                // The copied ground: where it would land.
+                Tool::PasteArea => {
+                    if let Some((corner, (w, h))) = self.editor.paste_spot(tile_of(camera.screen_to_world(mouse))) {
+                        let (corner, size) = (vec2(corner.0 as f32, corner.1 as f32), vec2(w as f32, h as f32));
+                        draw_diamond(camera, corner, size, Color::new(1.0, 1.0, 1.0, 0.15));
+                        crate::picking::frame(camera, corner, size);
+                        draw_text(format!("Paste {w} x {h}"), mouse.x + 14.0, mouse.y + 14.0, 20.0, WHITE);
+                    }
+                }
+                Tool::Paint(_) | Tool::Ore(_) | Tool::Smooth | Tool::Remove | Tool::ZombieBrush => {
                     let color = match tool {
-                        Tool::Paint(Terrain::Grass) | Tool::Ore(None) => Color::new(1.0, 1.0, 1.0, 0.25),
+                        Tool::Paint(Terrain::Grass) | Tool::Ore(None) | Tool::Smooth => Color::new(1.0, 1.0, 1.0, 0.25),
                         Tool::Paint(terrain) => Color { a: 0.6, ..terrain_color(terrain) },
                         Tool::Ore(Some(ore)) => Color { a: 0.6, ..ore_color(ore) },
                         Tool::Remove => Color::new(0.9, 0.15, 0.15, 0.35),
@@ -2159,9 +2469,31 @@ impl Ui {
                         _ => WHITE,
                     };
                     let tile = tile_of(camera.screen_to_world(mouse));
-                    let tiles = if tool == Tool::Ore(Some(Ore::Oil)) { oil_node(tile) } else { self.editor.brush_tiles(tile) };
-                    for (x, y) in tiles {
-                        draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, color);
+                    match self.shape_start {
+                        // A rectangle being drawn: its frame – it may be half the map, far too many tiles to draw each.
+                        Some(start) if self.editor.shape_of(tool) == PaintShape::Rect => {
+                            let (min, max) = ((start.0.min(tile.0), start.1.min(tile.1)), (start.0.max(tile.0), start.1.max(tile.1)));
+                            let size = vec2((max.0 - min.0 + 1) as f32, (max.1 - min.1 + 1) as f32);
+                            draw_diamond(camera, vec2(min.0 as f32, min.1 as f32), size, Color { a: color.a * 0.5, ..color });
+                            crate::picking::frame(camera, vec2(min.0 as f32, min.1 as f32), size);
+                            draw_text(format!("{} x {}", size.x, size.y), mouse.x + 14.0, mouse.y + 14.0, 20.0, WHITE);
+                        }
+                        // A line being drawn: its tiles (a very long one with a big brush: only its middle).
+                        Some(start) => {
+                            let mut tiles = self.line_tiles(start, tile);
+                            if tiles.len() > 6000 {
+                                tiles = grid_line(start, tile);
+                            }
+                            for (x, y) in tiles {
+                                draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, color);
+                            }
+                        }
+                        None => {
+                            let tiles = if tool == Tool::Ore(Some(Ore::Oil)) { oil_node(tile) } else { self.editor.brush_tiles(tile) };
+                            for (x, y) in tiles {
+                                draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, color);
+                            }
+                        }
                     }
                     if tool == Tool::ZombieBrush {
                         draw_text(self.editor.brush_text(), mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
@@ -2193,7 +2525,25 @@ impl Ui {
                     let text = if fits { format!("{} house - {inside} zombies inside", nest.name()) } else { "No room here".to_owned() };
                     draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, if fits { YELLOW } else { Color::new(1.0, 0.45, 0.4, 1.0) });
                 }
-                Tool::Unit(_) | Tool::Spawner | Tool::Loot | Tool::Giant => {
+                // Where it goes (snapped onto the track's open end): its tiles – a piece of track the ones it lies on,
+                // brighter.
+                Tool::Ornament(kind) => {
+                    let tile = ornament_spot(world, kind, camera.screen_to_world(mouse));
+                    let (w, h) = kind.footprint();
+                    draw_diamond(camera, vec2(tile.0 as f32, tile.1 as f32), vec2(w as f32, h as f32), Color::new(1.0, 0.9, 0.3, 0.15));
+                    if let OrnamentKind::Rail(shape) = kind {
+                        let piece = RailPiece { shape, tile };
+                        for y in tile.1..tile.1 + h {
+                            for x in (tile.0..tile.0 + w).filter(|&x| piece.covers((x, y))) {
+                                draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, Color::new(1.0, 0.9, 0.3, 0.45));
+                            }
+                        }
+                    }
+                    draw_ornament_ghost(camera, sprites, Ornament { kind, tile }, Color::new(1.0, 1.0, 1.0, 0.55));
+                    draw_text(tool.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
+                }
+                Tool::RailPlanner => self.rail.draw(world, camera, sprites, mouse),
+                Tool::Unit(_) | Tool::Spawner | Tool::Loot | Tool::Giant | Tool::Spot => {
                     draw_circle_lines(mouse.x, mouse.y, 10.0, 2.0, YELLOW);
                     draw_text(tool.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
                 }
@@ -2243,6 +2593,13 @@ impl Ui {
                     Some((Axes::Screen, min, size, grab(min, size, Axes::Screen, point, camera)))
                 }
                 (None, None, Some(s)) if free => Some((s.axes, s.min, s.size, grab(s.min, s.size, s.axes, point, camera))),
+                // The selected region's rectangles: the edge under the mouse.
+                (None, None, None) if free && self.editor.module == Module::Regions && !self.editor.testing() => self
+                    .editor
+                    .picked_rects(world)
+                    .into_iter()
+                    .rev()
+                    .find_map(|(_, min, size)| grab(min, size, Axes::Tiles, point, camera).map(|edges| (Axes::Tiles, min, size, Some(edges)))),
                 _ => None,
             };
             if let Some((axes, min, size, Some(edges))) = lit.filter(|l| l.3 != Some(Edges::ALL)) {

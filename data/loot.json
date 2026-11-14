@@ -4,5 +4,7 @@
   "awareness": 1.5,
   "gold": 500,
   "goods": 10,
-  "gold_share": 0.4
+  "gold_share": 0.4,
+  "food": 20,
+  "energy": 20
 }

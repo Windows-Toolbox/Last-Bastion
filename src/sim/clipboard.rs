@@ -9,7 +9,7 @@
 
 use macroquad::math::{vec2, Vec2};
 
-use super::{Axes, Ornament, OrnamentKind, Thing, ThingRef, World};
+use super::{Axes, Ornament, Thing, ThingRef, World};
 use crate::kinds::BuildingKind;
 use crate::map::{BigRock, Terrain};
 use crate::mapfile::{BuildingData, DoomData, LootData, NeutralData, SpawnerData, UnitData, ZombieData};
@@ -312,11 +312,8 @@ pub fn count_pieces(pieces: &[Piece]) -> String {
     ])
 }
 
-/// The middle of an ornament on the ground: a ruin's 4 × 4 tiles, a tower's one tile.
+/// The middle of an ornament on the ground: of the tiles it covers (a ruin's 4 × 4, a tower's one).
 pub fn ornament_middle(ornament: Ornament) -> Vec2 {
-    let corner = vec2(ornament.tile.0 as f32, ornament.tile.1 as f32);
-    match ornament.kind {
-        OrnamentKind::Ruin => corner + 2.0,
-        OrnamentKind::PowerTower | OrnamentKind::PowerTowerFlip => corner + 0.5,
-    }
+    let (w, h) = ornament.kind.footprint();
+    vec2(ornament.tile.0 as f32 + w as f32 / 2.0, ornament.tile.1 as f32 + h as f32 / 2.0)
 }

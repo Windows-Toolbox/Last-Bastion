@@ -170,7 +170,11 @@ impl Critters {
             if world.anyone_near(pos, watch) {
                 self.list[i].doing = match kind {
                     Kind::Raven => self.take_off(world, pos, now),
-                    Kind::Rat => Doing::Flee { to: self.free_spot(world, pos, 2.0, 2.0) },
+                    Kind::Rat => {
+                        // TAB's `PlayRatSound`: it squeaks as it dashes off.
+                        crate::audio::critter(false, pos);
+                        Doing::Flee { to: self.free_spot(world, pos, 2.0, 2.0) }
+                    }
                 };
             }
         }
@@ -276,6 +280,8 @@ impl Critters {
             at = next;
         }
         let path = (1..=25).map(|k| curve(&points, k as f32 / 25.0)).collect();
+        // TAB's `CBird.StartFlight`: its wings and its caw.
+        crate::audio::critter(true, from);
         Doing::Fly { since: now, path, next: 0 }
     }
 

@@ -8,9 +8,11 @@ use macroquad::prelude::*;
 use crate::app::Program;
 use crate::keymap::KeyMap;
 use crate::settings::{self, Settings, WindowMode};
-use crate::widgets::{button, choice, slider, toggle, Column};
+use crate::widgets::{button, choice, slider, toggle, Column, GAP};
 
 const WIDTH: f32 = 460.0;
+/// The settings page: two columns side by side (`settings_page`).
+pub const SETTINGS_WIDTH: f32 = 2.0 * WIDTH;
 
 /// What the player triggered in the menu – `game.rs` carries it out.
 pub enum MenuAction {
@@ -71,7 +73,7 @@ impl Menu {
         match self.page {
             Page::Main => self.main_page(),
             Page::Settings => {
-                let mut col = Column::centered("Settings", 13, WIDTH);
+                let mut col = Column::centered("Settings", 13, SETTINGS_WIDTH);
                 if settings_page(&mut col, settings) {
                     self.page = Page::Main;
                 }
@@ -124,9 +126,28 @@ impl Menu {
     }
 }
 
-/// The settings, as rows in `col` – the same page in the Esc menu and on the home screen. Returns `true` when
+/// The settings, as rows in `col` – the same page in the Esc menu and on the home screen: on the left controls and
+/// display, on the right TAB's seven volumes. `col` is as wide as both halves (`SETTINGS_WIDTH`). Returns `true` when
 /// "Back" was clicked.
 pub fn settings_page(col: &mut Column, s: &mut Settings) -> bool {
+    let half = (col.width - 2.0 * GAP) / 2.0;
+    let mut right = Column { x: col.x + half + 2.0 * GAP, y: col.y, width: half };
+    col.width = half;
+    right.heading("Sound");
+    let v = &mut s.volume;
+    // The master volume turns everything down at once – each kind below is a share of it.
+    slider(right.row(), "Master volume", &mut v.global, 0.0, 100.0);
+    right.gap();
+    for (label, value) in [
+        ("Music", &mut v.music),
+        ("Effects", &mut v.effects),
+        ("Unit voices", &mut v.voices),
+        ("Alerts", &mut v.notifications),
+        ("Surroundings", &mut v.ambient),
+        ("Interface", &mut v.interface),
+    ] {
+        slider(right.row(), label, value, 0.0, 100.0);
+    }
     col.heading("Controls");
     toggle(col.row(), "Scroll at the window edge", &mut s.edge_scroll);
     slider(col.row(), "Scroll speed", &mut s.scroll_speed, 300.0, 2500.0);

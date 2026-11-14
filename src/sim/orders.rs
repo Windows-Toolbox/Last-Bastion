@@ -6,9 +6,13 @@ use macroquad::math::{vec2, Vec2};
 use super::buildings::{Product, Rally, MAX_PRODUCTION};
 use super::clipboard::{Clip, Piece};
 use super::commands::Command;
-use super::events::Event;
+use super::events::{plan_events, Event};
+use super::landscaping::{Area, Patch, TerrainClip};
 use super::neutral::{Owner, Tag, ThingRef};
-use super::story::{Script, Story};
+use super::rails::RailPiece;
+use super::regions::{Spot, Zone};
+use super::{Ornament, OrnamentKind};
+use super::story::Story;
 use super::spawning::{Axes, BreedCount, SpawnMode, WaveFrom, WaveGroup, NEW_SPAWNER_SIZE};
 use super::zombies::Breed;
 use super::World;
@@ -63,6 +67,12 @@ pub enum Order {
     AddEvent(Event),
     SetEvent { index: usize, event: Event },
     RemoveEvent { index: usize },
+    /// An event's zombies, now, once – like "Send now" but with the event's groups and numbers (the middle of a range is
+    /// rolled); the event itself keeps its schedule.
+    SendEvent { index: usize },
+    /// All events anew from TAB's survival plan (`plan_events`) for the round's days and this difficulty's zombie
+    /// population – what was there is replaced, the offsets are rolled again.
+    PlanEvents { difficulty: String },
     /// All zombies gone.
     ClearZombies,
     /// A new unit at a point (only inside the world border).
@@ -70,6 +80,21 @@ pub enum Order {
     /// Editor: these tiles get this terrain (grass = erase). Tiles with buildings stay as they are,
     /// whoever stands on new solid ground is pushed out.
     PaintTerrain { terrain: Terrain, tiles: Vec<(i32, i32)> },
+    /// Editor: the forest, rock or ore on these tiles is drawn with this group of pictures – 1–3: the landscape's A,
+    /// B, C, 0: mixed again (`Map::set_picture`). Only the look.
+    PaintPicture { picture: u8, tiles: Vec<(i32, i32)> },
+    /// Editor "Smooth": each of these tiles takes the ground most of its neighbours have (`landscaping.rs`).
+    SmoothTerrain { tiles: Vec<(i32, i32)> },
+    /// Editor: a copied area's ground back onto the map, its corner on the tile `to`. `spare`: not on or next to
+    /// buildings and the railway (`World::spare`). `Box`: the copy lies somewhere else in memory, so the order itself
+    /// stays small – like `Paste`.
+    PasteTerrain { clip: Box<TerrainClip>, to: (i32, i32), spare: bool },
+    /// Editor "Generate in the area": a patch of forest, a lake, mountains, an ore field or a village of doom inside
+    /// `area`, made from `seed`. `percent`: how much of the area it takes.
+    Generate { what: Patch, area: Area, percent: u32, seed: u64, spare: bool },
+    /// Editor: the map is drawn as this one of TAB's landscapes from now on ("BR", "FA" … – `World::set_look`), with
+    /// its weather. What the landscape does to the round (`modifiers`) stays as it is.
+    SetLook { look: String },
     /// Editor: one of TAB's big rocks – its tiles become mountain like painted ones (`Map::place_big_rock`).
     PlaceBigRock(BigRock),
     /// Editor: ore on these tiles (only where there's grass) – `None` takes it away.
@@ -85,6 +110,18 @@ pub enum Order {
     SetSpawnMode { spawner: u32, mode: SpawnMode },
     /// Gone – and out of every wave and stage that named it.
     RemoveSpawner { spawner: u32 },
+    /// Editor "Regions" (`regions.rs`): a new named region – its number is given here, and its name if it's empty
+    /// ("Region 7").
+    AddZone { zone: Zone },
+    /// The region with this number (`zone.id`) is this one now: name, colour, shapes.
+    SetZone { zone: Zone },
+    /// Tiles painted into a region by hand – or, `cut`, out of it.
+    PaintZone { zone: u32, tiles: Vec<(i32, i32)>, cut: bool },
+    RemoveZone { zone: u32 },
+    /// The same for a named point.
+    AddSpot { spot: Spot },
+    SetSpot { spot: Spot },
+    RemoveSpot { spot: u32 },
     /// Editor: a house of a village of doom (top left tile, width and depth) with as many zombies inside as the generator
     /// would put there (`World::doom_zombies`). Only inside the world border, on open ground nothing else takes.
     PlaceDoom { tile: (i32, i32), size: (i32, i32) },
@@ -94,6 +131,9 @@ pub enum Order {
     RemovePieces { pieces: Vec<Piece> },
     /// Editor: a pile of loot at this point – what lies in it and how many guards, rolled like the generator does.
     PlaceLoot { point: Vec2 },
+    /// Editor: an ornament – a piece of the railway (`ornaments.rs`). Only where all of it is on the map, and not twice
+    /// the same on the same tile.
+    PlaceOrnament(Ornament),
     /// Editor eraser: everything on these tiles goes – buildings standing on one of them, houses of doom, units,
     /// zombies, loot, the dead.
     RemoveAt { tiles: Vec<(i32, i32)> },
@@ -103,12 +143,13 @@ pub enum Order {
     /// percent, infected (a building) or a veteran (a unit) – and the thing removed.
     SetTag { thing: ThingRef, tag: Tag },
     SetOwner { thing: ThingRef, owner: Owner },
+    /// Editor ("Placing: owner"): carry out the order inside – a building or a unit put down – and what it made belongs
+    /// to `owner` right away. If it made nothing (no room), nothing happens. `Box`: like `Credit`.
+    PlaceAs { owner: Owner, order: Box<Order> },
     SetHealth { thing: ThingRef, percent: u32 },
     SetMark { thing: ThingRef, on: bool },
     RemoveThing { thing: ThingRef },
-    /// Editor: the script a neutral thing runs when it joins the colony (`story.rs`).
-    SetJoinScript { neutral: u32, script: Script },
-    /// Editor: the map's story – scripts, goals, the command center's button, counters (`story.rs`).
+    /// Editor: the map's story – triggers, goals, the command center's button, variables (`story.rs`).
     SetStory { story: Story },
     /// The player picked option `index` of the oldest waiting choice of a script (`Action::Choose`).
     Choose { index: usize },
@@ -125,6 +166,9 @@ pub enum Order {
     // --- The round (editor) ---
     /// The round lasts this many days (at least 1) – the final waves move to the new last day.
     SetDays { days: u32 },
+    /// The round's difficulty, by name (`data\game_difficulties.json`; an unknown name is the default one): how close
+    /// each breed may come (`keep_out`) and what new villages of doom hold. The gold, wood and everything placed stay.
+    SetDifficulty { name: String },
     /// The colony's gold right now – in the editor that's the gold the map starts with.
     SetGold { gold: u32 },
     /// The wood in the stock right now – in the editor the wood the map starts with.
@@ -151,6 +195,10 @@ pub enum Order {
     CancelTrain { building: u32, index: usize },
     /// Markets: sell what's above the mark (`on`) – or not (`market.rs`).
     SetSelling { buildings: Vec<u32>, on: bool },
+    /// Mine traps: wait this many steps (0–3) before going off (`blast.rs`, TAB's `DelayActivation`).
+    SetMineDelay { buildings: Vec<u32>, delay: u8 },
+    /// This workshop starts research `tech` (`research.rs`, the index in `data\research.json`).
+    Research { building: u32, tech: u16 },
     /// The same order, but gold may go below 0 into the banks' credit (Shift, `debt.rs`) – everything else it needs
     /// has to be there as always. `Box`: an order inside an order needs a fixed size.
     Credit(Box<Order>),
@@ -235,7 +283,8 @@ impl World {
             }
             Order::SetEvent { index, event } => {
                 if *index < self.events.len() {
-                    self.events[*index] = event.clone();
+                    let old = std::mem::replace(&mut self.events[*index], event.clone()).name;
+                    self.rename_event_in_triggers(&old, &event.name);
                     self.event_changed(*index);
                 }
             }
@@ -243,6 +292,25 @@ impl World {
                 if *index < self.events.len() {
                     self.events.remove(*index);
                 }
+            }
+            Order::SendEvent { index } => {
+                if let Some(event) = self.events.get(*index).cloned() {
+                    for group in &event.groups {
+                        let breeds = group
+                            .breeds
+                            .iter()
+                            .map(|b| {
+                                let (lo, hi) = (b.count, b.up_to.max(b.count));
+                                BreedCount::new(lo + self.rng.below(hi - lo + 1), b.breed)
+                            })
+                            .collect();
+                        self.send_group(&WaveGroup { from: group.from.clone(), breeds }, false);
+                    }
+                }
+            }
+            Order::PlanEvents { difficulty } => {
+                self.events = plan_events(self.days, data::get().difficulty(difficulty).population);
+                self.roll_events();
             }
             Order::ClearZombies => {
                 self.zombies.clear();
@@ -262,6 +330,11 @@ impl World {
                     }
                 }
             }
+            Order::PaintPicture { picture, tiles } => self.paint_picture(*picture, tiles),
+            Order::SmoothTerrain { tiles } => self.smooth(tiles),
+            Order::PasteTerrain { clip, to, spare } => self.paste_terrain(clip, *to, *spare),
+            Order::Generate { what, area, percent, seed, spare } => self.generate_patch(*what, *area, *percent, *seed, *spare),
+            Order::SetLook { look } => self.set_look(look),
             Order::PlaceBigRock(rock) => {
                 if self.map.place_big_rock(*rock) {
                     self.map_changed = true;
@@ -309,6 +382,16 @@ impl World {
                 self.spawners.retain(|s| s.id != *spawner);
                 self.forget_spawner(*spawner);
             }
+            Order::AddZone { zone } => self.add_zone(zone.clone()),
+            Order::SetZone { zone } => self.set_zone(zone),
+            Order::PaintZone { zone, tiles, cut } => self.paint_zone(*zone, tiles, *cut),
+            Order::RemoveZone { zone } => {
+                self.zones.retain(|z| z.id != *zone);
+                self.forget_zone(*zone);
+            }
+            Order::AddSpot { spot } => self.add_spot(spot.clone()),
+            Order::SetSpot { spot } => self.set_spot(spot),
+            Order::RemoveSpot { spot } => self.spots.retain(|s| s.id != *spot),
             Order::PlaceDoom { tile, size } => {
                 if self.doom_fits(*tile, *size) {
                     // As full as the generator makes it at the map's difficulty.
@@ -323,6 +406,19 @@ impl World {
                     self.add_loot(*point, kind, amount, guards);
                 }
             }
+            Order::PlaceOrnament(ornament) => {
+                // Every tile it lies on on the map – not off it, nor in a corner of the grid past its edge.
+                let (w, h) = ornament.kind.footprint();
+                let (x, y) = ornament.tile;
+                let covers = |t: (i32, i32)| match ornament.kind {
+                    OrnamentKind::Rail(shape) => RailPiece { shape, tile: ornament.tile }.covers(t),
+                    _ => true,
+                };
+                let on_map = (y..y + h).all(|ty| (x..x + w).all(|tx| !covers((tx, ty)) || self.map.on_map(tx, ty)));
+                if on_map && !self.ornaments.contains(ornament) {
+                    self.ornaments.push(*ornament);
+                }
+            }
             Order::RemoveAt { tiles } => self.remove_at(tiles),
             Order::Paste { clip, to } => self.paste(clip, *to),
             Order::RemovePieces { pieces } => self.remove_pieces(pieces),
@@ -332,11 +428,13 @@ impl World {
                 }
             }
             Order::SetTag { thing, tag } => self.set_tag(*thing, tag),
-            Order::SetOwner { thing, owner } => self.set_owner(*thing, *owner),
+            Order::SetOwner { thing, owner } => {
+                self.set_owner(*thing, *owner);
+                self.expect_payout_before_start();
+            }
             Order::SetHealth { thing, percent } => self.set_health(*thing, *percent),
             Order::SetMark { thing, on } => self.set_mark(*thing, *on),
             Order::RemoveThing { thing } => self.remove_thing(*thing),
-            Order::SetJoinScript { neutral, script } => self.set_join_script(*neutral, script),
             Order::SetStory { story } => self.story = story.clone(),
             Order::Choose { index } => self.choose(*index),
             Order::CustomCommand => self.custom_command(),
@@ -347,6 +445,7 @@ impl World {
             }
             Order::PaintZombies { tiles, per_tile, wander } => self.paint_zombies(tiles, per_tile, *wander),
             Order::SetDays { days } => self.set_days(*days),
+            Order::SetDifficulty { name } => self.set_difficulty(data::get().difficulty(name)),
             Order::SetGold { gold } => {
                 self.gold = *gold;
                 self.debt = 0;
@@ -371,6 +470,7 @@ impl World {
                     // Building is loud work (`sound.rs`).
                     let center = self.buildings[self.buildings.len() - 1].center();
                     self.make_colony_sound(center, data::get().sound.building_placed);
+                    self.fx.push(super::Fx::Placed { kind: *kind });
                 }
             }
             Order::PlaceBuilding { kind, tile, turned, editor: true } => {
@@ -379,6 +479,7 @@ impl World {
                     // The terrain under it stays as it is (water stays water) – it shows again when the building
                     // falls. Whoever stands there is pushed out (`push_out_of_terrain`).
                     self.add_building(*kind, *tile, *turned);
+                    self.expect_payout_before_start();
                 }
             }
             Order::Unload { building } => {
@@ -433,6 +534,26 @@ impl World {
                     }
                 }
             }
+            Order::Research { building, tech } => self.start_research(*building, *tech),
+            Order::SetMineDelay { buildings, delay } => {
+                for &id in buildings {
+                    if let Some(b) = self.find_building(id).filter(|&b| self.buildings[b].kind == BuildingKind::MineTrap) {
+                        self.buildings[b].delay = (*delay).min(3);
+                    }
+                }
+            }
+            Order::PlaceAs { owner, order } => {
+                // The numbers the next building and unit get: whichever is taken afterwards is the new one.
+                let (building, unit, _) = self.next_ids();
+                self.apply(order);
+                let (next_building, next_unit, _) = self.next_ids();
+                if next_building > building {
+                    self.set_owner(ThingRef::Building(building), *owner);
+                } else if next_unit > unit {
+                    self.set_owner(ThingRef::Unit(unit), *owner);
+                }
+                self.expect_payout_before_start();
+            }
             Order::Credit(order) => {
                 self.on_credit = true;
                 self.apply(order);
@@ -477,6 +598,7 @@ impl World {
                                 vec![(Resource::Wood, s.cost_wood), (Resource::Iron, s.cost_iron), (Resource::Oil, s.cost_oil)]
                             }
                             Product::Barrel => vec![(Resource::Coal, data::get().buildings.blast.cost_coal)],
+                            Product::Research(t) => super::tech(t).goods().to_vec(),
                         };
                         for (r, n) in goods {
                             self.stock.add(r, n, self.storage(r));
@@ -528,6 +650,16 @@ impl World {
         self.corpses.retain(|c| !on(c.pos));
         self.dying.retain(|d| !on(d.pos));
         self.remove_neutral_at(on_tile);
+        // Ornaments with a tile under it – a piece of track only where it lies.
+        self.ornaments.retain(|o| {
+            let (w, h) = o.kind.footprint();
+            let tiles = (o.tile.1..o.tile.1 + h).flat_map(|y| (o.tile.0..o.tile.0 + w).map(move |x| (x, y)));
+            let covered = |t: (i32, i32)| match o.kind {
+                OrnamentKind::Rail(shape) => RailPiece { shape, tile: o.tile }.covers(t),
+                _ => true,
+            };
+            !tiles.filter(|&t| covered(t)).any(|(x, y)| on_tile(x, y))
+        });
     }
 
     /// The zombie brush (`Order::PaintZombies`). Who stands on a painted tile already is counted first – awake or asleep

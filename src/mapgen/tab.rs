@@ -13,7 +13,8 @@
 //!    → everything again with a new seed. What can't be reached from it doesn't count as free – less than 30 % of the
 //!    playing field reachable: a new seed too (ours, `MIN_REACHED`).
 //! 5. **Villages of doom:** a circle cleared, a house in the middle, houses in a spiral around it.
-//! 6. **Ruins with loot** (TAB's treasures): 2–4 piles each – gold, or a good that is worth more further out.
+//! 6. **Ruins with loot** (TAB's treasures): 2–4 piles each – gold, or a good that is worth more further out. On the
+//!    same kind of spots TAB's supplies: a power line tower with 2 × energy, a burning truck with 2 × food.
 //! 7. **Stone, iron, coal, gold:** a fine noise on the free dirt, not too close to the command center – at least 4
 //!    stone and 10 iron close to it, else rolled again. Coal isn't TAB's (our charcoal burners and foundries need it):
 //!    a layer of its own made like iron, also at least 10 close by.
@@ -21,8 +22,7 @@
 //! 9. **Zombies:** a noise over the free land, outside `weak_from` – the higher, the more per tile; further out the
 //!    stronger kinds (`medium_from` …). **Giants** far out (at least 70 tiles), 40 apart.
 //!
-//! Not taken over (yet): TAB's old towers and ravens, the supplies of food and energy, the mutants – we don't have
-//! those. The decorations of the landscapes are only pictures. TAB's start units – ours come from the difficulty.
+//! Not taken over (yet): TAB's old towers and ravens, the mutants – we don't have those. The decorations of the landscapes are only pictures. TAB's start units – ours come from the difficulty.
 //!
 //! TAB's counts (villages, ruins, giants) are for its 256 map: `TAB_AREA` tiles inside the border. On a bigger or
 //! smaller map they grow and shrink with it. Only `+ - * /`, `sqrt`, `floor` – the same map on every PC.
@@ -83,6 +83,12 @@ pub struct Params {
     /// Ruins with loot on a TAB map: from … to (`NumTreasures`).
     pub ruins_min: f32,
     pub ruins_max: f32,
+    /// TAB's supplies, places like the ruins: a power line tower with 2 energy (`NumSuppyEnergy`), a burning truck with
+    /// 2 food (`NumSuppyFood`) – from … to on a TAB map.
+    pub energy_sites_min: f32,
+    pub energy_sites_max: f32,
+    pub food_sites_min: f32,
+    pub food_sites_max: f32,
     /// Stone, iron, coal, gold: how much (`StoneEarthFactor` …) and no closer to the command center than this
     /// (`StoneFormationMinDistance` …, tiles). Coal isn't TAB's – ours, made like iron.
     pub stone: f32,
@@ -130,6 +136,10 @@ impl Default for Params {
             village_size_max: 7.0,
             ruins_min: 3.0,
             ruins_max: 4.0,
+            energy_sites_min: 2.0,
+            energy_sites_max: 3.0,
+            food_sites_min: 2.0,
+            food_sites_max: 3.0,
             stone: 0.12,
             stone_from: 5.0,
             iron: 0.09,
@@ -418,8 +428,12 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
     let mut taken: Vec<(i32, i32)> = Vec::new();
     let mut loot = Vec::new();
     let mut ornaments = Vec::new();
+    // Like TAB: first the ruins, then the power line towers, then the trucks – all on the same spots, 20 apart.
     let ruin_count = scaled(range(rng, p.ruins_min as i32, p.ruins_max as i32 + 1));
-    for _ in 0..ruin_count {
+    let food_count = scaled(range(rng, p.food_sites_min as i32, p.food_sites_max as i32 + 1));
+    let energy_count = scaled(range(rng, p.energy_sites_min as i32, p.energy_sites_max as i32 + 1));
+    let supplies = &crate::data::get().loot;
+    for site in 0..ruin_count + energy_count + food_count {
         if spots.is_empty() {
             break;
         }
@@ -430,8 +444,25 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
             }
             taken.push(at);
             ruins.set_rect((at.0, at.1, 4, 4), 1.0);
+            let offset = |dx: i32, dy: i32| (at.0 + dx, at.1 + dy);
+            if site >= ruin_count {
+                // A supply site (TAB's tiles, from the spot's corner): a medium power line tower (2 × 2) in a ruin
+                // round the corner, 2 energy at its far side – or a burning truck (2 × 4), a ruin next to it, its fire
+                // and smoke on the truck's second tile, 2 food beside it.
+                let (pieces, kind, piles) = if site < ruin_count + energy_count {
+                    let tower = if rng.below(2) == 0 { OrnamentKind::PowerTowerMedium } else { OrnamentKind::PowerTowerMediumFlip };
+                    ([(tower, offset(0, 0)), (OrnamentKind::Ruin, offset(-1, -1))], LootKind::Energy, [offset(2, 1), offset(1, 2)])
+                } else {
+                    ([(OrnamentKind::Truck, offset(0, 0)), (OrnamentKind::Ruin, offset(0, 0))], LootKind::Food, [offset(2, 1), offset(2, 2)])
+                };
+                ornaments.extend(pieces.map(|(kind, tile)| Ornament { kind, tile }));
+                let amount = if kind == LootKind::Food { supplies.food } else { supplies.energy };
+                loot.extend(piles.into_iter().filter(|t| free.get(t.0, t.1) >= 1.0).map(|tile| LootSpot { tile, haul: Some((kind, amount)) }));
+                break;
+            }
             ornaments.push(Ornament { kind: OrnamentKind::Ruin, tile: at });
-            // 2 to 4 piles: gold in 35 of 100, else a good – the further out and the fewer piles, the better.
+            // 2 to 4 piles in the ruin's 3 × 3 tiles: gold in 35 of 100, else a good – the further out and the fewer
+            // piles, the better.
             let piles = range(rng, 2, 5);
             let mut used: Vec<(i32, i32)> = Vec::new();
             for _ in 0..piles {
@@ -449,7 +480,7 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
                     (kind, if kind == LootKind::Gold { 500 } else { 10 })
                 };
                 let tile = loop {
-                    let tile = (at.0 + rng.below(4) as i32, at.1 + rng.below(4) as i32);
+                    let tile = (at.0 + rng.below(3) as i32, at.1 + rng.below(3) as i32);
                     if !used.contains(&tile) {
                         break tile;
                     }
@@ -781,7 +812,8 @@ mod tests {
                 for spot in &g.loot {
                     let (x, y) = spot.tile;
                     assert!(map.in_play(x, y) && !map.is_solid(x, y) && !houses[y as usize * map.size + x as usize], "{name} {seed}: loot on ({x}, {y})");
-                    assert!(matches!(spot.haul, Some((LootKind::Gold, 500)) | Some((_, 10))), "{name} {seed}: loot {:?}", spot.haul);
+                    let supply = matches!(spot.haul, Some((LootKind::Food | LootKind::Energy, 20)));
+                    assert!(supply || matches!(spot.haul, Some((LootKind::Gold, 500)) | Some((_, 10))), "{name} {seed}: loot {:?}", spot.haul);
                 }
 
                 let oil = |x: i32, y: i32| map.deposit(x, y).is_some_and(|d| d.ore == Ore::Oil);

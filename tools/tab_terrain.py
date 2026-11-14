@@ -23,6 +23,9 @@ What TAB's map drawer does (`ZX.GameSystems\\ZXMapDrawer.cs`, `ZXMapTheme*.cs`) 
 6. The floor under a building (`ZX.Components\\CFloorUndeBuilding.cs`): TAB's stone pavement `Floor A`, coloured like the
    landscape's `FloorBuilding_*` template, repeating every 8 tiles - and its three soft masks (`MasksTerrainSmall`,
    `MaskTerrainMedium`, `TerrainMaskLarge`, for buildings 1, 2 and 3+ tiles wide) side by side in one picture.
+7. The cliffs round the water (`CreateCliffsFor`): TAB's 29 pictures `BRCliffA_*` in 17 kinds of pieces - one set for
+   every landscape, coloured like it (`OnCreateSceneObject_CliffEarthUnderWater`). Which piece goes where, the game
+   decides (`src\\ground.rs`, `cliffs`).
 Every picture coloured like TAB's `DefaultVisualState` (saturation, contrast, brightness, hue; a tree's random hue as
 three variants). The water is a picture TAB composes of layers (`Clips`) - here mixed once into one texture, close to
 it (the recipes below, read from the clips by hand).
@@ -115,6 +118,14 @@ FLOORS = {"BR": "FloorBuilding_BR", "AL": "FloorBuilding_AL", "DS": "FloorBuildi
 FLOOR_MASKS = ["Masks/MasksTerrainSmall.png", "Masks/MaskTerrainMedium.png", "Masks/TerrainMaskLarge.png"]
 FLOOR_MASK_SIZE = 512
 
+# TAB's cliffs round the water (`ZXMapDrawer.CreateCliffsFor`, `ZXMapTheme.CliffPiecesBase`): the 17 kinds of pieces,
+# each `BRCliffA_<kind>` or `BRCliffA_<kind>1..5` - the same pictures in every landscape. The ones going down into the
+# water in front (B, R, BR, BL, TR) fade into it: TAB lays the mask `Mask_UnderWaterVeryHard` over them (IBR:
+# `Mask_UnderWaterVeryHard_Shallow`), white seen, grey 30 % - here baked into their see-through.
+CLIFF_KINDS = ["B", "T", "L", "R", "BR", "BL", "TR", "TL", "IBR", "IBL", "ITR", "ITL", "UT", "UL", "UR", "UB", "X"]
+CLIFF_MASKS = {**{k: "Masks/Mask_UnderWaterVeryHard.png" for k in ("B", "R", "BR", "BL", "TR")},
+               "IBR": "Masks/Mask_UnderWaterVeryHard_Shallow.png"}
+
 WATER["DS"] = WATER["TM"]
 WATER["FA"] = WATER["BR"]  # FA keeps the default (BR) water
 
@@ -152,6 +163,7 @@ def template(images, templates, name):
             out["image"] = images.get(d.get("IDImage"))
             out["scaling"] = num("SceneScalingFactor", "1")
             out["offset"] = num("SceneOffsetFactorY", "0")
+            out["offset_x"] = num("SceneOffsetFactorX", "0")
             # Its random pictures can be named right here (FA's and VO's mountain pieces: `VOPiece1` = VOPiece1A-F).
             if d.get("RandomImageName"):
                 out["random"] = d["RandomImageName"]
@@ -242,7 +254,7 @@ class Atlas:
     def __init__(self):
         self.pictures = []  # (image, width in tiles, offset share, feet share)
 
-    def add(self, image, width_tiles, offset):
+    def add(self, image, width_tiles, offset, offset_x=0.0):
         box = image.getchannel("A").getbbox() or (0, 0, image.width, image.height)
         # The bottom middle of TAB's whole frame stands on the ground; where is that in the cut picture?
         full_w, full_h = image.size
@@ -252,8 +264,8 @@ class Atlas:
         cut = cut.convert("RGBa").resize((w, h), Image.LANCZOS).convert("RGBA")
         # The feet: the frame's bottom middle - TAB moves the frame down by `offset` of its height (`DXComponentVisual`:
         # `bottomCenter.Y += SceneOffsetFactorY * height`), so the feet are that much higher in it. In the cut
-        # picture's pixels.
-        feet_x = (full_w / 2 - box[0]) * scale
+        # picture's pixels. `offset_x` moves it sideways by that share of its width (`SceneOffsetFactorX`).
+        feet_x = (full_w * (0.5 - offset_x) - box[0]) * scale
         feet_y = (full_h * (1 - offset) - box[1]) * scale
         self.pictures.append({"image": cut, "feet": (feet_x, feet_y), "pixels_per_tile": full_w * scale / width_tiles})
         return len(self.pictures) - 1
@@ -471,6 +483,58 @@ def floor_masks(tab, out):
     return "floor_masks.png"
 
 
+def cliff_look(key):
+    """How a landscape colours its cliffs (`OnCreateSceneObject_CliffEarthUnderWater`): (saturation, contrast,
+    brightness, hue) - BR and VO change those of its earth template (here: times them). `None`: TAB has nothing of
+    its own for it (FA) - it takes its earth's, see `earth_gains`."""
+    return {"BR": (1.2, 0.2, 1.4, 0), "VO": (0.5, 0.6, 1.04, 0), "AL": (0, 1, 1.03, 0),
+            "TM": (0.7, 0.8, 0.98, 20), "DS": (0.7, 0.95, 1, 10)}.get(key)
+
+
+def earth_gains(pictures, earth_png):
+    """Per channel: how much brighter the cliffs get to match the earth around them (on average over all their opaque
+    pixels). Not TAB's: TAB colours FA's cliffs with its earth's brightness 0.85 - added, so it takes 0.15 off every
+    channel, and the rock faces (darker than that) went black (a deviation, DESIGN.md 2)."""
+    earth = Image.open(earth_png).convert("RGB")
+    e = [sum(v * n for v, n in enumerate(earth.getchannel(c).histogram())) / (earth.width * earth.height) for c in range(3)]
+    sums, count = [0.0, 0.0, 0.0], 0
+    for image in pictures:
+        solid = image.getchannel("A").point(lambda a: 255 if a > 200 else 0)
+        for c in range(3):
+            hist = image.getchannel(c).histogram(mask=solid)
+            sums[c] += sum(v * n for v, n in enumerate(hist))
+        count += solid.histogram()[255]
+    return [ei / max(1.0, s / max(1, count)) for ei, s in zip(e, sums)]
+
+
+def cliffs(tab, images, templates, atlas, key, earth, earth_png):
+    """The cliff pieces in the atlas, coloured for this landscape: {kind: [picture, ...]} - variants in TAB's order."""
+    own = cliff_look(key)
+    s, c, b, _ = earth["look"]
+    look = None if own is None else (own if key not in ("BR", "VO") else (s * own[0], c * own[1], b * own[2], own[3]))
+    pieces = []
+    for kind in CLIFF_KINDS:
+        names = [n for n in [f"BRCliffA_{kind}"] + [f"BRCliffA_{kind}{k}" for k in range(1, 6)] if n in templates]
+        for name in names:
+            t = template(images, templates, name)
+            files = picture_files(tab, t)
+            if files:
+                pieces.append((kind, t, Image.open(files[0]).convert("RGBA")))
+    gains = earth_gains([p for _, _, p in pieces], earth_png) if look is None else None
+    out = {kind: [] for kind in CLIFF_KINDS}
+    for kind, t, raw in pieces:
+        if look is not None:
+            image = tinted(raw, look, None)
+        else:
+            image = raw.convert("RGB").convert("RGB", (gains[0], 0, 0, 0, 0, gains[1], 0, 0, 0, 0, gains[2], 0))
+            image.putalpha(raw.getchannel("A"))
+        if kind in CLIFF_MASKS:
+            mask = Image.open(os.path.join(tab, "Images", CLIFF_MASKS[kind])).convert("L").resize(image.size, Image.LANCZOS)
+            image.putalpha(ImageChops.multiply(image.getchannel("A"), mask))
+        out[kind].append(atlas.add(image, t["size"] * t["scaling"], t["offset"], t["offset_x"]))
+    return out
+
+
 def convert(tab, images, templates, key, theme):
     folder = os.path.join(OUT, key)
     os.makedirs(folder, exist_ok=True)
@@ -496,6 +560,8 @@ def convert(tab, images, templates, key, theme):
     meta["oil"] = oil(tab, atlas)
     meta["coal"] = coal(tab, images, templates, atlas)
     meta["big_rocks"] = big_rocks(tab, images, templates, atlas, key)
+    meta["cliffs"] = cliffs(tab, images, templates, atlas, key, template(images, templates, theme["earth"]),
+                            os.path.join(folder, "earth.png"))
     meta["pictures"], size = atlas.save(os.path.join(folder, "objects.png"))
     meta["objects"] = "objects.png"
     with open(os.path.join(folder, "terrain.json"), "w", encoding="utf-8") as f:

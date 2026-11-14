@@ -20,6 +20,7 @@ use crate::data;
 use crate::iso::{Camera, TILE_W};
 use crate::kinds::{BuildingKind, UnitKind};
 use crate::sim::{Breed, Nest};
+use crate::train_sprites::TrainSprites;
 
 /// `assets\<name>.json`: what's in the picture and where.
 #[derive(Deserialize)]
@@ -305,8 +306,8 @@ pub(crate) fn smooth(texture: &Texture2D) {
 const ANIMALS: [&str; 2] = ["animals/raven", "animals/rat"];
 
 /// The pictures of `assets\decor\` the game draws: wheat on a farm's fields, loot, the treasure ruins of every
-/// landscape, the power line towers.
-const DECOR: [&str; 17] = [
+/// landscape, the power line towers, the burning truck, the railway (`OrnamentKind::RAILWAY`).
+const DECOR: [&str; 40] = [
     "wheat",
     "loot_gold",
     "loot_wood",
@@ -323,7 +324,30 @@ const DECOR: [&str; 17] = [
     "treasure_ruin_vo",
     "power_tower_high",
     "power_tower_high_flip",
+    "power_tower_medium",
+    "power_tower_medium_flip",
+    "truck",
     "loot_oil_2",
+    "rail_x",
+    "rail_y",
+    "rail_curve_ne",
+    "rail_curve_nw",
+    "rail_curve_se",
+    "rail_curve_sw",
+    "rail_end_n",
+    "rail_end_s",
+    "rail_end_e",
+    "rail_end_w",
+    "rail_arch_a",
+    "rail_arch_b",
+    "rail_arch_c",
+    "rail_barrier_a",
+    "rail_barrier_b",
+    "rail_crossing",
+    "rail_trolley",
+    "mine_wagon_a",
+    "mine_wagon_b",
+    "train_lamp",
 ];
 
 /// The sprites in use, each loaded once – by the name `data\` gives it – and which of them every kind wears.
@@ -340,6 +364,8 @@ pub struct Sprites {
     buildings_loaded: HashMap<String, Option<BuildingSprite>>,
     buildings: Vec<Vec<String>>,
     doom: Vec<Vec<String>>,
+    /// The trains' pictures (`train_sprites.rs`) – `None`: not there (or broken).
+    trains: Option<TrainSprites>,
     /// What was wrong with the last one that didn't load.
     problem: Option<String>,
 }
@@ -357,6 +383,10 @@ impl Sprites {
         self.buildings = BuildingKind::ALL.iter().map(|k| self.building_looks(&k.stats().skins)).collect();
         for name in ANIMALS {
             self.try_load(name, false);
+        }
+        match TrainSprites::load() {
+            Ok(trains) => self.trains = trains,
+            Err(e) => self.problem = Some(e),
         }
         let decor: Vec<String> = DECOR.iter().map(|name| format!("decor/{name}")).collect();
         self.building_looks(&decor);
@@ -392,6 +422,11 @@ impl Sprites {
     /// A picture of `assets\decor\` (`DECOR`, same format as a building): `"wheat"`, `"loot_gold"` … `None`: not there.
     pub fn decor(&self, name: &str) -> Option<&BuildingSprite> {
         self.buildings_loaded.get(&format!("decor/{name}"))?.as_ref()
+    }
+
+    /// The trains' pictures – `None`: not there.
+    pub fn trains(&self) -> Option<&TrainSprites> {
+        self.trains.as_ref()
     }
 
     /// A sprite of `ANIMALS` by its name (`"animals/raven"`) – `None`: not there.

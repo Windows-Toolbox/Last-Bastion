@@ -201,7 +201,7 @@ impl World {
                         self.arrows.push(if splash.is_some() { arrow.with_splash(stats.splash, stats.edge_factor, to) } else { arrow });
                     } else if let Some(blow) = splash {
                         self.hit_splash(to, stats.splash, &blow);
-                        self.fx.push(Fx::Blast { at: to, radius: stats.splash });
+                        self.fx.push(Fx::Blast { at: to, radius: stats.splash, by: Some(kind) });
                     } else {
                         self.hit_zombie(z, damage, id, by);
                         if stats.knockback > 0.0 && self.zombies[z].is_alive() {

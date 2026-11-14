@@ -290,7 +290,7 @@ pub enum BuildingKind {
     Barrel,
     /// TAB's wooden house: the house between tent and stone house – goes on a tent, a stone house goes on it.
     WoodHouse,
-    /// TAB's power plant: a lot of power, burns coal (DESIGN.md's coal plant – TAB's burns wood).
+    /// TAB's power plant: a lot of power, burns wood like TAB's (DESIGN.md's coal plant comes later).
     PowerPlant,
     /// TAB's oil platform: right on an oil node (all its tiles oil), pumps oil.
     OilPlatform,
@@ -682,14 +682,15 @@ pub struct Convert {
     pub makes: Vec<(Resource, u32)>,
 }
 
-/// What a mine trap does (TAB's `TrapMine`): a zombie steps on it, `delay_seconds` later it goes off – `damage` to
-/// everyone within `radius` (zombies, your units, buildings, like a barrel's blast), and it's gone.
+/// What a mine trap does (TAB's `TrapMine`): a zombie steps on it, its delay (0–3, set on its card like TAB's
+/// `DelayActivation`) × `delay_step_seconds` later it goes off – `damage` to everyone within `radius` (zombies, your
+/// units, buildings, like a barrel's blast), and it's gone.
 #[derive(Deserialize)]
 pub struct MineBlast {
     pub damage: u32,
     pub radius: f32,
-    #[serde(rename = "delay_seconds", deserialize_with = "data::seconds")]
-    pub delay: u32,
+    #[serde(rename = "delay_step_seconds", deserialize_with = "data::seconds")]
+    pub delay_step: u32,
 }
 
 impl BuildingStats {
@@ -735,6 +736,13 @@ impl BuildingKind {
     /// them.
     pub fn is_defence(self) -> bool {
         self.is_wall() || self.is_tower() || self.stats().weapon.is_some()
+    }
+
+    /// May it be built on ore (`placement.rs`)? Only defence – walls, gates, towers, the ones that shoot by themselves
+    /// and the traps – and what digs it: the mine and the quarries, which work the tiles under them too
+    /// (`gather_below`). Ours: TAB builds nothing on ore. Oil is another matter: only the oil platform (`needs_oil`).
+    pub fn on_ore(self) -> bool {
+        self.is_defence() || self.is_trap() || matches!(self.gathers(), Some((Source::Ore | Source::Stone, _)))
     }
 
     /// A trap: everyone walks over it, zombies don't attack it – it hurts them (`trap_damage`), or it goes off under

@@ -230,8 +230,48 @@ pub struct Effects {
     seed: u32,
     /// Every other big building falling shows wood, the others stone (TAB's `WoodAndStoneBig`).
     falls: u32,
+    /// How strong the snow and the rain are drawn (0..1, `lasting.rs`) – they fade towards `World::weather`. `None`:
+    /// not yet looked – the first frame takes the round's weather at once.
+    weather: Option<[f32; 2]>,
+    /// The smoke out of the locomotives' chimneys (TAB's `Locomotive.AddParticleSmoke`).
+    puffs: Vec<Puff>,
     problem: Option<String>,
 }
+
+/// A puff of a locomotive's smoke: one of TAB's nine `SmokeParticle` pictures, where it left the chimney and when,
+/// how long it lives, where it drifts (screen, tile widths over its life), how far it turns (radians) and how big it
+/// starts (tile widths).
+struct Puff {
+    name: &'static str,
+    at: Vec2,
+    start: f32,
+    life: f32,
+    drift: Vec2,
+    turn: f32,
+    size: f32,
+}
+
+/// TAB's chimney: the locomotive picture's middle (its `ImageOffset` and `Height`, `tools\tab_trains.py`) and 1.1
+/// scene units above it – in tiles on the map, and in tile widths up.
+const CHIMNEY_OFFSET: Vec2 = vec2(-0.45, -0.47);
+const CHIMNEY_LIFT: f32 = 0.163 + 1.1 * std::f32::consts::FRAC_1_SQRT_2;
+/// A puff: 0.5 scene units big, growing from 1.5 to 16 times that over its 4–5 s, fading in over 0.1 s.
+const PUFF_SIZE: f32 = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+const PUFF_GROWS: (f32, f32) = (1.5, 16.0);
+const PUFF_IN: f32 = 0.1;
+/// At most this opaque – 20 a second lie over each other at first.
+const PUFF_OPACITY: f32 = 0.45;
+const PUFFS: [&str; 9] = [
+    "effects/smoke_puff_1",
+    "effects/smoke_puff_2",
+    "effects/smoke_puff_3",
+    "effects/smoke_puff_4",
+    "effects/smoke_puff_5",
+    "effects/smoke_puff_6",
+    "effects/smoke_puff_7",
+    "effects/smoke_puff_8",
+    "effects/smoke_puff_9",
+];
 
 impl Effects {
     /// After every tick: what the simulation says happened (`World::fx`) starts playing.
@@ -241,11 +281,11 @@ impl Effects {
             match *fx {
                 Fx::UnitShot { from, to, kind, bleeds, flight } => self.unit_shot(now, from, to, kind, bleeds, flight),
                 Fx::TowerShot { building, kind, from, to } => self.tower_shot(now, building, kind, from, to),
-                Fx::ZombieDied { at } => {
+                Fx::ZombieDied { at, .. } => {
                     self.on_body("effects/blood_zombie", now, at, 0.4, ZOMBIE_BLOOD);
                     self.stain("effects/blood_stain", now, at, 0.4, ZOMBIE_STAIN);
                 }
-                Fx::UnitDied { at } => {
+                Fx::UnitDied { at, .. } => {
                     self.on_body("effects/blood_human", now, at, 0.4, WHITE);
                     self.stain("effects/blood_stain", now, at, 0.4, HUMAN_STAIN);
                 }
@@ -254,19 +294,40 @@ impl Effects {
                     self.stain("effects/venom_pool", now, at, 0.4, VENOM_POOL);
                 }
                 // TAB's big fire blast for a barrel or a mine, a small one for a shell or a missile – as wide as it hits.
-                Fx::Blast { at, radius } => {
+                Fx::Blast { at, radius, .. } => {
                     let name = if radius >= 1.5 { "effects/fire_blast" } else { "effects/small_fire" };
                     self.play(name, now, at, 0.0, 2.0 * radius, 0.0, WHITE);
                 }
                 Fx::Flame { from, to } => self.flame(now, from, to),
                 Fx::Shock { building, from, to } => self.shock(now, building, from, to),
                 Fx::Fell { what, tile, size } => self.fell(now, what, tile, size),
-                Fx::Infected { tile, size } => {
+                Fx::Infected { tile, size, .. } => {
                     let middle = vec2(tile.0 as f32 + size.0 as f32 / 2.0, tile.1 as f32 + size.1 as f32 / 2.0);
                     let s = 1.0 + (size.0.max(size.1) - 1) as f32 * 0.2;
                     self.play("effects/crystal", now, middle, 0.0, s, 0.0, WHITE);
                 }
+                // Only heard, not seen (`audio.rs`).
+                Fx::ZombieStruck { .. }
+                | Fx::Placed { .. }
+                | Fx::Built { .. }
+                | Fx::Trained { .. }
+                | Fx::Veteran
+                | Fx::Picked { .. }
+                | Fx::Deserted { .. }
+                | Fx::TrainStart { .. } => {}
             }
+        }
+        // Every locomotive that moved lets out a puff (TAB: every update its position changed).
+        for train in world.trains.iter().filter(|t| t.offset != t.prev_offset) {
+            let at = train.line.point_at(train.offset) + CHIMNEY_OFFSET + self.spread(0.07);
+            let name = PUFFS[(self.random() * PUFFS.len() as f32) as usize % PUFFS.len()];
+            self.load(name);
+            let life = 4.0 + self.random();
+            // Up 5 scene units, give or take 2 each way.
+            let drift = (vec2(0.0, -5.0) + vec2(self.random() * 4.0 - 2.0, self.random() * 4.0 - 2.0)) * std::f32::consts::FRAC_1_SQRT_2;
+            let turn = (180.0 + 90.0 * self.random()).to_radians();
+            let size = PUFF_SIZE * (0.8 + 0.4 * self.random());
+            self.puffs.push(Puff { name, at, start: now, life, drift, turn, size });
         }
     }
 
@@ -455,6 +516,7 @@ impl Effects {
         }
         // Torn down, fallen: its gun goes with it.
         self.guns.retain(|id, _| world.buildings.iter().any(|b| b.id == *id));
+        self.fade_weather(world.weather, dt);
         let sheets = &self.sheets;
         let over = |name: &str, start: f32| match sheets.get(name) {
             Some(Some(e)) => e.at_age(now - start).is_none(),
@@ -464,6 +526,7 @@ impl Effects {
         self.rays.retain(|r| !over(r.name, r.start) && world.buildings.iter().any(|b| b.id == r.building));
         self.flights.retain(|f| now < f.start + f.time + 0.05);
         self.stains.retain(|s| now < s.start + STAIN_GROWS + STAIN_FADES);
+        self.puffs.retain(|p| now < p.start + p.life);
         // Arrows that arrive: the zombie bleeds.
         let landed: Vec<(Vec2, f32)> = self
             .flights
@@ -519,6 +582,23 @@ impl Effects {
 
     /// Everything else – over the figures and buildings, like TAB's effects.
     pub fn draw(&self, camera: &Camera, now: f32, shows: impl Fn(Vec2) -> bool) {
+        // The locomotives' smoke: rising, growing, turning, fading in fast and out slowly, a bit greyer as it goes.
+        for puff in self.puffs.iter().filter(|p| shows(p.at)) {
+            let Some(Some(effect)) = self.sheets.get(puff.name) else {
+                continue;
+            };
+            let t = ((now - puff.start) / puff.life).clamp(0.0, 1.0);
+            let age = now - puff.start;
+            let fade = if age < PUFF_IN { age / PUFF_IN } else { (1.0 - t) * (1.0 - t) };
+            let grey = 1.0 - 0.15 * t;
+            let size = puff.size * (PUFF_GROWS.0 + (PUFF_GROWS.1 - PUFF_GROWS.0) * t);
+            let unit = TILE_W * camera.zoom;
+            // Fast away from the chimney, then slower (TAB's transition with an easing of its own) – so the puffs
+            // don't pile up into one bright ball.
+            let away = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+            let at = camera.world_to_screen(puff.at) + (vec2(0.0, -CHIMNEY_LIFT) + puff.drift * away) * unit;
+            effect.draw_at(camera, at, size, puff.turn * t, Color::new(grey, grey, grey, fade * PUFF_OPACITY), true);
+        }
         for flight in self.flights.iter().filter(|f| shows(f.from) || shows(f.to)) {
             let Some(Some(effect)) = self.sheets.get(flight.name) else {
                 continue;

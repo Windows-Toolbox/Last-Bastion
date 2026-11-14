@@ -1,13 +1,13 @@
-//! Building blocks the generators share: the grid of tiles they paint on, rivers, single trees, and the step that
-//! connects every open place to the base.
+//! Building blocks of the plain map (`Generator::Blank`): the grid of tiles it paints on, single trees, and the step
+//! that connects every open place to the base.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use macroquad::math::{vec2, Vec2};
 
-use super::{Context, Field, Show};
-use crate::map::{Map, Region, Terrain};
+use super::{Field, Show};
+use crate::map::{Region, Terrain};
 use crate::noise::Noise;
 use crate::rng::Rng;
 
@@ -15,15 +15,11 @@ use crate::rng::Rng;
 pub struct Tiles {
     pub size: i32,
     terrain: Vec<Terrain>,
-    /// How wet every tile is (0 … 1, row by row like `all`), if the generator knows it (Wild: the same noise that
-    /// grows its forests). The dirt then goes where it's driest (`scatter_dirt`) – dry plains, green land around the
-    /// forests, like in TAB. `None`: the dirt gets a noise of its own.
-    pub moisture: Option<Vec<f32>>,
 }
 
 impl Tiles {
     pub fn new(size: usize) -> Tiles {
-        Tiles { size: size as i32, terrain: vec![Terrain::Grass; size * size], moisture: None }
+        Tiles { size: size as i32, terrain: vec![Terrain::Grass; size * size] }
     }
 
     pub fn center(&self) -> (i32, i32) {
@@ -99,82 +95,6 @@ pub fn random_direction(rng: &mut Rng) -> Vec2 {
     }
 }
 
-/// 0 below `lo`, 1 above `hi`, and an "S" in between (smooth at both ends).
-pub fn smoothstep(lo: f32, hi: f32, v: f32) -> f32 {
-    let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// The value at the given share of all values: `level(values, 0.1)` = the value 10 % of them lie below.
-/// So "10 % water" stays 10 %, whatever the noise gave this time.
-pub fn level(values: &[f32], share: f32) -> f32 {
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f32::total_cmp);
-    sorted[((sorted.len() - 1) as f32 * share.clamp(0.0, 1.0)) as usize]
-}
-
-/// Which terrain a wall gets: material 0 mountains, 1 forest, 3 water; 2 (mixed) rolls mountains or forest, now and
-/// then water.
-pub fn material(choice: f32, rng: &mut Rng) -> Terrain {
-    match choice.round() as i32 {
-        0 => Terrain::Mountain,
-        1 => Terrain::Forest,
-        3 => Terrain::Water,
-        _ => match rng.below(10) {
-            0..=4 => Terrain::Mountain,
-            5..=8 => Terrain::Forest,
-            _ => Terrain::Water,
-        },
-    }
-}
-
-/// Like `material`, but for "mixed" (2) per tile from a noise: patches of rock and forest along the same wall, now
-/// and then a bit of water – a wall that looks grown, not painted with one brush. The others stay one material.
-pub fn material_at(choice: f32, fixed: Terrain, mix: &Noise, x: i32, y: i32) -> Terrain {
-    if choice.round() as i32 != 2 {
-        return fixed;
-    }
-    let v = mix.fractal(x as f32, y as f32, 18.0, 3);
-    if v < 0.28 {
-        Terrain::Water
-    } else if v < 0.55 {
-        Terrain::Mountain
-    } else {
-        Terrain::Forest
-    }
-}
-
-/// Blobs of rock, forest or water smaller than `max` tiles become grass again – crumbs that only get in the way.
-/// The generators scatter their single trees only afterwards (`scatter_trees`), so those stay.
-pub fn remove_specks(tiles: &mut Tiles, max: usize) {
-    let n = tiles.size;
-    let mut seen = vec![false; (n * n) as usize];
-    for (x, y) in tiles.all() {
-        let t = tiles.get(x, y);
-        if seen[(y * n + x) as usize] || !t.is_solid() {
-            continue;
-        }
-        // All connected tiles of the same terrain.
-        let mut blob = vec![(x, y)];
-        let mut stack = vec![(x, y)];
-        seen[(y * n + x) as usize] = true;
-        while let Some((bx, by)) = stack.pop() {
-            for (nx, ny) in [(bx + 1, by), (bx - 1, by), (bx, by + 1), (bx, by - 1)] {
-                if tiles.inside(nx, ny) && !seen[(ny * n + nx) as usize] && tiles.get(nx, ny) == t {
-                    seen[(ny * n + nx) as usize] = true;
-                    stack.push((nx, ny));
-                    blob.push((nx, ny));
-                }
-            }
-        }
-        if blob.len() < max {
-            for (bx, by) in blob {
-                tiles.set(bx, by, Terrain::Grass);
-            }
-        }
-    }
-}
-
 /// The slider for single trees – nearly every generator has it.
 pub fn trees_field(value: &mut f32) -> Field<'_> {
     Field {
@@ -185,32 +105,6 @@ pub fn trees_field(value: &mut f32) -> Field<'_> {
         step: 0.005,
         show: Show::Percent,
         help: "Chance for a lone tree - a single forest tile - on open grass, more next to forests. Blocks walking, sight and shots like any forest.",
-    }
-}
-
-/// Bare dirt in patches (`Terrain::Dirt` – no farm grows there): on the grass tiles `inside`, wherever a slow noise is
-/// lowest – exactly `share` of them, because the cut is the noise value at that share of all of them, sorted. The noise
-/// is smooth, so the dirt comes in patches of a few to a few dozen tiles across instead of single tiles. If the
-/// generator knows how wet the land is (`Tiles::moisture`), that's the noise: the dirt lies where it's driest.
-pub fn scatter_dirt(tiles: &mut Tiles, noise: &Noise, share: f32, inside: impl Fn(i32, i32) -> bool) {
-    let grass: Vec<(i32, i32)> = tiles.all().filter(|&(x, y)| inside(x, y) && tiles.get(x, y) == Terrain::Grass).collect();
-    let count = (grass.len() as f32 * share.clamp(0.0, 1.0)) as usize;
-    if count == 0 {
-        return;
-    }
-    let size = tiles.size;
-    let moisture = tiles.moisture.take();
-    let value = |(x, y): (i32, i32)| match &moisture {
-        Some(wet) => wet[(y * size + x) as usize],
-        None => noise.fractal(x as f32, y as f32, 18.0, 3),
-    };
-    let mut values: Vec<f32> = grass.iter().map(|&t| value(t)).collect();
-    values.sort_unstable_by(f32::total_cmp);
-    let cut = values[count - 1];
-    for t in grass {
-        if value(t) <= cut {
-            tiles.set(t.0, t.1, Terrain::Dirt);
-        }
     }
 }
 
@@ -238,72 +132,6 @@ pub fn scatter_trees(tiles: &mut Tiles, rng: &mut Rng, density: f32) {
     }
 }
 
-/// A smooth random shift of a point by up to `amount` tiles ("domain warping"): look up the noise somewhere else
-/// than where you stand, and round blobs become frayed, stretched, organic shapes.
-pub struct Warp {
-    x: Noise,
-    y: Noise,
-    scale: f32,
-    amount: f32,
-}
-
-impl Warp {
-    pub fn new(rng: &mut Rng, scale: f32, amount: f32) -> Warp {
-        Warp { x: Noise::new(rng.next_u64() as u32), y: Noise::new(rng.next_u64() as u32), scale, amount }
-    }
-
-    pub fn apply(&self, x: f32, y: f32) -> Vec2 {
-        if self.amount <= 0.0 {
-            return vec2(x, y);
-        }
-        let dx = (self.x.fractal(x, y, self.scale, 3) - 0.5) * 2.0 * self.amount;
-        let dy = (self.y.fractal(x, y, self.scale, 3) - 0.5) * 2.0 * self.amount;
-        vec2(x + dx, y + dy)
-    }
-}
-
-/// A river from one edge of the map to another: it starts at a random point on a random side and flows towards a
-/// point on another side, bending left and right (`meander` 0 = nearly straight, 1 = big bends). Near the base it
-/// is pushed outwards, so it flows around the free space instead of being cut off by it.
-///
-/// No angles: the direction is a vector – "towards the end" plus a bit of "sideways", then shortened to length 1
-/// (`normalize`, only `sqrt`). That keeps it exact on every PC.
-pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meander: f32) {
-    let n = tiles.size as f32;
-    // The sides of the map as you see them – a river from a corner of the grid would flow through nothing.
-    let full = Map::full_area_of(tiles.size as usize);
-    let edge_point = |side: u32, t: f32| full.side_point(side, t);
-    let from_side = rng.below(4);
-    // Mostly to the opposite side (0 ↔ 1, 2 ↔ 3), sometimes round the corner.
-    let opposite = from_side ^ 1;
-    let to_side = if rng.below(3) == 0 { (from_side + 2) % 4 } else { opposite };
-    let mut pos = edge_point(from_side, 0.15 + 0.7 * rng.unit_f32());
-    let end = edge_point(to_side, 0.15 + 0.7 * rng.unit_f32());
-    let bend = Noise::new(rng.next_u64() as u32);
-    let avoid = ctx.keep_out + 10.0;
-    let step = 0.5;
-    let max_steps = (n * 8.0) as usize;
-    for k in 0..max_steps {
-        let to_end = (end - pos).normalize_or_zero();
-        let side = vec2(-to_end.y, to_end.x);
-        // The bend: slow noise along the way, -1 … 1.
-        let wiggle = (bend.fractal(k as f32 * step, 0.0, 40.0, 3) - 0.5) * 4.0 * meander;
-        let mut dir = to_end + side * wiggle;
-        // Pushed away from the base, the closer the stronger.
-        let from_base = pos - ctx.center;
-        let d = from_base.length();
-        if d < avoid && d > 0.0 {
-            dir += from_base / d * (3.0 * (avoid - d) / avoid);
-        }
-        pos += dir.normalize_or_zero() * step;
-        tiles.disc(pos, width / 2.0, Terrain::Water);
-        let outside = !full.contains(pos);
-        if pos.distance(end) < 1.0 || (k > 20 && outside) {
-            break;
-        }
-    }
-}
-
 /// Makes sure every open place (grass) can be reached from `from` on foot, in two passes:
 /// 1. **Inside** the world border (`inside`), only through tiles inside it – that's where your units walk.
 /// 2. **On the whole map** (`on_map`), the ring outside the border too – the zombies' way in. Since the ring is open ground (`generate`)
@@ -317,7 +145,7 @@ pub fn river(tiles: &mut Tiles, rng: &mut Rng, ctx: &Context, width: f32, meande
 /// ridge, a trail through a forest – 3 tiles wide where it cuts. How much a blocked tile "costs" changes slowly over
 /// the map (`rough`), so the way winds along the thinner, cheaper parts instead of running along a grid line (cut
 /// with a ruler, it looked like one). Open places smaller than `min_pocket` tiles are filled with forest instead.
-/// Since the ways in (`lanes.rs`) this is only the safety net for what the generators still close off. Returns how many
+/// The safety net for what the generator still closes off. Returns how many
 /// blocked tiles it opened.
 ///
 /// Walking counts only straight steps (4 neighbours): stricter than the units, who also go diagonally – so whatever

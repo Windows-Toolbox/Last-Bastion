@@ -98,7 +98,7 @@ BUILDINGS = {
     "tower": "WatchTowerWood",
     "stone_tower": "WatchTowerStone",
 }
-# TAB's buildings we don't have yet (docs\\tab-assets.md steps 5-7) - at TAB's size (its `Size`), since they aren't in
+# TAB's buildings we don't have yet (DESIGN.md 2) - at TAB's size (its `Size`), since they aren't in
 # data\\buildings.json yet. The quarry looks like our mine (both TAB's `Quarry`); the power plant and the warehouse are
 # also our charcoal burner and munitions factory, but there 2 tiles wide - here at TAB's 3 and 4.
 TAB_BUILDINGS = {
@@ -126,9 +126,10 @@ IMAGES = {"stakes": ("TrapStakes", 1), "barrel": ("ExplosiveBarrel", 1), "blade_
           "mine_trap": ("TrapMine", 1)}
 # Things on the map that aren't buildings (assets\\decor\\, same JSON): template, tiles wide. Wheat on the farm's
 # fields (`CFarmer`), loot (`Pickable*`), treasure ruins per landscape, TAB's power line towers in the forest
-# (`ZXMapTheme.Decorate`), ruins of tents and a well.
+# (`ZXMapTheme.Decorate`), ruins of tents and a well, the burning truck of a food site (`ZXLevelGenerator`).
 DECOR = {
     "wheat": ("Wheat_A", 1),
+    "truck": ("TruckA", (2, 4)),
     "loot_wood": ("PickableWood", 1), "loot_stone": ("PickableStone", 1), "loot_iron": ("PickableIron", 1),
     "loot_oil": ("PickableOil", 1), "loot_gold": ("PickableGold", 1), "loot_food": ("PickableFood", 1),
     "loot_energy": ("PickableEnergy", 1), "loot_science": ("PickableSciencePoint", 1),

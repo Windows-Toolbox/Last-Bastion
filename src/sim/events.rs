@@ -12,7 +12,7 @@ use macroquad::math::Vec2;
 use serde::{Deserialize, Serialize};
 
 use super::spawning::{BreedCount, WaveFrom, WaveGroup};
-use super::story::Script;
+use super::story::TriggerEvent;
 use super::zombies::Breed;
 use super::{World, HOUR_TICKS};
 use crate::data::{self, EventPlan};
@@ -66,12 +66,6 @@ pub struct Event {
     /// `EntityType1` … `EntityType10`).
     #[serde(default)]
     pub groups: Vec<WaveGroup>,
-    /// Scripts (`story.rs`): when it comes (TAB's `Script`, every time), and once when it has come every time (TAB's
-    /// `ScriptOnFinished` – a final wave only once none of it is left).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub script: Script,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub script_done: Script,
     /// While the round runs – not in the file (`World::roll_events` sets it when the round starts). `pub` only so an
     /// event can be written as `Event { …, ..Event::new(…) }` outside the simulation – only the simulation changes it.
     #[serde(skip)]
@@ -89,7 +83,7 @@ pub struct EventState {
     /// Per group, per side: the spawners (`id`) its zombies come out of next – picked when it's announced (or, silent,
     /// when it comes).
     from: Option<Vec<Vec<Vec<u32>>>>,
-    /// Its `script_done` has run.
+    /// Its "done" triggers have fired.
     done_ran: bool,
 }
 
@@ -116,9 +110,13 @@ pub enum Notice {
     Came { name: String, zombies: u32, final_wave: bool },
     /// A neutral building or unit joined the colony (`neutral.rs`).
     Joined { name: String },
+    /// A research is done (`research.rs`).
+    Researched { name: String },
     /// A script's line at the top of the screen, and its window (`story.rs`).
     Message { text: String },
     Window { title: String, text: String },
+    /// A train stopped at the command center (`trains.rs`), here.
+    TrainArrived { at: Vec2 },
 }
 
 /// Zombies an event still has to bring out of one side (TAB's `GenerationRequest`): every `stream_every_seconds` the
@@ -127,6 +125,8 @@ pub enum Notice {
 pub(super) struct Request {
     /// The spawners (`id`) of the side – any of them, or …
     spawners: Vec<u32>,
+    /// … (no spawners then) tiles of these regions (`id`, `WaveFrom::Zones`) – or …
+    zones: Vec<u32>,
     /// … a square (in the axes of the first one: middle, half its size) – `None`: anywhere in them.
     square: Option<(Vec2, Vec2)>,
     breed: Breed,
@@ -164,8 +164,6 @@ impl Event {
             won: false,
             won_when_dead: false,
             groups: vec![WaveGroup { from, breeds: vec![BreedCount::new(count, breed)] }],
-            script: Vec::new(),
-            script_done: Vec::new(),
             state: EventState::default(),
         }
     }
@@ -208,10 +206,59 @@ impl Event {
         1.0 + extra
     }
 
-    /// About how many zombies it brings the next time from one side – the middle of every range (for the notices).
-    fn per_side(&self) -> u32 {
-        let middle: u32 = self.groups.iter().flat_map(|g| &g.breeds).map(|b| (b.count + b.up_to.max(b.count)) / 2).sum();
-        (middle as f32 * self.factor(self.state.fired)) as u32
+    /// About how many zombies one group brings once – the middle of every range, before the growth.
+    fn middle(group: &WaveGroup) -> u32 {
+        group.breeds.iter().map(|b| (b.count + b.up_to.max(b.count)) / 2).sum()
+    }
+
+    /// About how many zombies it brings the next time, for the notices: per group the middle of its ranges, times the
+    /// growth, times its sides picked (`from`) – a group out of regions comes once.
+    fn expected(&self, from: &[Vec<Vec<u32>>]) -> u32 {
+        let factor = self.factor(self.state.fired);
+        self.groups
+            .iter()
+            .zip(from)
+            .map(|(group, sides)| {
+                let places = match &group.from {
+                    WaveFrom::Zones(ids) => ids.len().min(1) as u32,
+                    _ => sides.len() as u32,
+                };
+                (Event::middle(group) as f32 * factor) as u32 * places
+            })
+            .sum()
+    }
+
+    /// About how many zombies it brings the `time`-th time it comes (0 is the first): its groups' middles times the
+    /// growth – times the sides of a `Sides` group, once for any other.
+    pub fn at_time(&self, time: u32) -> u32 {
+        let per_time: u32 = self
+            .groups
+            .iter()
+            .map(|g| {
+                let places = match &g.from {
+                    WaveFrom::Sides(n) => (*n).min(4),
+                    WaveFrom::Spawners(ids) | WaveFrom::Zones(ids) => ids.len().min(1) as u32,
+                    WaveFrom::OneSpawner => 1,
+                };
+                Event::middle(g) * places
+            })
+            .sum();
+        (per_time as f32 * self.factor(time)) as u32
+    }
+
+    /// About how many zombies it brings in all, counting every time it comes up to the hour `last` (the round's end).
+    pub fn total(&self, last: u32) -> u32 {
+        let mut all = 0;
+        for time in 0..self.repeats().unwrap_or(u32::MAX) {
+            if self.hour + time * self.every_hours > last {
+                break;
+            }
+            all += self.at_time(time);
+            if self.every_hours == 0 {
+                break;
+            }
+        }
+        all
     }
 }
 
@@ -298,7 +345,7 @@ impl World {
         let event = &self.events[e];
         let sides = self.sides_of(&from);
         let at = event.next_hour().unwrap_or(0) as u64 * HOUR_TICKS;
-        let zombies = event.per_side() * from.iter().map(|g| g.len() as u32).max().unwrap_or(0);
+        let zombies = event.expected(&from);
         self.notices.push(Notice::Coming { name: event.name.clone(), at, zombies, sides, final_wave: event.final_wave });
         let state = &mut self.events[e].state;
         state.announced += 1;
@@ -337,6 +384,12 @@ impl World {
                     (b.breed, grown + if k == 0 { unrest } else { 0 })
                 })
                 .collect();
+            if let Some(zones) = self.wave_zones(&group.from) {
+                if !zones.is_empty() {
+                    total += counts.iter().map(|c| c.1).sum::<u32>();
+                }
+                self.request_zones(&zones, &counts, event.notify_hours.is_some(), event.final_wave);
+            }
             for side in sides {
                 total += counts.iter().map(|c| c.1).sum::<u32>();
                 self.request(side, &counts, event.dispersion, event.notify_hours.is_some(), event.final_wave);
@@ -345,23 +398,23 @@ impl World {
         if event.notify_hours.is_some() {
             self.notices.push(Notice::Came { name: event.name.clone(), zombies: total, final_wave: event.final_wave });
         }
-        self.run(&event.script);
+        self.fire(&TriggerEvent::EventComes { event: event.name.clone() });
     }
 
-    /// Every event that has come every time runs its `script_done` once – a final wave only once none of it is left
-    /// or still to come.
+    /// Every event that has come every time fires its "done" triggers once (TAB's `ScriptOnFinished`) – a final wave
+    /// only once none of it is left or still to come.
     fn finish_events(&mut self) {
         for e in 0..self.events.len() {
             let event = &self.events[e];
-            if event.state.done_ran || event.script_done.is_empty() || !event.is_done() {
+            if event.state.done_ran || !event.is_done() {
                 continue;
             }
             if event.final_wave && (self.final_wave_pending() || self.zombies.iter().any(|z| z.final_wave)) {
                 continue;
             }
             self.events[e].state.done_ran = true;
-            let script = self.events[e].script_done.clone();
-            self.run(&script);
+            let name = self.events[e].name.clone();
+            self.fire(&TriggerEvent::EventDone { event: name });
         }
     }
 
@@ -405,7 +458,20 @@ impl World {
         let swarm = if shown { self.new_swarm() } else { 0 };
         for &(breed, left) in counts.iter().filter(|c| c.1 > 0) {
             let share = self.rng.unit_f32();
-            self.requests.push(Request { spawners: spawners.clone(), square, breed, left, share, swarm, final_wave, storm: true });
+            self.requests.push(Request { spawners: spawners.clone(), zones: Vec::new(), square, breed, left, share, swarm, final_wave, storm: true });
+        }
+    }
+
+    /// A group from regions gets its zombies to let out: one request per breed, anywhere in the regions, a swarm of
+    /// their own if it's announced.
+    pub(super) fn request_zones(&mut self, zones: &[u32], counts: &[(Breed, u32)], shown: bool, final_wave: bool) {
+        if zones.is_empty() {
+            return;
+        }
+        let swarm = if shown { self.new_swarm() } else { 0 };
+        for &(breed, left) in counts.iter().filter(|c| c.1 > 0) {
+            let share = self.rng.unit_f32();
+            self.requests.push(Request { spawners: Vec::new(), zones: zones.to_vec(), square: None, breed, left, share, swarm, final_wave, storm: true });
         }
     }
 
@@ -437,14 +503,15 @@ impl World {
         }
         let speed = spawning.stream_speed.max(1);
         // The sides (by their spawners) in the order they first appear.
-        let mut sides: Vec<Vec<u32>> = Vec::new();
+        let place = |r: &Request| (r.spawners.clone(), r.zones.clone());
+        let mut sides: Vec<(Vec<u32>, Vec<u32>)> = Vec::new();
         for r in &self.requests {
-            if !sides.contains(&r.spawners) {
-                sides.push(r.spawners.clone());
+            if !sides.contains(&place(r)) {
+                sides.push(place(r));
             }
         }
         for side in sides {
-            let mine: Vec<usize> = (0..self.requests.len()).filter(|&r| self.requests[r].spawners == side).collect();
+            let mine: Vec<usize> = (0..self.requests.len()).filter(|&r| place(&self.requests[r]) == side).collect();
             let all: u32 = mine.iter().map(|&r| self.requests[r].left).sum();
             let mut made = 0;
             for (k, &r) in mine.iter().enumerate().rev() {
@@ -466,6 +533,21 @@ impl World {
     /// found: the request is dropped (nobody can come from there).
     fn let_out_request(&mut self, r: usize, n: u32) {
         let req = self.requests[r].clone();
+        if !req.zones.is_empty() {
+            for _ in 0..n {
+                let Some(pos) = self.zone_point(&req.zones) else {
+                    self.requests[r].left = 0;
+                    return;
+                };
+                self.spawn_zombie_as(pos, req.breed, !req.storm);
+                if let Some(zombie) = self.zombies.last_mut() {
+                    zombie.final_wave = req.final_wave;
+                    zombie.swarm = req.swarm;
+                }
+                self.requests[r].left -= 1;
+            }
+            return;
+        }
         let indices: Vec<usize> = req.spawners.iter().filter_map(|&id| self.find_spawner(id)).collect();
         if indices.is_empty() {
             self.requests[r].left = 0;

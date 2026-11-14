@@ -14,6 +14,9 @@ use macroquad::prelude::*;
 /// TAB's numbers for the map (`PostProcessingWithBloom`).
 const BLOOM_INTENSITY: f32 = 1.8;
 const ORIGINAL_INTENSITY: f32 = 1.5;
+/// The editor's views without the player's light (everything as if seen right now): TAB's brightening on top of that
+/// glared – there the picture goes on only this much brighter (`finish`, `unlit`).
+const UNLIT_INTENSITY: f32 = 1.1;
 const MIN_LUMINANCE: f32 = 0.1;
 /// How far the glow smears: 4 % of the picture's width (sideways) and height (up and down).
 const BLOOM_WIDTH: f32 = 0.04;
@@ -104,7 +107,8 @@ impl Post {
     }
 
     /// The picture onto the screen: shrunk, smeared, and then with its glow and the landscape's filter (`look`).
-    pub fn finish(&mut self, look: &str) {
+    /// `unlit`: the map was drawn without the player's light and dark (the editor's other views) – less brightening.
+    pub fn finish(&mut self, look: &str, unlit: bool) {
         let (Some(scene), Some(across), Some(blur), Some(finish)) = (&self.scene, &self.across, &self.blur, &self.finish) else {
             return;
         };
@@ -125,7 +129,8 @@ impl Post {
         let m = grade(look).matrix();
         // GLSL keeps a matrix by columns: column j = what goes into channel j.
         finish.set_uniform("Grade", Mat4::from_cols_array_2d(&std::array::from_fn(|j| std::array::from_fn(|i| m[i][j]))));
-        finish.set_uniform("Glow", vec4(BLOOM_INTENSITY, ORIGINAL_INTENSITY, MIN_LUMINANCE, 0.0));
+        let original = if unlit { UNLIT_INTENSITY } else { ORIGINAL_INTENSITY };
+        finish.set_uniform("Glow", vec4(BLOOM_INTENSITY, original, MIN_LUMINANCE, 0.0));
         finish.set_texture("Bloom", eighth.texture.clone());
         gl_use_material(finish);
         draw_texture_ex(&scene.texture, 0.0, 0.0, WHITE, sized(vec2(screen_width(), screen_height())));

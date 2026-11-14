@@ -153,6 +153,10 @@ pub enum WaveFrom {
     /// These spawners (their `id`): the count once, spread over all of them – "5000 runners out of C, D, F and G". A
     /// spawner that is removed leaves the list (`World::forget_spawner`); with none left nobody comes.
     Spawners(Vec<u32>),
+    /// Somewhere in these regions (their `id`, `sim/regions.rs`): a random free tile of one of them, from which the base
+    /// can be reached – the count once, spread over all of them. A region that is removed leaves the list
+    /// (`World::forget_zone`); with none left nobody comes.
+    Zones(Vec<u32>),
 }
 
 /// One group of an event: where it comes out – picked once, all its breeds come out there together – and how many of
@@ -325,7 +329,7 @@ impl World {
                 let unit = &self.units[i];
                 let (pos, kind, id, facing, fling) = (unit.pos, unit.kind, unit.id, unit.facing, unit.fling);
                 self.corpses.push(Corpse { pos, prev: pos, kind, id, facing, died: self.tick, rise_in, fling });
-                self.fx.push(Fx::UnitDied { at: pos });
+                self.fx.push(Fx::UnitDied { at: pos, kind });
                 self.score.units_lost += 1;
                 // Dying is loud (`sound.rs`).
                 self.make_sound(pos, data::get().sound.unit_dies);
@@ -369,6 +373,29 @@ impl World {
                 ids.retain(|&s| s != id);
             }
         }
+    }
+
+    /// Region `id` is gone: the events that named it don't any more.
+    pub(super) fn forget_zone(&mut self, id: u32) {
+        for group in self.events.iter_mut().flat_map(|e| e.groups.iter_mut()) {
+            if let WaveFrom::Zones(ids) = &mut group.from {
+                ids.retain(|&z| z != id);
+            }
+        }
+    }
+
+    /// What names region `id`: its events' groups, for the Regions module ("Wave (day 20), group 2") – deleting it
+    /// takes it out of those.
+    pub fn zone_uses(&self, id: u32) -> Vec<String> {
+        let mut uses = Vec::new();
+        for event in &self.events {
+            for (g, group) in event.groups.iter().enumerate() {
+                if matches!(&group.from, WaveFrom::Zones(ids) if ids.contains(&id)) {
+                    uses.push(format!("{} (day {}), group {}", event.name, event.hour / 24 + 1, g + 1));
+                }
+            }
+        }
+        uses
     }
 
     /// The number the next spawner will get – the editor selects a spawner right after placing it.
@@ -418,6 +445,13 @@ impl World {
     /// A group of a wave sent at once ("send now" in the editor): where it comes out is picked once (`wave_sides`) –
     /// every breed of it comes out there, one after the other, all of a side one swarm.
     pub(super) fn send_group(&mut self, group: &WaveGroup, final_wave: bool) {
+        if let Some(zones) = self.wave_zones(&group.from) {
+            let swarm = self.new_swarm();
+            for z in &group.breeds {
+                self.spawn_in_zones(&zones, z.count as usize, z.breed, final_wave, swarm);
+            }
+            return;
+        }
         for side in self.wave_sides(&group.from) {
             let swarm = self.new_swarm();
             let spawners: Vec<(usize, u32)> = side.into_iter().map(|s| (s, swarm)).collect();
@@ -447,6 +481,51 @@ impl World {
             WaveFrom::Spawners(ids) => {
                 let found: Vec<usize> = ids.iter().filter_map(|&id| self.find_spawner(id)).collect();
                 if found.is_empty() { Vec::new() } else { vec![found] }
+            }
+            // Not from spawners at all (`wave_zones`).
+            WaveFrom::Zones(_) => Vec::new(),
+        }
+    }
+
+    /// The regions (`id`) a group comes out of – the ones that still exist; `None`: the group comes from spawners.
+    pub(super) fn wave_zones(&self, from: &WaveFrom) -> Option<Vec<u32>> {
+        match from {
+            WaveFrom::Zones(ids) => Some(ids.iter().copied().filter(|&id| self.find_zone(id).is_some()).collect()),
+            _ => None,
+        }
+    }
+
+    /// A random tile in one of these regions (`id`) that isn't blocked and leads to the base: its middle, as a point –
+    /// `None` after `SPAWN_TRIES` tries (all of them gone, covered with water, cut off). Only the world's dice.
+    pub(super) fn zone_point(&mut self, zones: &[u32]) -> Option<Vec2> {
+        let found: Vec<usize> = zones.iter().filter_map(|&id| self.find_zone(id)).collect();
+        if found.is_empty() {
+            return None;
+        }
+        for _ in 0..SPAWN_TRIES {
+            let zone = &self.zones[found[self.rng.below(found.len() as u32) as usize]];
+            let Some(area) = zone.bounds() else {
+                continue;
+            };
+            let (w, h) = area.size();
+            let tile = (area.min.0 + self.rng.below(w as u32) as i32, area.min.1 + self.rng.below(h as u32) as i32);
+            if zone.contains(tile) && !self.map.is_blocked(tile.0, tile.1) && self.to_base.reachable(tile.0, tile.1) {
+                return Some(vec2(tile.0 as f32 + self.rng.unit_f32(), tile.1 as f32 + self.rng.unit_f32()));
+            }
+        }
+        None
+    }
+
+    /// `count` zombies of this breed in these regions, at once (`spawn_from`'s way for regions).
+    pub(super) fn spawn_in_zones(&mut self, zones: &[u32], count: usize, breed: Breed, final_wave: bool, swarm: u32) {
+        for _ in 0..count {
+            let Some(pos) = self.zone_point(zones) else {
+                break;
+            };
+            self.spawn_zombie_as(pos, breed, false);
+            if let Some(zombie) = self.zombies.last_mut() {
+                zombie.final_wave = final_wave;
+                zombie.swarm = swarm;
             }
         }
     }

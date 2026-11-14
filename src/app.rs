@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use macroquad::prelude::*;
 
+use crate::audio;
 use crate::cursor;
 use crate::data;
 use crate::game::{Game, GameAction};
@@ -62,6 +63,8 @@ pub async fn run(program: Program) {
         prevent_quit();
     }
     let mut screen = first_screen(program);
+    // Was the home screen up last frame? Coming to it, TAB's intro music starts (`audio.rs`).
+    let mut was_home = false;
     loop {
         // Mouse 4 and 5 – macroquad doesn't report them, so they're asked from Windows before anything reads input.
         cursor::poll_side_buttons();
@@ -74,6 +77,10 @@ pub async fn run(program: Program) {
                 if quit_asked {
                     break;
                 }
+                if !was_home {
+                    if program == Program::Game { audio::home() } else { audio::quiet() }
+                }
+                audio::frame(None, &home.settings.volume);
                 let before = home.settings.clone();
                 let action = home.frame(random_seed);
                 home.settings.apply_changes(&before);
@@ -116,6 +123,7 @@ pub async fn run(program: Program) {
                 }
             }
         }
+        was_home = matches!(screen, Screen::Home(_));
         if let Some(screen_next) = next {
             screen = screen_next;
         }

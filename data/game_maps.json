@@ -9,7 +9,7 @@
       "setup": {
         "generator": "tab",
         "look": "FA",
-        "tab": {"land": 0.75, "land_dispersion": 0.5, "land_octaves": 6, "mountains": 0.36, "vegetation_octaves": 6, "grass": 0.62, "forest_on_grass": 0.35, "forest_on_dirt": 0.25, "villages_min": 1, "villages_max": 1, "village_size_min": 3, "village_size_max": 4, "ruins_min": 3, "ruins_max": 4, "stone": 0.14, "stone_from": 5, "iron": 0.11, "iron_from": 18, "coal": 0.11, "coal_from": 18, "gold": 0.09, "gold_from": 36, "oil_block": 48, "infected": 0.35, "infected_dispersion": 0.06, "weak_from": 34, "medium_from": 58, "strong_from": 82, "powerful_from": 200, "giants": 0, "nests": 0.5}
+        "tab": {"land": 0.75, "land_dispersion": 0.5, "land_octaves": 6, "mountains": 0.36, "vegetation_octaves": 6, "grass": 0.62, "forest_on_grass": 0.35, "forest_on_dirt": 0.25, "villages_min": 1, "villages_max": 1, "village_size_min": 3, "village_size_max": 4, "ruins_min": 3, "ruins_max": 4, "energy_sites_min": 2, "energy_sites_max": 3, "food_sites_min": 2, "food_sites_max": 3, "stone": 0.14, "stone_from": 5, "iron": 0.11, "iron_from": 18, "coal": 0.11, "coal_from": 18, "gold": 0.09, "gold_from": 36, "oil_block": 48, "infected": 0.35, "infected_dispersion": 0.06, "weak_from": 34, "medium_from": 58, "strong_from": 82, "powerful_from": 200, "giants": 0, "nests": 0.5}
       }
     },
     {
@@ -26,7 +26,7 @@
       "setup": {
         "generator": "tab",
         "look": "TM",
-        "tab": {"land": 0.68, "land_dispersion": 0.2, "land_octaves": 2, "mountains": 0.2, "vegetation_octaves": 2, "grass": 0.45, "forest_on_grass": 0.04, "forest_on_dirt": 0.15, "villages_min": 4, "villages_max": 4, "village_size_min": 7, "village_size_max": 10, "ruins_min": 4, "ruins_max": 5, "stone": 0.12, "stone_from": 5, "iron": 0.09, "iron_from": 18, "coal": 0.09, "coal_from": 18, "gold": 0.07, "gold_from": 36, "oil_block": 48, "infected": 0.4, "infected_dispersion": 0.035, "weak_from": 32, "medium_from": 50, "strong_from": 68, "powerful_from": 88, "giants": 1, "nests": 1}
+        "tab": {"land": 0.68, "land_dispersion": 0.2, "land_octaves": 2, "mountains": 0.2, "vegetation_octaves": 2, "grass": 0.45, "forest_on_grass": 0.04, "forest_on_dirt": 0.15, "villages_min": 4, "villages_max": 4, "village_size_min": 7, "village_size_max": 10, "ruins_min": 4, "ruins_max": 5, "energy_sites_min": 2, "energy_sites_max": 3, "food_sites_min": 1, "food_sites_max": 2, "stone": 0.12, "stone_from": 5, "iron": 0.09, "iron_from": 18, "coal": 0.09, "coal_from": 18, "gold": 0.07, "gold_from": 36, "oil_block": 48, "infected": 0.4, "infected_dispersion": 0.035, "weak_from": 32, "medium_from": 50, "strong_from": 68, "powerful_from": 88, "giants": 1, "nests": 1}
       }
     },
     {
@@ -37,7 +37,7 @@
       "setup": {
         "generator": "tab",
         "look": "AL",
-        "tab": {"land": 0.8, "land_dispersion": 0.3, "land_octaves": 1, "mountains": 0.3, "vegetation_octaves": 2, "grass": 0.26, "forest_on_grass": 0.035, "forest_on_dirt": 0.22, "villages_min": 2, "villages_max": 2, "village_size_min": 7, "village_size_max": 10, "ruins_min": 3, "ruins_max": 4, "stone": 0.12, "stone_from": 5, "iron": 0.08, "iron_from": 18, "coal": 0.08, "coal_from": 18, "gold": 0.06, "gold_from": 36, "oil_block": 52, "infected": 0.4, "infected_dispersion": 0.035, "weak_from": 30, "medium_from": 48, "strong_from": 66, "powerful_from": 86, "giants": 1, "nests": 1}
+        "tab": {"land": 0.8, "land_dispersion": 0.3, "land_octaves": 1, "mountains": 0.3, "vegetation_octaves": 2, "grass": 0.26, "forest_on_grass": 0.035, "forest_on_dirt": 0.22, "villages_min": 2, "villages_max": 2, "village_size_min": 7, "village_size_max": 10, "ruins_min": 3, "ruins_max": 4, "energy_sites_min": 5, "energy_sites_max": 6, "food_sites_min": 1, "food_sites_max": 2, "stone": 0.12, "stone_from": 5, "iron": 0.08, "iron_from": 18, "coal": 0.08, "coal_from": 18, "gold": 0.06, "gold_from": 36, "oil_block": 52, "infected": 0.4, "infected_dispersion": 0.035, "weak_from": 30, "medium_from": 48, "strong_from": 66, "powerful_from": 86, "giants": 1, "nests": 1}
       }
     },
     {
@@ -48,7 +48,7 @@
       "setup": {
         "generator": "tab",
         "look": "DS",
-        "tab": {"land": 0.75, "land_dispersion": 1, "land_octaves": 5, "mountains": 0.3, "vegetation_octaves": 4, "grass": 0.22, "forest_on_grass": 0.028, "forest_on_dirt": 0.29, "villages_min": 3, "villages_max": 3, "village_size_min": 8, "village_size_max": 10, "ruins_min": 5, "ruins_max": 6, "stone": 0.11, "stone_from": 5, "iron": 0.085, "iron_from": 18, "coal": 0.085, "coal_from": 18, "gold": 0.065, "gold_from": 36, "oil_block": 42, "infected": 0.42, "infected_dispersion": 0.035, "weak_from": 28, "medium_from": 46, "strong_from": 64, "powerful_from": 82, "giants": 1, "nests": 1}
+        "tab": {"land": 0.75, "land_dispersion": 1, "land_octaves": 5, "mountains": 0.3, "vegetation_octaves": 4, "grass": 0.22, "forest_on_grass": 0.028, "forest_on_dirt": 0.29, "villages_min": 3, "villages_max": 3, "village_size_min": 8, "village_size_max": 10, "ruins_min": 5, "ruins_max": 6, "energy_sites_min": 1, "energy_sites_max": 2, "food_sites_min": 5, "food_sites_max": 6, "stone": 0.11, "stone_from": 5, "iron": 0.085, "iron_from": 18, "coal": 0.085, "coal_from": 18, "gold": 0.065, "gold_from": 36, "oil_block": 42, "infected": 0.42, "infected_dispersion": 0.035, "weak_from": 28, "medium_from": 46, "strong_from": 64, "powerful_from": 82, "giants": 1, "nests": 1}
       }
     },
     {
@@ -58,48 +58,8 @@
       "setup": {
         "generator": "tab",
         "look": "VO",
-        "tab": {"land": 0.72, "land_dispersion": 0.3, "land_octaves": 6, "mountains": 0.38, "vegetation_octaves": 6, "grass": 0.5, "forest_on_grass": 0.28, "forest_on_dirt": 0.28, "villages_min": 1, "villages_max": 1, "village_size_min": 22, "village_size_max": 22, "ruins_min": 3, "ruins_max": 4, "stone": 0.12, "stone_from": 5, "iron": 0.08, "iron_from": 18, "coal": 0.08, "coal_from": 18, "gold": 0.12, "gold_from": 18, "oil_block": 48, "infected": 0.45, "infected_dispersion": 0.035, "weak_from": 24, "medium_from": 36, "strong_from": 52, "powerful_from": 70, "giants": 2, "nests": 1.5}
+        "tab": {"land": 0.72, "land_dispersion": 0.3, "land_octaves": 6, "mountains": 0.38, "vegetation_octaves": 6, "grass": 0.5, "forest_on_grass": 0.28, "forest_on_dirt": 0.28, "villages_min": 1, "villages_max": 1, "village_size_min": 22, "village_size_max": 22, "ruins_min": 3, "ruins_max": 4, "energy_sites_min": 2, "energy_sites_max": 3, "food_sites_min": 2, "food_sites_max": 3, "stone": 0.12, "stone_from": 5, "iron": 0.08, "iron_from": 18, "coal": 0.08, "coal_from": 18, "gold": 0.12, "gold_from": 18, "oil_block": 48, "infected": 0.45, "infected_dispersion": 0.035, "weak_from": 24, "medium_from": 36, "strong_from": 52, "powerful_from": 70, "giants": 2, "nests": 1.5}
       }
-    },
-    {
-      "name": "Peaceful Lowlands",
-      "about": "Wide dry plains, green meadows with groves, big lakes - lots of room for farms, but wide fronts to hold",
-      "score_percent": 100,
-      "setup": {
-        "generator": "wild",
-        "common": { "base_clear": 8, "dirt": 0.55, "giants": 2 },
-        "wild": { "scale": 44, "wobble": 20, "water": 0.14, "shore_detail": 3, "mountains": 0.02, "ridges": 0.0, "forest": 0.10, "forest_size": 8, "trees": 0.01, "rivers": 0 }
-      }
-    },
-    {
-      "name": "Green Valley",
-      "about": "Lakes, ridges, forests and rivers - the ways in are easy to read",
-      "score_percent": 100,
-      "setup": { "generator": "wild" }
-    },
-    {
-      "name": "Broken Lands",
-      "about": "Regions walled off by rock and forest - hold the passes. Two huge villages of doom",
-      "score_percent": 110,
-      "setup": { "generator": "regions", "common": { "villages": 0.3, "houses_near": 15, "houses_edge": 25, "giants": 5 } }
-    },
-    {
-      "name": "Old Fortress",
-      "about": "Rings of rock around the base - the openings never line up",
-      "score_percent": 90,
-      "setup": { "generator": "rings", "common": { "villages": 1.0, "houses_near": 4, "houses_edge": 8 } }
-    },
-    {
-      "name": "Red Canyons",
-      "about": "Winding canyons through solid rock - long ways, little room to build",
-      "score_percent": 120,
-      "setup": { "generator": "canyons" }
-    },
-    {
-      "name": "Open Plains",
-      "about": "Grass and lone trees - nothing walls you in, nothing walls them out. Many small villages",
-      "score_percent": 160,
-      "setup": { "generator": "blank", "common": { "villages": 4.0, "houses_near": 2, "houses_edge": 3, "giants": 6 }, "blank": { "trees": 0.02 } }
     }
   ]
 }

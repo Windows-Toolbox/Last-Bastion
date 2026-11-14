@@ -13,7 +13,7 @@
 
 use macroquad::math::Vec2;
 
-use super::World;
+use super::{Building, World};
 use crate::data;
 use crate::kinds::{in_area, Area, BuildingKind, Resource, Source, UnitKind};
 use crate::map::{Ore, Terrain};
@@ -171,14 +171,14 @@ impl World {
                 power.grid_of[b] = Some(g);
                 let stats = building.stats();
                 if (stats.burns_wood == 0 && stats.burns_coal == 0) || building.fuelled {
-                    power.made[g] += stats.energy;
+                    power.made[g] += self.power_made(building);
                 }
                 #[cfg(test)]
                 if building.kind == BuildingKind::CommandCenter {
                     power.made[g] += self.extra_power;
                 }
                 power.used[g] += self.energy_use(building.kind);
-                // A scan charging takes the command center's grid a lot of power (`scan.rs`).
+                // A scan charging takes the radar's grid a lot of power (`scan.rs`).
                 if self.scan_charger() == Some(b) {
                     power.used[g] += data::get().buildings.scan.power;
                 }
@@ -353,7 +353,7 @@ impl World {
             let stats = building.stats();
             flow[Resource::Wood.index()] -= stats.burns_wood as i64 * 1000;
             flow[Resource::Coal.index()] -= stats.burns_coal as i64 * 1000;
-            flow[Resource::Food.index()] += (stats.food_made as i64 - stats.food as i64) * 1000;
+            flow[Resource::Food.index()] += (self.food_made(building) as i64 - stats.food as i64) * 1000;
             if let Some(convert) = &stats.converts {
                 for &(r, n) in &convert.takes {
                     flow[r.index()] -= n as i64 * 1000;
@@ -366,6 +366,20 @@ impl World {
         flow[Resource::Food.index()] -= self.units_food() as i64 * 1000;
         flow[Resource::Oil.index()] -= self.units_oil() as i64 * 1000;
         flow
+    }
+
+    /// The food a building makes per payout out of nothing: the command center's own and the food supplies picked up
+    /// (`found_food`, TAB's `CommandCenterExtraFood`).
+    pub fn food_made(&self, building: &Building) -> u32 {
+        let found = if building.kind == BuildingKind::CommandCenter { self.found_food } else { 0 };
+        building.stats().food_made + found
+    }
+
+    /// The power a building makes – with fuel, if it burns any: its own and, the command center, the energy supplies
+    /// picked up (`found_power`, TAB's `CommandCenterExtraEnergy`).
+    pub fn power_made(&self, building: &Building) -> u32 {
+        let found = if building.kind == BuildingKind::CommandCenter { self.found_power } else { 0 };
+        building.stats().energy + found
     }
 
     /// Food per payout for every living unit (not the ones in a production queue) – like their upkeep.
@@ -384,14 +398,15 @@ impl World {
         needed.is_none_or(|needed| self.buildings.iter().any(|b| b.kind == needed && !b.off && b.is_built()))
     }
 
-    /// May `kind` be built – does what it `requires` stand?
+    /// May `kind` be built – does what it `requires` stand, and is its research done (`research.rs`)?
     pub fn unlocked(&self, kind: BuildingKind) -> bool {
-        self.stands(kind.stats().requires)
+        self.stands(kind.stats().requires) && self.building_researched(kind)
     }
 
-    /// May `kind` be trained – does what it `requires` stand (firearms: the munitions factory)?
+    /// May `kind` be trained – does what it `requires` stand (firearms: the munitions factory), and is its research
+    /// done?
     pub fn unit_unlocked(&self, kind: UnitKind) -> bool {
-        self.stands(kind.stats().requires)
+        self.stands(kind.stats().requires) && self.unit_researched(kind)
     }
 
     /// Are wood, stone, coal and iron enough for `kind` – and for a barrel, is there one in the store (`blast.rs`)?
@@ -548,7 +563,7 @@ impl World {
         self.smelt(&power);
         self.convert(&power);
         // The command center's food, out of nothing.
-        let made: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().food_made).sum();
+        let made: u32 = self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| self.food_made(b)).sum();
         self.stock.add(Resource::Food, made, self.storage(Resource::Food));
         // The units eat first – what they eat the houses don't get. Not enough: they eat what there is, nothing else
         // happens to them.
@@ -585,6 +600,16 @@ impl World {
         // The Victorious: houses around it pay more (TAB's `FactorGoldNearBuildings`).
         let near = if building.stats().colonists > 0 { self.boost(building.kind, building.tile, |s| s.gold_boost_percent) } else { 0 };
         building.full_income() * share / 1000 * (100 + self.market_bonus(b) + near) / 100
+    }
+
+    /// In the editor, before the round starts (tick 0): a building placed or taken back into the colony counts with its
+    /// first payout at once, like everyone's at the start (`expect_first_payout`). Otherwise the command center made
+    /// neutral and back showed only the upkeep (−7) until a test ran – no payout ever comes in the editor. Once the
+    /// round runs, a new building pays from its first payout on.
+    pub(super) fn expect_payout_before_start(&mut self) {
+        if self.tick == 0 {
+            self.expect_first_payout();
+        }
     }
 
     /// When the round starts nobody has paid yet – the HUD (gold of the last payout minus the upkeep) would show only

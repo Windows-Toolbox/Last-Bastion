@@ -7,6 +7,7 @@
 use macroquad::prelude::*;
 
 use crate::hud::{self, Button, BARRACKS_BUTTONS, COMMAND_CENTER_BUTTONS, UNIT_BUTTONS};
+use crate::kinds::BuildingKind;
 use crate::keys::{self, Action, Bindings};
 use crate::widgets::{button, button_lit, key_box, mouse, Column, BAD, DIM, GAP, ROW};
 
@@ -221,8 +222,12 @@ fn lines(tab: usize) -> Vec<Line> {
             binds(&mut lines, trains.chain([Action::of(Button::Rally)]));
             heading(&mut lines, "Engineering center");
             binds(&mut lines, hud::ENGINEERING_BUTTONS.into_iter().filter(|b| b.trains().is_some()).map(Action::of));
+            for kind in [BuildingKind::WoodWorkshop, BuildingKind::StoneWorkshop, BuildingKind::Foundry] {
+                heading(&mut lines, &format!("{} - research", kind.stats().name));
+                binds(&mut lines, crate::sim::researched_in(kind).map(|t| Action::of(Button::Research(t))));
+            }
             heading(&mut lines, "Other buildings");
-            let others = [Button::Repair, Button::Switch, Button::Demolish, Button::Unload, Button::MakeBarrel, Button::Sell];
+            let others = [Button::Repair, Button::Switch, Button::Demolish, Button::Unload, Button::MakeBarrel, Button::Sell, Button::Scan, Button::Delay(0), Button::Delay(1), Button::Delay(2), Button::Delay(3)];
             binds(&mut lines, others.into_iter().map(Action::of));
         }
     }

@@ -106,7 +106,8 @@ impl World {
                     friendly: false,
                 };
                 self.hit_splash(at, arrow.splash, &blow);
-                self.fx.push(Fx::Blast { at, radius: arrow.splash });
+                let by = self.find_unit(arrow.shooter).map(|u| self.units[u].kind);
+                self.fx.push(Fx::Blast { at, radius: arrow.splash, by });
                 continue;
             }
             match arrow.target {

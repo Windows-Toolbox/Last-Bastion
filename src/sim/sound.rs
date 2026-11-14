@@ -263,6 +263,11 @@ impl World {
     }
 
     /// The loudest place right now and how loud – for the developer overlay (F3).
+    /// Every loud cell of the sound grid: its middle and how loud it is – the editor's heat map (`draw::Layers`).
+    pub fn noise(&self) -> impl Iterator<Item = (Vec2, u32)> + '_ {
+        self.sound.loud()
+    }
+
     pub fn loudest_sound(&self) -> Option<(Vec2, u32)> {
         self.sound.loud().max_by_key(|&(_, level)| level)
     }

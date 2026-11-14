@@ -21,7 +21,7 @@ use crate::keys::Action;
 use crate::kinds::{BuildingKind, Resource, Source, UnitKind};
 use crate::map::{from_frame, to_frame, Region};
 use crate::picture::MapPicture;
-use crate::sim::{DebtStage, LootKind, Power, Product, RepairPlan, World, Zombie, MAX_PRODUCTION, TICKS_PER_SECOND};
+use crate::sim::{researched_in, tech, DebtStage, LootKind, Power, Product, RepairPlan, World, Zombie, MAX_PRODUCTION, TICKS_PER_SECOND};
 use crate::ui::{Pick, Place, Sub, Ui};
 use crate::ui_art;
 
@@ -70,6 +70,8 @@ const WAIT_LIGHT: Color = Color::new(0.5, 1.0, 0.3, 0.30);
 const GREYED: Color = Color::new(0.45, 0.45, 0.45, 1.0);
 /// The villages of doom on the minimap – red like TAB's.
 const DOOM_MINIMAP: Color = Color::new(0.85, 0.12, 0.10, 1.0);
+/// A train on the minimap – TAB's `GreenYellow`.
+const TRAIN_MINIMAP: Color = Color::new(0.68, 1.0, 0.18, 1.0);
 /// A giant on the minimap: a big dot, always shown.
 const GIANT_MINIMAP: Color = Color::new(0.95, 0.45, 0.15, 1.0);
 /// A swarm of a wave on the minimap: a warning triangle in its middle.
@@ -99,6 +101,11 @@ pub enum Button {
     MakeBarrel,
     /// Market: selling on or off (`sim/market.rs`).
     Sell,
+    /// Mine trap: how long it waits once a zombie steps on it – 0 to 3 steps of half a second (TAB's
+    /// `DelayActivation`, `sim/blast.rs`).
+    Delay(u8),
+    /// The workshops: start this research (`sim/research.rs`, the index in `data\research.json`).
+    Research(u16),
     /// Command center: show a circle of the map for a while (`sim/scan.rs`).
     Scan,
     /// Units carrying a barrel: put it down where they stand.
@@ -146,6 +153,16 @@ impl Button {
             Button::Attack => "IconAttack",
             Button::Rally => "IconSetRallyPoint",
             Button::Sell => "IconFResourcesToGold",
+            Button::Delay(d) => return icon(&format!("CommandDelay{d}")),
+            // Like TAB: the portrait of what it unlocks.
+            Button::Research(t) => {
+                let tech = tech(t);
+                return match (tech.buildings.first(), tech.units.first()) {
+                    (Some(&kind), _) => portrait_of(kind),
+                    (None, Some(&kind)) => portrait_of(kind),
+                    (None, None) => None,
+                };
+            }
             Button::Scan => "IconFWatchRange",
             Button::Drop => "IconLeaveObject",
             Button::Dismiss => "IconDismissUnit",
@@ -234,9 +251,9 @@ pub const UNIT_BUTTONS: [Button; 9] = [
     Button::FormCircle,
     Button::Dismiss,
 ];
-/// The buttons of the command center: one per build menu, Q W E / A S D / Y – F repair, C scan. It builds, the
-/// barracks trains.
-pub const COMMAND_CENTER_BUTTONS: [Button; 9] = [
+/// The buttons of the command center: one per build menu, Q W E / A S D / Y – G repair. It builds, the barracks
+/// trains. (The scan is the radar's.)
+pub const COMMAND_CENTER_BUTTONS: [Button; 8] = [
     Button::Open(Submenu::Colonists),
     Button::Open(Submenu::Resources),
     Button::Open(Submenu::Energy),
@@ -245,8 +262,9 @@ pub const COMMAND_CENTER_BUTTONS: [Button; 9] = [
     Button::Open(Submenu::Defense),
     Button::Open(Submenu::Wonders),
     Button::Repair,
-    Button::Scan,
 ];
+/// The buttons of the radar: its scan (C).
+pub const RADAR_BUTTONS: [Button; 2] = [Button::Scan, Button::Repair];
 /// The buttons of the barracks.
 pub const BARRACKS_BUTTONS: [Button; 7] = [
     Button::Train(UnitKind::Soldier),
@@ -277,6 +295,8 @@ pub const ENGINEERING_BUTTONS: [Button; 5] = [
 pub const MUNITIONS_BUTTONS: [Button; 2] = [Button::MakeBarrel, Button::Repair];
 /// The buttons of a market.
 pub const MARKET_BUTTONS: [Button; 2] = [Button::Sell, Button::Repair];
+/// The buttons of a mine trap: its delay, like TAB's four.
+pub const MINE_BUTTONS: [Button; 5] = [Button::Delay(0), Button::Delay(1), Button::Delay(2), Button::Delay(3), Button::Repair];
 /// The buttons of a tower.
 pub const TOWER_BUTTONS: [Button; 3] = [Button::Unload, Button::Rally, Button::Repair];
 /// Buildings that do nothing else (tent, wall, gate): only repair.
@@ -317,9 +337,13 @@ pub fn building_buttons(kind: BuildingKind) -> Vec<Button> {
         BuildingKind::EngineeringCenter => ENGINEERING_BUTTONS.to_vec(),
         BuildingKind::MunitionsFactory => MUNITIONS_BUTTONS.to_vec(),
         BuildingKind::Market => MARKET_BUTTONS.to_vec(),
+        BuildingKind::MineTrap => MINE_BUTTONS.to_vec(),
+        BuildingKind::Radar => RADAR_BUTTONS.to_vec(),
         BuildingKind::Tower | BuildingKind::StoneTower => TOWER_BUTTONS.to_vec(),
         _ => REPAIR_BUTTONS.to_vec(),
     };
+    // The workshops: their researches (`Ui::card` leaves out the ones done or going on).
+    card.extend(researched_in(kind).map(Button::Research));
     // Everything that runs can be switched off (Y).
     if kind.can_switch_off() {
         card.push(Button::Switch);
@@ -337,8 +361,12 @@ pub fn building_buttons(kind: BuildingKind) -> Vec<Button> {
 pub fn all_cards() -> Vec<Vec<Button>> {
     let mut cards = vec![[UNIT_BUTTONS.as_slice(), &[Button::Drop]].concat(), COMMAND_CENTER_BUTTONS.to_vec()];
     cards.extend(build_menus().map(menu_buttons));
-    for buttons in [&BARRACKS_BUTTONS[..], &INN_BUTTONS, &ENGINEERING_BUTTONS, &MUNITIONS_BUTTONS, &MARKET_BUTTONS, &TOWER_BUTTONS, &REPAIR_BUTTONS] {
+    for buttons in [&BARRACKS_BUTTONS[..], &INN_BUTTONS, &ENGINEERING_BUTTONS, &MUNITIONS_BUTTONS, &MARKET_BUTTONS, &MINE_BUTTONS, &RADAR_BUTTONS, &TOWER_BUTTONS, &REPAIR_BUTTONS] {
         cards.push([buttons, &[Button::Switch, Button::Demolish]].concat());
+    }
+    // The workshops with all their researches.
+    for kind in [BuildingKind::WoodWorkshop, BuildingKind::StoneWorkshop, BuildingKind::Foundry] {
+        cards.push(building_buttons(kind));
     }
     // The command center's card with the map's own button, and in the editor (`Ui::card`).
     cards.push([COMMAND_CENTER_BUTTONS.as_slice(), &[Button::Custom]].concat());
@@ -371,6 +399,11 @@ impl Button {
             Button::Rally => "Rally",
             Button::MakeBarrel => "Barrel",
             Button::Sell => "Selling",
+            Button::Research(t) => &tech(t).name,
+            Button::Delay(0) => "No delay",
+            Button::Delay(1) => "Delay 1",
+            Button::Delay(2) => "Delay 2",
+            Button::Delay(_) => "Delay 3",
             Button::Scan => "Scan",
             Button::Drop => "Drop",
             Button::Dismiss => "Dismiss",
@@ -437,6 +470,9 @@ impl Button {
     fn slot(self) -> usize {
         match self {
             Button::Move | Button::Unload | Button::MakeBarrel | Button::Sell => 0,
+            // TAB's spots: one after the other in the top row.
+            Button::Delay(d) => d as usize,
+            Button::Research(t) => tech(t).slot,
             Button::Train(kind) => train_slot(kind),
             Button::Place(kind) => place_slot(kind),
             Button::Stop => 1,
@@ -447,9 +483,10 @@ impl Button {
             Button::Scan => 12,
             Button::Open(menu) => menu.slot(),
             Button::Planned(i) => PLANNED[i].slot,
-            Button::Repair => 8,
+            // G, right above Delete (tearing down) – F was in the middle of the workshops' researches.
+            Button::Repair => 9,
             Button::Switch => 10,
-            Button::Rally => 9,
+            Button::Rally => 8,
             Button::FormLine => 10,
             Button::FormBox => 11,
             Button::FormCircle => 12,
@@ -478,6 +515,9 @@ impl Button {
 
     /// What the button costs in gold – the unit it trains, the building it places, a barrel (`None`: it costs nothing).
     pub fn cost(self) -> Option<u32> {
+        if let Button::Research(t) = self {
+            return Some(tech(t).gold);
+        }
         match (self.trains(), self.places()) {
             (Some(kind), _) => Some(kind.stats().cost),
             (_, Some(kind)) => Some(kind.stats().cost),
@@ -517,8 +557,13 @@ impl Button {
             Button::Train(kind) => train_help(kind),
             Button::Rally => "Where new units go (tower: where units go when unloaded). On a unit: follow it. Also with right click.",
             Button::MakeBarrel => "An explosive barrel into the store (6 per factory). Set it from the defence menu, or right click the factory with units: each takes one along. Ctrl: 5 at once, Shift: on credit, hold the key: more.",
+            Button::Research(_) => "Research it once, and from then on it can be built - for the rest of the round, even if the workshop falls. One research at a time per workshop; it needs power. Shift: on credit.",
+            Button::Delay(0) => "Goes off at once when a zombie steps on it.",
+            Button::Delay(1) => "Goes off 0.5 s after a zombie steps on it - more of the crowd behind it is in the blast.",
+            Button::Delay(2) => "Goes off 1 s after a zombie steps on it - more of the crowd behind it is in the blast.",
+            Button::Delay(_) => "Goes off 1.5 s after a zombie steps on it - more of the crowd behind it is in the blast.",
             Button::Sell => "Selling on/off. On (lit): at every payout the market sells what lies above 80 % of the storage - up to 1 good per 4 colonists of its houses. Off: it keeps everything, its houses still pay more.",
-            Button::Scan => "Click anywhere on the map: a circle of 10 tiles is shown for 10 s, over forests too - no noise. 2 charges, a new one every 120 s - while one charges, the command center takes 30 power from its grid.",
+            Button::Scan => "Click anywhere on the map: a circle of 10 tiles is shown for 10 s, over forests too - no noise. 2 charges, a new one every 120 s - while one charges, the radar takes 30 power from its grid.",
             Button::Drop => "Put the barrels down where the units stand. Any damage and a barrel goes off - and a unit carrying one goes off when it dies.",
             Button::Dismiss => "Send the selected units away for good: no more upkeep, their workers are free again. No gold back, a barrel they carry is put down.",
             Button::Open(Submenu::Colonists) => "Houses for your colonists: the tent and the stone house.",
@@ -628,7 +673,7 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Ballista => "Ballista (2 x 2, 700 HP). Shoots by itself: a heavy bolt every 2.5 s, 9 tiles far, always at the toughest zombie in range - fat ones, riots, giants. No power needed. Needs a wood workshop.",
         BuildingKind::MachineGunTower => "Machine gun tower (1 x 1, 900 HP). Shoots by itself: five shots a second at the nearest zombie - against crowds. Loud. Costs iron from the foundry, needs power and a foundry.",
         BuildingKind::WoodHouse => "Wood house (2 x 2). 8 colonists eat 8 food at every payout and pay gold, 4 workers - between tent and stone house. Goes on a tent (an upgrade), a stone house goes on it. Needs power and a wood workshop.",
-        BuildingKind::PowerPlant => "Power plant (3 x 3). A lot of power - but it burns 10 coal at every payout, without coal none. Loud. Has to stand inside the grid. Needs a stone workshop.",
+        BuildingKind::PowerPlant => "Power plant (3 x 3). A lot of power - but it burns 10 wood at every payout, without wood none. Loud. Has to stand inside the grid. Needs a stone workshop.",
         BuildingKind::OilPlatform => "Oil platform (2 x 2). Pumps oil - it has to stand right on an oil node (the dark pools). Needs power and a foundry.",
         BuildingKind::Quarry => "Quarry (2 x 2). Stone from the stone patches under it and up to 2 tiles around it - only stone. Put it right on the stone. Needs power.",
         BuildingKind::BigQuarry => "Advanced quarry (2 x 2). Like the quarry, twice the stone per tile. Costs oil, needs power and a foundry.",
@@ -640,7 +685,7 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Executor => "Executor (2 x 2). Shoots by itself: a heavy shot twice a second, 9 tiles far, that hits everything round its target. Needs power and a foundry, costs oil.",
         BuildingKind::BladeTrap => "Blade trap (1 x 1). Like the stake trap, harder (10 per hit) and tougher. Costs iron, needs a foundry. Drag: a line.",
         BuildingKind::MineTrap => "Mine (1 x 1). Goes off under the first zombie that steps on it: 500 damage to everyone within 1.9 tiles - your units and buildings too - and it's gone. Costs iron, needs a stone workshop. Drag: a line.",
-        BuildingKind::Radar => "Radar (1 x 1). Sees 40 tiles far - over forest too. Needs power and a foundry.",
+        BuildingKind::Radar => "Radar (1 x 1). Sees 40 tiles far - over forest too - and scans (C): a circle anywhere on the map. Needs power and a foundry.",
         BuildingKind::LookoutTower => "Lookout tower (1 x 1). Sees 24 tiles far - over forest too. Needs a wood workshop.",
         BuildingKind::Spire => "The Spire (5 x 5, wonder). 800 power that reaches 30 tiles, sees 36 tiles over forest. Only one. Needs a foundry.",
         BuildingKind::Academy => "The Academy (4 x 4, wonder). While it works every one of your units is a veteran. Only one. Needs power and a stone workshop.",
@@ -895,11 +940,12 @@ impl Layout {
         self.tab(1032.0, y, 28.0, 28.0)
     }
 
-    /// The control groups one below the other (`ControlSelectionGroups`: TAB's 8 in 128 pixels – here 1 to 0).
+    /// The control groups one above the other (`ControlSelectionGroups`: TAB's 8 in 128 pixels – here 10): key 1 at
+    /// the bottom, key 0 at the top.
     fn group_rect(&self, g: usize) -> Rect {
         let h = 128.0 / 10.0;
         let r = self.tab(326.0, 587.0, 36.0, 128.0);
-        Rect::new(r.x, r.y + g as f32 * h, r.w, h - 1.0)
+        Rect::new(r.x, r.y + (9 - g.min(9)) as f32 * h, r.w, h - 1.0)
     }
 
     /// The portrait of a unit or zombie (`@ImagePortrait`, 3 : 4) – a building's picture is square (`@Image`).
@@ -1157,6 +1203,13 @@ fn draw_minimap(layout: &Layout, world: &World, camera: &Camera, ui: &Ui, minima
         let color = if ui.selected.contains(&unit.id) { WHITE } else { kind_color(unit.kind) };
         draw_rectangle(m.x - 1.0, m.y - 1.0, 2.0, 2.0, color);
     }
+    // The trains, yellow-green like TAB's (`TrainCarriage.OnUpdate`: `GreenYellow`) – where someone sees them.
+    for train in &world.trains {
+        for car in train.cars_at(train.offset).into_iter().filter(|c| !fog || world.vision.sees(c.pos)) {
+            let (a, b) = (to_mini(car.pos - car.dir * car.kind.length() / 2.0), to_mini(car.pos + car.dir * car.kind.length() / 2.0));
+            draw_line(a.x, a.y, b.x, b.y, 2.5, TRAIN_MINIMAP);
+        }
+    }
 
     // On top, through the fog: every giant, awake or asleep, and the middle of every swarm of a wave – the bigger the
     // swarm, the bigger its mark (TAB's `IconInfectedGiant` and `IconMiniMap_Swarn`). A mark outside what the minimap
@@ -1274,16 +1327,26 @@ fn draw_groups(layout: &Layout, world: &World, ui: &Ui) {
         if group.is_empty() {
             continue;
         }
-        // Colour: the most common unit type in the group – only buildings: the first building – plus the count.
+        // Its picture: the most common unit type in the group – only buildings: the first building – plus the count.
+        // Without TAB's portraits a bar in its colour.
         let count = |kind: UnitKind| group.units.iter().filter(|&&id| unit_kind(world, id) == Some(kind)).count();
         let main = UnitKind::ALL.into_iter().filter(|&kind| count(kind) > 0).max_by_key(|&kind| count(kind));
         let building = group.buildings.iter().find_map(|&id| world.find_building(id)).map(|b| world.buildings[b].kind);
-        let color = match (main, building) {
-            (Some(kind), _) => kind_color(kind),
-            (None, Some(kind)) => building_color(kind),
-            (None, None) => BORDER,
+        let (color, picture) = match (main, building) {
+            (Some(kind), _) => (kind_color(kind), portrait_of(kind)),
+            (None, Some(kind)) => (building_color(kind), portrait_of(kind)),
+            (None, None) => (BORDER, None),
         };
-        draw_rectangle(r.x + 10.0, r.y + 2.0, 4.0, r.h - 4.0, color);
+        match picture {
+            Some(picture) => {
+                // As high as the row, as wide as its shape (a unit's portrait is 3 : 4, a building's square).
+                let side = r.h - 1.0;
+                let size = vec2(side * picture.width() / picture.height().max(1.0), side);
+                let params = DrawTextureParams { dest_size: Some(size), ..Default::default() };
+                draw_texture_ex(&picture, r.x + 9.0, r.y + 0.5, WHITE, params);
+            }
+            None => draw_rectangle(r.x + 10.0, r.y + 2.0, 4.0, r.h - 4.0, color),
+        }
         draw_right(&group.len().to_string(), r.right() - 2.0, r.bottom() - 2.5, 10.0, WHITE);
     }
 }
@@ -1623,7 +1686,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         cells.push(("Food", format!("-{}", stats.food)));
     }
     if stats.food_made > 0 {
-        cells.push(("Food", format!("+{}", stats.food_made)));
+        cells.push(("Food", format!("+{}", world.food_made(building))));
     }
     if stats.armor > 0.0 {
         cells.push(("Armor", percent(stats.armor)));
@@ -1683,7 +1746,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     }
     // Power: what it makes, how much of what it takes it gets, how far it carries it.
     if stats.energy > 0 {
-        let made = if stats.burns_wood > 0 && !building.fuelled { 0 } else { stats.energy };
+        let made = if stats.burns_wood > 0 && !building.fuelled { 0 } else { world.power_made(building) };
         cells.push(("Power", format!("+{made}")));
     }
     if stats.burns_wood > 0 {
@@ -1746,7 +1809,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         draw_cells(layout, &cells);
         return;
     }
-    if !building.kind.trains() && !building.kind.makes_barrels() {
+    if !building.kind.trains() && !building.kind.makes_barrels() && researched_in(building.kind).next().is_none() {
         draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 12.0, 5, DIM);
         draw_cells(layout, &cells);
         return;
@@ -1761,6 +1824,10 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
                     Product::Barrel => {
                         let barrel = BuildingKind::Barrel.stats();
                         (building_color(BuildingKind::Barrel), barrel.letter.as_str(), barrel.name.as_str(), portrait_of(BuildingKind::Barrel))
+                    }
+                    Product::Research(t) => {
+                        let button = Button::Research(t);
+                        (building_color(building.kind), "R", tech(t).name.as_str(), button.picture(false))
                     }
                 };
                 match picture {
@@ -1984,12 +2051,14 @@ fn draw_card(layout: &Layout, world: &World, ui: &Ui, card: &[Button]) {
             || (button.places().is_some() && ui.placing == button.places())
             || button.formation().is_some_and(|shape| shape == ui.formation)
             || (button == Button::Switch && ui.switching_on(world))
-            || (button == Button::Sell && ui.selling(world));
+            || (button == Button::Sell && ui.selling(world))
+            || matches!(button, Button::Delay(d) if ui.mine_delay(world) == Some(d));
         // Too expensive right now – gold or workers: the picture greys and the price turns red (like StarCraft's
         // missing minerals or supply). Planned: everything grey – the button only shows where it will be.
         let cost = shown_cost(button, world, ui);
         let goods = button.places().is_none_or(|kind| world.can_afford_goods(kind) && world.unlocked(kind))
-            && button.trains().is_none_or(|kind| world.unit_unlocked(kind) && world.can_afford_unit_goods(kind));
+            && button.trains().is_none_or(|kind| world.unit_unlocked(kind) && world.can_afford_unit_goods(kind))
+            && !matches!(button, Button::Research(t) if !world.can_afford_tech_goods(t));
         let affordable = cost.is_none_or(|cost| cost <= world.gold) && button.workers() <= free_workers && goods;
         // Repair with nothing to repair: grey like a planned button. The map's own button once it can't be pressed.
         let idle = (button == Button::Repair && cost.is_none()) || (button == Button::Custom && !world.command_ready());
@@ -2080,6 +2149,14 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
             parts.push(format!("{} oil", s.cost_oil));
         }
     }
+    if let Button::Research(t) = button {
+        let tech = tech(t);
+        for (r, n) in tech.goods().into_iter().filter(|&(_, n)| n > 0) {
+            parts.push(format!("{n} {}", resource_word(r)));
+        }
+        let seconds = tech.ticks(&data::get().research) as f32 / TICKS_PER_SECOND;
+        parts.push(format!("{seconds:.0} s"));
+    }
     if let Some(kind) = button.trains() {
         let s = kind.stats();
         if s.cost_wood > 0 {
@@ -2108,10 +2185,30 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
     let building = button.places().filter(|&kind| !world.unlocked(kind)).and_then(|kind| kind.stats().requires);
     let unit = button.trains().filter(|&kind| !world.unit_unlocked(kind)).and_then(|kind| kind.stats().requires);
     let needed = building.or(unit);
-    if let Some(needed) = needed {
+    if let Some(needed) = needed.filter(|&n| !world.stands(Some(n))) {
         text += &format!(" - needs a {} first", needed.stats().name.to_lowercase());
+    } else if let Some(t) = button.places().and_then(|k| world.missing_research(k)).or(button.trains().and_then(|k| world.missing_unit_research(k))) {
+        text += &format!(" - {}", research_first(t));
     }
     text
+}
+
+/// "Research X in the wood workshop first" – what a locked button or a refused order says.
+pub fn research_first(t: u16) -> String {
+    let tech = tech(t);
+    format!("research {} in the {} first", tech.name.to_lowercase(), tech.researched_in.stats().name.to_lowercase())
+}
+
+/// A good's word in a price.
+fn resource_word(r: Resource) -> &'static str {
+    match r {
+        Resource::Wood => "wood",
+        Resource::Stone => "stone",
+        Resource::Iron => "iron",
+        Resource::Oil => "oil",
+        Resource::Coal => "coal",
+        _ => "goods",
+    }
 }
 
 /// What tearing these buildings down gives back (`World::demolish_refund`) – the ones that may be torn down.

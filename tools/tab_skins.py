@@ -159,7 +159,7 @@ SKINS = {
     "lucifer": Skin("HumansB", "Lucifer", 0.8, 3.4, (-0.02, 0.31), (1, 1, 1, 0), (3000, 2500, 800, 800), (0.5, 1.8), 500, die_ms=1200, load_ms=500),
     "thanatos": Skin("HumansC", "Thanatos", 0.7, 4.6, (0, 0.335), (1, 1, 1, 0), (3000, 2500, 800, 800), (0.5, 1.8), 600, die_ms=800, load_ms=1500, fight_ms=1000),
     "titan": Skin("BigUnitsA", "Titan", 0.9, 5.7, (-0.015, 0.35), (1, 1, 1, 0), (2000, 3000, 800, 800), (0.8, 3), 200, die_ms=800, load_ms=500),
-    # Decoration (docs\tab-assets.md step 8): TAB's ravens (they hop, take off when someone comes, fly away - TimeAniFly,
+    # Decoration (DESIGN.md 2): TAB's ravens (they hop, take off when someone comes, fly away - TimeAniFly,
     # TimeAniPrepareFly) and rats. Width = their Size 0.25.
     "raven": Skin("AnimalsA", "Raven", 0.25, 4.5, (-0.01, 0.35), (1, 2, 0.97, 0), (3000, 2000, 300, 2000), (0.75, 6), 1000,
                   more={"take_off": 500, "fly": 500}),

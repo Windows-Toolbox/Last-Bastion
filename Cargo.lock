@@ -737,6 +737,7 @@ version = "0.1.0"
 dependencies = [
  "egui-macroquad",
  "image",
+ "lewton",
  "libm",
  "macroquad",
  "rayon",

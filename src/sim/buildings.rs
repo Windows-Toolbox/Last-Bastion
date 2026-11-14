@@ -67,16 +67,21 @@ pub struct Building {
     pub selling: bool,
     pub sold_goods: u32,
     pub sold_gold: u32,
+    /// A mine trap: how long it waits once a zombie steps on it, in steps of `delay_step_seconds` (0–3, TAB's
+    /// `DelayActivation` – set on its card).
+    pub delay: u8,
     /// What the editor gave it: a name for the scripts, a name and text for the player, a mark on the minimap
     /// (`neutral.rs`).
     pub tag: Option<Box<Tag>>,
 }
 
-/// What a production queue makes: a unit (barracks, inn) or a barrel (munitions factory, `blast.rs`).
+/// What a production queue makes: a unit (barracks, inn), a barrel (munitions factory, `blast.rs`) or a research
+/// (the workshops, `research.rs` – the index in `data\research.json`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Product {
     Unit(UnitKind),
     Barrel,
+    Research(u16),
 }
 
 impl Product {
@@ -85,6 +90,7 @@ impl Product {
         match self {
             Product::Unit(kind) => kind.stats().cost,
             Product::Barrel => data::get().buildings.blast.cost,
+            Product::Research(t) => super::tech(t).gold,
         }
     }
 
@@ -92,7 +98,7 @@ impl Product {
     pub fn worker_cost(self) -> u32 {
         match self {
             Product::Unit(kind) => kind.stats().worker_cost,
-            Product::Barrel => 0,
+            Product::Barrel | Product::Research(_) => 0,
         }
     }
 
@@ -101,6 +107,7 @@ impl Product {
         match self {
             Product::Unit(kind) => kind.stats().build_time,
             Product::Barrel => data::get().buildings.blast.build_time,
+            Product::Research(t) => super::tech(t).ticks(&data::get().research),
         }
     }
 }
@@ -133,6 +140,7 @@ impl Building {
             selling: true,
             sold_goods: 0,
             sold_gold: 0,
+            delay: 0,
             tag: None,
         }
     }
@@ -519,7 +527,7 @@ impl World {
     /// way to the command center is computed anew. Still being built, it falls (TAB).
     pub(super) fn infect(&mut self, b: usize) {
         let (tile, size) = (self.buildings[b].tile, self.buildings[b].footprint());
-        self.fx.push(Fx::Infected { tile, size });
+        self.fx.push(Fx::Infected { tile, size, kind: self.buildings[b].kind });
         self.buildings[b].repair_left = 0; // a repair underway is lost with it
         self.map.set_taken(tile.0, tile.1, size, true);
         self.refresh_map();
@@ -604,6 +612,8 @@ impl World {
         for b in 0..self.buildings.len() {
             // Finished: a charcoal burner lights up right away if there's wood, like a new one did before.
             if self.buildings[b].build_step() {
+                let kind = self.buildings[b].kind;
+                self.fx.push(Fx::Built { kind });
                 self.fuel(b);
             }
         }
@@ -644,6 +654,7 @@ impl World {
                 match product {
                     Product::Unit(kind) => self.finish_unit(b, kind),
                     Product::Barrel => self.barrels += 1,
+                    Product::Research(t) => self.finish_research(t),
                 }
             }
         }
@@ -805,6 +816,7 @@ impl World {
             return;
         };
         self.spawn_unit(kind, pos);
+        self.fx.push(Fx::Trained { kind });
         self.score.units_trained += 1;
         let id = self.next_unit_id;
         match rally {

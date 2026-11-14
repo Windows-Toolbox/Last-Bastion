@@ -122,7 +122,16 @@ pub fn button_lit(r: Rect, label: &str, enabled: bool, lit: bool) -> bool {
     draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if lit { GREEN } else { BORDER });
     let w = measure_text(label, None, 20, 1.0).width;
     draw_text(label, r.x + (r.w - w) / 2.0, r.y + r.h / 2.0 + 6.0, 20.0, if enabled { WHITE } else { DIM });
-    hover && is_mouse_button_pressed(MouseButton::Left)
+    clicked(hover)
+}
+
+/// Clicked this frame – and TAB's click is heard (`audio.rs`).
+fn clicked(hover: bool) -> bool {
+    let clicked = hover && is_mouse_button_pressed(MouseButton::Left);
+    if clicked {
+        crate::audio::interface("ButtonConsoleClick");
+    }
+    clicked
 }
 
 /// One of a list to pick from (the maps of a new game): its name on the left, a detail on the right (what it's worth) –
@@ -141,13 +150,13 @@ pub fn pick(r: Rect, label: &str, detail: &str, lit: bool) -> bool {
     draw_text(label, r.x + 12.0, r.y + r.h / 2.0 + 6.0, 20.0, WHITE);
     let w = measure_text(detail, None, 18, 1.0).width;
     draw_text(detail, r.right() - w - 12.0, r.y + r.h / 2.0 + 6.0, 18.0, DIM);
-    hover && is_mouse_button_pressed(MouseButton::Left)
+    clicked(hover)
 }
 
 /// Text on the left, a box "On"/"Off" on the right. A click on the row switches.
 pub fn toggle(r: Rect, label: &str, value: &mut bool) {
     let hover = r.contains(mouse());
-    if hover && is_mouse_button_pressed(MouseButton::Left) {
+    if clicked(hover) {
         *value = !*value;
     }
     if hover {
@@ -246,7 +255,7 @@ pub fn choice(r: Rect, label: &str, current: &str) -> bool {
     draw_rectangle_lines(b.x, b.y, b.w, b.h, 1.0, BORDER);
     let w = measure_text(current, None, 18, 1.0).width;
     draw_text(current, b.x + (b.w - w) / 2.0, b.y + 17.0, 18.0, WHITE);
-    hover && is_mouse_button_pressed(MouseButton::Left)
+    clicked(hover)
 }
 
 /// A text field: shows `text`; while `active` with a blinking line at the end. Returns `true` if it was clicked.

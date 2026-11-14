@@ -1,0 +1,40 @@
+{
+  "seconds_per_factor": 70.0,
+  "techs": [
+    {"id": "TechWoodHouse", "name": "Wood house", "researched_in": "WoodWorkshop", "slot": 0, "time_factor": 1.0, "gold": 350, "buildings": ["WoodHouse"]},
+    {"id": "TechFarms", "name": "Farm", "researched_in": "WoodWorkshop", "slot": 1, "time_factor": 1.0, "gold": 400, "buildings": ["Farm"]},
+    {"id": "TechMarket", "name": "Market", "researched_in": "WoodWorkshop", "slot": 2, "time_factor": 1.0, "gold": 450, "buildings": ["Market"]},
+    {"id": "TechStoneWorkshop", "name": "Stone workshop", "researched_in": "WoodWorkshop", "slot": 3, "time_factor": 1.0, "gold": 500, "buildings": ["StoneWorkshop"]},
+    {"id": "TechSniper", "name": "Sniper", "researched_in": "WoodWorkshop", "slot": 4, "time_factor": 1.0, "gold": 700, "units": ["Sniper", "MercSniper"]},
+    {"id": "TechLookoutTower", "name": "Lookout tower", "researched_in": "WoodWorkshop", "slot": 5, "time_factor": 1.0, "gold": 300, "buildings": ["LookoutTower"]},
+    {"id": "TechTrapStakes", "name": "Stake trap", "researched_in": "WoodWorkshop", "slot": 6, "time_factor": 1.0, "gold": 300, "buildings": ["Stakes"]},
+    {"id": "TechBallista", "name": "Ballista", "researched_in": "WoodWorkshop", "slot": 7, "time_factor": 1.0, "gold": 700, "buildings": ["Ballista"]},
+    {"id": "TechTheInn", "name": "Inn", "researched_in": "WoodWorkshop", "slot": 8, "time_factor": 1.5, "gold": 1000, "buildings": ["Inn"]},
+    {"id": "TechTheCrystalPalace", "name": "The Crystal Palace", "researched_in": "WoodWorkshop", "slot": 12, "time_factor": 2.0, "gold": 6000, "wood": 150, "stone": 200, "iron": 150, "buildings": ["CrystalPalace"]},
+
+    {"id": "TechWatchTowerStone", "name": "Stone tower", "researched_in": "StoneWorkshop", "slot": 0, "time_factor": 1.0, "gold": 500, "buildings": ["StoneTower"]},
+    {"id": "TechStoneWall", "name": "Stone wall", "researched_in": "StoneWorkshop", "slot": 1, "time_factor": 1.0, "gold": 500, "buildings": ["StoneWall"]},
+    {"id": "TechMachineGun", "name": "Machine gun tower", "researched_in": "StoneWorkshop", "slot": 2, "time_factor": 1.0, "gold": 800, "buildings": ["MachineGunTower"]},
+    {"id": "TechFoundry", "name": "Foundry", "researched_in": "StoneWorkshop", "slot": 3, "time_factor": 1.0, "gold": 1000, "buildings": ["Foundry"]},
+    {"id": "TechStoneHouse", "name": "Stone house", "researched_in": "StoneWorkshop", "slot": 5, "time_factor": 1.0, "gold": 600, "buildings": ["StoneHouse"]},
+    {"id": "TechPowerPlant", "name": "Power plant", "researched_in": "StoneWorkshop", "slot": 6, "time_factor": 1.0, "gold": 800, "buildings": ["PowerPlant"]},
+    {"id": "TechBank", "name": "Bank", "researched_in": "StoneWorkshop", "slot": 7, "time_factor": 1.0, "gold": 800, "buildings": ["Bank"]},
+    {"id": "TechShockingTower", "name": "Shocking tower", "researched_in": "StoneWorkshop", "slot": 8, "time_factor": 1.0, "gold": 900, "buildings": ["ShockingTower"]},
+    {"id": "TechTheVictorious", "name": "The Victorious", "researched_in": "StoneWorkshop", "slot": 11, "time_factor": 2.0, "gold": 7000, "stone": 100, "iron": 200, "oil": 100, "buildings": ["Victorious"]},
+    {"id": "TechTheSoldierAcademy", "name": "The Academy", "researched_in": "StoneWorkshop", "slot": 12, "time_factor": 2.0, "gold": 7000, "wood": 200, "stone": 200, "iron": 100, "buildings": ["Academy"]},
+    {"id": "TechTrapMine", "name": "Mine", "researched_in": "StoneWorkshop", "slot": 13, "time_factor": 1.0, "gold": 600, "buildings": ["MineTrap"]},
+
+    {"id": "TechAdvancedQuarry", "name": "Advanced quarry", "researched_in": "Foundry", "slot": 0, "time_factor": 1.0, "gold": 1500, "buildings": ["BigQuarry"]},
+    {"id": "TechAdvancedFarm", "name": "Advanced farm", "researched_in": "Foundry", "slot": 1, "time_factor": 1.0, "gold": 1500, "buildings": ["BigFarm"]},
+    {"id": "TechIronMill", "name": "Iron mill", "researched_in": "Foundry", "slot": 2, "time_factor": 1.0, "gold": 1400, "buildings": ["BigMill"]},
+    {"id": "TechOilPlatform", "name": "Oil platform", "researched_in": "Foundry", "slot": 3, "time_factor": 1.0, "gold": 1200, "buildings": ["OilPlatform"]},
+    {"id": "TechTheElectricSpire", "name": "The Spire", "researched_in": "Foundry", "slot": 4, "time_factor": 2.0, "gold": 8000, "stone": 150, "iron": 200, "oil": 100, "buildings": ["Spire"]},
+    {"id": "TechRadarTower", "name": "Radar", "researched_in": "Foundry", "slot": 5, "time_factor": 1.0, "gold": 1000, "buildings": ["Radar"]},
+    {"id": "TechTrapBlades", "name": "Blade trap", "researched_in": "Foundry", "slot": 6, "time_factor": 1.0, "gold": 900, "buildings": ["BladeTrap"]},
+    {"id": "TechExecutor", "name": "Executor", "researched_in": "Foundry", "slot": 7, "time_factor": 1.0, "gold": 3000, "buildings": ["Executor"]},
+    {"id": "TechAdvancedUnitCenter", "name": "Engineering center", "researched_in": "Foundry", "slot": 8, "time_factor": 1.0, "gold": 2000, "buildings": ["EngineeringCenter"]},
+    {"id": "TechThanatos", "name": "Thanatos", "researched_in": "Foundry", "slot": 11, "time_factor": 1.0, "gold": 2000, "units": ["Thanatos"], "needs_tech": "TechAdvancedUnitCenter", "needs_building": "EngineeringCenter"},
+    {"id": "TechTitan", "name": "Titan", "researched_in": "Foundry", "slot": 12, "time_factor": 1.0, "gold": 6000, "units": ["Titan"], "needs_tech": "TechAdvancedUnitCenter", "needs_building": "EngineeringCenter"},
+    {"id": "TechTheTransmutator", "name": "The Transmutator", "researched_in": "Foundry", "slot": 13, "time_factor": 2.0, "gold": 8000, "stone": 100, "iron": 200, "oil": 200, "buildings": ["Transmutator"]}
+  ]
+}

@@ -6,7 +6,7 @@
 //! head, and in debt it deserts a third as likely (`debt.rs`). Mercenaries take no share – they are better already.
 //! Kept in thousandths, so a share of a walker among ten units isn't lost to rounding.
 
-use super::World;
+use super::{Fx, World};
 use crate::data;
 
 impl World {
@@ -40,6 +40,7 @@ impl World {
                 unit.xp += gain;
                 if !unit.veteran && unit.xp >= veterans.xp * 1000 {
                     unit.make_veteran();
+                    self.fx.push(Fx::Veteran);
                 }
             }
         }

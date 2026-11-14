@@ -1,11 +1,11 @@
 //! The home screens (DESIGN.md 10.1, a first version) – of the game and of the map editor (`Program`):
 //! - **Main page.** The game: New game, Map editor, Custom maps, Settings, Quit. The editor: New map, Open a map,
 //!   Settings, Quit. In front of a map of the current setup.
-//! - **New game** (the game, like TAB's): pick a map (`data\game_maps.json`), a difficulty (`game_difficulties.json`)
+//! - **New game** (the game, like TAB's – and the editor's "New map"): pick one of TAB's maps (`data\game_maps.json`), a difficulty (`game_difficulties.json`)
 //!   and how long the round lasts (`game_durations.json`) – the preview shows the map, the score factor what the
 //!   round is worth. "Custom setup" goes on to the setup page with the picked map's values. Or, like TAB's "Custom
 //!   Levels", one of the maps saved in the editor – its round is in its file.
-//! - **Setup page** (the game's "Custom setup", the editor's "New map"): pick a generator, change its values, pick a
+//! - **Setup page** ("Custom setup" in both): change the values of TAB's generator, pick a
 //!   seed, set the round (difficulty, days) – the preview on the right shows the map right away. "Start game" plays
 //!   it, "Open in the editor" edits it.
 //! - **Maps:** the files in the maps folder (`mapfile.rs`) – every game that was started and every map saved in the
@@ -142,12 +142,11 @@ impl Home {
         }
     }
 
-    /// Opens the setup page directly – the editor's "New map…" comes here with the values of the current map.
+    /// The editor's "New map…" from an open map comes here: the list of TAB's maps, the current map's round kept.
     pub fn open_setup(&mut self, setup: MapSetup, seed: u64) {
         self.setup = setup;
         self.seed = seed;
-        self.page = Page::Setup;
-        self.preview_stale = true;
+        self.open_new_game();
     }
 
     /// One frame of the home screen: draw it, react to clicks.
@@ -168,7 +167,7 @@ impl Home {
             Page::Maps => self.maps_page(),
             Page::Settings => {
                 self.draw_backdrop(0.8);
-                let mut col = Column::centered("Settings", 13, 460.0);
+                let mut col = Column::centered("Settings", 13, crate::menu::SETTINGS_WIDTH);
                 if settings_page(&mut col, &mut self.settings) {
                     self.page = Page::Main;
                 }
@@ -257,6 +256,10 @@ impl Home {
         self.setup = picked_setup(&self.setup.map, &self.setup.round);
         self.preview_stale = true;
         self.page = Page::NewGame;
+        // The editor has no "Custom levels" tab here ("Open a map" does that).
+        if self.program == Program::Editor {
+            self.custom = false;
+        }
     }
 
     /// To the setup page, with fresh values from `data\` (the difficulties and durations to pick).
@@ -311,8 +314,9 @@ impl Home {
                 button(col.row(), "Research (comes later)", false);
             }
             Program::Editor => {
+                // Like the game's "New game": TAB's maps first, every value of them one page further.
                 if button(col.row(), "New map", true) {
-                    self.open_setup_page();
+                    self.open_new_game();
                 }
                 if button(col.row(), "Open a map", true) {
                     self.open_maps();
@@ -344,31 +348,32 @@ impl Home {
     fn new_game_page(&mut self, new_seed: impl Fn() -> u64) -> HomeAction {
         let h = screen_height();
         let left = Rect::new(16.0, 16.0, 440.0, h - 32.0);
-        let mut col = Column::boxed("New game", left);
+        let editor = self.program == Program::Editor;
+        let mut col = Column::boxed(if editor { "New map" } else { "New game" }, left);
         // `&'static`: the values live as long as the program (`data::get`) – borrowing them doesn't hold up `self`.
         let data = data::get();
-        // Like TAB's new game: the game's maps – or the custom levels, made in the editor.
-        let tabs = col.split(2);
-        if button_lit(tabs[0], "Maps", true, !self.custom) && self.custom {
-            self.custom = false;
-            self.preview_stale = true;
-        }
-        if button_lit(tabs[1], "Custom levels", true, self.custom) && !self.custom {
-            self.open_levels();
-        }
-        if self.custom {
-            return self.levels_page(col, left);
+        // Like TAB's new game: the game's maps – or the custom levels, made in the editor. The editor opens those with
+        // "Open a map", here it only makes new ones.
+        if !editor {
+            let tabs = col.split(2);
+            if button_lit(tabs[0], "Maps", true, !self.custom) && self.custom {
+                self.custom = false;
+                self.preview_stale = true;
+            }
+            if button_lit(tabs[1], "Custom levels", true, self.custom) && !self.custom {
+                self.open_levels();
+            }
+            if self.custom {
+                return self.levels_page(col, left);
+            }
         }
 
-        // Two side by side – a dozen maps under each other pushed the difficulty out of a 720 px window. The map's
-        // score is on the right then (the score factor below the preview).
-        for pair in data.maps.maps.chunks(2) {
-            for (r, map) in col.split(2).into_iter().zip(pair) {
-                let picked = map.name == self.setup.map;
-                if pick(r, &map.name, "", picked) && !picked {
-                    self.setup = picked_setup(&map.name, &self.setup.round);
-                    self.preview_stale = true;
-                }
+        // TAB's six maps, one per row, what each is worth on the right.
+        for map in &data.maps.maps {
+            let picked = map.name == self.setup.map;
+            if pick(col.row(), &map.name, &format!("{} %", map.score_percent), picked) && !picked {
+                self.setup = picked_setup(&map.name, &self.setup.round);
+                self.preview_stale = true;
             }
         }
         col.wrap(&data.game_map(&self.setup.map).about);
@@ -405,7 +410,7 @@ impl Home {
             self.open_setup_page();
         }
         let start = Rect::new(right.x + 2.0 * (third + 8.0), row, third, 40.0);
-        if button(start, "Start game", true) {
+        if button(start, if editor { "Open in the editor" } else { "Start game" }, true) {
             save_setup(&self.setup);
             action = HomeAction::Start { seed: self.seed, setup: self.setup.clone() };
         }
@@ -594,18 +599,12 @@ impl Home {
         let mut changed = false;
         let mut help: Option<&'static str> = None;
 
-        // Which generator.
-        let gens = col.split(Generator::ALL.len());
-        for (r, g) in gens.into_iter().zip(Generator::ALL) {
-            if button_lit(r, g.name(), true, self.setup.generator == g) && self.setup.generator != g {
-                self.setup.generator = g;
-                changed = true;
-            }
-        }
-        col.note(self.setup.generator.about());
+        // Only TAB's generator: maps from an old setup (Wild, Regions …) read as TAB's already (`mapgen.rs`).
+        self.setup.generator = Generator::Tab;
+        col.note("They Are Billions' own generator - its values below");
         changed |= self.seed_row(col.row(), &new_seed);
 
-        // Both lists of sliders have to fit into the box: in a 720 px window (Wild: 19 sliders) the rows get lower.
+        // Both lists of sliders have to fit into the box: in a 720 px window the rows get lower.
         let count = self.setup.common_fields().len() + self.setup.generator_fields().len();
         let room = left.bottom() - col.y - 2.0 * 30.0 - 8.0;
         let height = (room / count as f32 - 3.0).clamp(19.0, 28.0);
@@ -644,11 +643,8 @@ impl Home {
         let row2 = right.bottom() - 44.0;
         let mut action = HomeAction::Nothing;
         if button(Rect::new(right.x, row2, half, 40.0), "Back", true) {
-            // The game came here from "New game" – back there (the picked map's values again).
-            match self.program {
-                Program::Game => self.open_new_game(),
-                Program::Editor => self.page = Page::Main,
-            }
+            // Back to the maps ("New game", the editor's "New map") – the picked map's values again.
+            self.open_new_game();
         }
         if button(Rect::new(right.x + half + 8.0, row2, half, 40.0), start, true) {
             save_setup(&self.setup);

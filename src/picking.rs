@@ -13,9 +13,9 @@ use std::collections::HashSet;
 use macroquad::prelude::*;
 
 use crate::draw::draw_ring;
-use crate::editor::{ClipAction, Sight};
+use crate::editor::{ClipAction, Module, Sight};
 use crate::iso::Camera;
-use crate::sim::{count_pieces, ornament_middle, Order, OrnamentKind, Piece, Thing, World};
+use crate::sim::{count_pieces, ornament_middle, Order, OrnamentKind, Piece, RailPiece, Thing, World};
 use crate::ui::{tile_of, Place, Ui};
 
 /// The mark on what's picked – the yellow of the editor's tools on the mouse.
@@ -68,6 +68,34 @@ impl Ui {
         // More than units and buildings: counted by kind ("40 zombies, 1 house of doom") – else the editor names them.
         let more = !self.picked.is_empty() || self.selected_zombie.is_some() || self.selected_place.is_some();
         self.editor.picked_text = more.then(|| count_pieces(&pieces));
+        self.editor.selection = pieces;
+    }
+
+    /// The editor's table asked for these (`Editor::select`): select them on the map – units and buildings as the
+    /// game holds them, a spawner as the editor does, the rest as `picked`. `add`: each in or out of what's selected
+    /// already. No voice answers, unlike a click on the map.
+    pub(crate) fn select_pieces(&mut self, pieces: Vec<Piece>, add: bool) {
+        if !add {
+            self.deselect();
+            self.editor.select_spawner(None);
+        }
+        // In the list: out of it – not in it: into it.
+        fn toggle<T: PartialEq>(list: &mut Vec<T>, item: T) {
+            match list.iter().position(|other| *other == item) {
+                Some(k) => drop(list.remove(k)),
+                None => list.push(item),
+            }
+        }
+        for piece in pieces {
+            match piece {
+                Piece::Unit(id) => toggle(&mut self.selected, id),
+                Piece::Building(id) => toggle(&mut self.selected_buildings, id),
+                Piece::Spawner(id) => self.editor.select_spawner(Some(id)),
+                other => toggle(&mut self.picked, other),
+            }
+        }
+        // The editor's panel is drawn before the next `sync_pieces` – it should show these already.
+        self.editor.selection = self.pieces();
     }
 
     /// Edit mode: Ctrl+C, Ctrl+X, Ctrl+V and Del – or the same from the Edit menu (`Editor::clip_request`). `true`: a
@@ -97,16 +125,35 @@ impl Ui {
             return false;
         };
         let pieces = self.pieces();
+        // The Terrain module has a clipboard of its own, for ground (`editor\terrain.rs`): with an area selected and
+        // nothing else, Ctrl+C copies the area's ground – and Ctrl+V takes what was copied last in hand, if that
+        // was ground.
+        if self.editor.module == Module::Terrain {
+            match action {
+                ClipAction::Copy if pieces.is_empty() && self.editor.area.is_some() => {
+                    self.editor.copy_area(world);
+                    return true;
+                }
+                ClipAction::Paste if self.editor.terrain_clip.is_some() && (self.editor.ground_copied || self.editor.clip.is_none()) => {
+                    self.editor.take_paste();
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match action {
             ClipAction::Copy | ClipAction::Cut => {
                 let clip = world.copy(&pieces);
                 if !clip.is_empty() {
                     self.editor.clip = Some(clip);
+                    self.editor.ground_copied = false;
                     if action == ClipAction::Cut {
                         self.remove(pieces, orders);
                     }
                 }
             }
+            // Nothing selected: the key isn't taken – it may be for a region or a point (`ui.rs`).
+            ClipAction::Delete if pieces.is_empty() => return false,
             ClipAction::Delete => self.remove(pieces, orders),
             ClipAction::Paste => {
                 if let Some(clip) = &self.editor.clip {
@@ -212,9 +259,10 @@ impl Ui {
                 return Some(Piece::Neutral(n.id));
             }
         }
-        let ornament = world.ornaments.iter().find(|o| match o.kind {
-            OrnamentKind::Ruin => (o.tile.0..o.tile.0 + 4).contains(&x) && (o.tile.1..o.tile.1 + 4).contains(&y),
-            OrnamentKind::PowerTower | OrnamentKind::PowerTowerFlip => o.tile == (x, y),
+        // A piece of track only where it lies – not in the empty corner of a curve's 6 × 6.
+        let ornament = world.ornaments.iter().rev().find(|o| match o.kind {
+            OrnamentKind::Rail(shape) => RailPiece { shape, tile: o.tile }.covers((x, y)),
+            _ => o.covers((x, y)),
         });
         if let Some(o) = ornament {
             return Some(Piece::Ornament(*o));
@@ -265,10 +313,10 @@ impl Ui {
                     }
                 }
                 Piece::BigRock(rock) => frame(camera, corner(rock.tile), Vec2::splat(rock.size as f32)),
-                Piece::Ornament(o) => match o.kind {
-                    OrnamentKind::Ruin => frame(camera, corner(o.tile), Vec2::splat(4.0)),
-                    _ => frame(camera, corner(o.tile), Vec2::ONE),
-                },
+                Piece::Ornament(o) => {
+                    let (w, h) = o.kind.footprint();
+                    frame(camera, corner(o.tile), vec2(w as f32, h as f32));
+                }
                 Piece::Building(_) | Piece::Unit(_) | Piece::Spawner(_) => {}
             }
         }
@@ -276,7 +324,7 @@ impl Ui {
 }
 
 /// A frame on the ground round a rectangle of tiles (corner + size) – on screen a diamond's edges.
-fn frame(camera: &Camera, corner: Vec2, size: Vec2) {
+pub(crate) fn frame(camera: &Camera, corner: Vec2, size: Vec2) {
     let c = [corner, corner + vec2(size.x, 0.0), corner + size, corner + vec2(0.0, size.y)].map(|p| camera.world_to_screen(p));
     for k in 0..4 {
         let (a, b) = (c[k], c[(k + 1) % 4]);

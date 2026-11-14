@@ -9,6 +9,7 @@ use std::time::Instant;
 use macroquad::prelude::*;
 
 use crate::app::Program;
+use crate::audio;
 use crate::data;
 use crate::draw::{self, Fog};
 use crate::editor::{Around, EditorRequest, MapInfo, Mode, Sight};
@@ -127,7 +128,7 @@ impl Game {
         ui.editor.map_name = file.name.clone();
         ui.editor.info = MapInfo::of(&file);
         ui.editor.map_info = file.info();
-        Ok(Game {
+        let game = Game {
             program,
             camera: Camera::new(world.base),
             zombie_view: Vision::new(world.map.size),
@@ -156,7 +157,13 @@ impl Game {
             windows: Vec::new(),
             chosen: false,
             quit_asked: false,
-        })
+        };
+        // A round begins: its landscape's sound and music (`audio.rs`). The editor stays quiet until a test.
+        match program {
+            Program::Game => audio::round_start(&game.world),
+            Program::Editor => audio::quiet(),
+        }
+        Ok(game)
     }
 
     /// The game: a new round gets its file right away, in the maps folder – one game = one file, like in TAB.
@@ -185,8 +192,11 @@ impl Game {
     /// One frame: input, ticks, drawing, and what the menu, the editor's panel and the dialogs ask for.
     pub fn frame(&mut self) -> GameAction {
         let settings_before = self.ui.settings.clone();
+        let (paused_before, menu_before) = (self.ui.paused, self.menu.open);
         let dt = get_frame_time();
         self.ui.update_cursor();
+        // The sounds: where the camera is, how loud (`audio.rs`).
+        audio::frame(Some(&self.camera), &self.ui.settings.volume);
 
         // A question, a script's window or choice, or the end screen in front: only their buttons count – no Esc menu, no
         // input on the map, no time passing (TAB pauses for them too).
@@ -242,8 +252,19 @@ impl Game {
             }
             self.ui.handle_input(&self.world, &mut self.camera, &mut self.orders, dt);
         }
-        self.simulate(dt, modal);
+        let time_ran = self.simulate(dt, modal);
         self.draw(dt);
+        // Zombies roar and giants stamp only while time runs; the music follows the swarms.
+        if time_ran {
+            audio::zombies(&self.world, &self.looks);
+        }
+        if self.program == Program::Game || self.ui.editor.testing() {
+            audio::round_frame(&self.world);
+        }
+        // TAB: the pause has its sound, the menu window opens and closes.
+        if self.ui.paused != paused_before {
+            audio::paused(self.ui.paused);
+        }
 
         let mut action = GameAction::Nothing;
         // What the editor's panel asks for – only `Game` can do it.
@@ -298,12 +319,15 @@ impl Game {
         if std::mem::take(&mut self.quit_asked) {
             action = self.leave(GameAction::Quit);
         }
+        if self.menu.open != menu_before {
+            audio::interface(if self.menu.open { "WindowOpen" } else { "WindowClose" });
+        }
         self.ui.settings.apply_changes(&settings_before);
         action
     }
 
-    /// The simulation in fixed ticks (DESIGN.md 12.5) – or, where no time passes, only the orders.
-    fn simulate(&mut self, dt: f32, modal: bool) {
+    /// The simulation in fixed ticks (DESIGN.md 12.5) – or, where no time passes, only the orders. Did time pass?
+    fn simulate(&mut self, dt: f32, modal: bool) -> bool {
         // The editor's Edit mode: time stands still, every change shows at once.
         let editing = self.ui.editor.editing() && !self.ui.editor.testing();
         let runs = !editing && !self.ui.paused && !self.menu.open && !modal && self.world.outcome.is_none();
@@ -314,6 +338,7 @@ impl Game {
             while self.accumulator >= TICK && ticks < MAX_TICKS_PER_FRAME {
                 self.world.step(&self.orders);
                 self.looks.effects.take(&self.world); // what only the picture shows (`effects.rs`)
+                audio::take_fx(&self.world); // … and what's heard (`audio.rs`)
                 self.orders.clear();
                 self.accumulator -= TICK;
                 ticks += 1;
@@ -348,6 +373,7 @@ impl Game {
         }
         self.follow_size();
         self.announce_events();
+        runs
     }
 
     /// The map got another size (editor: "Map size", or undo / redo of it): what is as big as the map starts anew –
@@ -368,10 +394,28 @@ impl Game {
     /// here, when it comes.
     fn announce_events(&mut self) {
         for notice in std::mem::take(&mut self.world.notices) {
+            // TAB's sounds for them (`audio.rs`).
+            match &notice {
+                Notice::Coming { at, zombies, sides, final_wave, .. } => {
+                    audio::swarm_coming(*zombies, sides, *final_wave, (*at / crate::sim::HOUR_TICKS) as u32);
+                }
+                Notice::Came { .. } => audio::swarm_came(),
+                Notice::Joined { .. } => audio::interface("NewNeutralBuiliding"),
+                Notice::Researched { name } => {
+                    let tech = data::get().research.techs.iter().find(|t| &t.name == name);
+                    audio::researched(tech.is_some_and(|t| !t.buildings.is_empty()), tech.is_some_and(|t| !t.units.is_empty()));
+                }
+                Notice::Window { .. } => audio::interface("WindowOpen"),
+                Notice::Message { .. } => {}
+                // TAB's `PlayNotification(TrainArrival)`: the officer says it.
+                Notice::TrainArrived { .. } => audio::alert("TrainArrival"),
+            }
             let icon = match &notice {
                 Notice::Coming { .. } | Notice::Came { .. } => "EventSwarm",
                 Notice::Joined { .. } => "EventReward",
+                Notice::Researched { .. } => "EventGoalCompleted",
                 Notice::Message { .. } | Notice::Window { .. } => "EventInfo",
+                Notice::TrainArrived { .. } => "EventTrainArrival",
             };
             let text = match notice {
                 Notice::Coming { at, zombies, sides, final_wave, .. } => {
@@ -390,7 +434,9 @@ impl Game {
                 Notice::Came { zombies, final_wave: true, .. } => format!("THE FINAL WAVE is here - {zombies} zombies!"),
                 Notice::Came { zombies, .. } => format!("The swarm is here - {zombies} zombies!"),
                 Notice::Joined { name } => format!("{name} joins the colony!"),
+                Notice::Researched { name } => format!("Research complete: {name}"),
                 Notice::Message { text } => text,
+                Notice::TrainArrived { .. } => "The train has arrived.".to_owned(),
                 // A window: it pauses the game until it's closed (TAB's "Display Window Message").
                 Notice::Window { title, text } => {
                     self.windows.push((title, text));
@@ -450,6 +496,10 @@ impl Game {
         self.zombie_view_tick = None;
         self.looks = draw::Looks::default(); // the new world numbers its zombies from 1 again
         self.end_hidden = false;
+        match self.program {
+            Program::Game => audio::round_start(&self.world),
+            Program::Editor => audio::quiet(),
+        }
     }
 
     /// Editor (Edit): the last step undone (Ctrl+Z) – or with `redo` the one undone last done again (Ctrl+Y).
@@ -510,6 +560,11 @@ impl Game {
             }
         }
         self.ui.editor.set_mode(mode);
+        // A test is a round with its sounds; back in Edit, quiet.
+        match mode {
+            Mode::Test => audio::round_start(&self.world),
+            Mode::Edit => audio::quiet(),
+        }
         // The two worlds number their units and buildings differently.
         self.ui.forget_selection();
         self.ui.paused = false;
@@ -605,6 +660,7 @@ impl Game {
             col.gap();
             if button(col.row(), "OK", true) || is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) {
                 self.windows.remove(0);
+                audio::interface("WindowClose");
             }
             return;
         }
@@ -703,16 +759,19 @@ impl Game {
             landscape: pictures.then_some(&self.landscape),
             spawners: self.ui.spawner_shapes(world, &self.camera),
             zombie_tiles: self.ui.editor.zombie_tiles(self.camera.zoom),
+            layers: self.ui.editor.layers(),
         };
-        // Into TAB's picture, then with its glow and colours onto the screen – only the map, not the panel. Only in the
-        // player's view: the editor's other views show the map without light, and through TAB's filter that glares
-        // (TAB's editor has none either).
-        let post = self.ui.sight() == Sight::Player && self.post.begin();
+        // Into TAB's picture, then with its glow and colours onto the screen – only the map, not the panel. Also in the
+        // editor's other views (without them everything looked pale) – they show the map without the player's light,
+        // so it's brightened less there (`Post::finish`).
+        let post = self.post.begin();
         draw::draw_world(world, &self.camera, &view, &self.ui.selected, alpha);
         if post {
-            self.post.finish(&world.look);
+            self.post.finish(&world.look, self.ui.sight() != Sight::Player);
         }
-        self.ui.draw(world, &self.camera, &self.looks.effects);
+        // The bars after it – through TAB's glow they shone.
+        draw::draw_bars(world, &self.camera, &view, &self.ui.selected, alpha);
+        self.ui.draw(world, &self.camera, &self.looks.effects, &self.sprites);
         // The minimap's picture: with fog only in the player's view – in the editor's other views it stays readable.
         let fog = (self.ui.sight() == Sight::Player).then_some(&world.vision);
         self.minimap.refresh(&world.map, &Extras { fog, spawners: &[], base: false, shade_ring: false }, dt);
@@ -804,6 +863,7 @@ impl Game {
                 ),
                 None => "Quiet everywhere".to_owned(),
             })
+            .text(crate::audio::status())
             .text(format!("Tick {}   speed x{} (+/-)", world.tick, ui.speed))
             .button(format!("Seed {}   map {} x {}   (click: copy)", world.seed, world.map.size, world.map.size), Action::CopySeed)
             .text(format!("Checksum now  {:016x}", world.checksum()))

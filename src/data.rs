@@ -15,12 +15,13 @@
 //! Co-op (DESIGN.md 12.8): both PCs need the same values, or they compute different games. Checking that comes with
 //! the network code.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::kinds::{BuildingKind, BuildingStats, Stats, UnitKind};
+use crate::kinds::{BuildingKind, BuildingStats, Resource, Stats, UnitKind};
 use crate::mapgen::MapSetup;
 use crate::sim::{Breed, Event, TICKS_PER_SECOND};
 
@@ -43,6 +44,186 @@ pub struct GameData {
     pub difficulties: Difficulties,
     pub durations: Durations,
     pub maps: GameMaps,
+    /// `data\research.json`: TAB's research – what each workshop researches, for how much, what it unlocks
+    /// (`sim/research.rs`).
+    pub research: Research,
+    /// `data\audio.json`: which of TAB's sounds go with which unit, zombie and building (`audio.rs`).
+    pub audio: AudioData,
+    /// `data\trains.json`: how TAB's train runs (`sim/trains.rs`).
+    pub trains: TrainValues,
+}
+
+/// `data\trains.json`: TAB's `Locomotive` and `TrainCarriage` – in the file per second, here per tick.
+#[derive(Deserialize)]
+pub struct TrainValues {
+    /// Top speed and how fast it gets there (tiles per tick, per tick and tick) – in the file tiles per second and
+    /// per second² (TAB: `MaxSpeed` 8 × 30 / 1000 tiles per update, 0.001 more every update, 30 updates a second).
+    #[serde(deserialize_with = "per_second")]
+    pub max_speed: f32,
+    #[serde(deserialize_with = "per_second_squared")]
+    pub acceleration: f32,
+    /// It brakes this many tiles before a stop: at most its top speed × the way left / this.
+    pub brake_tiles: f32,
+    /// But never slower than this (tiles per tick – in the file per second) before it's there.
+    #[serde(deserialize_with = "per_second")]
+    pub least_speed: f32,
+    /// It waits this long at a stop (ticks – in the file seconds, TAB's `TimeInStopPoint`).
+    #[serde(rename = "stop_seconds", deserialize_with = "seconds")]
+    pub stop: u32,
+    /// Room between two cars (tiles, `CarriageSeparation`).
+    pub gap: f32,
+    /// Running faster than `hits_from_speed` (tiles per tick – in the file per second), it hits everyone in its way
+    /// with `damage`, every tick they're in it (before their armor).
+    pub damage: u32,
+    #[serde(deserialize_with = "per_second")]
+    pub hits_from_speed: f32,
+    /// How long each car is (tiles).
+    pub cars: CarLengths,
+}
+
+#[derive(Deserialize)]
+pub struct CarLengths {
+    pub locomotive: f32,
+    pub colonists: f32,
+    pub armored: f32,
+    pub goods: f32,
+}
+
+/// `data\audio.json`: TAB's `SoundOn…` columns of its `Entities` and `Commands`, on our kinds. Every value is a list
+/// name: every file of its folder whose name contains it (several names: separated by spaces). Left out: silent.
+#[derive(Deserialize)]
+pub struct AudioData {
+    pub units: HashMap<UnitKind, UnitSounds>,
+    pub zombies: HashMap<Breed, ZombieSounds>,
+    pub buildings: HashMap<BuildingKind, BuildingSounds>,
+    /// A house of doom falling: the small one, the medium and large ones.
+    pub doom_small: String,
+    pub doom_big: String,
+    /// The landscape's own sound, looping (TAB's `ZXMapTheme.AmbientSound`), by `look`. While it rains
+    /// (`World::weather`) `RainLoopA` plays on top.
+    pub ambient: HashMap<String, String>,
+}
+
+/// A unit's sounds. `voice`: the start of its voice files in `UnitVoices\` (TAB: `Ranger_What`, `_Yes`, `_Attack`,
+/// `_Trained`, `_Die`, `_Bye`); `shot` its shot, `melee` its close blow, `hit` where its missile lands.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct UnitSounds {
+    pub voice: String,
+    pub shot: String,
+    pub melee: String,
+    pub hit: String,
+}
+
+/// A zombie's sounds: its roar (idle, running), when it strikes, when it dies – and a giant's own.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct ZombieSounds {
+    pub roar: String,
+    pub attack: String,
+    pub died: String,
+    pub death: String,
+    pub fall: String,
+    pub steps: String,
+}
+
+/// A building's sounds: placed, selected, falling, infected, its shot and where that hits. `structure`: TAB's walls,
+/// gates, towers and traps – no "building completed" when they're done.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct BuildingSounds {
+    pub placed: String,
+    pub selected: String,
+    pub destroyed: String,
+    pub infected: String,
+    pub shot: String,
+    pub hit: String,
+    pub structure: bool,
+}
+
+/// `data\research.json`: TAB's research (`ZX.Commands\Technology.cs`, the `Tech…` rows of `Commands`).
+#[derive(Deserialize)]
+pub struct Research {
+    /// A research takes this long times its `time_factor` (TAB: 1.4 × factor × 50 – seconds of game time).
+    pub seconds_per_factor: f32,
+    pub techs: Vec<Tech>,
+}
+
+/// One research (TAB's `Tech…`): done once, in its workshop, and from then on what it unlocks can be built or trained
+/// – as long as what that `requires` stands, too.
+#[derive(Deserialize)]
+pub struct Tech {
+    /// TAB's name (`TechWoodHouse`) – what the key file and later the scripts call it.
+    pub id: String,
+    /// On the button.
+    pub name: String,
+    /// The workshop that researches it.
+    pub researched_in: BuildingKind,
+    /// Its spot on the workshop's card (0–14, row by row) – TAB's `PanelPosition` − 1, moved where repair (8) and
+    /// on/off (10) sit on ours.
+    pub slot: usize,
+    #[serde(default = "one_f32")]
+    pub time_factor: f32,
+    pub gold: u32,
+    #[serde(default)]
+    pub wood: u32,
+    #[serde(default)]
+    pub stone: u32,
+    #[serde(default)]
+    pub iron: u32,
+    #[serde(default)]
+    pub oil: u32,
+    /// What it unlocks.
+    #[serde(default)]
+    pub buildings: Vec<BuildingKind>,
+    #[serde(default)]
+    pub units: Vec<UnitKind>,
+    /// It only shows once this research is done and this building stands (TAB: Thanatos and Titan need the
+    /// engineering center).
+    #[serde(default)]
+    pub needs_tech: Option<String>,
+    #[serde(default)]
+    pub needs_building: Option<BuildingKind>,
+}
+
+impl Tech {
+    /// Ticks the research takes at full power.
+    pub fn ticks(&self, research: &Research) -> u32 {
+        (research.seconds_per_factor * self.time_factor * TICKS_PER_SECOND + 0.5).floor() as u32
+    }
+
+    /// The goods it costs besides the gold.
+    pub fn goods(&self) -> [(Resource, u32); 4] {
+        [(Resource::Wood, self.wood), (Resource::Stone, self.stone), (Resource::Iron, self.iron), (Resource::Oil, self.oil)]
+    }
+}
+
+impl Research {
+    /// The research with TAB's name `id`.
+    pub fn index(&self, id: &str) -> Option<u16> {
+        self.techs.iter().position(|t| t.id == id).map(|i| i as u16)
+    }
+
+    /// Something wrong with the list – a name twice, an unknown `needs_tech`, a spot off the card or taken twice.
+    fn check(&self) -> Result<(), String> {
+        for (i, tech) in self.techs.iter().enumerate() {
+            let twice = self.techs[..i].iter().find(|t| t.id == tech.id || (t.researched_in == tech.researched_in && t.slot == tech.slot));
+            if let Some(other) = twice {
+                return Err(format!("data\\research.json: {} and {} - same name or same spot", other.id, tech.id));
+            }
+            if tech.slot >= 15 || [9, 10, 14].contains(&tech.slot) {
+                return Err(format!("data\\research.json: {} - slot {} isn't free on the card", tech.id, tech.slot));
+            }
+            if let Some(needs) = tech.needs_tech.as_deref().filter(|&n| self.index(n).is_none()) {
+                return Err(format!("data\\research.json: {} needs {needs}, which isn't in the list", tech.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn one_f32() -> f32 {
+    1.0
 }
 
 /// `data\units.json`
@@ -198,7 +379,7 @@ pub struct Blast {
     pub carry_slow_percent: u32,
 }
 
-/// The command center's scan, like StarCraft's: it shows a circle of the map for a while, wherever you like.
+/// The radar's scan, like StarCraft's: it shows a circle of the map for a while, wherever you like.
 #[derive(Deserialize)]
 pub struct Scan {
     /// How far (tiles) and how long …
@@ -209,7 +390,7 @@ pub struct Scan {
     pub charges: u32,
     #[serde(rename = "every_seconds", deserialize_with = "seconds")]
     pub every: u32,
-    /// … and while one charges, the command center takes this much power from its grid.
+    /// … and while one charges, the radar takes this much power from its grid.
     pub power: u32,
 }
 
@@ -413,6 +594,10 @@ pub struct LootValues {
     pub goods: u32,
     /// … gold in this share of the piles.
     pub gold_share: f32,
+    /// A supply of food / energy (TAB's `PickableFood`, `PickableEnergy`: `FoodSupply`, `EnergySupply`): the command
+    /// center makes this much more food per payout / power from then on.
+    pub food: u32,
+    pub energy: u32,
 }
 
 /// The numbers of one zombie breed.
@@ -501,6 +686,11 @@ pub struct BreedStats {
     /// Time between two attacks (read in seconds, kept in ticks). Left out: `hit_every_seconds` of all zombies.
     #[serde(default, rename = "attack_seconds", deserialize_with = "some_seconds")]
     pub attack: Option<u32>,
+    /// Its swing (read in seconds, kept in ticks): the attack's animation starts, the blow lands this long after – TAB's
+    /// `TimeAction × TimeFactorAction` (a walker: 1 s × 0.5). A unit that got out of its reach meanwhile isn't hit.
+    /// Left out: 0 – it hits at once.
+    #[serde(default, rename = "windup_seconds", deserialize_with = "seconds")]
+    pub windup: u32,
     /// Its shot flies this many tiles per second – you can step out of the way. Left out: 0 – it hits at once.
     #[serde(default)]
     pub projectile_speed: f32,
@@ -902,7 +1092,11 @@ impl GameData {
             difficulties: one(texts[9], FILES[9])?,
             durations: one(texts[10], FILES[10])?,
             maps: one(texts[11], FILES[11])?,
+            research: one(texts[12], FILES[12])?,
+            audio: one(texts[13], FILES[13])?,
+            trains: one(texts[14], FILES[14])?,
         };
+        data.research.check()?;
         // The lookups (`difficulty`, `duration`, `game_map`) need at least one of each.
         let empty = [
             (data.difficulties.difficulties.is_empty(), FILES[9]),
@@ -917,7 +1111,7 @@ impl GameData {
 }
 
 /// The files in `data\` – a new one goes here and into `BUILT_IN`, in the same place.
-const FILES: [&str; 12] = [
+const FILES: [&str; 15] = [
     "units.json",
     "buildings.json",
     "zombies.json",
@@ -930,6 +1124,9 @@ const FILES: [&str; 12] = [
     "game_difficulties.json",
     "game_durations.json",
     "game_maps.json",
+    "research.json",
+    "audio.json",
+    "trains.json",
 ];
 
 /// The files as they were when the program was built (`include_str!` only takes a written-out path, no `FILES[i]`).
@@ -946,6 +1143,9 @@ const BUILT_IN: [&str; FILES.len()] = [
     include_str!("../data/game_difficulties.json"),
     include_str!("../data/game_durations.json"),
     include_str!("../data/game_maps.json"),
+    include_str!("../data/research.json"),
+    include_str!("../data/audio.json"),
+    include_str!("../data/trains.json"),
 ];
 
 /// The values in use. A `&'static` reference to them, so `kind.stats()` can hand out references that live on.
@@ -1005,6 +1205,16 @@ pub fn seconds<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     Ok((s * TICKS_PER_SECOND + 0.5).floor() as u32)
 }
 
+/// A speed per second in the file – per tick here.
+fn per_second<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(f32::deserialize(d)? / TICKS_PER_SECOND)
+}
+
+/// A change of speed per second² in the file – per tick² here.
+fn per_second_squared<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(f32::deserialize(d)? / (TICKS_PER_SECOND * TICKS_PER_SECOND))
+}
+
 /// 1 – for values that are 1 when they're left out (`#[serde(default = "one")]`).
 fn one() -> u32 {
     1
@@ -1024,11 +1234,13 @@ mod tests {
     #[test]
     fn built_in_data_parses() {
         let data = GameData::built_in();
-        assert_eq!(data.units.soldier.cooldown, 6, "0.3 s should be 6 ticks");
+        // Seconds become ticks, rounded: the soldier's 0.27 + 0.53 s – a shot every 0.8 s, like TAB plays it.
+        let soldier = &data.units.soldier;
+        assert_eq!((soldier.aim, soldier.windup, soldier.cooldown), (0, 5, 11), "0.27 + 0.53 s should be 5 + 11 ticks");
         assert!(data.spawning.events.iter().any(|e| e.event.won), "no victory in the plan");
         assert!(data.spawning.events.iter().any(|e| e.event.final_wave), "no final wave in the plan");
-        // Every map's setup is read – a typo in a generator's name would be an error, a missing one the default.
-        assert!(data.maps.maps.iter().any(|m| m.setup.generator != MapSetup::default().generator), "the maps' setups aren't read");
+        // Every map's setup is read – each has its own landscape (`look`), a missing one would be "".
+        assert!(data.maps.maps.iter().all(|m| !m.setup.look.is_empty()), "the maps' setups aren't read");
         assert!(data.difficulties.difficulties.iter().any(|d| d.name == data.difficulties.default), "the default difficulty isn't in the list");
         assert!(data.maps.maps.iter().any(|m| m.name == data.maps.default), "the default map isn't in the list");
         assert!(data.durations.durations.iter().any(|d| d.days == data.durations.default_days), "the default duration isn't in the list");

@@ -140,7 +140,7 @@ pub fn place(
                 let spot = vec2(rng.unit_f32() * 2.0 - 1.0, rng.unit_f32() * 2.0 - 1.0) * radius + center;
                 let house = HouseSpot { tile: (spot.x.floor() as i32, spot.y.floor() as i32), size: (side, side) };
                 // Its ring stays open for good: a later house may not stand on it either (`too_close`).
-                let free = house.tiles_with_ring().all(|(x, y)| open(x, y) && !ctx.lanes.is_open(x, y));
+                let free = house.tiles_with_ring().all(|(x, y)| open(x, y));
                 if free && !places.houses.iter().any(|other| house.too_close(other)) {
                     places.houses.push(house);
                     break;

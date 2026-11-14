@@ -5,7 +5,7 @@
 //!
 //! What's in it: the round (how many days, the gold at the start, the difficulty), the events (TAB's: the waves, the
 //! stragglers, the final wave, the victory), the spawners, buildings, units, the zombies on the map, the houses of the villages
-//! of doom and the loot, the ore deposits and the terrain (one letter per tile, one line of text per row – you can
+//! of doom and the loot, the named regions and points, the ore deposits and the terrain (one letter per tile, one line of text per row – you can
 //! almost see the map in the file). Not in it: what happens during a round (hit points, commands, the clock) – the file is the round as it starts. Saving a round half-way through
 //! (DESIGN.md 11.5) comes later; then it goes into the same file.
 
@@ -22,8 +22,8 @@ use crate::map::{BigRock, Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
 use crate::sim::{
-    Axes, Breed, Building, DoomHouse, Event, Loot, LootKind, Neutral, Ornament, Script, Sleeper, SpawnMode, Spawner, Story, Tag,
-    Thing, ThingRef, Unit, WaveFrom, WaveGroup, World, Zombie,
+    Axes, Breed, Building, DoomHouse, Event, Loot, LootKind, Neutral, Ornament, Sleeper, SpawnMode, Spawner, Story, Tag,
+    Thing, ThingRef, Unit, WaveFrom, WaveGroup, World, Zombie, Spot, Zone,
 };
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
@@ -32,7 +32,13 @@ use crate::sim::{
 /// 4: waves with groups (several breeds, chosen spawners), spawners with their number and axes, custom levels, the
 /// playing field anywhere on the map.
 /// 5: TAB's events instead of the timeline of waves and the constant spawn; days of 60 seconds.
-const VERSION: u32 = 5;
+/// 6: named regions and points (`sim/regions.rs`).
+/// 7: a wave's group can come out of regions (`WaveFrom::Zones`) – an older game can't read that.
+/// 8: triggers and variables (`sim/story.rs`) instead of scripts on the start, the end, the events, the neutral things
+/// and the command center's button, and counters – `triggers_from_scripts` turns an older file around when it's read.
+/// 9: a small typed language (`sim/expr.rs`): steps of a script have a condition and code, triggers have expressions
+/// as conditions, variables can be yes/no or text. Older files read as they are (`Story::declare_unknown`).
+const VERSION: u32 = 9;
 
 /// The fields in the order they are in the file: the short ones on top, the terrain at the end.
 /// `#[serde(default …)]`: a field a file from version 1 doesn't have yet gets this value instead of an error.
@@ -78,7 +84,7 @@ pub struct MapFile {
     /// constant spawn is left out: TAB's stragglers are events now.)
     #[serde(default, skip_serializing)]
     pub waves: Vec<OldWave>,
-    /// The map's story (`sim/story.rs`): scripts, goals, the command center's button, counters – not written if empty.
+    /// The map's story (`sim/story.rs`): triggers, goals, the command center's button, variables – not written if empty.
     #[serde(default, skip_serializing_if = "Story::is_empty")]
     pub story: Story,
     /// How the map was generated – for the info line and "New map" (same setup, new seed). `None`: not known (files
@@ -86,6 +92,12 @@ pub struct MapFile {
     #[serde(default)]
     pub setup: Option<MapSetup>,
     pub spawners: Vec<SpawnerData>,
+    /// The named regions and points (`sim/regions.rs`), with their numbers – not written when there are none. Files
+    /// before format 6 have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<Zone>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<Spot>,
     pub buildings: Vec<BuildingData>,
     pub units: Vec<UnitData>,
     pub zombies: Vec<ZombieData>,
@@ -108,6 +120,11 @@ pub struct MapFile {
     /// written when there are none; an older game skips the field and draws small pieces there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub big_rocks: Vec<BigRock>,
+    /// Which pictures the forest, rock or ore of a tile is drawn with, where the editor's painter chose them
+    /// (`Map::picture`) – in runs along a row: `[x, y, how many tiles, picture]`. Only the look: not written when
+    /// everything is mixed, and an older game skips the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<(i32, i32, i32, u8)>,
     /// One string per row, one letter per tile (`letter`).
     pub terrain: Vec<String>,
 }
@@ -293,9 +310,6 @@ pub struct NeutralData {
     pub veteran: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<Tag>,
-    /// Runs when it joins the colony (`sim/story.rs`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub on_join: Script,
 }
 
 /// 100 – full hit points, when a file says nothing (`#[serde(default = "hundred")]`) …
@@ -403,17 +417,12 @@ impl NeutralData {
             hp_percent: n.hp_percent,
             veteran: n.veteran,
             tag: n.tag.as_deref().cloned(),
-            on_join: n.on_join.clone(),
         }
     }
 
     /// A building only where it fits (`World::add_neutral`).
     pub fn add_to(&self, world: &mut World) {
-        let before = world.neutral.len();
         world.add_neutral(self.thing, self.joinable, self.hp_percent, self.veteran, self.tag.clone().map(Box::new));
-        if let Some(added) = world.neutral.get_mut(before) {
-            added.on_join = self.on_join.clone();
-        }
     }
 }
 
@@ -509,6 +518,8 @@ impl MapFile {
             story: world.story.clone(),
             setup: None,
             spawners: world.spawners.iter().map(SpawnerData::of).collect(),
+            regions: world.zones.clone(),
+            points: world.spots.clone(),
             buildings: world.buildings.iter().map(BuildingData::of).collect(),
             units: world.units.iter().map(UnitData::of).collect(),
             neutral: world.neutral.iter().map(NeutralData::of).collect(),
@@ -518,6 +529,7 @@ impl MapFile {
             ornaments: world.ornaments.clone(),
             deposits: world.map.all_deposits().map(|(x, y, d)| DepositData { tile: (x, y), ore: d.ore, amount: d.amount }).collect(),
             big_rocks: world.map.big_rocks().to_vec(),
+            pictures: picture_runs(world.map.all_pictures()),
             terrain,
         }
     }
@@ -528,13 +540,14 @@ impl MapFile {
         world.set_difficulty(data::get().difficulty(&self.round.difficulty));
         // Before the zombies: their speed is rolled with it.
         world.modifiers = self.modifiers;
-        world.look = self.look.clone();
+        world.set_look(&self.look);
         world.days = self.round.days;
         world.gold = self.round.gold;
         world.stock.set(Resource::Wood, self.round.wood);
         for s in &self.spawners {
             s.add_to(&mut world);
         }
+        self.add_regions(&mut world);
         for b in &self.buildings {
             b.add_to(&mut world);
         }
@@ -585,7 +598,19 @@ impl MapFile {
         world.events = self.events.clone();
         world.roll_events();
         world.story = self.story.clone();
+        // They lie where they lay on the saved map – on a new one that's somewhere else, but a script may still name them.
+        self.add_regions(&mut world);
         Ok(world)
+    }
+
+    /// The file's regions and points into the world, each with its number.
+    fn add_regions(&self, world: &mut World) {
+        for zone in &self.regions {
+            world.add_zone(zone.clone());
+        }
+        for spot in &self.points {
+            world.add_spot(spot.clone());
+        }
     }
 
     /// Only the map – terrain and ore, without anything on it: for `to_world`, and for the preview of a custom level
@@ -614,6 +639,9 @@ impl MapFile {
         }
         for &rock in &self.big_rocks {
             map.place_big_rock(rock);
+        }
+        for (x, y, picture) in picture_tiles(&self.pictures) {
+            map.set_picture(x, y, picture);
         }
         Ok(map)
     }
@@ -689,6 +717,7 @@ impl MapFile {
             .map(|r| BigRock { tile: shift(r.tile), ..*r })
             .filter(|r| all_on_map(r.tile, r.size, r.size))
             .collect();
+        file.pictures = picture_runs(picture_tiles(&self.pictures).map(|(x, y, p)| (x + d, y + d, p)).filter(|&(x, y, _)| on_map(x, y)));
         file.doom = self.doom.iter().map(|h| DoomData { house: shift(h.house), ..h.clone() }).filter(|h| all_on_map(h.house, h.size.0, h.size.1)).collect();
         file.units = self.units.iter().map(|u| UnitData { pos: moved(u.pos), ..u.clone() }).filter(|u| point_on_map(u.pos)).collect();
         file.neutral = self
@@ -711,7 +740,15 @@ impl MapFile {
             .collect();
         file.zombies = self.zombies.iter().map(|z| ZombieData { pos: moved(z.pos), ..z.clone() }).filter(|z| point_on_map(z.pos)).collect();
         file.loot = self.loot.iter().map(|l| LootData { pos: moved(l.pos), ..l.clone() }).filter(|l| point_on_map(l.pos)).collect();
-        file.ornaments = self.ornaments.iter().map(|o| Ornament { tile: shift(o.tile), ..*o }).filter(|o| all_on_map(o.tile, 1, 1)).collect();
+        file.ornaments = self
+            .ornaments
+            .iter()
+            .map(|o| Ornament { tile: shift(o.tile), ..*o })
+            .filter(|o| {
+                let (w, h) = o.kind.footprint();
+                all_on_map(o.tile, w, h)
+            })
+            .collect();
         // In the screen axes (`map::to_frame`: across x − y, down x + y) d tiles both ways are 0 across and 2 · d down.
         let down = |min: (i32, i32)| (min.0, min.1 + 2 * d);
         file.spawners = self
@@ -719,6 +756,9 @@ impl MapFile {
             .iter()
             .map(|s| SpawnerData { min: if s.axes == Axes::Screen { down(s.min) } else { shift(s.min) }, ..s.clone() })
             .collect();
+        // Regions and points move along, also off the map: back on a bigger grid they're where they were.
+        file.regions = self.regions.iter().map(|z| z.moved((d, d))).collect();
+        file.points = self.points.iter().map(|p| Spot { tile: shift(p.tile), ..p.clone() }).collect();
         let play = self.play_area.unwrap_or_else(|| default_play(self.size, self.border));
         file.play_area = Some(PlayArea { min: down(play.min), ..play });
         file
@@ -749,10 +789,126 @@ impl MapFile {
 
     pub fn load(path: &Path) -> Result<MapFile, String> {
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let mut file: MapFile = serde_json::from_str(&text).map_err(|e| format!("not a map file: {e}"))?;
+        MapFile::parse(&text)
+    }
+
+    /// A map file's text as a `MapFile` – an older format is turned into the newest.
+    pub fn parse(text: &str) -> Result<MapFile, String> {
+        /// Only the number: an old file is read as plain JSON first, a new one straight into the structs.
+        #[derive(Deserialize)]
+        struct Head {
+            #[serde(default)]
+            version: u32,
+        }
+        let not_a_map = |e: serde_json::Error| format!("not a map file: {e}");
+        let head: Head = serde_json::from_str(text).map_err(not_a_map)?;
+        let mut file: MapFile = if head.version < 8 {
+            let mut value: serde_json::Value = serde_json::from_str(text).map_err(not_a_map)?;
+            triggers_from_scripts(&mut value);
+            serde_json::from_value(value).map_err(not_a_map)?
+        } else {
+            serde_json::from_str(text).map_err(not_a_map)?
+        };
+        if head.version < 9 {
+            file.story.declare_unknown();
+        }
         file.upgrade();
         Ok(file)
     }
+}
+
+/// Format 8: a file before it has its scripts on the story (`on_start`, `on_won`, `on_lost`, the command center's
+/// button), on the events (`script`, `script_done`) and on the neutral things (`on_join`) – they become triggers, in
+/// this order. A neutral thing without a name ID gets one (`join 1` …), the triggers know it by that. Counters
+/// (`[name, value]`) become variables.
+fn triggers_from_scripts(file: &mut serde_json::Value) {
+    use serde_json::{json, Map as Json, Value};
+
+    /// The non-empty list under `key`, taken out of `object`.
+    fn take_script(object: &mut Json<String, Value>, key: &str) -> Option<Value> {
+        match object.remove(key) {
+            Some(Value::Array(list)) if !list.is_empty() => Some(Value::Array(list)),
+            _ => None,
+        }
+    }
+    let trigger = |name: String, event: Value, actions: Value| json!({ "name": name, "event": event, "actions": actions });
+
+    let Some(root) = file.as_object_mut() else {
+        return;
+    };
+    let mut triggers = Vec::new();
+    if let Some(Value::Object(story)) = root.get_mut("story") {
+        for (key, name, event) in [("on_start", "On game start", "Start"), ("on_won", "On victory", "Won"), ("on_lost", "On defeat", "Lost")] {
+            if let Some(actions) = take_script(story, key) {
+                triggers.push(trigger(name.to_owned(), json!(event), actions));
+            }
+        }
+        if let Some(Value::Object(command)) = story.get_mut("command")
+            && let Some(actions) = take_script(command, "script")
+        {
+            triggers.push(trigger("Command center button".to_owned(), json!("Button"), actions));
+        }
+        if let Some(Value::Array(counters)) = story.remove("counters") {
+            let variables: Vec<Value> = counters.iter().filter_map(|c| Some(json!({ "name": c.get(0)?, "start": c.get(1)? }))).collect();
+            if !variables.is_empty() {
+                story.insert("variables".to_owned(), Value::Array(variables));
+            }
+        }
+    }
+    if let Some(Value::Array(events)) = root.get_mut("events") {
+        for event in events.iter_mut().filter_map(Value::as_object_mut) {
+            let name = event.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            if let Some(actions) = take_script(event, "script") {
+                triggers.push(trigger(format!("{name}: it comes"), json!({ "EventComes": { "event": name } }), actions));
+            }
+            if let Some(actions) = take_script(event, "script_done") {
+                triggers.push(trigger(format!("{name}: it's done"), json!({ "EventDone": { "event": name } }), actions));
+            }
+        }
+    }
+    if let Some(Value::Array(neutral)) = root.get_mut("neutral") {
+        for (k, thing) in neutral.iter_mut().filter_map(Value::as_object_mut).enumerate() {
+            let Some(actions) = take_script(thing, "on_join") else {
+                continue;
+            };
+            let tag = thing.entry("tag").or_insert(Value::Null);
+            if !tag.is_object() {
+                *tag = json!({});
+            }
+            let tag = tag.as_object_mut().expect("just made one");
+            let mut name_id = tag.get("name_id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            if name_id.is_empty() {
+                name_id = format!("join {}", k + 1);
+                tag.insert("name_id".to_owned(), json!(name_id));
+            }
+            triggers.push(trigger(format!("{name_id}: it joins"), json!({ "Join": { "name_id": name_id } }), actions));
+        }
+    }
+    if !triggers.is_empty() {
+        let story = root.entry("story").or_insert_with(|| json!({}));
+        if let Some(story) = story.as_object_mut() {
+            story.insert("triggers".to_owned(), Value::Array(triggers));
+        }
+    }
+}
+
+/// The tiles with a chosen picture (`Map::all_pictures`: row by row, left to right) as runs along a row: `(x, y, how
+/// many tiles, picture)` – a forest painted with one picture is a few hundred runs instead of thousands of tiles.
+fn picture_runs(tiles: impl Iterator<Item = (i32, i32, u8)>) -> Vec<(i32, i32, i32, u8)> {
+    let mut runs: Vec<(i32, i32, i32, u8)> = Vec::new();
+    for (x, y, picture) in tiles {
+        match runs.last_mut() {
+            // Right behind the last run, in the same row, the same picture: that run gets one tile longer.
+            Some(run) if run.1 == y && run.0 + run.2 == x && run.3 == picture => run.2 += 1,
+            _ => runs.push((x, y, 1, picture)),
+        }
+    }
+    runs
+}
+
+/// The runs as single tiles again: (x, y, picture).
+fn picture_tiles(runs: &[(i32, i32, i32, u8)]) -> impl Iterator<Item = (i32, i32, u8)> + '_ {
+    runs.iter().flat_map(|&(x, y, len, picture)| (0..len).map(move |k| (x + k, y, picture)))
 }
 
 /// `serde_json` writes everything in one long line. This puts in line breaks where they help reading and changing
@@ -767,7 +923,7 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "modifiers", "look", "events", "story", "setup", "spawners", "buildings", "units", "zombies", "neutral", "doom", "loot", "ornaments", "deposits", "big_rocks", "terrain"] {
+    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "modifiers", "look", "events", "story", "setup", "spawners", "regions", "points", "buildings", "units", "zombies", "neutral", "doom", "loot", "ornaments", "deposits", "big_rocks", "pictures", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
     // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units
@@ -883,6 +1039,7 @@ pub fn file_stem(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::TriggerEvent;
     use crate::map::Ore;
     use crate::sim::{BreedCount, Order};
 
@@ -916,8 +1073,11 @@ mod tests {
         let mut file = MapFile::from_world(&world, "Test: map?");
         file.setup = Some(MapSetup::default());
         (file.author, file.description, file.picture, file.regenerate) = ("Me".into(), "A test, \"quoted\".".into(), "pic.png".into(), true);
-        file.story.on_start = vec![crate::sim::Action::Window { title: "Hi".into(), text: "Welcome.".into() }];
-        file.story.counters = vec![("keys".into(), 2)];
+        file.story.triggers = vec![crate::sim::Trigger {
+            actions: vec![crate::sim::Action::Window { title: "Hi".into(), text: "Welcome.".into() }.into()],
+            ..crate::sim::Trigger::new("Welcome", crate::sim::TriggerEvent::Start)
+        }];
+        file.story.variables = vec![crate::sim::Variable { name: "keys".into(), kind: crate::sim::VarKind::Number, start: crate::sim::Value::Number(2) }];
         assert!(file.deposits.len() > 20, "the generated ore isn't saved");
         assert!(file.deposits.iter().any(|d| d.tile == (c + 3, c + 9) && d.ore == Ore::Coal), "the painted ore isn't saved");
         assert_eq!(file.round, RoundData { days: 25, gold: world.gold, wood: 55, difficulty: world.difficulty.clone() });
@@ -958,7 +1118,7 @@ mod tests {
     /// file's round and events. Without it, the saved map.
     #[test]
     fn a_regenerated_level_keeps_its_round_and_events() {
-        let mut setup = MapSetup { generator: crate::mapgen::Generator::Wild, ..MapSetup::default() };
+        let mut setup = MapSetup::default();
         setup.common.size = 128.0;
         let world = World::generate(4, &setup);
         let mut file = MapFile::from_world(&world, "Random");
@@ -1038,6 +1198,91 @@ mod tests {
         assert_eq!(file.spawners.iter().map(|s| s.id).collect::<Vec<_>>(), world.spawners.iter().map(|s| s.id).collect::<Vec<_>>());
     }
 
+    /// A file before format 8 has scripts on the start, the end, the command center's button, the events and the neutral
+    /// things, and counters: reading it turns them into triggers (in that order) and variables, and a neutral thing
+    /// without a name ID gets one. The result is what format 8 would have written – nothing of the old stays.
+    #[test]
+    fn old_scripts_become_triggers() {
+        let old = r#"{"version":7,"name":"Old","seed":7,"size":2,"border":0,"terrain":["..",".."],
+            "events":[{"name":"Raid","hour":5,"script":[{"Notify":{"text":"coming"}}],"script_done":[{"Win":null}]},{"name":"Quiet","hour":9}],
+            "story":{"on_start":[{"Counter":{"name":"keys","add":false,"value":1}}],"on_lost":[{"Notify":{"text":"lost"}}],
+                "command":{"label":"Dig","script":[{"Counter":{"name":"keys","add":true,"value":1}}],"uses":2},
+                "goals":[{"text":"keys","condition":{"Counter":{"name":"keys","at_least":3}}}],"counters":[["keys",0]]},
+            "spawners":[],"buildings":[],"units":[],"zombies":[],
+            "neutral":[{"thing":{"Unit":{"kind":"Soldier","pos":[0.5,0.5]}},"on_join":[{"Reveal":null}]},
+                {"thing":{"Unit":{"kind":"Soldier","pos":[1.5,1.5]}},"tag":{"name_id":"boss"},"on_join":[{"Notify":{"text":"hi"}}]},
+                {"thing":{"Unit":{"kind":"Soldier","pos":[1.5,0.5]}}}]}"#;
+        let file = MapFile::parse(old).unwrap();
+        assert_eq!(file.version, VERSION);
+        let story = &file.story;
+        let names: Vec<(&str, &TriggerEvent)> = story.triggers.iter().map(|t| (t.name.as_str(), &t.event)).collect();
+        assert_eq!(
+            names,
+            [
+                ("On game start", &TriggerEvent::Start),
+                ("On defeat", &TriggerEvent::Lost),
+                ("Command center button", &TriggerEvent::Button),
+                ("Raid: it comes", &TriggerEvent::EventComes { event: "Raid".into() }),
+                ("Raid: it's done", &TriggerEvent::EventDone { event: "Raid".into() }),
+                ("join 1: it joins", &TriggerEvent::Join { name_id: "join 1".into() }),
+                ("boss: it joins", &TriggerEvent::Join { name_id: "boss".into() }),
+            ]
+        );
+        assert_eq!(story.variables, [crate::sim::Variable { name: "keys".into(), kind: crate::sim::VarKind::Number, start: crate::sim::Value::Number(0) }]);
+        assert!(matches!(story.goals[0].condition, crate::sim::Condition::Variable { .. }), "a goal's Counter isn't read as a variable");
+        assert_eq!(story.command, Some(crate::sim::CustomCommand { label: "Dig".into(), text: String::new(), uses: 2 }));
+        assert_eq!(file.neutral[0].tag.as_ref().map(|t| t.name_id.as_str()), Some("join 1"));
+        assert!(file.neutral[2].tag.is_none(), "a thing without a script got a tag");
+        // It plays: the start trigger sets the variable.
+        let mut world = file.to_world().unwrap();
+        world.step(&[]);
+        assert_eq!(world.variable("keys"), 1);
+        // And what's written reads back the same.
+        let again = MapFile::parse(&pretty(&serde_json::to_string(&file).unwrap())).unwrap();
+        assert_eq!(again, file);
+    }
+
+    /// Format 9: steps may have a condition and code, triggers have expressions as conditions. A step without either
+    /// is still just its action in the file – and a file of format 8 with the goals' kind of conditions, the action
+    /// "Variable" and an undeclared counter reads as the same in the new kind.
+    #[test]
+    fn steps_and_conditions_are_written_and_old_ones_are_read() {
+        use crate::sim::{Action, Step, Trigger};
+        let mut file = MapFile::parse(r#"{"version":9,"name":"N","seed":7,"size":2,"border":0,"terrain":["..",".."],"spawners":[],"buildings":[],"units":[],"zombies":[]}"#).unwrap();
+        let variables = vec![crate::sim::Variable { name: "keys".into(), kind: crate::sim::VarKind::Number, start: crate::sim::Value::Number(0) }];
+        let scope = crate::sim::Scope { variables: &variables };
+        let mut trigger = Trigger::new("t", TriggerEvent::Start);
+        trigger.conditions = vec![crate::sim::parse_condition("Day >= 3 & keys < 2", scope).unwrap()];
+        trigger.actions = vec![
+            Step::new(Action::Reveal),
+            Step {
+                action: Action::Notify { text: "hi".into() },
+                when: Some(crate::sim::parse_condition("keys = 0", scope).unwrap()),
+                code: crate::sim::parse_code("keys += 1", scope).unwrap(),
+            },
+        ];
+        file.story.variables = variables;
+        file.story.triggers = vec![trigger];
+        let text = serde_json::to_string(&file).unwrap();
+        assert!(text.contains(r#"["Reveal",{"action":{"Notify":{"text":"hi"}},"when":"#), "a plain step isn't just its action: {text}");
+        assert_eq!(MapFile::parse(&text).unwrap(), file);
+
+        let old = r#"{"version":8,"name":"Old","seed":7,"size":2,"border":0,"terrain":["..",".."],"spawners":[],"buildings":[],"units":[],"zombies":[],
+            "story":{"triggers":[{"name":"t","event":"Start","conditions":[{"Day":3},{"Variable":{"name":"keys","at_least":2}}],
+                "actions":[{"Variable":{"name":"keys","add":true,"value":1}},"Reveal"]}],"variables":[{"name":"met","kind":"Flag","start":1}]}}"#;
+        let old = MapFile::parse(old).unwrap();
+        let t = &old.story.triggers[0];
+        assert_eq!(t.conditions.iter().map(|c| c.to_string()).collect::<Vec<_>>(), ["Day >= 3", "keys >= 2"]);
+        assert_eq!(t.actions.len(), 2);
+        assert_eq!(crate::sim::code_text(&t.actions[0].code), "keys += 1");
+        assert_eq!(t.actions[1], Step::new(Action::Reveal));
+        let declared: Vec<&str> = old.story.variables.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(declared, ["met", "keys"], "a counter nobody declared is declared");
+        let mut world = old.to_world().unwrap();
+        world.step(&[]);
+        assert_eq!(world.variable("keys"), 0, "Day >= 3 doesn't hold on the first day");
+    }
+
     /// A round from its file starts with the command center's gold as the income – nobody has paid yet, but it will at
     /// the first payout. Before, the HUD showed only the upkeep there.
     #[test]
@@ -1045,6 +1290,39 @@ mod tests {
         let world = MapFile::from_world(&World::new(4), "x").to_world().unwrap();
         assert_eq!(world.tick, 0);
         assert_eq!(world.income(), BuildingKind::CommandCenter.stats().gold);
+    }
+
+    /// The pictures the painter chose are kept, in runs along a row – and move with the grid. A map with none doesn't
+    /// have the field, and a file without it (every file so far) reads as "all mixed".
+    #[test]
+    fn chosen_pictures_are_saved_in_runs_and_move_with_the_grid() {
+        let mut world = World::new(4);
+        let c = world.map.size as i32 / 2;
+        let row: Vec<(i32, i32)> = (0..5).map(|k| (c + 20 + k, c + 3)).collect();
+        let below: Vec<(i32, i32)> = (0..2).map(|k| (c + 20 + k, c + 4)).collect();
+        let all: Vec<(i32, i32)> = row.iter().chain(&below).copied().collect();
+        world.apply_orders(&[
+            Order::RemoveAt { tiles: all.clone() },
+            Order::PaintOre { ore: None, tiles: all.clone() },
+            Order::PaintTerrain { terrain: Terrain::Forest, tiles: all },
+            Order::PaintPicture { picture: 2, tiles: row },
+            Order::PaintPicture { picture: 3, tiles: below },
+        ]);
+        let file = MapFile::from_world(&world, "x");
+        assert_eq!(file.pictures, vec![(c + 20, c + 3, 5, 2), (c + 20, c + 4, 2, 3)]);
+        let text = pretty(&serde_json::to_string(&file).unwrap());
+        let back: MapFile = serde_json::from_str(&text).unwrap();
+        let map = back.to_world().unwrap().map;
+        assert_eq!((map.picture(c + 24, c + 3), map.picture(c + 21, c + 4), map.picture(c + 25, c + 3)), (2, 3, 0));
+        // 16 tiles more on every side: everything 16 further.
+        let grown = file.resized(file.size + 32);
+        assert_eq!(grown.pictures, vec![(c + 36, c + 19, 5, 2), (c + 36, c + 20, 2, 3)]);
+        // Ground painted over loses its pictures; a map without any doesn't write the field – and reads without it.
+        world.apply_orders(&[Order::PaintTerrain { terrain: Terrain::Grass, tiles: vec![(c + 22, c + 3)] }]);
+        assert_eq!(MapFile::from_world(&world, "x").pictures[..2], [(c + 20, c + 3, 2, 2), (c + 23, c + 3, 2, 2)]);
+        let plain = serde_json::to_string(&MapFile::from_world(&World::new(4), "None")).unwrap();
+        assert!(!plain.contains("pictures"));
+        assert!(serde_json::from_str::<MapFile>(&plain).unwrap().pictures.is_empty());
     }
 
     /// A broken file gives a reason, not a crash.

@@ -19,7 +19,7 @@
 //! The penalties are one number for the whole army (`army_keep`, `army_pace`) – out of debt this costs nothing: the
 //! upkeep isn't even added up then.
 
-use super::World;
+use super::{Fx, World};
 use crate::data;
 
 /// How bad the debt is right now (`World::debt_stage`).
@@ -171,7 +171,8 @@ impl World {
         for i in 0..self.units.len() {
             if roll < weight(i) {
                 // `remove`, not `swap_remove`: the order of the list stays the same on every PC.
-                self.units.remove(i);
+                let gone = self.units.remove(i);
+                self.fx.push(Fx::Deserted { kind: gone.kind });
                 self.score.units_deserted += 1;
                 return;
             }

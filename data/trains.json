@@ -1,0 +1,16 @@
+{
+  "max_speed": 7.2,
+  "acceleration": 0.9,
+  "brake_tiles": 8.0,
+  "least_speed": 0.03,
+  "stop_seconds": 3.0,
+  "gap": 0.4,
+  "damage": 100,
+  "hits_from_speed": 0.3,
+  "cars": {
+    "locomotive": 4.0,
+    "colonists": 3.0,
+    "armored": 3.0,
+    "goods": 3.0
+  }
+}

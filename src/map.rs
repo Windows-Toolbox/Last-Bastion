@@ -15,15 +15,17 @@ use serde::{Deserialize, Serialize};
 
 
 /// Width of the ring outside the world border, in steps of the screen axes (`to_frame` – on screen 32 pixels across,
-/// 16 pixels up and down; a straight distance of 16 / √2 ≈ 11 tiles). How big the playing field is, is chosen per
-/// map – `mapgen::Common::size`.
-pub const BORDER: usize = 16;
+/// 16 pixels up and down; a straight distance of 24 / √2 ≈ 17 tiles). Room for the spawners at its outer edge and,
+/// between them and the border, for track where a train comes in unseen. How big the playing field is, is chosen per
+/// map – `mapgen::Common::size`; the map is that much bigger.
+pub const BORDER: usize = 24;
 /// The playing field is at least this many steps of the screen axes across and down (`Map::set_play_area`).
 pub const MIN_PLAY: i32 = 8;
 
 // What a tile is like, as bits of one byte (`Map::flags`): one look into memory answers "can a zombie go here?",
 // "can a unit go here?", "can you see through it?". The terrain bits are worked out from `terrain` and kept in step
-// with it, buildings set and clear theirs. One bit is still free (power coverage, DESIGN.md 5.5, will be it).
+// with it, buildings set and clear theirs, oil its own (`OIL`). All eight bits are taken – power coverage (DESIGN.md 5.5)
+// needs a wider type.
 /// Solid terrain – everything but grass and dirt: nobody walks here, and zombies can't tear it down.
 const SOLID: u8 = 1 << 0;
 /// Forest: nobody sees or shoots through it.
@@ -40,8 +42,14 @@ const TAKEN: u8 = 1 << 5;
 /// A house of a village of doom stands here (`sim/doom.rs`): like a mountain for everyone – nobody walks through it,
 /// the zombies don't tear it down, nobody builds on it. Only shooting it down frees the tiles again.
 const DOOM: u8 = 1 << 6;
+/// An oil pool lies here (a 2 × 2 node): nobody walks into it. Ways go round the whole node (`is_blocked`,
+/// `blocks_unit`), the bodies only keep out of a circle in its middle (`out_of_oil`) – its corners are free.
+const OIL: u8 = 1 << 7;
 /// Off the map altogether: like a mountain outside the border.
 const OFF_MAP: u8 = SOLID | OUTSIDE;
+/// The oil pool: a circle this many tiles round the middle of its node – a body's middle keeps its own radius further
+/// off, but never more than 1 (the edge of the node).
+pub const OIL_POOL: f32 = 0.75;
 
 /// What the ground of a tile is. Grass and dirt are open ground – everything else blocks walking (DESIGN.md 9.1).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -191,20 +199,7 @@ impl Region {
         size.x * size.y / 2.0
     }
 
-    /// A point on side `side` (0 top, 1 bottom, 2 left, 3 right – as you see it on screen), `t` (0 … 1) of the way
-    /// along it, from left to right or from top to bottom.
-    pub fn side_point(&self, side: u32, t: f32) -> Vec2 {
-        let (min, max) = (self.min, self.max);
-        let along = |from: f32, to: f32| from + (to - from) * t;
-        from_frame(match side {
-            0 => vec2(along(min.x, max.x), min.y),
-            1 => vec2(along(min.x, max.x), max.y),
-            2 => vec2(min.x, along(min.y, max.y)),
-            _ => vec2(max.x, along(min.y, max.y)),
-        })
-    }
-
-    /// Which side the point lies closest to (numbered like `side_point`) – seen from the middle, the larger of the
+    /// Which side the point lies closest to (0 top, 1 bottom, 2 left, 3 right – as you see it on screen) – seen from the middle, the larger of the
     /// two screen axes decides.
     pub fn nearest_side(&self, p: Vec2) -> u32 {
         let d = to_frame(p) - (self.min + self.max) / 2.0;
@@ -244,6 +239,9 @@ pub struct BigRock {
     pub size: i32,
     pub variant: u8,
 }
+
+/// The picture groups a tile can ask for (`Map::picture`): A, B, C – 0 is "mixed".
+pub const PICTURES: [(u8, &str); 3] = [(1, "A"), (2, "B"), (3, "C")];
 
 /// The sizes of the big rocks (tiles) – TAB's `BRMountainC2`, `C3`, `C4`.
 pub const BIG_ROCK_SIZES: [i32; 3] = [3, 4, 5];
@@ -286,6 +284,10 @@ pub struct Map {
     deposits: Vec<Option<Deposit>>,
     /// The big rocks put down in the editor – their tiles are mountain (`place_big_rock`).
     big_rocks: Vec<BigRock>,
+    /// Per tile: which pictures the forest, the rock or the ore on it is drawn with (`PICTURES`: 0 mixed, 1–3 the
+    /// landscape's group A, B, C – `ground.rs`). Only the look: the simulation never asks. The editor's painter sets
+    /// it; ground that becomes something else is mixed again.
+    pictures: Vec<u8>,
 }
 
 impl Map {
@@ -302,6 +304,7 @@ impl Map {
             revision: 0,
             deposits: vec![None; size * size],
             big_rocks: Vec::new(),
+            pictures: vec![0; size * size],
         };
         for i in 0..size * size {
             let (x, y) = ((i % size) as i32, (i / size) as i32);
@@ -372,25 +375,63 @@ impl Map {
         Region::around(Vec2::splat(size as f32 / 2.0), size as f32 / 2.0)
     }
 
+    /// Is this tile on the map – inside `full_area`, not in a corner of the grid sticking out past it?
+    pub fn on_map(&self, x: i32, y: i32) -> bool {
+        self.full_area().contains_tile(x, y)
+    }
+
     /// Does this tile lie inside the world border?
     pub fn in_play(&self, x: i32, y: i32) -> bool {
         self.play_area().contains_tile(x, y)
     }
 
-    /// Solid terrain, a house of doom, a building (not an infected one), or outside the map? (That's what blocks
-    /// zombies.)
+    /// Solid terrain, a house of doom, oil, a building (not an infected one), or outside the map? (That's what blocks
+    /// zombies – their ways.)
     pub fn is_blocked(&self, x: i32, y: i32) -> bool {
+        self.is_blocked_body(x, y) || self.has(x, y, OIL)
+    }
+
+    /// `is_blocked` for a zombie's body: oil doesn't count here – it keeps out of the pool's circle (`out_of_oil`).
+    pub fn is_blocked_body(&self, x: i32, y: i32) -> bool {
         let flags = self.flags(x, y);
         (flags & (SOLID | DOOM)) != 0 || (flags & (BUILT | TAKEN)) == BUILT
     }
 
     /// Blocked for your units: like `is_blocked`, plus everything outside the world border – but a gate's door
     /// and an infected building let them through. Not onto solid terrain, though: in the editor a gate can stand on
-    /// water.
+    /// water. Their ways go round oil too.
     pub fn blocks_unit(&self, x: i32, y: i32) -> bool {
+        self.blocks_unit_body(x, y) || self.has(x, y, OIL)
+    }
+
+    /// `blocks_unit` for a unit's body: without oil – it keeps out of the pool's circle (`out_of_oil`).
+    pub fn blocks_unit_body(&self, x: i32, y: i32) -> bool {
         let flags = self.flags(x, y);
         let closed_building = (flags & BUILT) != 0 && (flags & (DOOR | TAKEN)) == 0;
         (flags & (SOLID | DOOM | OUTSIDE)) != 0 || closed_building
+    }
+
+    /// Where a body of `radius` at `pos` has to stand to keep out of an oil pool (`OIL_POOL`): pushed straight out
+    /// from the middle of its node – sideways it slides round. `pos` itself if it isn't in one. A pool lies inside its
+    /// node, so only a middle on an oil tile can be in it (nodes never touch).
+    pub fn out_of_oil(&self, pos: Vec2, radius: f32) -> Vec2 {
+        let (x, y) = (pos.x.floor() as i32, pos.y.floor() as i32);
+        if !self.has(x, y, OIL) {
+            return pos;
+        }
+        // The node's top left: oil left of this tile, or above it, is the same node.
+        let left = if self.has(x - 1, y, OIL) { x - 1 } else { x };
+        let top = if self.has(x, y - 1, OIL) { y - 1 } else { y };
+        let middle = vec2(left as f32 + 1.0, top as f32 + 1.0);
+        let reach = (OIL_POOL + radius).min(1.0);
+        let off = pos - middle;
+        let d = off.length();
+        if d >= reach {
+            return pos;
+        }
+        // Right in the middle (put there in the editor): out to the right.
+        let dir = if d > 1e-4 { off / d } else { vec2(1.0, 0.0) };
+        middle + dir * reach
     }
 
     /// Is there a building on this tile?
@@ -541,6 +582,12 @@ impl Map {
                     self.clear_oil_node(i);
                 }
                 self.deposits[i] = deposit;
+                if deposit.is_some_and(|d| d.ore == Ore::Oil) {
+                    self.flags[i] |= OIL;
+                }
+                if deposit.is_none() {
+                    self.pictures[i] = 0;
+                }
                 self.revision += 1;
                 true
             }
@@ -557,6 +604,7 @@ impl Map {
                 continue;
             }
             self.deposits[i] = None;
+            self.flags[i] &= !OIL;
             let (x, y) = ((i % self.size) as i32, (i / self.size) as i32);
             todo.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)].into_iter().filter_map(|(x, y)| self.index(x, y)));
         }
@@ -577,6 +625,10 @@ impl Map {
                     self.big_rocks.retain(|r| !r.covers(x, y));
                 }
                 self.terrain[i] = terrain;
+                // Whatever stood here had its picture – the new ground starts mixed (ore on open ground keeps its own).
+                if terrain.is_solid() || self.deposits[i].is_none() {
+                    self.pictures[i] = 0;
+                }
                 if terrain.is_solid() {
                     self.clear_oil_node(i);
                     self.deposits[i] = None;
@@ -588,6 +640,30 @@ impl Map {
             }
             _ => false,
         }
+    }
+
+    /// Which pictures the forest, rock or ore on a tile is drawn with: 0 mixed, 1–3 the group A, B, C (`PICTURES`).
+    pub fn picture(&self, x: i32, y: i32) -> u8 {
+        self.index(x, y).map_or(0, |i| self.pictures[i])
+    }
+
+    /// Sets it (editor) – only where something stands that has pictures: forest, mountain or ore. Anything above C
+    /// counts as mixed. Returns whether anything changed.
+    pub fn set_picture(&mut self, x: i32, y: i32, picture: u8) -> bool {
+        let picture = if PICTURES.iter().any(|&(p, _)| p == picture) { picture } else { 0 };
+        match self.index(x, y) {
+            Some(i) if self.pictures[i] != picture && (matches!(self.terrain[i], Terrain::Forest | Terrain::Mountain) || self.deposits[i].is_some()) => {
+                self.pictures[i] = picture;
+                self.revision += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Every tile that isn't mixed: (x, y, picture) – for saving.
+    pub fn all_pictures(&self) -> impl Iterator<Item = (i32, i32, u8)> + '_ {
+        self.pictures.iter().enumerate().filter(|&(_, &p)| p != 0).map(|(i, &p)| ((i % self.size) as i32, (i / self.size) as i32, p))
     }
 
     /// The big rocks on the map.
@@ -694,22 +770,17 @@ impl Map {
 mod tests {
     use super::*;
 
-    /// A map made with the default values of "Wild" has water, mountains, forests and single forest tiles on their own.
+    /// A map of TAB's generator (the default) has water, mountains and forests.
     #[test]
     fn default_map_has_everything() {
         use crate::mapgen::{self, MapSetup};
         for seed in 1..=5 {
-            let map = mapgen::generate(seed, &MapSetup { generator: mapgen::Generator::Wild, ..MapSetup::default() }).map;
+            let map = mapgen::generate(seed, &MapSetup::default()).map;
             let tiles = || (0..map.size as i32).flat_map(|y| (0..map.size as i32).map(move |x| (x, y)));
             let count = |t: Terrain| tiles().filter(|&(x, y)| map.terrain(x, y) == t).count();
             for (t, at_least) in [(Terrain::Water, 1000), (Terrain::Mountain, 1000), (Terrain::Forest, 2000)] {
                 assert!(count(t) > at_least, "seed {seed}: only {} {}", count(t), t.name());
             }
-            let forest = |x: i32, y: i32| map.terrain(x, y) == Terrain::Forest;
-            let alone = tiles()
-                .filter(|&(x, y)| forest(x, y) && ![(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dy)| forest(x + dx, y + dy)))
-                .count();
-            assert!(alone > 200, "seed {seed}: only {alone} single forest tiles");
         }
     }
 
@@ -765,10 +836,13 @@ mod tests {
         assert!(map.sees_into_forest(from, from, 3));
     }
 
+    /// The geometry tests below: a 64 map with a ring of 16 steps – a playing field 32 steps across.
+    const RING: usize = 16;
+
     /// The bits of a tile follow terrain and buildings: who may walk, build and look where.
     #[test]
     fn tile_bits_follow_terrain_and_buildings() {
-        let mut map = Map::blank(64, BORDER);
+        let mut map = Map::blank(64, RING);
         let c = map.size as i32 / 2;
         assert!(map.is_buildable(c, c) && !map.blocks_unit(c, c));
 
@@ -808,9 +882,9 @@ mod tests {
 
         // Outside the world border: zombies walk there, units don't, nobody builds. Off the map – outside the grid or
         // in a corner of it beyond the ring: blocked for all.
-        let (x, y) = (c, c - map.size as i32 / 2 + BORDER as i32 / 2);
+        let (x, y) = (c, c - map.size as i32 / 2 + RING as i32 / 2);
         assert!(!map.in_play(x, y) && !map.is_blocked(x, y) && map.blocks_unit(x, y) && !map.is_buildable(x, y));
-        for (x, y) in [(-1, 0), (0, 0), (BORDER as i32 - 1, BORDER as i32 - 1)] {
+        for (x, y) in [(-1, 0), (0, 0), (RING as i32 - 1, RING as i32 - 1)] {
             assert!(map.is_blocked(x, y) && map.blocks_unit(x, y) && map.is_solid(x, y) && !map.blocks_sight(x, y));
         }
     }
@@ -819,7 +893,7 @@ mod tests {
     /// `Region::rows` walks exactly over the tiles `contains_tile` says are inside.
     #[test]
     fn the_playing_field_is_a_diamond_in_the_grid() {
-        let map = Map::blank(64, BORDER);
+        let map = Map::blank(64, RING);
         let play = map.play_area();
         let c = 32;
         // Half the width of the diamond: 16 steps of the screen axes – the middle of a tile less than that from the
