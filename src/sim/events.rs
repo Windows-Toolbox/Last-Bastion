@@ -117,6 +117,8 @@ pub enum Notice {
     Window { title: String, text: String },
     /// A train stopped at the command center (`trains.rs`), here.
     TrainArrived { at: Vec2 },
+    /// A script sends the camera there (`Action::Camera`).
+    Camera { at: Vec2 },
 }
 
 /// Zombies an event still has to bring out of one side (TAB's `GenerationRequest`): every `stream_every_seconds` the

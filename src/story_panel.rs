@@ -11,6 +11,7 @@ mod sentences;
 use egui_macroquad::egui::{self, Color32, CollapsingHeader, ComboBox, DragValue, Frame, RichText, TextEdit, Ui};
 
 use crate::editor::{settled_text, Places};
+use crate::kinds::BuildingKind;
 use crate::sim::{
     parse_condition, parse_expr, signature, CustomCommand, Expr, ExprError, Goal, Order, Scope, Story, Trigger, TriggerEvent, Ty, Value,
     VarKind, Variable, World, FUNCS,
@@ -190,7 +191,23 @@ pub(crate) fn functions_help(ui: &mut Ui) {
 }
 
 /// The kinds of events, for the drop-down list of a trigger.
-const EVENTS: [&str; 7] = ["Round starts", "Round won", "Round lost", "Event comes", "Event done", "Thing joins", "Button"];
+const EVENTS: [&str; 15] = [
+    "Round starts",
+    "Round won",
+    "Round lost",
+    "Event comes",
+    "Event done",
+    "Thing joins",
+    "Button",
+    "Every few seconds",
+    "Day and hour",
+    "Building finished",
+    "Building falls",
+    "Zombies killed",
+    "Unit enters region",
+    "Unit leaves region",
+    "Unit reaches thing",
+];
 
 fn event_name(event: &TriggerEvent) -> &'static str {
     match event {
@@ -201,6 +218,14 @@ fn event_name(event: &TriggerEvent) -> &'static str {
         TriggerEvent::EventDone { .. } => EVENTS[4],
         TriggerEvent::Join { .. } => EVENTS[5],
         TriggerEvent::Button => EVENTS[6],
+        TriggerEvent::Every { .. } => EVENTS[7],
+        TriggerEvent::Clock { .. } => EVENTS[8],
+        TriggerEvent::Built { .. } => EVENTS[9],
+        TriggerEvent::Fell { .. } => EVENTS[10],
+        TriggerEvent::Kills { .. } => EVENTS[11],
+        TriggerEvent::Enters { .. } => EVENTS[12],
+        TriggerEvent::Leaves { .. } => EVENTS[13],
+        TriggerEvent::Reached { .. } => EVENTS[14],
     }
 }
 
@@ -212,6 +237,14 @@ fn event_help(name: &str) -> &'static str {
         "Event comes" => "Every time the event (Events) with this name comes",
         "Event done" => "Once, when the event with this name has come every time - a final wave once none of it is left",
         "Thing joins" => "When the neutral thing with this name ID (Objects) joins the colony",
+        "Every few seconds" => "Again and again: every so many seconds of the round, the first time after that many",
+        "Day and hour" => "Once, when the clock reaches this day and hour",
+        "Building finished" => "When a building (of this kind, or any) is finished",
+        "Building falls" => "When a building (of this kind, or any) is destroyed - not torn down, not a barrel that went off",
+        "Zombies killed" => "Once, when the zombies killed so far reach this many",
+        "Unit enters region" => "When one of your units comes into the region (Regions) - a unit that starts in it doesn't count. Once per look, however many come",
+        "Unit leaves region" => "When one of your units goes out of the region (or dies in it)",
+        "Unit reaches thing" => "Once, when one of your units comes within a tile of the neutral thing with this name ID (Objects) - TAB's \"On Enter\"",
         _ => "When the player presses the command center's button (below)",
     }
 }
@@ -221,7 +254,7 @@ fn event_help(name: &str) -> &'static str {
 fn new_event(name: &str, old: &TriggerEvent) -> TriggerEvent {
     let kept = match old {
         TriggerEvent::EventComes { event } | TriggerEvent::EventDone { event } => event.clone(),
-        TriggerEvent::Join { name_id } => name_id.clone(),
+        TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } => name_id.clone(),
         _ => String::new(),
     };
     match name {
@@ -231,6 +264,14 @@ fn new_event(name: &str, old: &TriggerEvent) -> TriggerEvent {
         "Event comes" => TriggerEvent::EventComes { event: kept },
         "Event done" => TriggerEvent::EventDone { event: kept },
         "Thing joins" => TriggerEvent::Join { name_id: kept },
+        "Every few seconds" => TriggerEvent::Every { seconds: 60 },
+        "Day and hour" => TriggerEvent::Clock { day: 2, hour: 12 },
+        "Building finished" => TriggerEvent::Built { kind: None },
+        "Building falls" => TriggerEvent::Fell { kind: None },
+        "Zombies killed" => TriggerEvent::Kills { count: 100 },
+        "Unit enters region" => TriggerEvent::Enters { zone: 0 },
+        "Unit leaves region" => TriggerEvent::Leaves { zone: 0 },
+        "Unit reaches thing" => TriggerEvent::Reached { name_id: kept },
         _ => TriggerEvent::Button,
     }
 }
@@ -245,11 +286,19 @@ pub(crate) fn event_label(event: &TriggerEvent) -> String {
         TriggerEvent::EventDone { event } => format!("event {event} done"),
         TriggerEvent::Join { name_id } => format!("{name_id} joins"),
         TriggerEvent::Button => "button".to_owned(),
+        TriggerEvent::Every { seconds } => format!("every {seconds} s"),
+        TriggerEvent::Clock { day, hour } => format!("day {day}, {hour:02}:00"),
+        TriggerEvent::Built { kind } => format!("{} finished", kind.map_or("building", |k| k.stats().name.as_str())),
+        TriggerEvent::Fell { kind } => format!("{} falls", kind.map_or("building", |k| k.stats().name.as_str())),
+        TriggerEvent::Kills { count } => format!("{count} zombies killed"),
+        TriggerEvent::Enters { zone } => format!("unit enters region {zone}"),
+        TriggerEvent::Leaves { zone } => format!("unit leaves region {zone}"),
+        TriggerEvent::Reached { name_id } => format!("{name_id} reached"),
     }
 }
 
 /// "When": the kind of event and the name it needs, as words on one line.
-pub(crate) fn trigger_event_ui(ui: &mut Ui, id: egui::Id, t: &mut Trigger) {
+pub(crate) fn trigger_event_ui(ui: &mut Ui, id: egui::Id, t: &mut Trigger, places: Places) {
     ui.horizontal_wrapped(|ui| {
         let shown = event_name(&t.event);
         ComboBox::from_id_salt(id.with("event")).width(120.0).selected_text(shown).show_ui(ui, |ui| {
@@ -264,13 +313,49 @@ pub(crate) fn trigger_event_ui(ui: &mut Ui, id: egui::Id, t: &mut Trigger) {
                 ui.label("named");
                 text_field(ui, event, false);
             }
-            TriggerEvent::Join { name_id } => {
+            TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } => {
                 ui.label("name ID");
                 text_field(ui, name_id, false);
+            }
+            TriggerEvent::Every { seconds } => {
+                ui.add(DragValue::new(seconds).range(1..=36_000).suffix(" s"));
+            }
+            TriggerEvent::Clock { day, hour } => {
+                ui.add(DragValue::new(day).range(1..=999).prefix("day "));
+                ui.add(DragValue::new(hour).range(0..=23).prefix("hour "));
+            }
+            TriggerEvent::Built { kind } | TriggerEvent::Fell { kind } => {
+                let shown = kind.map_or("any building", |k| k.stats().name.as_str());
+                ComboBox::from_id_salt(id.with("kind")).width(150.0).selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(kind, None, "any building");
+                    for k in BuildingKind::ALL {
+                        ui.selectable_value(kind, Some(k), k.stats().name.as_str());
+                    }
+                });
+            }
+            TriggerEvent::Kills { count } => {
+                ui.add(DragValue::new(count).range(1..=10_000_000).speed(10));
+            }
+            TriggerEvent::Enters { zone } | TriggerEvent::Leaves { zone } => {
+                ui.label("region");
+                zone_box(ui, id.with("zone"), zone, places);
             }
             _ => {}
         }
     });
+}
+
+/// A drop-down list of the map's regions, by name - the number is what's kept.
+pub(crate) fn zone_box(ui: &mut Ui, id: egui::Id, zone: &mut u32, places: Places) {
+    let shown = places.zones.iter().find(|z| z.id == *zone).map_or("(choose one)", |z| z.name.as_str());
+    ComboBox::from_id_salt(id).width(150.0).selected_text(shown).show_ui(ui, |ui| {
+        for z in places.zones {
+            ui.selectable_value(zone, z.id, z.name.as_str());
+        }
+    });
+    if places.zones.is_empty() {
+        ui.label(RichText::new("No regions yet - make some in the Regions module").small().weak());
+    }
 }
 
 /// "If" (the conditions, all of them) and "Then" (the actions as sentences) of a trigger.

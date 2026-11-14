@@ -172,8 +172,7 @@ Die ursprünglichen Punkte:
 4. **Nach Trigger-Doku 4:** Block, Loop / Exit loop, Wait, Bedingung je Option.
 5. **Rechts die Palette** (Flow, Zombies, Colony, Show, Map, End) mit Suche; Klick hängt die Aktion ans Ende, Ziehen
    in die Liste (egui `dnd_drag_source` / `dnd_drop_zone`) an die Stelle. Strg+Leertaste: Suchfeld mit Tippen.
-6. **(offen)** **Nach Trigger-Doku 5 + Regionen:** Ereignisse „unit enters / leaves region“, Aktionen „Spawn at region“,
-   „Camera to region/point“, „Playing field to region“ – jede trägt sich in `zone_uses` ein (Schritt 6.5).
+6. **Fertig (Trigger-Doku 5):** Ereignisse „Unit enters / leaves region“ (und Zeit, Gebäude, Kills, Objekt erreicht) in `story_panel.rs`, Aktionen „Camera“ und „Noise“ (Region oder Punkt, Palette-Gruppe „Map“), „Spawn at region“ = die Aktion Zombies mit „chosen regions“; jede trägt sich in `zone_uses` ein. **Offen:** „Playing field to region“ (siehe Trigger-Doku, Abweichungen Schritt 5). Aktionen mit einem Ort, den es nicht gibt, stehen in der Statuszeile als Problem.
 7. Statuszeile: „Trigger: X · N conditions · M actions · No errors“.
 
 ### Was bewusst fehlt (nicht als toten Knopf bauen)

@@ -79,6 +79,7 @@ mod towers;
 mod trains;
 mod units;
 mod veterans;
+mod watch;
 mod weather;
 mod zombies;
 #[cfg(test)]
@@ -116,7 +117,7 @@ pub use expr::{code_text, parse_code, parse_condition, parse_expr, Expr, ExprErr
 pub use funcs::{signature, FUNCS};
 pub use script::{Place, Run};
 pub use story::{
-    Action, CommandState, CustomCommand, Goal, GoalState, Pick, Script, Step, Story, Trigger, TriggerEvent, VarKind, Variable, Weighted,
+    Action, CommandState, CustomCommand, Goal, GoalState, Pick, Script, Site, Step, Story, Trigger, TriggerEvent, VarKind, Variable, Weighted, MOST_NOISE,
 };
 pub use weather::{Weather, LOOKS};
 pub use ranged::Spit;
@@ -306,6 +307,8 @@ pub struct World {
     pub command_state: CommandState,
     ending: Option<story::Ending>,
     command_used: u32,
+    /// What the triggers watch between ticks (`watch.rs`).
+    watched: watch::Watched,
     rng: Rng,
     to_base: FlowField,
     grid: SpatialGrid,
@@ -542,6 +545,7 @@ impl World {
             command_state: CommandState::default(),
             ending: None,
             command_used: 0,
+            watched: watch::Watched::default(),
             // Not `Rng::new(seed)`: the map generator already uses that one – this way the two don't repeat each other.
             rng: Rng::new(seed ^ 0x5157_4F52_4C44),
             map_changed: false,
@@ -649,6 +653,7 @@ impl World {
         self.update_units(); // units.rs, shooting in combat.rs
         self.run_trains(); // trains.rs – after everyone moved: whoever is in a train's way now is hit or pushed out
         self.join_neutrals(); // neutral.rs
+        self.watch_triggers(); // watch.rs – time, kills, regions, things reached: their triggers
         self.fire_towers(); // towers.rs – the ballista, the machine gun tower, the shocking tower, the executor
         self.burn(); // fire.rs – zombies Lucifer set alight
         self.detonate(); // blast.rs – barrels hit or carried by the dead go off

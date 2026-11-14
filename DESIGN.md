@@ -1069,11 +1069,12 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      for co-op.
      *In the prototype:* TAB's story first (`sim/story.rs`, editor module "Triggers"): **triggers** (event, conditions
      typed expressions, actions with a condition and code – block, loop, exit loop, wait, random, choose among them) stored
-     as data in the map file (format 10; older files are turned around when read). Events: round start, victory, defeat, a
-     map event comes or is done, a neutral thing joins (by name ID), the command center's own button. Goals (condition and
+     as data in the map file (format 11; older files are turned around when read). Events: round start, victory, defeat, a
+     map event comes or is done, a neutral thing joins (by name ID), the command center's own button, every N seconds,
+     day and hour, a building finished / fallen, zombies killed, a unit enters / leaves a region, a unit reaches a
+     neutral thing (`sim/watch.rs`); actions Camera and Noise at a region or point. Goals (condition and
      progress as expressions) and the button (visible, enabled, counter as expressions); variables (number, yes/no, text).
-     A running script is data (`sim/script.rs`), a player's choice comes as an order. More events (regions, "when …") build
-     on it later. The editor page (`editor/triggers.rs`, `story_panel/sentences.rs`): a tree on the left (goals, button,
+     A running script is data (`sim/script.rs`), a player's choice comes as an order. The editor page (`editor/triggers.rs`, `story_panel/sentences.rs`): a tree on the left (goals, button,
      variables, functions, triggers in folders, the neutral things with a name ID), the chosen trigger as **sentences**
      in the middle (blue words open their field right under the line – no pop-up, so drop-down lists work inside), or as
      text (the trigger's JSON, not a language of its own), a palette of actions on the right (click or drag).

@@ -406,7 +406,7 @@ impl Game {
                     audio::researched(tech.is_some_and(|t| !t.buildings.is_empty()), tech.is_some_and(|t| !t.units.is_empty()));
                 }
                 Notice::Window { .. } => audio::interface("WindowOpen"),
-                Notice::Message { .. } => {}
+                Notice::Message { .. } | Notice::Camera { .. } => {}
                 // TAB's `PlayNotification(TrainArrival)`: the officer says it.
                 Notice::TrainArrived { .. } => audio::alert("TrainArrival"),
             }
@@ -416,6 +416,7 @@ impl Game {
                 Notice::Researched { .. } => "EventGoalCompleted",
                 Notice::Message { .. } | Notice::Window { .. } => "EventInfo",
                 Notice::TrainArrived { .. } => "EventTrainArrival",
+                Notice::Camera { .. } => "EventInfo",
             };
             let text = match notice {
                 Notice::Coming { at, zombies, sides, final_wave, .. } => {
@@ -437,6 +438,11 @@ impl Game {
                 Notice::Researched { name } => format!("Research complete: {name}"),
                 Notice::Message { text } => text,
                 Notice::TrainArrived { .. } => "The train has arrived.".to_owned(),
+                // A script moves the camera - no line for it.
+                Notice::Camera { at } => {
+                    self.camera.center = at;
+                    continue;
+                }
                 // A window: it pauses the game until it's closed (TAB's "Display Window Message").
                 Notice::Window { title, text } => {
                     self.windows.push((title, text));

@@ -7,6 +7,7 @@ use macroquad::math::{vec2, Vec2};
 
 use super::fx::{Fallen, Fx};
 use super::neutral::Tag;
+use super::story::TriggerEvent;
 use super::commands::Command;
 use super::terrain::free_point_near;
 
@@ -490,7 +491,7 @@ impl World {
         // A barrel that went off did its job – it isn't counted as lost.
         let blown = self.buildings.iter().filter(|b| b.hp == 0 && b.blown).count();
         let mut command_center_fell = false;
-        // (middle, its tiles, its workers) of every fallen building – they come out after the list is cleaned up.
+        // (middle, its tiles, its workers, its kind – none if a barrel went off) of every fallen building – they come out after the list is cleaned up.
         let mut fallen = Vec::new();
         for building in &self.buildings {
             if building.hp == 0 {
@@ -505,7 +506,7 @@ impl World {
                 }
                 // Switched off or not finished yet, nobody works in it – nobody comes out.
                 let workers = if building.works() { building.stats().worker_cost } else { 0 };
-                fallen.push((building.center(), building.tiles(), workers));
+                fallen.push((building.center(), building.tiles(), workers, (!building.blown).then_some(building.kind)));
             }
         }
         self.buildings.retain(|b| b.hp > 0);
@@ -513,10 +514,13 @@ impl World {
             self.score.buildings_lost += (before - self.buildings.len() - blown) as u32;
             self.refresh_map();
         }
-        for (center, tiles, workers) in fallen {
+        for (center, tiles, workers, kind) in fallen {
             self.make_sound(center, data::get().sound.building_destroyed);
             let free: Vec<(i32, i32)> = tiles.into_iter().filter(|&(x, y)| !self.map.is_blocked(x, y)).collect();
             self.infected_come_out(center, &free, workers);
+            if kind.is_some() {
+                self.fire(&TriggerEvent::Fell { kind });
+            }
         }
         command_center_fell
     }
@@ -615,6 +619,7 @@ impl World {
                 let kind = self.buildings[b].kind;
                 self.fx.push(Fx::Built { kind });
                 self.fuel(b);
+                self.fire(&TriggerEvent::Built { kind: Some(kind) });
             }
         }
         if (self.tick + 1).is_multiple_of(payout_ticks()) {

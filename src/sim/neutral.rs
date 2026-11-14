@@ -93,7 +93,7 @@ impl Neutral {
     }
 
     /// Is one of these points within a tile of it (TAB: its cells grown by 1)?
-    fn touched(&self, units: impl Iterator<Item = Vec2>) -> bool {
+    pub(super) fn touched(&self, units: impl Iterator<Item = Vec2>) -> bool {
         let (min, max) = match self.thing {
             Thing::Building { kind, tile, turned } => {
                 let (w, h) = kind.footprint(turned);

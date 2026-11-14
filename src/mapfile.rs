@@ -41,7 +41,9 @@ use crate::sim::{
 /// 10: scripts as trees – block, loop, exit loop, wait, conditions on the options of a random action and a choice
 /// (`sim/story.rs`, `sim/script.rs`); goals and the command center's button with expressions. Older files read as they
 /// are (a goal's old condition becomes its expressions).
-const VERSION: u32 = 10;
+/// 11: more events for triggers (time, buildings, kills, regions, things reached) and the actions Camera and Noise
+/// (`sim/watch.rs`) – an older game can't read them.
+const VERSION: u32 = 11;
 
 /// The fields in the order they are in the file: the short ones on top, the terrain at the end.
 /// `#[serde(default …)]`: a field a file from version 1 doesn't have yet gets this value instead of an error.
@@ -1342,6 +1344,37 @@ mod tests {
         world.step(&[]);
         assert_eq!(world.runs.len(), 1);
         assert!(!world.revealed);
+    }
+
+    /// Format 11: the new events (time, buildings, kills, regions, a thing reached) and the actions Camera and Noise are
+    /// written and read back the same.
+    #[test]
+    fn the_events_of_format_11_are_written_and_read_back() {
+        use crate::sim::{Action, Site, Step, Trigger};
+        let mut file = MapFile::from_world(&World::new(4), "x");
+        let events = [
+            TriggerEvent::Every { seconds: 30 },
+            TriggerEvent::Clock { day: 3, hour: 12 },
+            TriggerEvent::Built { kind: None },
+            TriggerEvent::Built { kind: Some(BuildingKind::Tent) },
+            TriggerEvent::Fell { kind: Some(BuildingKind::Wall) },
+            TriggerEvent::Kills { count: 500 },
+            TriggerEvent::Enters { zone: 2 },
+            TriggerEvent::Leaves { zone: 2 },
+            TriggerEvent::Reached { name_id: "chest".into() },
+        ];
+        file.story.triggers = events
+            .iter()
+            .map(|e| {
+                let mut t = Trigger::new("t", e.clone());
+                t.actions = vec![Step::new(Action::Camera { to: Site::Region(2) }), Step::new(Action::Noise { at: Site::Point(1), volume: 800 })];
+                t
+            })
+            .collect();
+        let text = pretty(&serde_json::to_string(&file).unwrap());
+        let again = MapFile::parse(&text).unwrap();
+        assert_eq!(again.story, file.story);
+        assert_eq!(again.version, VERSION);
     }
 
     /// A round from its file starts with the command center's gold as the income – nobody has paid yet, but it will at

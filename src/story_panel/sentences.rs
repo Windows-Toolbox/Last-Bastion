@@ -11,19 +11,20 @@
 
 use egui_macroquad::egui::{self, Color32, CursorIcon, DragAndDrop, DragValue, Frame, Id, RichText, Sense, Ui};
 
-use super::{code_field, text_field, when_field};
+use super::{code_field, text_field, when_field, zone_box};
 use crate::editor::{from_label, wave_group, Places, MAX_AMOUNT};
 use crate::kinds::{Resource, UnitKind};
 use crate::sim::{
-    code_text, parse_code, parse_expr, Action, BreedCount, Expr, Pick, Scope, Script, Step, Ty, Weather, Weighted, WaveFrom, WaveGroup,
+    code_text, parse_code, parse_expr, Action, BreedCount, Expr, Pick, Scope, Script, Site, Step, Ty, MOST_NOISE, Weather, Weighted, WaveFrom, WaveGroup,
 };
 
 /// The kinds of actions the palette and the "+ action" menu offer, in groups – each name is one of `action_name`'s.
-pub const GROUPS: [(&str, &[&str]); 5] = [
+pub const GROUPS: [(&str, &[&str]); 6] = [
     ("Flow", &["Block", "Loop", "Exit loop", "Wait", "Random", "Choose", "Code"]),
     ("Zombies", &["Zombies"]),
     ("Colony", &["Resources", "Units", "Infect houses", "Join", "Train"]),
     ("Show", &["Notify", "Window", "Reveal", "Weather"]),
+    ("Map", &["Camera", "Noise"]),
     ("End", &["Win", "Lose"]),
 ];
 
@@ -71,6 +72,8 @@ pub fn new_action(name: &str) -> Action {
         "Reveal" => Action::Reveal,
         "Weather" => Action::Weather { weather: Weather::Snow },
         "Train" => Action::Train { stop: true, reverse: false, on_arrival: Vec::new() },
+        "Camera" => Action::Camera { to: Site::Region(0) },
+        "Noise" => Action::Noise { at: Site::Region(0), volume: 1000 },
         "Win" => Action::Win,
         _ => Action::Lose,
     }
@@ -96,6 +99,8 @@ pub fn action_help(name: &str) -> &'static str {
         "Reveal" => "The whole map is shown from now on",
         "Weather" => "Snow, rain or clear from now on - it fades in over a few seconds. A round starts with its landscape's (snow on Frozen Highlands, rain on Caustic Lands)",
         "Train" => "A train comes along the railway (Objects > Railway): on the line closest to the command center, from its end nearer the edge of the map. It runs over everyone in its way",
+        "Camera" => "The camera goes to the middle of a region or a point (Regions) - for every player",
+        "Noise" => "A noise at a region or a point that the zombies hear: 1,000 is a shot's worth many times over, 10,000 the loudest",
         "Win" => "The round is won",
         _ => "The round is lost",
     }
@@ -384,6 +389,16 @@ fn sentence(ui: &mut Ui, action: &Action, open: &mut Option<u8>) {
             word(ui, open, 0, if *reverse { "from the other end" } else { "from the usual end" });
             word(ui, open, 1, if *stop { "and stops at the command center" } else { "and drives through" });
         }
+        Action::Camera { to } => {
+            ui.label("Move the camera to");
+            word(ui, open, 0, &site_label(*to));
+        }
+        Action::Noise { at, volume } => {
+            ui.label("Make a noise of");
+            word(ui, open, 0, &volume.to_string());
+            ui.label("at");
+            word(ui, open, 1, &site_label(*at));
+        }
         Action::Block { .. } => {
             ui.label("Block:");
         }
@@ -508,6 +523,11 @@ fn edit_action(ui: &mut Ui, id: Id, action: &mut Action, w: u8, places: Places) 
                 }
             });
         }
+        (Action::Camera { to }, 0) => site_box(ui, id.with("site"), to, places),
+        (Action::Noise { volume, .. }, 0) => {
+            ui.add(DragValue::new(volume).range(0..=MOST_NOISE).speed(50));
+        }
+        (Action::Noise { at, .. }, 1) => site_box(ui, id.with("site"), at, places),
         (Action::Train { reverse, .. }, 0) => {
             ui.radio_value(reverse, false, "from the end of the line nearer the edge of the map");
             ui.radio_value(reverse, true, "from the other end");
@@ -517,6 +537,42 @@ fn edit_action(ui: &mut Ui, id: Id, action: &mut Action, w: u8, places: Places) 
             ui.radio_value(stop, false, "drives through");
         }
         _ => {}
+    }
+}
+
+/// "region 3" / "point 2" - the word of a place in a sentence (the numbers are what's kept; the field shows names).
+fn site_label(site: Site) -> String {
+    match site {
+        Site::Region(0) | Site::Point(0) => "(choose a place)".to_owned(),
+        Site::Region(id) => format!("region {id}"),
+        Site::Point(id) => format!("point {id}"),
+    }
+}
+
+/// Region or point, and which one of that kind - by name.
+fn site_box(ui: &mut Ui, id: Id, site: &mut Site, places: Places) {
+    ui.horizontal(|ui| {
+        let region = matches!(site, Site::Region(_));
+        if ui.radio(region, "region").clicked() && !region {
+            *site = Site::Region(0);
+        }
+        if ui.radio(!region, "point").clicked() && region {
+            *site = Site::Point(0);
+        }
+    });
+    match site {
+        Site::Region(zone) => zone_box(ui, id.with("region"), zone, places),
+        Site::Point(spot) => {
+            let shown = places.spots.iter().find(|s| s.id == *spot).map_or("(choose one)", |s| s.name.as_str());
+            egui::ComboBox::from_id_salt(id.with("point")).width(150.0).selected_text(shown).show_ui(ui, |ui| {
+                for s in places.spots {
+                    ui.selectable_value(spot, s.id, s.name.as_str());
+                }
+            });
+            if places.spots.is_empty() {
+                ui.label(RichText::new("No points yet - make some in the Regions module").small().weak());
+            }
+        }
     }
 }
 

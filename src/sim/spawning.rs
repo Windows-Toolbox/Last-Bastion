@@ -382,6 +382,7 @@ impl World {
                 ids.retain(|&z| z != id);
             }
         }
+        self.forget_zone_in_story(id); // watch.rs
     }
 
     /// What names region `id`: its events' groups, for the Regions module ("Wave (day 20), group 2") – deleting it
@@ -395,6 +396,7 @@ impl World {
                 }
             }
         }
+        uses.extend(self.story_uses(true, id)); // watch.rs
         uses
     }
 

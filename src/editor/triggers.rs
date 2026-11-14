@@ -62,8 +62,16 @@ pub fn problems(world: &World, t: &Trigger) -> Vec<String> {
         TriggerEvent::EventComes { event } | TriggerEvent::EventDone { event } if !world.events.iter().any(|e| e.name == *event) => {
             found.push(format!("No event is named \"{event}\" (Events)."));
         }
-        TriggerEvent::Join { name_id } if !has_thing(world, name_id) => found.push(format!("No neutral thing has the name ID \"{name_id}\" (Objects).")),
+        TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } if !has_thing(world, name_id) => {
+            found.push(format!("No neutral thing has the name ID \"{name_id}\" (Objects)."));
+        }
+        TriggerEvent::Enters { zone } | TriggerEvent::Leaves { zone } if world.find_zone(*zone).is_none() => {
+            found.push("The region of the event is gone (Regions) - choose another.".to_owned());
+        }
         _ => {}
+    }
+    if world.names_missing_site(&t.actions) {
+        found.push("An action names a region or point that isn't there - choose one (Regions).".to_owned());
     }
     if world.story.misfits().contains(&format!("trigger \"{}\"", t.name)) {
         found.push("An expression doesn't fit the variables any more (Variables).".to_owned());
@@ -263,7 +271,7 @@ fn trigger_page(ui: &mut Ui, page: &mut TriggersPage, story: &mut Story, i: usiz
     });
     ui.horizontal(|ui| {
         ui.label(RichText::new("When").weak());
-        trigger_event_ui(ui, id, t);
+        trigger_event_ui(ui, id, t, places);
     });
     ui.horizontal(|ui| {
         ui.label(RichText::new("Folder").weak());

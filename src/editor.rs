@@ -1485,13 +1485,14 @@ fn clear_map(world: &World, orders: &mut Vec<Order>) {
 pub(crate) struct Places<'a> {
     pub spawners: &'a [Spawner],
     pub zones: &'a [Zone],
+    pub spots: &'a [crate::sim::Spot],
     /// The variables a condition or code may use (`story_panel::code_field`).
     pub variables: &'a [crate::sim::Variable],
 }
 
 impl<'a> Places<'a> {
     pub(crate) fn of(world: &'a World) -> Places<'a> {
-        Places { spawners: &world.spawners, zones: &world.zones, variables: &world.story.variables }
+        Places { spawners: &world.spawners, zones: &world.zones, spots: &world.spots, variables: &world.story.variables }
     }
 }
 

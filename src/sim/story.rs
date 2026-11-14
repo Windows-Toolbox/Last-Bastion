@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use super::events::{Notice, Request};
 use super::expr::{code_text, parse_code, parse_condition, parse_expr, Assign, Code, Expr, Op, Scope, Stmt, Ty, Value};
 use super::neutral::ThingRef;
-use super::spawning::WaveGroup;
+use super::spawning::{WaveFrom, WaveGroup};
+use super::watch::Watched;
 use super::terrain::free_point_near;
 use super::zombies::Breed;
 use super::{Weather, World};
@@ -35,6 +36,9 @@ fn yes() -> bool {
 fn one() -> u32 {
     1
 }
+
+/// The loudest noise an action makes (TAB: 10,000).
+pub const MOST_NOISE: u32 = 10_000;
 
 /// A script: steps one after the other (TAB's `ZXScript`).
 pub type Script = Vec<Step>;
@@ -172,6 +176,10 @@ pub enum Action {
         #[serde(default)]
         on_arrival: Script,
     },
+    /// The camera goes there ("Move Camera"): the screen takes it from the notices.
+    Camera { to: Site },
+    /// A noise there that the zombies hear, 0 to 10,000 (TAB's noise of "On Enter").
+    Noise { at: Site, volume: u32 },
     /// The round is won – or lost – now.
     Win,
     Lose,
@@ -188,6 +196,28 @@ impl Action {
             Action::Train { on_arrival, .. } => (k == 0).then_some(on_arrival),
             _ => None,
         }
+    }
+
+    /// The regions and points this action itself names (not those of the steps inside it): `(regions, points)`.
+    pub(super) fn sites(&self) -> (Vec<u32>, Vec<u32>) {
+        let (mut zones, mut spots) = (Vec::new(), Vec::new());
+        let mut site = |s: &Site| match *s {
+            Site::Region(id) => zones.push(id),
+            Site::Point(id) => spots.push(id),
+        };
+        match self {
+            Action::Camera { to } => site(to),
+            Action::Noise { at, .. } => site(at),
+            Action::Zombies { groups, .. } => {
+                for group in groups {
+                    if let WaveFrom::Zones(ids) = &group.from {
+                        zones.extend(ids);
+                    }
+                }
+            }
+            _ => {}
+        }
+        (zones, spots)
     }
 
     /// All the scripts inside it, mutable.
@@ -408,6 +438,40 @@ pub enum TriggerEvent {
     Join { name_id: String },
     /// The player presses the command center's own button.
     Button,
+    /// Every this many seconds of the round (SC2's periodic timer) – the first time after that many.
+    Every { seconds: u32 },
+    /// The clock reaches this day (from 1) and hour (0–23), once.
+    Clock { day: u32, hour: u32 },
+    /// A building of this kind (none: any kind) is finished …
+    Built { kind: Option<BuildingKind> },
+    /// … or falls (destroyed – not torn down, not a barrel that went off).
+    Fell { kind: Option<BuildingKind> },
+    /// The zombies killed so far reach this many, once.
+    Kills { count: u32 },
+    /// One of your units comes into / goes out of the region with this number (`watch.rs`).
+    Enters { zone: u32 },
+    Leaves { zone: u32 },
+    /// One of your units comes within a tile of the neutral thing with this name ID, once (TAB's "On Enter",
+    /// `CScriptOnEnter`) – a joinable one joins at the same time (`Join` first).
+    Reached { name_id: String },
+}
+
+impl TriggerEvent {
+    /// Does a trigger for this event answer to what just `happened`? The same event – or, for "a building is
+    /// finished / falls", the one without a kind answers to every kind.
+    pub fn answers(&self, happened: &TriggerEvent) -> bool {
+        match (self, happened) {
+            (TriggerEvent::Built { kind: None }, TriggerEvent::Built { .. }) | (TriggerEvent::Fell { kind: None }, TriggerEvent::Fell { .. }) => true,
+            _ => self == happened,
+        }
+    }
+}
+
+/// A place a script names: a region (its middle) or a point, by number – they keep it when they are renamed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Site {
+    Region(u32),
+    Point(u32),
 }
 
 fn is_yes(b: &bool) -> bool {
@@ -760,6 +824,7 @@ impl World {
     pub(super) fn start_story(&mut self) {
         self.variables = self.story.variables.iter().map(|v| (v.name.clone(), v.start.as_ty(v.kind.ty()))).collect();
         self.runs.clear();
+        self.watched = Watched::default();
         self.fire(&TriggerEvent::Start);
         self.refresh_story_view();
     }
@@ -769,7 +834,7 @@ impl World {
     pub fn fire(&mut self, event: &TriggerEvent) {
         for t in 0..self.story.triggers.len() {
             let trigger = &self.story.triggers[t];
-            if !trigger.on || trigger.event != *event {
+            if !trigger.on || !trigger.event.answers(event) {
                 continue;
             }
             let conditions = trigger.conditions.clone();
@@ -823,6 +888,16 @@ impl World {
             }
             Action::Reveal => self.revealed = true,
             Action::Weather { weather } => self.weather = *weather,
+            Action::Camera { to } => {
+                if let Some(at) = self.site_center(*to) {
+                    self.notices.push(Notice::Camera { at });
+                }
+            }
+            Action::Noise { at, volume } => {
+                if let Some(at) = self.site_center(*at) {
+                    self.make_sound(at, (*volume).min(MOST_NOISE));
+                }
+            }
             Action::Win => self.ending = self.ending.or(Some(Ending::Won)),
             Action::Lose => self.ending = Some(Ending::Lost),
             // These are steps of their own (`script.rs`); the code of a step runs there too.

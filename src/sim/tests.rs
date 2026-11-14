@@ -6582,3 +6582,178 @@ fn nothing_is_built_on_or_next_to_the_railway() {
     assert!(!world.can_place(BuildingKind::Gate, (x, y), true), "a gate with its end on the track");
 }
 
+
+/// A story with these triggers, taken over by the world (the way the editor does it).
+fn use_triggers(world: &mut World, triggers: Vec<Trigger>) {
+    let mut story = world.story.clone();
+    story.triggers = triggers;
+    world.step(&[Order::SetStory { story }]);
+}
+
+/// Triggers that wait for time: every so many seconds (again and again), a day and hour (once), the zombies killed
+/// reaching a number (once, however far they jump past it).
+#[test]
+fn timers_the_clock_and_kills_fire_their_triggers() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let add = |name: &str| vec![var_step(name, true, 1)];
+    let (day, hour) = world.clock();
+    let next = day * 24 + hour + 1; // the next full hour, as hours since the start
+    let kills = world.score.zombies_killed;
+    use_triggers(
+        &mut world,
+        vec![
+            trigger_of(TriggerEvent::Every { seconds: 2 }, add("every")),
+            trigger_of(TriggerEvent::Clock { day: (next / 24) as u32, hour: (next % 24) as u32 }, add("clock")),
+            trigger_of(TriggerEvent::Kills { count: kills + 3 }, add("kills")),
+        ],
+    );
+    let from = world.tick;
+    for _ in 0..HOUR_TICKS + 300 {
+        world.step(&[]);
+        if world.tick == from + 50 {
+            world.score.zombies_killed += 5; // past 3 in one step
+        }
+    }
+    world.score.zombies_killed += 5;
+    world.step(&[]);
+    let periods = (from..world.tick - 1).filter(|t| *t > 0 && t % 40 == 0).count() as i32;
+    assert!(periods >= 5, "the test ran too short");
+    assert_eq!(world.variable("every"), periods, "every 2 seconds");
+    assert_eq!(world.variable("clock"), 1, "the clock's hour comes once");
+    assert_eq!(world.variable("kills"), 1, "the kills number is reached once");
+}
+
+/// Your units coming into or going out of a region fire its triggers – one that starts inside doesn't "enter".
+#[test]
+fn units_entering_and_leaving_a_region_fire_their_triggers() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    world.units.clear();
+    let at = (world.base.x as i32 + 12, world.base.y as i32 - 12);
+    clear_ground(&mut world, at, 6);
+    let before = world.zones.len();
+    world.step(&[Order::AddZone { zone: Zone::new("gate", 0, Form::Rect { min: (at.0 - 2, at.1 - 2), size: (5, 5) }) }]);
+    assert_eq!(world.zones.len(), before + 1);
+    let zone = world.zones.last().unwrap().id;
+    let add = |name: &str| vec![var_step(name, true, 1)];
+    // One unit stands in it from the start.
+    let inside = vec2(at.0 as f32 + 0.5, at.1 as f32 + 0.5);
+    let first = bait(&mut world, UnitKind::Soldier, inside);
+    use_triggers(&mut world, vec![trigger_of(TriggerEvent::Enters { zone }, add("in")), trigger_of(TriggerEvent::Leaves { zone }, add("out"))]);
+    for _ in 0..12 {
+        world.step(&[]);
+    }
+    assert_eq!((world.variable("in"), world.variable("out")), (0, 0), "a unit that was inside from the start entered");
+    // A second one comes in, then both go.
+    let second = bait(&mut world, UnitKind::Soldier, inside + vec2(1.0, 0.0));
+    for _ in 0..12 {
+        world.step(&[]);
+    }
+    assert_eq!((world.variable("in"), world.variable("out")), (1, 0), "the second one entered");
+    for u in world.units.iter_mut().filter(|u| u.id == first || u.id == second) {
+        u.pos = inside + vec2(8.0, 0.0);
+    }
+    for _ in 0..12 {
+        world.step(&[]);
+    }
+    assert_eq!((world.variable("in"), world.variable("out")), (1, 1), "both left in one look: one trigger");
+}
+
+/// A unit that comes within a tile of a neutral thing fires its "reached" trigger – once, however often it returns.
+#[test]
+fn reaching_a_neutral_thing_fires_once() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    let p = world.base + vec2(10.5, 0.5);
+    clear_ground(&mut world, (p.x as i32, p.y as i32), 3);
+    let tag = Tag { name_id: "chest".into(), ..Tag::default() };
+    world.add_neutral(Thing::Unit { kind: UnitKind::Soldier, pos: (p.x, p.y) }, false, 100, false, Some(Box::new(tag)));
+    use_triggers(&mut world, vec![trigger_of(TriggerEvent::Reached { name_id: "chest".into() }, vec![var_step("n", true, 1)])]);
+    for _ in 0..30 {
+        world.step(&[]);
+    }
+    assert_eq!(world.variable("n"), 0, "nobody is near");
+    let unit = bait(&mut world, UnitKind::Ranger, p + vec2(0.0, 1.0));
+    for _ in 0..30 {
+        world.step(&[]);
+    }
+    assert_eq!(world.variable("n"), 1);
+    assert_eq!(world.neutral.len(), 1, "a thing that doesn't join stays");
+    world.units.iter_mut().find(|u| u.id == unit).unwrap().pos = p + vec2(9.0, 0.0);
+    for _ in 0..30 {
+        world.step(&[]);
+    }
+    world.units.iter_mut().find(|u| u.id == unit).unwrap().pos = p + vec2(0.0, 1.0);
+    for _ in 0..30 {
+        world.step(&[]);
+    }
+    assert_eq!(world.variable("n"), 1, "fires once");
+}
+
+/// A building finished or fallen fires the triggers for its kind – and those for any kind.
+#[test]
+fn buildings_finished_and_fallen_fire_their_triggers() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let add = |name: &str| vec![var_step(name, true, 1)];
+    use_triggers(
+        &mut world,
+        vec![
+            trigger_of(TriggerEvent::Built { kind: Some(BuildingKind::Wall) }, add("wall")),
+            trigger_of(TriggerEvent::Built { kind: Some(BuildingKind::Tent) }, add("tent")),
+            trigger_of(TriggerEvent::Built { kind: None }, add("any")),
+            trigger_of(TriggerEvent::Fell { kind: Some(BuildingKind::Tent) }, add("fell")),
+            trigger_of(TriggerEvent::Fell { kind: None }, add("fell any")),
+        ],
+    );
+    world.instant_build = false;
+    let tile = (world.base.x as i32 + 9, world.base.y as i32 + 9);
+    clear_ground(&mut world, tile, 3);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Tent, tile, turned: false, editor: false }]);
+    let b = world.buildings.len() - 1;
+    assert!(!world.buildings[b].is_built(), "the tent stands at once");
+    for _ in 0..4000 {
+        if world.buildings[b].is_built() {
+            break;
+        }
+        world.step(&[]);
+    }
+    assert!(world.buildings[b].is_built(), "the tent isn't finished");
+    world.step(&[]);
+    assert_eq!((world.variable("wall"), world.variable("tent"), world.variable("any")), (0, 1, 1));
+    assert_eq!(world.variable("fell"), 0);
+    world.buildings[b].hp = 0;
+    world.step(&[]);
+    assert_eq!((world.variable("fell"), world.variable("fell any")), (1, 1));
+}
+
+/// The camera and noise actions name a region or a point: the camera goes to its middle, the noise is heard there.
+/// A region that is named in an action or a trigger is "used" – and one that is gone leaves them without effect.
+#[test]
+fn actions_name_regions_and_points() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let at = (world.base.x as i32 + 12, world.base.y as i32 - 12);
+    world.step(&[
+        Order::AddZone { zone: Zone::new("gate", 0, Form::Rect { min: at, size: (4, 2) }) },
+        Order::AddSpot { spot: Spot { name: "door".into(), id: 0, color: 0, tile: (at.0 - 3, at.1) } },
+    ]);
+    let (zone, spot) = (world.zones.last().unwrap().id, world.spots.last().unwrap().id);
+    assert!(world.zone_uses(zone).is_empty());
+    let steps = script(vec![Action::Camera { to: Site::Region(zone) }, Action::Noise { at: Site::Point(spot), volume: 500 }]);
+    use_triggers(&mut world, vec![trigger_of(TriggerEvent::Start, steps.clone()), trigger_of(TriggerEvent::Enters { zone }, Vec::new())]);
+    world.notices.clear();
+    world.fire(&TriggerEvent::Start);
+    let cameras: Vec<Vec2> = world.notices.iter().filter_map(|n| if let Notice::Camera { at } = n { Some(*at) } else { None }).collect();
+    assert_eq!(cameras, [vec2(at.0 as f32 + 2.0, at.1 as f32 + 1.0)]);
+    let door = vec2((at.0 - 3) as f32 + 0.5, at.1 as f32 + 0.5);
+    assert!(world.loudest_sound().is_some_and(|(_, level)| level >= 500), "no noise at {door}");
+    assert_eq!(world.zone_uses(zone).len(), 2, "the trigger's event and its action: {:?}", world.zone_uses(zone));
+    assert_eq!(world.story_uses(false, spot).len(), 1);
+    // Gone: nothing to go to.
+    world.step(&[Order::RemoveZone { zone }]);
+    world.notices.clear();
+    world.fire(&TriggerEvent::Start);
+    assert!(!world.notices.iter().any(|n| matches!(n, Notice::Camera { .. })), "the camera went to a region that is gone");
+}
