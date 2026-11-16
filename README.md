@@ -82,7 +82,7 @@
 
 ## Anbindung an die Windows-Toolbox
 
-- Das Spiel ist ein eigenes Repo; die [Windows-Toolbox](https://github.com/ItsMaxxx/windows-toolbox) hat nur eine
+- Das Spiel ist ein eigenes Repo; die [Windows-Toolbox](https://github.com/Windows-Toolbox/Toolbox) hat nur eine
   Seite im Tab „Games“, die es startet (DESIGN.md 12.7).
 - Dafür gilt: das Spiel liegt immer unter **`dist\LastBastion.exe`**, das Design heißt `DESIGN.md`, die Einstellungen
   liegen fest unter `%APPDATA%\Last Bastion` (DESIGN.md 11.4).
