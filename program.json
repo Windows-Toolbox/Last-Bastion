@@ -1,0 +1,11 @@
+{
+  "id": "last_bastion",
+  "name": "Last Bastion",
+  "category": { "de": "Spiele", "en": "Games" },
+  "description": {
+    "de": "Echtzeit-Strategie ums Überleben: Einheitensteuerung wie in StarCraft, Horden wie in They Are Billions, Produktionsketten wie in Factorio – in Runden von 30 Minuten.",
+    "en": "Real-time strategy survival: StarCraft's unit control, They Are Billions' hordes, Factorio's production chains – in 30-minute rounds."
+  },
+  "exe": "LastBastion.exe",
+  "button": { "de": "Spielen", "en": "Play" }
+}

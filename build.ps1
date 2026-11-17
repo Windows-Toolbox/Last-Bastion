@@ -40,4 +40,10 @@ Install-Exe target\release\editor.exe LastBastionEditor.exe # der Editor daneben
 robocopy assets dist\assets /MIR /NJH /NJS /NFL /NDL /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { Write-Host "Bilder kopieren fehlgeschlagen (robocopy $LASTEXITCODE)"; exit $LASTEXITCODE }
 $global:LASTEXITCODE = 0 # robocopy meldet 1–7 auch bei Erfolg („es wurde etwas kopiert“) – das ist kein Fehler.
-Write-Host "Fertig: dist\LastBastion.exe und dist\LastBastionEditor.exe"
+
+# Der Ausweis für die Windows-Toolbox (DESIGN.md 12.7): program.json kommt nach dist\, ergänzt um die Version aus
+# Cargo.toml – so steht sie nur an einer Stelle. Die Toolbox liest dist\program.json, wenn es sie gibt.
+$version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+$manifest = (Get-Content program.json -Raw -Encoding UTF8) -replace '^\{', ("{`n  `"version`": `"$version`",")
+[IO.File]::WriteAllText((Join-Path (Get-Location) 'dist\program.json'), $manifest) # UTF-8 ohne BOM
+Write-Host "Fertig: dist\LastBastion.exe, dist\LastBastionEditor.exe und dist\program.json (Version $version)"

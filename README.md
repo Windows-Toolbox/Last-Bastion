@@ -82,10 +82,12 @@
 
 ## Anbindung an die Windows-Toolbox
 
-- Das Spiel ist ein eigenes Repo; die [Windows-Toolbox](https://github.com/Windows-Toolbox/Toolbox) hat nur eine
-  Seite im Tab „Games“, die es startet (DESIGN.md 12.7).
-- Dafür gilt: das Spiel liegt immer unter **`dist\LastBastion.exe`**, das Design heißt `DESIGN.md`, die Einstellungen
-  liegen fest unter `%APPDATA%\Last Bastion` (DESIGN.md 11.4).
+- Das Spiel ist ein eigenes Repo; die [Windows-Toolbox](https://github.com/Windows-Toolbox/Toolbox) kennt es nur über
+  **`program.json`** hier im Ordner (Name, Beschreibung, welche Exe „Spielen“ startet). `build.ps1` legt sie mit der
+  Version aus `Cargo.toml` nach `dist\`. In der Toolbox: **Programm hinzufügen…** → diesen Ordner wählen
+  (DESIGN.md 12.7).
+- Dafür gilt: das Spiel liegt immer unter **`dist\LastBastion.exe`**, die Einstellungen liegen fest unter
+  `%APPDATA%\Last Bastion` (DESIGN.md 11.4).
 
 ## Rust lernen
 

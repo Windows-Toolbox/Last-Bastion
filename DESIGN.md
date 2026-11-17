@@ -934,8 +934,11 @@ A 2–4 hour round is far too slow to test by playing.
 
 ### 12.7 Repository and toolbox
 
-- **Own git repository**, separate from the windows-toolbox. The toolbox only has a small page that starts the game.
-- **Keep stable:** the game at **`dist\LastBastion.exe`**, the design at `DESIGN.md`, settings at a fixed place (11.4).
+- **Own git repository**, separate from the Windows Toolbox. The Toolbox knows the game only by its
+  **`program.json`** in this repo (an "external exe", Toolbox\DESIGN.md 4.2): `build.ps1` copies it to
+  `dist\program.json` and adds the version from `Cargo.toml`. In the Toolbox: **Add program…** → this folder; it shows
+  name and description, **Play** starts `dist\LastBastion.exe`, and it sees whether the game runs.
+- **Keep stable:** the game at **`dist\LastBastion.exe`**, settings at a fixed place (11.4).
 - **Fresh PC:** clone, rustup, Visual Studio with C++, `.\build.ps1`.
 
 ### 12.8 Co-op: one player hosts
