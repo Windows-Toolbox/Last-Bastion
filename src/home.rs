@@ -167,7 +167,7 @@ impl Home {
             Page::Maps => self.maps_page(),
             Page::Settings => {
                 self.draw_backdrop(0.8);
-                let mut col = Column::centered("Settings", 13, crate::menu::SETTINGS_WIDTH);
+                let mut col = Column::centered("Settings", 14, crate::menu::SETTINGS_WIDTH);
                 if settings_page(&mut col, &mut self.settings) {
                     self.page = Page::Main;
                 }

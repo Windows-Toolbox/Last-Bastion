@@ -1,0 +1,12 @@
+{
+  "tracks": [
+    { "id": "infantry_weapons", "name": "Infantry weapons", "levels": 3 },
+    { "id": "infantry_armor", "name": "Infantry armor", "levels": 3 },
+    { "id": "heavy_weapons", "name": "Heavy weapons", "levels": 3 },
+    { "id": "heavy_armor", "name": "Heavy armor", "levels": 3 },
+    { "id": "tower_weapons", "name": "Tower weapons", "levels": 3 },
+    { "id": "structure_armor", "name": "Structure armor", "levels": 3 },
+    { "id": "zombie_weapons", "name": "Zombie weapons", "levels": 3 },
+    { "id": "zombie_armor", "name": "Zombie armor", "levels": 3 }
+  ]
+}

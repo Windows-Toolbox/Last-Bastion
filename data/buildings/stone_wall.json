@@ -1,0 +1,21 @@
+{
+  "name": "Stone wall",
+  "letter": "SW",
+  "skins": ["buildings/stone_wall"],
+  "explosion": ["stone_medium"],
+  "size": [1, 1],
+  "hp": 1000,
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 0,
+  "cost": 30,
+  "cost_stone": 3,
+  "requires": "StoneWorkshop",
+  "build_seconds": 28,
+  "repair_cost": 10,
+  "sight": 3.0,
+  "height": 0.65,
+  "joins": true,
+  "shield": 0,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

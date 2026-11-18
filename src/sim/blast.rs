@@ -7,7 +7,7 @@
 //! A barrel on the ground goes off at the **first damage** – a zombie hitting it, acid, the blast of another barrel.
 //! A unit carrying one goes off **when it dies**. A blast hurts everyone within `radius`: zombies, your units,
 //! buildings, houses of doom – and it's loud (`noise`, `sound.rs`). One blast sets off the next: a row of barrels goes
-//! up all at once. Values in `data\buildings.json` ("blast").
+//! up all at once. Values in `data\buildings\` ("blast").
 
 use macroquad::math::Vec2;
 
@@ -89,10 +89,10 @@ impl World {
         let barrel = &data::get().buildings.blast;
         // The mine traps a zombie stepped on (`spring_traps`): their fuse burns down, then they go off – once, and gone.
         let mut going_off: Vec<(Vec2, u32, f32)> = Vec::new();
-        for building in self.buildings.iter_mut().filter(|b| b.blown && b.hp > 0) {
+        for building in self.buildings.iter_mut().filter(|b| b.blown && b.alive()) {
             if let Some(mine) = &building.stats().mine {
                 if building.reload == 0 {
-                    building.hp = 0;
+                    building.destroy();
                     going_off.push((building.center(), mine.damage, mine.radius));
                 } else {
                     building.reload -= 1;
@@ -101,8 +101,8 @@ impl World {
         }
         loop {
             for building in self.buildings.iter_mut().filter(|b| b.kind == BuildingKind::Barrel && !b.blown) {
-                if building.hp < building.stats().hp {
-                    building.hp = 0;
+                if building.hp < building.max_hp() {
+                    building.destroy();
                     building.blown = true;
                     going_off.push((building.center(), barrel.damage, barrel.radius));
                 }
@@ -139,14 +139,14 @@ impl World {
         self.wake_area(at, radius);
         let tick = self.tick;
         for zombie in self.zombies.iter_mut().filter(|z| z.is_alive() && z.pos.distance(at) <= radius) {
-            zombie.hurt(after_armor(damage, zombie.breed.stats().armor), tick);
+            zombie.hurt(after_armor(damage, zombie.armor()), tick);
         }
         for unit in self.units.iter_mut().filter(|u| !u.is_inside() && u.hp > 0 && u.pos.distance(at) <= radius) {
             unit.take_hit(damage, tick);
         }
         let mut infected = Vec::new();
         for (b, building) in self.buildings.iter_mut().enumerate() {
-            if building.hp > 0 && building.distance_to(at) <= radius && building.take_damage(damage) {
+            if building.alive() && building.distance_to(at) <= radius && building.take_damage(damage) {
                 infected.push(b);
             }
         }

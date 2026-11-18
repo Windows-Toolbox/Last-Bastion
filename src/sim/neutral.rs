@@ -199,7 +199,7 @@ impl World {
                 };
                 let building = &self.buildings[b];
                 let (kind, tile, turned) = (building.kind, building.tile, building.turned);
-                let percent = building.hp * 100 / building.stats().hp.max(1);
+                let percent = super::hp_percent(building.hp, building.max_hp());
                 let tag = building.tag.clone();
                 self.take_down(id);
                 self.refresh_map();
@@ -210,7 +210,7 @@ impl World {
                     return;
                 };
                 let unit = self.units.remove(u);
-                let percent = unit.hp * 100 / unit.max_hp().max(1);
+                let percent = super::hp_percent(unit.hp, unit.max_hp());
                 let thing = Thing::Unit { kind: unit.kind, pos: (unit.pos.x, unit.pos.y) };
                 self.add_neutral(thing, joinable, percent, unit.veteran, unit.tag);
             }
@@ -271,7 +271,7 @@ impl World {
         match thing {
             ThingRef::Building(id) => {
                 if let Some(b) = self.buildings.iter_mut().find(|b| b.id == id) {
-                    b.hp = (b.stats().hp * percent / 100).max(1);
+                    b.hp = (b.max_hp() * percent / 100).max(1);
                 }
             }
             ThingRef::Unit(id) => {
@@ -294,7 +294,7 @@ impl World {
             ThingRef::Building(id) => {
                 if let Some(b) = self.buildings.iter_mut().find(|b| b.id == id) {
                     b.infected = on;
-                    b.shield = if on { 0 } else { b.stats().max_shield() };
+                    b.shield = if on { 0 } else { b.max_shield() };
                 }
             }
             ThingRef::Unit(id) => {

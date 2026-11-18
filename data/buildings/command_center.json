@@ -1,0 +1,23 @@
+{
+  "name": "Command Center",
+  "letter": "CC",
+  "skins": ["buildings/command_center"],
+  "explosion": ["wood_big", "stone_big"],
+  "size": [5, 5],
+  "hp": 2500,
+  "colonists": 10,
+  "workers": 10,
+  "worker_cost": 0,
+  "cost": 0,
+  "energy": 30,
+  "power_radius": 10.0,
+  "gold": 200,
+  "food_made": 20,
+  "build_seconds": 0,
+  "repair_cost": 300,
+  "sight": 16.0,
+  "height": 0.9,
+  "joins": false,
+  "shield": 2500,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

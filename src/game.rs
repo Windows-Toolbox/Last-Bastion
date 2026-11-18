@@ -48,6 +48,14 @@ pub enum GameAction {
     Quit,
 }
 
+/// A window of the map's story, waiting to be read: its title, text and the name of its picture (`Action::Window`).
+#[derive(Clone)]
+struct StoryWindow {
+    title: String,
+    text: String,
+    picture: String,
+}
+
 pub struct Game {
     program: Program,
     world: World,
@@ -97,7 +105,9 @@ pub struct Game {
     /// The windows of the map's scripts still to be read (TAB's "Display Window Message") – the oldest in front; the
     /// game is paused while one is up. And whether the player has just picked an option of a script's choice – the
     /// order is on its way, the window waits for it (`story_dialog`).
-    windows: Vec<(String, String)>,
+    windows: Vec<StoryWindow>,
+    /// The pictures of those windows (PNG files next to the map), read once – `None`: not there or no PNG.
+    window_pictures: std::collections::HashMap<String, Option<Texture2D>>,
     chosen: bool,
     /// Editor: the window's X was clicked (`app.rs`).
     quit_asked: bool,
@@ -155,6 +165,7 @@ impl Game {
             end_hidden: false,
             leaving: None,
             windows: Vec::new(),
+            window_pictures: std::collections::HashMap::new(),
             chosen: false,
             quit_asked: false,
         };
@@ -226,6 +237,7 @@ impl Game {
             egui_macroquad::ui(|ctx| {
                 let around = Around { world, orders: &mut *orders, camera: &mut *camera, grid: &mut *grid, enabled };
                 editor.show(ctx, around);
+                crate::ui_art::leave_pointer_to_us(ctx);
             });
         } else {
             crate::view::set(None);
@@ -405,16 +417,26 @@ impl Game {
                     let tech = data::get().research.techs.iter().find(|t| &t.name == name);
                     audio::researched(tech.is_some_and(|t| !t.buildings.is_empty()), tech.is_some_and(|t| !t.units.is_empty()));
                 }
-                Notice::Window { .. } => audio::interface("WindowOpen"),
+                Notice::Window { mood, .. } => {
+                    audio::interface("WindowOpen");
+                    audio::mood(*mood);
+                }
+                Notice::Sound { mood } => audio::mood(*mood),
                 Notice::Message { .. } | Notice::Camera { .. } => {}
                 // TAB's `PlayNotification(TrainArrival)`: the officer says it.
                 Notice::TrainArrived { .. } => audio::alert("TrainArrival"),
             }
+            let mut color = WHITE;
             let icon = match &notice {
                 Notice::Coming { .. } | Notice::Came { .. } => "EventSwarm",
                 Notice::Joined { .. } => "EventReward",
                 Notice::Researched { .. } => "EventGoalCompleted",
-                Notice::Message { .. } | Notice::Window { .. } => "EventInfo",
+                Notice::Message { color: tint, icon, .. } => {
+                    let [r, g, b] = tint.rgb();
+                    color = Color::from_rgba(r, g, b, 255);
+                    icon.file()
+                }
+                Notice::Window { .. } | Notice::Sound { .. } => "EventInfo",
                 Notice::TrainArrived { .. } => "EventTrainArrival",
                 Notice::Camera { .. } => "EventInfo",
             };
@@ -436,7 +458,7 @@ impl Game {
                 Notice::Came { zombies, .. } => format!("The swarm is here - {zombies} zombies!"),
                 Notice::Joined { name } => format!("{name} joins the colony!"),
                 Notice::Researched { name } => format!("Research complete: {name}"),
-                Notice::Message { text } => text,
+                Notice::Message { text, .. } => text,
                 Notice::TrainArrived { .. } => "The train has arrived.".to_owned(),
                 // A script moves the camera - no line for it.
                 Notice::Camera { at } => {
@@ -444,12 +466,14 @@ impl Game {
                     continue;
                 }
                 // A window: it pauses the game until it's closed (TAB's "Display Window Message").
-                Notice::Window { title, text } => {
-                    self.windows.push((title, text));
+                Notice::Window { title, text, picture, .. } => {
+                    self.windows.push(StoryWindow { title, text, picture });
                     continue;
                 }
+                // A sound only.
+                Notice::Sound { .. } => continue,
             };
-            self.ui.event(icon, &text);
+            self.ui.event(icon, color, &text);
         }
     }
 
@@ -660,9 +684,22 @@ impl Game {
     /// every PC.
     fn story_dialog(&mut self) {
         draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.5));
-        if let Some((title, text)) = self.windows.first().cloned() {
-            let mut col = Column::centered(&title, 4, 620.0);
-            col.wrap(&text);
+        if let Some(StoryWindow { title, text, picture }) = self.windows.first().cloned() {
+            let picture = self.window_picture(&picture);
+            // The picture above the text, as wide as the box lets it be and at most 240 high.
+            let shown = picture.as_ref().map(|t| {
+                let scale = (580.0 / t.width()).min(240.0 / t.height()).min(1.0);
+                vec2(t.width() * scale, t.height() * scale)
+            });
+            let lines = text.lines().count().max(1) + text.len() / 80;
+            let mut col = Column::centered(&title, 3 + lines.min(14) + shown.map_or(0, |s| (s.y / 30.0).ceil() as usize + 1), 620.0);
+            if let (Some(t), Some(size)) = (&picture, shown) {
+                draw_texture_ex(t, col.x + (col.width - size.x) / 2.0, col.y, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default() });
+                col.y += size.y + 12.0;
+            }
+            for line in text.split('\n') {
+                col.wrap(line);
+            }
             col.gap();
             if button(col.row(), "OK", true) || is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) {
                 self.windows.remove(0);
@@ -682,6 +719,23 @@ impl Game {
                 self.chosen = true;
             }
         }
+    }
+
+    /// The picture of a story window: the PNG of that name next to the map file – read once. `None`: it has none, or
+    /// the file isn't there, or no PNG, or the map has no file yet.
+    fn window_picture(&mut self, name: &str) -> Option<Texture2D> {
+        if name.trim().is_empty() {
+            return None;
+        }
+        let dir = self.path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+        self.window_pictures
+            .entry(name.to_owned())
+            .or_insert_with(|| {
+                let bytes = std::fs::read(dir?.join(name)).ok()?;
+                let image = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok()?;
+                Some(Texture2D::from_image(&image))
+            })
+            .clone()
     }
 
     /// The game: is the round over, and is the end screen up?

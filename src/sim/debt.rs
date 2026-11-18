@@ -1,5 +1,5 @@
 //! Upkeep and debt (DESIGN.md 7.2), like in TAB: every unit and every running building costs gold every payout
-//! (`upkeep` in `data\units.json` and `data\buildings.json`). Not enough gold: the rest is **debt**. Gold that comes in
+//! (`upkeep` in `data\units\` and `data\buildings\`). Not enough gold: the rest is **debt**. Gold that comes in
 //! pays it off first – while there is debt the gold stays at 0, so nothing new can be bought.
 //!
 //! In debt the army suffers, step by step (`data\colony.json`):

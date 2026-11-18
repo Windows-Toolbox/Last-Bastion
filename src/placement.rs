@@ -3,7 +3,7 @@
 //! `economy.rs`),
 //! and how a dragged line is laid out. To change a rule, change
 //! it here. The values (size, HP, cost of the buildings, how far zombies have to keep off a site, the refund for
-//! replaced buildings) are in `data\buildings.json`.
+//! replaced buildings) are in `data\buildings\`.
 
 use macroquad::math::{vec2, Vec2};
 
@@ -13,7 +13,7 @@ use crate::map::Ore;
 use crate::sim::World;
 
 /// No zombie may be this many tiles around a building site (plus the site itself) – you can't build
-/// right next to the horde. `zombie_free_radius` in `data\buildings.json`.
+/// right next to the horde. `zombie_free_radius` in `data\buildings\`.
 pub fn build_clearance() -> i32 {
     data::get().buildings.zombie_free_radius
 }
@@ -338,7 +338,8 @@ pub fn placement_line(kind: BuildingKind, start: (i32, i32), end: (i32, i32)) ->
         | BuildingKind::Academy
         | BuildingKind::Victorious
         | BuildingKind::Transmutator
-        | BuildingKind::CrystalPalace => vec![end],
+        | BuildingKind::CrystalPalace
+        | BuildingKind::TrainStation => vec![end],
         BuildingKind::Tent | BuildingKind::WoodHouse | BuildingKind::StoneHouse => {
             // Computed in "building steps": a tent (2 × 2) needs 2 tiles per step, plus the gap.
             let size = kind.stats().size.0 + spacing;

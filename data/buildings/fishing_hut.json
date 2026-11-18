@@ -1,0 +1,23 @@
+{
+  "name": "Fishing hut",
+  "letter": "Fi",
+  "skins": ["buildings/fishing_hut_1", "buildings/fishing_hut_2", "buildings/fishing_hut_3", "buildings/fishing_hut_4"],
+  "explosion": ["wood_big"],
+  "size": [1, 1],
+  "hp": 120,
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 1,
+  "cost": 80,
+  "upkeep": 2,
+  "energy_use": 1,
+  "gather_range": 3,
+  "gather_per_tile": 0.66,
+  "build_seconds": 28,
+  "repair_cost": 15,
+  "sight": 6.0,
+  "height": 0.45,
+  "joins": false,
+  "shield": 40,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

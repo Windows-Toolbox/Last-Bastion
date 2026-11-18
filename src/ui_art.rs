@@ -91,7 +91,8 @@ impl Pointer {
     /// Where on the picture the mouse really points (0..1 across and down) – TAB's `ZXPalette`.
     fn tip(self) -> Vec2 {
         match self {
-            Pointer::Arrow => vec2(0.05, 0.0),
+            // The arrow's tip in the 64×64 picture: pixel (16, 2) – the left quarter is empty.
+            Pointer::Arrow => vec2(16.0 / 64.0, 2.0 / 64.0),
             Pointer::Enter => vec2(0.2, 0.5),
             _ => vec2(0.5, 0.5),
         }
@@ -101,6 +102,15 @@ impl Pointer {
 /// This frame's pointer – the last call wins. `app.rs` sets it back to the arrow every frame.
 pub fn set_pointer(pointer: Pointer) {
     POINTER.with(|p| p.set(pointer));
+}
+
+/// For the end of every egui pass: tells egui not to bring Windows' arrow back. After each pass egui-miniquad calls
+/// `show_mouse(true)` (or `false` for `CursorIcon::None`), and `draw_pointer` hides it again later in the frame – the
+/// two fought every frame and the arrow flickered. Same condition as in `draw_pointer`: only while that draws ours.
+pub fn leave_pointer_to_us(ctx: &egui_macroquad::egui::Context) {
+    if get(Pointer::Arrow.file()).is_some() && crate::cursor::inside_window().is_some() {
+        ctx.set_cursor_icon(egui_macroquad::egui::CursorIcon::None);
+    }
 }
 
 /// Draws the mouse pointer at the mouse, in front of everything – TAB's picture instead of Windows' arrow. Without

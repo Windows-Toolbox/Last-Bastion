@@ -15,16 +15,17 @@ use super::{code_field, text_field, when_field, zone_box};
 use crate::editor::{from_label, wave_group, Places, MAX_AMOUNT};
 use crate::kinds::{Resource, UnitKind};
 use crate::sim::{
-    code_text, parse_code, parse_expr, Action, BreedCount, Expr, Pick, Scope, Script, Site, Step, Ty, MOST_NOISE, Weather, Weighted, WaveFrom, WaveGroup,
+    code_text, parse_code, parse_expr, parse_value, template_parts, Action, BreedCount, Expr, Icon, Mood, Pick, Scope, Script, Site, Step, Tint, Ty, MOST_NOISE,
+    Weather, Weighted, WaveFrom, WaveGroup,
 };
 
 /// The kinds of actions the palette and the "+ action" menu offer, in groups – each name is one of `action_name`'s.
 pub const GROUPS: [(&str, &[&str]); 6] = [
     ("Flow", &["Block", "Loop", "Exit loop", "Wait", "Random", "Choose", "Code"]),
     ("Zombies", &["Zombies"]),
-    ("Colony", &["Resources", "Units", "Infect houses", "Join", "Train"]),
-    ("Show", &["Notify", "Window", "Reveal", "Weather"]),
-    ("Map", &["Camera", "Noise"]),
+    ("Colony", &["Resources", "Units", "Research", "Infect houses", "Join", "Train"]),
+    ("Show", &["Notify", "Window", "Sound", "Reveal", "Weather"]),
+    ("Map", &["Camera", "Noise", "Playing field"]),
     ("End", &["Win", "Lose"]),
 ];
 
@@ -58,9 +59,11 @@ pub fn new_action(name: &str) -> Action {
         }
         "Resources" => Action::Resources { gold: 100, goods: Vec::new() },
         "Units" => Action::Units { units: vec![(UnitKind::Soldier, 1)] },
+        "Research" => Action::Research { ids: vec![crate::data::get().research.techs[0].id.clone()] },
         "Infect houses" => Action::InfectHouses { count: 1 },
-        "Notify" => Action::Notify { text: "Something happened.".into() },
-        "Window" => Action::Window { title: "News".into(), text: "Something happened.".into() },
+        "Notify" => Action::Notify { text: "Something happened.".into(), color: Tint::White, icon: Icon::Info },
+        "Window" => Action::Window { title: "News".into(), text: "Something happened.".into(), mood: Mood::Informative, picture: String::new() },
+        "Sound" => Action::Sound { mood: Mood::Informative },
         "Block" => Action::Block { steps: Vec::new() },
         "Loop" => Action::Loop { steps: Vec::new() },
         "Exit loop" => Action::ExitLoop { loops: 1 },
@@ -74,6 +77,7 @@ pub fn new_action(name: &str) -> Action {
         "Train" => Action::Train { stop: true, reverse: false, on_arrival: Vec::new() },
         "Camera" => Action::Camera { to: Site::Region(0) },
         "Noise" => Action::Noise { at: Site::Region(0), volume: 1000 },
+        "Playing field" => Action::PlayArea { to: 0 },
         "Win" => Action::Win,
         _ => Action::Lose,
     }
@@ -85,9 +89,11 @@ pub fn action_help(name: &str) -> &'static str {
         "Zombies" => "Zombies out of the spawners, now - storming the command center or idling where they come out",
         "Resources" => "Gold and goods for the colony - below 0 taken away",
         "Units" => "Units for the colony next to the command center",
+        "Research" => "The colony gets these researches at once, without a workshop - the ones it has are skipped",
         "Infect houses" => "So many houses with colonists, picked at random, are infected",
-        "Notify" => "A line at the top of the screen",
-        "Window" => "A window with a text - the game pauses until it's closed",
+        "Notify" => "A line at the top of the screen, with a colour and a picture. {expression} in the text is replaced by its value",
+        "Window" => "A window with a text, a sound and maybe a picture - the game pauses until it's closed. {expression} in the texts is replaced by its value",
+        "Sound" => "One of TAB's custom-event sounds (informative, sad, tension ...)",
         "Block" => "Steps one after the other, as one - the condition and the code of the block count for all of them",
         "Loop" => "The steps again and again, until an Exit loop leaves it. With Choose and a Back button inside it makes a menu; Wait makes a timer",
         "Exit loop" => "Leaves the innermost loop - or that many loops. Outside a loop it does nothing",
@@ -101,6 +107,7 @@ pub fn action_help(name: &str) -> &'static str {
         "Train" => "A train comes along the railway (Objects > Railway): on the line closest to the command center, from its end nearer the edge of the map. It runs over everyone in its way",
         "Camera" => "The camera goes to the middle of a region or a point (Regions) - for every player",
         "Noise" => "A noise at a region or a point that the zombies hear: 1,000 is a shot's worth many times over, 10,000 the loudest",
+        "Playing field" => "The playing field shrinks or moves to the smallest straight rectangle on screen that covers a region - units outside are moved in, the zombies come from outside it. Missions in parts",
         "Win" => "The round is won",
         _ => "The round is lost",
     }
@@ -349,19 +356,36 @@ fn sentence(ui: &mut Ui, action: &Action, open: &mut Option<u8>) {
             let units = units.iter().map(|(u, n)| format!("{n} {}", u.stats().name)).collect::<Vec<_>>().join(", ");
             word(ui, open, 0, if units.is_empty() { "no units" } else { &units });
         }
+        Action::Research { ids } => {
+            ui.label("Grant");
+            let names: Vec<String> = ids.iter().map(|id| tech_name(id)).collect();
+            let shown = if names.is_empty() { "no researches".to_owned() } else { short(&names.join(", "), 60) };
+            word(ui, open, 0, &shown);
+        }
         Action::InfectHouses { count } => {
             ui.label("Infect");
             word(ui, open, 0, &format!("{count} houses"));
         }
-        Action::Notify { text } => {
+        Action::Notify { text, color, icon } => {
             ui.label("Notify");
             word(ui, open, 0, &quote(text));
+            word(ui, open, 1, &format!("{}, {}", color.name().to_lowercase(), icon.name().to_lowercase()));
         }
-        Action::Window { title, text } => {
+        Action::Window { title, text, mood, picture } => {
             ui.label("Window");
             word(ui, open, 0, &quote(title));
             ui.label(":");
             word(ui, open, 1, &quote(text));
+            if !picture.trim().is_empty() {
+                word(ui, open, 2, &format!("picture {}", short(picture, 24)));
+            } else {
+                word(ui, open, 2, "no picture");
+            }
+            word(ui, open, 3, &mood.name().to_lowercase());
+        }
+        Action::Sound { mood } => {
+            ui.label("Play the sound");
+            word(ui, open, 0, &mood.name().to_lowercase());
         }
         Action::ExitLoop { loops } => {
             ui.label("Exit");
@@ -398,6 +422,10 @@ fn sentence(ui: &mut Ui, action: &Action, open: &mut Option<u8>) {
             word(ui, open, 0, &volume.to_string());
             ui.label("at");
             word(ui, open, 1, &site_label(*at));
+        }
+        Action::PlayArea { to } => {
+            ui.label("The playing field becomes");
+            word(ui, open, 0, &site_label(Site::Region(*to)));
         }
         Action::Block { .. } => {
             ui.label("Block:");
@@ -496,12 +524,59 @@ fn edit_action(ui: &mut Ui, id: Id, action: &mut Action, w: u8, places: Places) 
                 units.push((UnitKind::Soldier, 1));
             }
         }
+        (Action::Research { ids }, 0) => {
+            let mut gone = None;
+            for (k, id_text) in ids.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt(id.with(("tech", k))).width(200.0).selected_text(tech_name(id_text)).show_ui(ui, |ui| {
+                        for tech in &crate::data::get().research.techs {
+                            ui.selectable_value(id_text, tech.id.clone(), format!("{} ({})", tech.name, tech.researched_in.stats().name));
+                        }
+                    });
+                    if ui.small_button("x").clicked() {
+                        gone = Some(k);
+                    }
+                });
+            }
+            if let Some(k) = gone {
+                ids.remove(k);
+            }
+            if ui.small_button("+ research").clicked() {
+                ids.push(crate::data::get().research.techs[0].id.clone());
+            }
+        }
         (Action::InfectHouses { count }, 0) => {
             ui.add(DragValue::new(count).range(1..=100).suffix(" houses"));
         }
-        (Action::Notify { text }, 0) => text_field(ui, text, false),
-        (Action::Window { title, .. }, 0) => text_field(ui, title, false),
-        (Action::Window { text, .. }, 1) => text_field(ui, text, true),
+        (Action::Notify { text, .. }, 0) => {
+            text_field(ui, text, false);
+            template_hint(ui, text, scope);
+        }
+        (Action::Notify { color, icon, .. }, 1) => {
+            ui.horizontal_wrapped(|ui| {
+                for t in Tint::ALL {
+                    ui.selectable_value(color, t, t.name());
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                for i in Icon::ALL {
+                    ui.selectable_value(icon, i, i.name());
+                }
+            });
+        }
+        (Action::Window { title, .. }, 0) => {
+            text_field(ui, title, false);
+            template_hint(ui, title, scope);
+        }
+        (Action::Window { text, .. }, 1) => {
+            text_field(ui, text, true);
+            template_hint(ui, text, scope);
+        }
+        (Action::Window { picture, .. }, 2) => {
+            text_field(ui, picture, false);
+            ui.label(RichText::new("The name of a PNG file in the map's folder, e.g. MyHeader.png. Empty: no picture.").small().weak());
+        }
+        (Action::Window { mood, .. }, 3) | (Action::Sound { mood }, 0) => mood_box(ui, mood),
         (Action::ExitLoop { loops }, 0) => {
             ui.add(DragValue::new(loops).range(1..=100).suffix(" loop(s)")).on_hover_text("How many loops to leave - 1: the innermost");
         }
@@ -511,7 +586,10 @@ fn edit_action(ui: &mut Ui, id: Id, action: &mut Action, w: u8, places: Places) 
                 *seconds = new;
             }
         }
-        (Action::Choose { text, .. }, 0) => text_field(ui, text, true),
+        (Action::Choose { text, .. }, 0) => {
+            text_field(ui, text, true);
+            template_hint(ui, text, scope);
+        }
         (Action::Join { name_id }, 0) => {
             text_field(ui, name_id, false);
             ui.label(RichText::new("The name ID of a neutral thing (Objects).").small().weak());
@@ -528,6 +606,7 @@ fn edit_action(ui: &mut Ui, id: Id, action: &mut Action, w: u8, places: Places) 
             ui.add(DragValue::new(volume).range(0..=MOST_NOISE).speed(50));
         }
         (Action::Noise { at, .. }, 1) => site_box(ui, id.with("site"), at, places),
+        (Action::PlayArea { to }, 0) => zone_box(ui, id.with("region"), to, places),
         (Action::Train { reverse, .. }, 0) => {
             ui.radio_value(reverse, false, "from the end of the line nearer the edge of the map");
             ui.radio_value(reverse, true, "from the other end");
@@ -538,6 +617,30 @@ fn edit_action(ui: &mut Ui, id: Id, action: &mut Action, w: u8, places: Places) 
         }
         _ => {}
     }
+}
+
+/// The sound of a window or a sound action: one of the moods.
+fn mood_box(ui: &mut Ui, mood: &mut Mood) {
+    ui.horizontal_wrapped(|ui| {
+        for m in Mood::ALL {
+            ui.selectable_value(mood, m, m.name());
+        }
+    });
+}
+
+/// Under a text field: what is wrong with the `{expression}`s in the text – and what they are for.
+pub(super) fn template_hint(ui: &mut Ui, text: &str, scope: Scope) {
+    for (is_code, part) in template_parts(text) {
+        if is_code && let Err(e) = parse_value(part, scope) {
+            ui.label(RichText::new(format!("{{{part}}}: {e}")).small().color(Color32::LIGHT_RED));
+        }
+    }
+    ui.label(RichText::new("{expression} shows its value: {Day}, {keys + 1}. \\n is a new line.").small().weak());
+}
+
+/// The name a research has on its button - its id if the list has none by that id.
+fn tech_name(id: &str) -> String {
+    crate::data::get().research.techs.iter().find(|t| t.id == id).map_or_else(|| id.to_owned(), |t| t.name.clone())
 }
 
 /// "region 3" / "point 2" - the word of a place in a sentence (the numbers are what's kept; the field shows names).

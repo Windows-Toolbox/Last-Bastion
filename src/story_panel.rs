@@ -191,7 +191,7 @@ pub(crate) fn functions_help(ui: &mut Ui) {
 }
 
 /// The kinds of events, for the drop-down list of a trigger.
-const EVENTS: [&str; 15] = [
+const EVENTS: [&str; 16] = [
     "Round starts",
     "Round won",
     "Round lost",
@@ -207,6 +207,7 @@ const EVENTS: [&str; 15] = [
     "Unit enters region",
     "Unit leaves region",
     "Unit reaches thing",
+    "Loot picked up",
 ];
 
 fn event_name(event: &TriggerEvent) -> &'static str {
@@ -226,6 +227,7 @@ fn event_name(event: &TriggerEvent) -> &'static str {
         TriggerEvent::Enters { .. } => EVENTS[12],
         TriggerEvent::Leaves { .. } => EVENTS[13],
         TriggerEvent::Reached { .. } => EVENTS[14],
+        TriggerEvent::PickedUp { .. } => EVENTS[15],
     }
 }
 
@@ -245,6 +247,7 @@ fn event_help(name: &str) -> &'static str {
         "Unit enters region" => "When one of your units comes into the region (Regions) - a unit that starts in it doesn't count. Once per look, however many come",
         "Unit leaves region" => "When one of your units goes out of the region (or dies in it)",
         "Unit reaches thing" => "Once, when one of your units comes within a tile of the neutral thing with this name ID (Objects) - TAB's \"On Enter\"",
+        "Loot picked up" => "When one of your units picks up the pile of loot with this name ID (Objects)",
         _ => "When the player presses the command center's button (below)",
     }
 }
@@ -254,7 +257,7 @@ fn event_help(name: &str) -> &'static str {
 fn new_event(name: &str, old: &TriggerEvent) -> TriggerEvent {
     let kept = match old {
         TriggerEvent::EventComes { event } | TriggerEvent::EventDone { event } => event.clone(),
-        TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } => name_id.clone(),
+        TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } | TriggerEvent::PickedUp { name_id } => name_id.clone(),
         _ => String::new(),
     };
     match name {
@@ -272,6 +275,7 @@ fn new_event(name: &str, old: &TriggerEvent) -> TriggerEvent {
         "Unit enters region" => TriggerEvent::Enters { zone: 0 },
         "Unit leaves region" => TriggerEvent::Leaves { zone: 0 },
         "Unit reaches thing" => TriggerEvent::Reached { name_id: kept },
+        "Loot picked up" => TriggerEvent::PickedUp { name_id: kept },
         _ => TriggerEvent::Button,
     }
 }
@@ -294,6 +298,7 @@ pub(crate) fn event_label(event: &TriggerEvent) -> String {
         TriggerEvent::Enters { zone } => format!("unit enters region {zone}"),
         TriggerEvent::Leaves { zone } => format!("unit leaves region {zone}"),
         TriggerEvent::Reached { name_id } => format!("{name_id} reached"),
+        TriggerEvent::PickedUp { name_id } => format!("{name_id} picked up"),
     }
 }
 
@@ -313,7 +318,7 @@ pub(crate) fn trigger_event_ui(ui: &mut Ui, id: egui::Id, t: &mut Trigger, place
                 ui.label("named");
                 text_field(ui, event, false);
             }
-            TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } => {
+            TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } | TriggerEvent::PickedUp { name_id } => {
                 ui.label("name ID");
                 text_field(ui, name_id, false);
             }

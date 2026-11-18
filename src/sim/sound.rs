@@ -1,5 +1,5 @@
 //! Sound like in They Are Billions (DESIGN.md 8.3) – TAB's own rules. Everything that happens makes noise where it
-//! happens: your units' shots (`noise` in `data\units.json` – ranger 1, soldier 3, sniper 10 per shot), zombies hitting
+//! happens: your units' shots (`noise` in `data\units\` – ranger 1, soldier 3, sniper 10 per shot), zombies hitting
 //! something, a building being placed, a unit dying, a building destroyed – and, loudest of all, a building being
 //! infected. The other numbers are in `data\sound.json`.
 //!
@@ -15,7 +15,7 @@
 //! - Sleepers listen the same way (`sleep.rs`); the houses of doom and the hidden guards of loot every
 //!   `places_listen_seconds`, with their own `awareness` (`doom.rs`).
 //! - **Machines** (Factorio's pollution as TAB's noise): every `work_every_seconds` every working building makes its
-//!   `noise` (`data\buildings.json`) – all at the same moment, so buildings close together add up.
+//!   `noise` (`data\buildings\`) – all at the same moment, so buildings close together add up.
 //! - **Unrest:** everything your colony makes – shots, machines, blasts, building – also adds up in `World::unrest`,
 //!   which never goes down. For every `unrest_per_zombie` of it, every side of a silent event (TAB's stragglers)
 //!   brings one zombie more, for good (`events.rs`): growing loud has a price that tearing down the factory later

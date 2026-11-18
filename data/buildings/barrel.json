@@ -1,0 +1,20 @@
+{
+  "name": "Barrel",
+  "letter": "Ba",
+  "skins": ["buildings/barrel_1", "buildings/barrel_2", "buildings/barrel_3", "buildings/barrel_4", "buildings/barrel_5"],
+  "size": [1, 1],
+  "hp": 5,
+  "attributes": ["light", "structure"],
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 0,
+  "cost": 0,
+  "requires": "MunitionsFactory",
+  "build_seconds": 0,
+  "repair_cost": 0,
+  "sight": 1.0,
+  "height": 0.35,
+  "joins": false,
+  "shield": 0,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

@@ -1,6 +1,6 @@
 {
   "hp": { "small": 400, "medium": 1500, "big": 4000 },
-  "armor": 0.0,
+  "armor": 0,
   "max_units": { "small": 40, "medium": 150, "big": 500 },
   "batch_every_seconds": 1.0,
   "hearing": { "small": 20.0, "medium": 24.0, "big": 32.0 },

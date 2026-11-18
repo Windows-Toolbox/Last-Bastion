@@ -17,6 +17,7 @@ use crate::game::{Game, GameAction};
 use crate::home::{self, Home, HomeAction};
 use crate::mapfile::MapFile;
 use crate::mapgen::MapSetup;
+use crate::screen;
 use crate::settings::{Settings, WindowMode};
 use crate::ui_art;
 
@@ -57,6 +58,9 @@ enum Screen {
 /// for the screen's next frame – the loop pauses there until it comes.
 pub async fn run(program: Program) {
     data::reload();
+    // The window to the monitor of the settings (`screen::frame` does it, once the window is there).
+    let start = Settings::load();
+    screen::set_target(start.window_mode == WindowMode::Borderless, start.monitor, true);
     // The editor asks before it closes with unsaved changes: the window's X then only asks (`is_quit_requested`),
     // and the map decides (`Game::ask_to_quit`).
     if program == Program::Editor {
@@ -87,7 +91,7 @@ pub async fn run(program: Program) {
                 // egui (the editor's panel) keeps every key and click until it's asked for them – also while no map is
                 // open. Emptied every frame here, or they would all reach the panel at once when the next map opens.
                 if program == Program::Editor {
-                    egui_macroquad::ui(|_| {});
+                    egui_macroquad::ui(ui_art::leave_pointer_to_us);
                     egui_macroquad::draw();
                 }
                 match action {
@@ -129,7 +133,8 @@ pub async fn run(program: Program) {
         }
         // TAB's mouse pointer, in front of everything (`ui_art.rs`) – picked during the frame, the arrow otherwise.
         ui_art::draw_pointer();
-        cursor::keep_borderless_composed();
+        // Which monitor the window is on (`screen.rs`) – and a borderless one covering it, one row more.
+        screen::frame();
         next_frame().await;
     }
 }

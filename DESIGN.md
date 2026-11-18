@@ -287,7 +287,7 @@ The colony should look alive, like in TAB, but these figures have **no function 
 
 ## 6. Buildings
 
-Costs and stats live in `data\buildings.json` (12.4).
+Costs and stats live in `data\buildings\` (12.4).
 
 | Category | Building | Notes |
 |---|---|---|
@@ -316,7 +316,7 @@ Costs and stats live in `data\buildings.json` (12.4).
   gold: cheapest first, as many as it pays for. Not with a zombie in the build zone (`can_repair` in
   `placement.rs`), later not on creep (8.4).
 - **Demolish** (Del): any selected building but the command center, gone at once – part of its price comes back
-  (`demolish_refund_percent` 50 %, still being built `demolish_unfinished_refund_percent` 50 %, `data\buildings.json`;
+  (`demolish_refund_percent` 50 %, still being built `demolish_unfinished_refund_percent` 50 %, `data\buildings\`;
   like TAB's `FactorResourcesReturn`). Not an infected one – it belongs to the zombies. In the editor: removed,
   nothing back.
 - **Roads:** units **and zombies** are faster on them – a road into the base is also a fast lane for the horde.
@@ -403,7 +403,7 @@ one active ability** (low APM, clear identity).
 | **Machine gunner** | – (mech) | 3 | 5 | Walker with a gun that **spins up** (25 % → 100 % in ≈ 3 s) | *Keep spinning* (energy + constant noise) | Very loud | Large hordes, holding a line | Brutes, surprises |
 | **Siege tank** | SC | 3 | 6 | Crude artillery, **only shoots sieged** (≈ 4 s to siege), minimum range | *Siege / unsiege* | Very loud | Hordes at range, nests | Anything up close |
 
-**In the prototype:** soldier, ranger, sniper, medic, spearman, no abilities. Values in `data\units.json`. Firearms
+**In the prototype:** soldier, ranger, sniper, medic, spearman, no abilities. Values in `data\units\`. Firearms
 (soldier, sniper) only with a munitions factory standing (`requires`); the ranger's bow, the spear and the medic need
 nothing.
 
@@ -463,7 +463,7 @@ nothing.
 | **Walker** | Slow, weak, *lots* of them | The mass. Tests your walls. |
 | **Runner** | Fast, weak | Punishes gaps and lone units. |
 | **Brute** | Slow, huge HP, smashes walls | Needs focus fire (snipers). |
-| **Armored runner** (TAB's, shown as "Riot") | Fast like a runner, armor eats most of an arrow | Rangers alone can't hold it – soldiers and snipers can. |
+| **Armored runner** (TAB's, shown as "Riot") | Fast like a runner, armored (TAB's 0.1 – 88 HP here) | Rangers alone can't hold it – soldiers and snipers can. |
 | **Spitter** (TAB's venom) | Ranged acid over walls, lands a moment later and splashes | Forces you out instead of turtling; step aside in time. |
 | **Infested** (StarCraft 2's infested marine) | Shoots back, just under a soldier's range | Your line takes fire too – no free kills from behind a wall. |
 | **Harpy** (like TAB's) | Fast, hears much further than the others, leaps over thin walls; every hit it lands is loud and it adds up | First at every fight – kill it before its noise brings the rest. |
@@ -476,13 +476,19 @@ zombies; armor doesn't help, a unit takes its `venom_factor`, the soldier half),
 soldier 5), **harpy** (alertness 8: noise 2–4× quieter than
 the others need brings it, from 32 tiles – it comes first; hits every 0.3 s, noise 10 each – faster than noise fades, so it adds up; zombies' noise, no
 unrest; leaps over walls and gates up to 3 tiles thick when its goal lies behind them, hits thicker ones), **giant**
-(like TAB's: 10,000 HP, armor 0.3, runs 4 tiles/s, a wall in 3 hits – only a few per map, far out; how many is up to the map
+(like TAB's: 10,000 HP at armor 0.3 – 14,235 here, runs 4 tiles/s, a wall in 3 hits – only a few per map, far out; how many is up to the map
 (`giants`, default 4 on 256 tiles), the difficulty scales it 50–225 %; not in the waves, but the final wave calls
 them)
-– values in `data\zombies.json`, the names too. **Healing themselves** like TAB's: every second, 2 s after the last
+– values in `data\zombies\`, the names too. **Healing themselves** like TAB's: every second, 2 s after the last
 hit, units and zombies get their `regen` share of their full HP back (walker 8 %, giant 0.5 %, soldier 4 %), asleep
-too. Armor is a share like TAB's: damage × (1 − armor), rounded, at
-least 1. The harder breeds lie further out (`mix` in `data\roaming.json`); per trip they roam as little as TAB's (`stroll`:
+too. **Weapon and armor like StarCraft 2** (our decision, not TAB's): armor is in **points** that come off every single hit
+(`damage − armor`, at least 1 gets through – a share like TAB's would never stop small hits). **Hits to kill are TAB's:**
+base armor is 0 everywhere, TAB's share went into the hit points instead (HP ÷ (1 − share): soldier 120 → 198, giant
+10,000 → 14,235, Victorious × 2; venom and fire factors × the same) – off by at most a hit or so, from TAB rounding every
+hit; points come only from upgrades. Venom and fire ignore armor. A building's **shield has its own armor**
+(`shield_armor`), a hit on the hit points meets `armor`. Everything has **attributes** (`light`, `armored`, `massive`,
+`biological`, `mechanical`, `structure`) and a weapon can have **extra damage** against them (`bonus`, e.g. +25 against
+armored; none shipped, TAB has none) – the sums of all that match are added before the armor. Zombies have all of it too. The harder breeds lie further out (`mix` in `data\roaming.json`); per trip they roam as little as TAB's (`stroll`:
 almost all 0–1 plus TAB's 1, harpy 1–2, giant 2–3) – without a home they keep to (8.5). Every unit and zombie wears a
 skin of its kind (TAB's pictures, converted locally; walker 3, runner 4).
 TAB's breeds are ours like this: WeakA/B/C → walker, WorkerA/B and MediumA/B → runner, DressedA → riot, Chubby → fat,
@@ -761,6 +767,12 @@ A mix of Factorio (noise terrain, resource patches) and TAB (regions, points of 
   - **Twist for the final missions:** the virus is man-made and can be steered, e.g. by radio waves. The player learns
     it and gets to **control zombies** – a late ability that comes from the story instead of magic. Inspiration:
     *28 Years Later* / its sequel.
+  - **Satellite mission → command center scan:** one mission is about putting a satellite into orbit (build and
+    hold the launch site until the launch). Afterwards the player can unlock the **scan at the command center**
+    ("access the satellite network"): the same scan as the radar's (`scan` in `data/buildings`, 5), a circle on the
+    map that shows through fog and forest. So the campaign gets the scan without a radar, earned by the story; in
+    the survival mode it stays the radar's, with its research. Needs campaign state that carries unlocks from mission
+    to mission (not built yet).
 - No daily challenge.
 
 ---
@@ -818,7 +830,7 @@ of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: no
   next to it. A button *Open settings folder* makes it easy to find.
 - Planned values: display, window mode, resolution, FPS limit/vsync, volume, UI scale, edge scrolling, language.
 - **Never crash on a bad file:** missing values = defaults, unknown ones ignored.
-- **In the prototype:** window mode, edge scrolling, scroll speed, confine mouse, health bars, full command chain,
+- **In the prototype:** window mode, monitor, edge scrolling, scroll speed, confine mouse, health bars, full command chain,
   dev overlay, key bindings (`keys`: only the changed ones, action → first and second key, e.g. `"stop": ["Q", ""]`).
 
 ### 11.5 Save and load (like Factorio)
@@ -875,7 +887,8 @@ of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: no
   sections: the map editor's panel; later the dev tools in the game (12.6). macroquad draws it, after the HUD.
 - **Throwaway prototype (2026-10-15):** 10,000 zombies at 59 FPS, 2.1 ms simulation per tick – plenty of room.
 - **What macroquad can't do:**
-  - fullscreen only borderless on the main monitor, no monitor list, vsync only a hint;
+  - fullscreen only borderless on the main monitor, no monitor list (→ `src\screen.rs` asks Windows for the monitors
+    and puts the window or the borderless cover on the one chosen), vsync only a hint;
   - keys by **US position** (good for key grids, but bindings must show the player's own labels ❓);
   - Alt + key probably beeps → no Alt shortcuts;
   - no "mouse left the window"/focus event → solved with own Windows calls in `src\cursor.rs` (focus, real mouse
@@ -883,7 +896,7 @@ of every swarm of a wave (each side of a wave is a swarm), fog or not. Later: no
     comes for 0.4 s, so a stalled game never traps it;
   - no mouse buttons 4/5 → asked from Windows once per frame (`cursor.rs`);
   - borderless = a window exactly the size of the screen → Windows/driver take it for exclusive fullscreen, popups
-    (screenshot tools) make it blink → `cursor.rs` keeps it one pixel taller.
+    (screenshot tools) make it blink → `screen.rs` keeps it one pixel taller.
 - **Setup:** `winget install Rustlang.Rustup` + Visual Studio with "Desktop development with C++" (linker, SDK).
 
 ### 12.3 Graphics: the TAB look
@@ -1024,7 +1037,7 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      *In the prototype:* the **playing field** (the world border) dragged anywhere and to any size, and the **grid**
      around it (grows or shrinks on every side through the map file, new ground is grass) – like SC2's map bounds and
      map size; waves with **groups** (several breeds, chosen spawners by name), stages of the constant spawn with
-     spawners of their own (map format 4). Later a trigger action "playing field to region X" makes missions in parts.
+     spawners of their own (map format 4). The trigger action "Playing field" (region X) makes missions in parts.
      The **Map page** (`src\editor\map_page.rs`) is a full page in three columns (info and world; round, difficulty,
      players; victory and defeat): the difficulty is chosen from `game_difficulties.json` (`SetDifficulty`: how close
      each breed may come, what new villages hold – zombies already placed stay), the players are shown, not edited.
@@ -1056,7 +1069,7 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      and Point, lists with search, properties on the right (shapes with numbers, Locate, Duplicate, Delete); on the
      map click to select, drag to move, drag a rectangle's border; with a region selected Ctrl-drag adds a shape,
      Alt-drag cuts one. The playing field is a special region in the list (the border tool). "Used by" comes with the
-     Events module (below); the trigger action "playing field to region X" with the Triggers module.
+     Events module (below); the trigger action "Playing field" (the field becomes the smallest straight rectangle covering a region) with the Triggers module.
      *In the prototype* (`src\editor\events.rs`, map format 7): the Events module is a full page - a
      timeline of the whole round (rows Waves, Final, Notices, Reveal, Victory; bar height = zombies on a square-root
      scale; click picks, dragging a bar sets a new hour), below it the picked event's values and its groups, on the
@@ -1072,10 +1085,15 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      for co-op.
      *In the prototype:* TAB's story first (`sim/story.rs`, editor module "Triggers"): **triggers** (event, conditions
      typed expressions, actions with a condition and code – block, loop, exit loop, wait, random, choose among them) stored
-     as data in the map file (format 11; older files are turned around when read). Events: round start, victory, defeat, a
+     as data in the map file (format 12; older files are turned around when read). Events: round start, victory, defeat, a
      map event comes or is done, a neutral thing joins (by name ID), the command center's own button, every N seconds,
      day and hour, a building finished / fallen, zombies killed, a unit enters / leaves a region, a unit reaches a
-     neutral thing (`sim/watch.rs`); actions Camera and Noise at a region or point. Goals (condition and
+     neutral thing (`sim/watch.rs`); actions Camera and Noise at a region or point. Texts take `{expression}` (worked out
+     when shown, `World::render`); a notification has a colour and a picture, a window a mood (TAB's custom-event
+     sounds) and a PNG next to the map file; actions Sound and Research (grant technologies); functions `CountDeads`,
+     `IsInfected`, `GiveEntities`, `DamageAll`, `CureAll` (`CountBonus` is always 0: bonus units come at once; unloading
+     a train does nothing: colonists are always there; `ApplyRules` waits for the Data module; no custom sound files,
+     no Strings.csv yet). Goals (condition and
      progress as expressions) and the button (visible, enabled, counter as expressions); variables (number, yes/no, text).
      A running script is data (`sim/script.rs`), a player's choice comes as an order. The editor page (`editor/triggers.rs`, `story_panel/sentences.rs`): a tree on the left (goals, button,
      variables, functions, triggers in folders, the neutral things with a name ID), the chosen trigger as **sentences**
@@ -1103,6 +1121,38 @@ StarCraft 2's (regions, triggers, players and AI, data) for what follows.
      be selected, ordered, repaired or built over, costs and pays nothing; whether zombies go for it is set per thing.
      A trigger can hand it over ("rescue the outpost": neutral → colony).
   8. **Data per map (SC2's data editor, light):** a map overrides values of `data\` for itself.
+     *In the prototype* (`src\editor\data_page.rs`, `data::Overrides`): every number and yes/no of the files for units,
+     buildings, zombies, sound, roaming, doom, loot, colony, research, audio and trains can be changed for one map. It is
+     kept in the map file as `data` – keys like `units.soldier.hp` (the file, then the names down to the value); nothing
+     else of `data\` is copied. `Order::SetData` / `ClearData` change it (undo, co-op and replays work like for every
+     order). `World::use_data` (new world, loaded map, every order list, undo) makes `data::ensure` put the map's values
+     on top of the standard ones, so `data::get()` and `kind.stats()` read them everywhere – the simulation looks up
+     nothing per map. The page walks the JSON of the file, so a new value in `data\` needs no editor code; units, zombies
+     and towers get one **Attack speed** in percent for all their times. A wrong key or kind of value shows as a
+     `problem` line and the standard values stay. A map may also give a value a thing leaves
+     out (`units.soldier.cost_wood`). Researches: a table with **blocked** (a map can make a research not exist – it is
+     not offered on the workshop's card and can't be started; a script's action Research still grants it, so a
+     campaign can give what the player can't research), costs and time (`Tech::blocked`). Single
+     things: a unit or building has a `Tweak` (`sim/tweak.rs`) – percents of its kind's hit points and (for a building) shield as
+     two numbers (a building falls when both are 0 – a wall can be all shield), damage, attack speed, range, sight, speed and armor, set in the Objects module (`Order::SetTweak`,
+     `tweak` in the map file); `Unit::max_hp`, `damage`, `base_range`, `speed`, `armor`, `Building::max_hp`,
+     `max_shield`, `sight` and the tower code (`towers.rs`) read it; the HUD shows a selected unit's own values. It is
+     the stage before SC2-style upgrades. Hit points, shield and the two armors are numbers, the rest percents. A single zombie can be a **boss** (`Zombie::boss`, `Sleeper::boss`,
+     `Order::PlaceBoss`, the Zombies module's Boss tool and list): hit points and armor as numbers, damage, attack speed and speed as
+     percents of its breed's (the damage also of a ranged boss's shots); a boss is picked on the map or in the list and
+     changed (`Order::SetBoss`); a whole breed's values are the Data module's. **Upgrades like SC2's**
+     (`sim/upgrades.rs`, `data\upgrades.json`): a track has a level (`World::upgrade_levels`, map file `upgrades` – a
+     campaign map can start on level 2 – raised by a research with `upgrade`, or by the action Research); **every unit
+     and building lists in its own file what one level gives it** (flat: `"upgrades": { "infantry_weapons": { "damage":
+     2 } }`), and its sums are cached (`Bonus`) and made again when a level changes – so it counts for what stands and
+     what is built later. A level can give hit points, shield, damage, `bonus_damage` (added to every extra damage of the
+     weapon), `armor`, `shield_armor`, range, sight, speed and attack speed. Tracks shipped: infantry, heavy (Lucifer, Thanatos,
+     Titan), tower weapons, structure armor (every building), and the zombies' own `zombie_weapons` / `zombie_armor`
+     (damage, extra damage, armor, attack speed count for them) – no research raises these, the map does (start level) or the
+     script (`SetUpgrade("zombie_weapons", 2)`, `UpgradeLevel("…")`). The panel (`hud/stats.rs`) shows **Weapon** and **Armor**
+     (a building's **Shield armor**) as boxes with the upgrades' share in green, and a tooltip with damage, extra damage, attack
+     speed, damage per second, range – or armor, attributes, hit points, speed, venom/fire – and the track levels. Not yet:
+     `ApplyRules`, and no research ships that raises a track.
 - **Hooks:** allies need an **owner on every unit and building** – it reaches combat, vision, selection, upkeep. Co-op
   (12.8) needs the same, so build it once, early. Triggers must stay deterministic (integers, fixed order). Players and
   triggers make map format 5.

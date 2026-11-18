@@ -611,15 +611,7 @@ pub fn draw_world(world: &World, camera: &Camera, view: &View, selected: &[u32],
     }
     for loot in world.loot.iter().filter(|l| layers.things && area.contains(l.pos)) {
         // TAB's picture of it (coal is TAB's oil barrel) – else a little crate.
-        let name = match loot.kind {
-            LootKind::Gold => "loot_gold",
-            LootKind::Wood => "loot_wood",
-            LootKind::Stone => "loot_stone",
-            LootKind::Iron => "loot_iron",
-            LootKind::Coal => "loot_oil_1",
-            LootKind::Food => "loot_food",
-            LootKind::Energy => "loot_energy",
-        };
+        let name = loot_picture(loot.kind);
         if let Some(sprite) = view.sprites.decor(name)
             && let Some(body) = sprite.body()
             && seen(world, &view.fog, loot.pos)
@@ -860,7 +852,7 @@ pub fn draw_bars(world: &World, camera: &Camera, view: &View, selected: &[u32], 
     // --- Life bars above buildings, above the roof: hit points and shield in one bar (`hud::draw_life`) ---
     for building in &world.buildings {
         let stats = building.stats();
-        let hurt = building.hp < stats.hp || building.shield < stats.max_shield();
+        let hurt = building.hp < building.max_hp() || building.shield < building.max_shield();
         if !view.bars.shows(hurt, view.selected_buildings.contains(&building.id)) {
             continue;
         }
@@ -870,7 +862,7 @@ pub fn draw_bars(world: &World, camera: &Camera, view: &View, selected: &[u32], 
         let lift = ((fw + fh) as f32 * TILE_H / 4.0 + (stats.height + 0.15) * TILE_W) * camera.zoom;
         let w = fw.max(fh) as f32 * 0.5 * TILE_W * camera.zoom;
         let bar = Rect::new(middle.x - w / 2.0, middle.y - lift, w, 4.0);
-        draw_life(bar, (building.hp, stats.hp), (building.shield, stats.max_shield()), BLACK, None);
+        draw_life(bar, (building.hp, building.max_hp()), (building.shield, building.max_shield()), BLACK, None);
     }
     // The same over houses of doom you can see – they can't be selected.
     for house in world.doom.iter().filter(|d| view.bars.shows(d.hp < d.full_hp(), false) && watched(world, &view.fog, d.center())) {
@@ -1284,7 +1276,8 @@ fn building_parts(world: &World, building: &Building, things: &mut Vec<(f32, Pri
         | BuildingKind::Academy
         | BuildingKind::Victorious
         | BuildingKind::Transmutator
-        | BuildingKind::CrystalPalace => {
+        | BuildingKind::CrystalPalace
+        | BuildingKind::TrainStation => {
             part(rect(building.corner(), building.far_corner() - building.corner()), 0.0, height, color);
         }
         // Flat plates on the ground: the blades a ring of steel, the mine a dark disc.
@@ -1470,6 +1463,66 @@ fn ornament_feet(ornament: sim::Ornament, width: f32) -> Vec2 {
     }
 }
 
+/// The name of a pile of loot's picture in `assets\decor\` (TAB's: coal is its oil barrel).
+pub fn loot_picture(kind: LootKind) -> &'static str {
+    match kind {
+        LootKind::Gold => "loot_gold",
+        LootKind::Wood => "loot_wood",
+        LootKind::Stone => "loot_stone",
+        LootKind::IronOre => "loot_iron",
+        LootKind::Coal => "loot_oil_1",
+        LootKind::Food | LootKind::Provisions => "loot_food",
+        LootKind::Energy => "loot_energy",
+        LootKind::IronBar => "loot_iron",
+        LootKind::Oil => "loot_oil_2",
+    }
+}
+
+/// A picture of a building's kind (or of a house of doom, a pile of loot) as a see-through ghost, its feet on `feet`.
+fn draw_ghost(camera: &Camera, sprite: Option<&BuildingSprite>, feet: Vec2, width: f32, color: Color) {
+    if let Some(sprite) = sprite
+        && let Some(body) = sprite.body()
+    {
+        sprite.draw(camera, body, State::Working, 0.0, Aim::default(), feet, width, color);
+    }
+}
+
+/// A building the editor or the player is about to place, as a ghost of its picture on its site (top left `tile`). Not
+/// the walls and gates: they join up with their neighbours – their tiles show where they go.
+pub fn draw_building_ghost(world: &World, camera: &Camera, sprites: &Sprites, kind: BuildingKind, tile: (i32, i32), turned: bool, color: Color) {
+    let look = match kind {
+        BuildingKind::FishingHut => water_side(world, tile),
+        _ => tile_look(tile),
+    };
+    let sprite = sprites.building(kind, look).filter(|s| !s.has_pieces());
+    let (w, h) = kind.footprint(turned);
+    draw_ghost(camera, sprite, vec2((tile.0 + w) as f32, (tile.1 + h) as f32), w as f32, color);
+}
+
+/// A house of doom about to be placed: its picture on its site (top left `tile`).
+pub fn draw_doom_ghost(camera: &Camera, sprites: &Sprites, nest: sim::Nest, tile: (i32, i32), size: (i32, i32), color: Color) {
+    draw_ghost(camera, sprites.doom(nest, tile_look(tile)), vec2((tile.0 + size.0) as f32, (tile.1 + size.1) as f32), size.0 as f32, color);
+}
+
+/// A pile of loot about to be put down at `at`.
+pub fn draw_loot_ghost(camera: &Camera, sprites: &Sprites, kind: LootKind, at: Vec2, color: Color) {
+    draw_ghost(camera, sprites.decor(loot_picture(kind)), at + 0.5, 1.0, color);
+}
+
+/// A unit about to be placed, standing at `at`, facing `facing` (radians).
+pub fn draw_unit_ghost(camera: &Camera, sprites: &Sprites, kind: UnitKind, at: Vec2, facing: f32, color: Color) {
+    if let Some(figure) = sprites.unit(kind, 0) {
+        figure.draw(camera, at, facing, Pose::Idle, 0.0, color);
+    }
+}
+
+/// A zombie about to be placed, standing at `at`.
+pub fn draw_breed_ghost(camera: &Camera, sprites: &Sprites, breed: Breed, at: Vec2, color: Color) {
+    if let Some(figure) = sprites.breed(breed, 0) {
+        figure.draw(camera, at, 0.0, Pose::Idle, 0.0, color);
+    }
+}
+
 /// An ornament the editor is about to place, as a see-through ghost of its picture (`color`) – the railway's and the
 /// power towers' (not the ruin's, whose picture depends on the landscape).
 pub fn draw_ornament_ghost(camera: &Camera, sprites: &Sprites, ornament: sim::Ornament, color: Color) {
@@ -1539,9 +1592,11 @@ pub fn loot_color(kind: LootKind) -> Color {
         LootKind::Gold => Color::new(0.95, 0.78, 0.22, 1.0),
         LootKind::Wood => Color::new(0.55, 0.38, 0.20, 1.0),
         LootKind::Stone => ore_color(Ore::Stone),
-        LootKind::Iron => ore_color(Ore::Iron),
+        LootKind::IronOre => ore_color(Ore::Iron),
         LootKind::Coal => Color::new(0.16, 0.16, 0.18, 1.0),
-        LootKind::Food => Color::new(0.80, 0.30, 0.25, 1.0),
+        LootKind::Food | LootKind::Provisions => Color::new(0.80, 0.30, 0.25, 1.0),
+        LootKind::IronBar => Color::new(0.62, 0.64, 0.70, 1.0),
+        LootKind::Oil => Color::new(0.22, 0.18, 0.24, 1.0),
         LootKind::Energy => Color::new(0.35, 0.75, 0.95, 1.0),
     }
 }
@@ -1692,6 +1747,8 @@ pub fn building_color(kind: BuildingKind) -> Color {
         BuildingKind::Victorious => Color::new(0.62, 0.50, 0.30, 1.0),
         BuildingKind::Transmutator => Color::new(0.56, 0.38, 0.72, 1.0),
         BuildingKind::CrystalPalace => Color::new(0.70, 0.86, 0.92, 1.0),
+        // Rail grey with a red roof.
+        BuildingKind::TrainStation => Color::new(0.58, 0.42, 0.38, 1.0),
     }
 }
 

@@ -46,9 +46,10 @@ pub enum Waiting {
     No,
     /// Until this tick (`Action::Wait`).
     Until(u64),
-    /// For the player's pick (`Order::Choose`) of one of these options of the choice (`Action::Choose`) – the ones
-    /// whose condition held when it was asked.
-    Choice(Vec<usize>),
+    /// For the player's pick (`Order::Choose`) of one of the options `shown` of the choice (`Action::Choose`) – the
+    /// ones whose condition held when it was asked – with the question's text and the buttons' texts as they were
+    /// worked out then (`{expression}` in them, `World::render`).
+    Choice { shown: Vec<usize>, text: String, labels: Vec<String> },
 }
 
 /// A script that is running: it began at `base` levels down `path` – it ends when that script does – and is at step
@@ -130,30 +131,26 @@ impl World {
 
     /// Is a choice waiting for the player?
     pub fn choice_waiting(&self) -> bool {
-        self.runs.iter().any(|r| matches!(r.waiting, Waiting::Choice(_)))
+        self.runs.iter().any(|r| matches!(r.waiting, Waiting::Choice { .. }))
     }
 
     /// The oldest choice that waits for the player – the one `Order::Choose` answers.
     pub fn choice(&self) -> Option<ChoiceView> {
-        let run = self.runs.iter().find(|r| matches!(r.waiting, Waiting::Choice(_)))?;
-        let Waiting::Choice(shown) = &run.waiting else {
+        let run = self.runs.iter().find(|r| matches!(r.waiting, Waiting::Choice { .. }))?;
+        let Waiting::Choice { text, labels, .. } = &run.waiting else {
             return None;
         };
-        let Action::Choose { text, options } = &run.script(&self.story)?.get(run.next)?.action else {
-            return None;
-        };
-        let options = shown.iter().filter_map(|&k| options.get(k).map(|o| o.shown(k))).collect();
-        Some(ChoiceView { text: text.clone(), options })
+        Some(ChoiceView { text: text.clone(), options: labels.clone() })
     }
 
     /// The player picked button `index` of the oldest waiting choice (`Order::Choose`): its script runs – unless its
     /// condition has turned false since the window opened (TAB asks again): then it is skipped, the choice is done. A
     /// wrong index, or no choice waiting: nothing.
     pub(super) fn choose(&mut self, index: usize) {
-        let Some(at) = self.runs.iter().position(|r| matches!(r.waiting, Waiting::Choice(_))) else {
+        let Some(at) = self.runs.iter().position(|r| matches!(r.waiting, Waiting::Choice { .. })) else {
             return;
         };
-        let Waiting::Choice(shown) = &self.runs[at].waiting else {
+        let Waiting::Choice { shown, .. } = &self.runs[at].waiting else {
             return;
         };
         let Some(&child) = shown.get(index) else {
@@ -188,7 +185,7 @@ impl World {
             return false;
         };
         match run.waiting {
-            Waiting::Choice(_) => return true,
+            Waiting::Choice { .. } => return true,
             Waiting::Until(t) if self.tick < t => return true,
             Waiting::Until(_) => {
                 // The wait is over: the step is done (its code runs).
@@ -265,7 +262,7 @@ impl World {
                         None => run.next += 1,
                     }
                 }
-                Action::Choose { options, .. } => {
+                Action::Choose { text, options } => {
                     let shown: Vec<usize> = (0..options.len()).filter(|&k| options[k].when.as_ref().is_none_or(|w| self.holds(w))).collect();
                     if shown.is_empty() {
                         // No button to show: no window, on with the next step.
@@ -273,7 +270,8 @@ impl World {
                         run.next += 1;
                         continue;
                     }
-                    run.waiting = Waiting::Choice(shown);
+                    let labels = shown.iter().map(|&k| self.render(&options[k].shown(k))).collect();
+                    run.waiting = Waiting::Choice { shown, text: self.render(text), labels };
                     return true;
                 }
                 Action::Train { stop, reverse, .. } => {

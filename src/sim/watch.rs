@@ -185,6 +185,7 @@ impl World {
             let missing = match &step.action {
                 Action::Camera { to } => self.site_center(*to).is_none(),
                 Action::Noise { at, .. } => self.site_center(*at).is_none(),
+                Action::PlayArea { to } => self.site_center(Site::Region(*to)).is_none(),
                 _ => false,
             };
             let mut k = 0;

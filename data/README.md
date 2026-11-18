@@ -10,6 +10,11 @@ Wert fehlt), läuft das Spiel mit den alten Werten weiter und zeigt oben links e
   `game_difficulties.json`, `game_durations.json`). Was sie sagen, landet beim Start in der Kartendatei (Zombies,
   Wellen, Startgold …) – „Restart“ ändert daran nichts mehr. Nur `keep_out` der Schwierigkeit wird über ihren Namen
   in der Kartendatei nachgeschaut.
+- **Je Karte änderbar:** Im Editor (Modul **Data**) lässt sich jeder Zahlen- und Ja/Nein-Wert aus `units`, `buildings`,
+  `zombies`, `sound`, `roaming`, `doom`, `loot`, `colony`, `research`, `audio` und `trains` für **eine Karte** überschreiben –
+  sie speichert nur die Abweichungen (`data` in der Kartendatei, z. B. `"units.soldier.hp": 150`), alles andere gilt aus
+  diesen Dateien. Nicht dabei: `spawning` (gehört der Karte), `game_difficulties`, `game_durations`, `game_maps` (Auswahl vor der Runde).
+  Namen in diesen Dateien dürfen keinen Punkt haben (ein Test prüft das).
 - **Ausnahme `spawning.json`:** Die Events (Wellen, Streuner, Schlusswelle, Sieg) gehören zur **Karte**. Eine neue
   Karte bekommt eine Kopie davon in ihre Kartendatei (eine Runde = eine Datei, siehe Haupt-README), danach zählt, was dort steht – im
   Editor änderbar. Eine Änderung hier gilt also erst für **neue** Spiele („New map“ oder „New game“), nicht für
@@ -19,232 +24,23 @@ Wert fehlt), läuft das Spiel mit den alten Werten weiter und zeigt oben links e
 - **1 Tag = 60 Sekunden, 1 Stunde = 2,5 Sekunden** wie in TAB (steht im Code, `DAY_TICKS` in `src\sim\mod.rs`).
 - **„Pro Abrechnung“:** Die Wirtschaft rechnet alle `economy_every_seconds` Sekunden ab (`colony.json`, 28 wie TABs
   `CResourceGenerator`): Gold, Nahrung, Holz, Unterhalt – alle Werte dazu gelten pro Abrechnung.
-- **Rüstung wie TAB:** ein Anteil (`0.4` = 40 % weniger). Durch kommt Schaden × (1 − Rüstung), gerundet wie C#
-  (eine halbe Zahl zur geraden), mindestens 1.
+- **Rüstung in Punkten** (SC2), Grundwert überall 0: TABs Anteil steckt in `hp` (TAB-HP ÷ (1 − Anteil)), Gift- und
+  Feuerfaktor sind mit demselben Faktor mal genommen – so braucht jede Waffe so viele Treffer wie in TAB.
 - Entfernungen in **Kacheln**, Geschwindigkeiten in **Kacheln pro Sekunde**.
 - Im Koop müssen später beide PCs dieselben Werte haben, sonst laufen die Spiele auseinander.
 
-## `units.json` – Einheiten
+## `units\`, `buildings\`, `zombies\` – Einheiten, Gebäude, Zombies
 
-Ein Block pro Typ: `soldier`, `ranger`, `sniper`, `medic`, `spearman` (der Speerträger) – und die Söldner
-`merc_soldier`, `merc_ranger`, `merc_sniper` (aus dem Gasthaus) – und TABs späte Einheiten `lucifer`, `thanatos`,
-`titan` (aus dem Ingenieurszentrum). Ranger, Soldat, Scharfschütze, Lucifer, Thanatos und Titan haben TABs Werte
-(`Entities` und `Commands` in `ZXRules`), die Söldner unsere 2,5×-Regel, Medic und Speerträger sind unsere.
-Dazu der Block `veterans` (unten) und für alle:
+Je Typ ein **Ordner**, je Ding darin eine Datei (`soldier.json`) mit ihrer Beschreibung (`soldier.md`); `_general.json` hat die Werte für alle. Was jeder Wert heißt, steht in der `README.md` des Ordners und – zum Nachschlagen für genau dieses Ding – in dessen `.md`:
 
-- `regen_every_seconds` (1), `regen_after_seconds` (2): **Selbstheilung** wie TAB – so oft heilen sich Einheiten
-  **und Zombies** um ihr `regen`, aber erst so lange nach dem letzten Treffer. Schlafende Zombies heilen auch.
-- `dismiss_refund_percent` (50): **Entlassen** (Entf) gibt so viel Prozent ihres Holzes und Eisens zurück,
-  aufgerundet (halbe 3 Holz = 2) – kein Gold.
-- `search_seconds` (0,35): So oft sieht sich eine Einheit **ohne Ziel** nach einem neuen um – wie TAB (1/3 s). Nach
-  einem Kill steht sie also kurz still, die Waffe bleibt oben. Im Angriffsmarsch und auf Patrouille sucht sie jeden
-  Tick (sonst liefe sie bis zur nächsten Suche weiter).
-
-Ein Schuss geht wie in TAB: **Waffe heben** (`raise_seconds`, nur wenn sie unten ist) und gleichzeitig **drehen** →
-**nachladen** abwarten (zählt ab dem letzten Schuss) → **zielen** (`aim_seconds`, nur der Scharfschütze) →
-**ausholen** (`windup_seconds`, die Schuss-Animation läuft) → Schuss. Ein Schuss dauert also
-`aim_seconds + windup_seconds + cooldown_seconds` – zusammen TABs Zeit zwischen zwei Schüssen.
-
-**Animation Cancelling:** Wer beim Ausholen losläuft, bricht den Schuss ab (kein Schaden, kein Nachladen). Wer gleich
-nach dem Schuss losläuft, verliert nichts: das Nachladen läuft beim Gehen weiter. Beim Gehen sinkt die Waffe
-(`lower_seconds`); nach einem kurzen Schritt ist sie nur halb unten und schneller wieder oben. Ein neuer Befehl –
-auch derselbe Angriff nochmal – fängt Zielen und Ausholen von vorn an.
-
-Die Zeiten von Ranger, Soldat und Scharfschütze sind TABs (`Commands.tsv`): heben = `TimeLoad`, senken = `TimeUnload`,
-zielen = `TimePreAction`, ausholen = `TimeAction × TimeFactorAction`, nachladen = der Rest von `TimeAction` +
-`TimePostAction`. Die Söldner haben TABs Veteranen-Zeiten.
-
-**So wie TAB sie spielt:** TABs Einheiten und Zombies denken nur alle 133 ms (jedes 4. seiner 30 KI-Bilder pro
-Sekunde) – jede Wartezeit endet erst an so einem Takt, und der nächste Schuss beginnt einen Takt danach. Die Zeiten
-hier sind darum schon die gespielten (einmal so umgerechnet, das Spiel rechnet nichts mehr um): Soldat 0,2 + 0,3 s aus
-`Commands.tsv` → **0,27 + 0,53 s**, ein Schuss alle 0,8 s; Walker 0,53 s ausholen, alle 1,2 s ein Schlag. Wer zielt,
-ausholt oder nachlädt, wie lange, steht also genau so hier – ändern, wie man will.
-
-| Wert | Bedeutung |
-|---|---|
-| `name`, `letter` | Name im Spiel, 1–2 Buchstaben fürs Symbol |
-| `cost` | Preis in Gold. Bezahlt, sobald sie in die Bauschlange kommt; Abbrechen gibt alles zurück (wie StarCraft) |
-| `cost_wood`, `cost_iron` | Dazu Holz und Eisen (aus der Gießerei) aus dem Vorrat, wie TAB: Ranger 2 Holz, Soldat 2 Eisen, Scharfschütze beides, Söldner je 5. Abbrechen gibt sie zurück. Weglassen = 0 |
-| `worker_cost` | **Arbeiter**, die sie braucht – ab der Bauschlange, solange sie lebt (stirbt sie, sind sie wieder frei) |
-| `upkeep` | **Unterhalt:** Gold pro Abrechnung, solange sie lebt (noch nicht in der Bauschlange). Reicht das Gold nicht: Schulden (`colony.json`) |
-| `food` | **Nahrung** pro Abrechnung, solange sie lebt – wie TAB (Soldat 1). Die Einheiten essen vor den Häusern; fehlt Nahrung, passiert ihnen nichts, aber den Häusern fehlt sie. Weglassen = 0 |
-| `hp` | Lebenspunkte |
-| `armor` | Rüstung gegen jeden Zombie-Treffer, ein Anteil (Soldat 0,4, Ranger 0,05) |
-| `venom_factor` | **Gift-Resistenz** wie TABs `VenomDamageFactor`: so viel vom Gift des Spitters kommt durch (Soldat 0,5, alle anderen 1). Gegen Gift hilft keine Rüstung. Pflicht in jedem Block |
-| `regen` | **Selbstheilung** wie TABs `LifeRegenFactor`: dieser Anteil der vollen HP (aufgerundet) alle `regen_every_seconds`, sobald sie `regen_after_seconds` nicht getroffen wurde (Soldat 0,04, Ranger 0,01, Scharfschütze 0,005; Medic 0,01 und Speerträger 0,04 sind unsere). Pflicht in jedem Block |
-| `damage` | Schaden pro Schuss |
-| `range` | Reichweite |
-| `sight` | Sichtweite (mindestens so weit wie die Reichweite) |
-| `turn_around_seconds` | So lange braucht sie für eine halbe Drehung (180°). Erst wenn sie zum Ziel schaut, zielt sie |
-| `raise_seconds` | Waffe heben, sobald sie steht und ein Ziel hat (Ranger 0,5, Soldat 0,2, Scharfschütze 0,5). Danach bleibt sie oben, solange sie schießt |
-| `lower_seconds` | Waffe senken beim Gehen (Ranger 0,25, Soldat 0,1) – das Gehen wartet nicht darauf |
-| `aim_seconds` | Zielen vor jedem Schuss, still auf dem Ziel (nur Scharfschütze 1,6). Neues Ziel: das Zielen fängt von vorne an |
-| `windup_seconds` | Ausholen: vom Start der Schuss-Animation bis zum Schuss (Ranger und Soldat 0,2). Losgehen bricht den Schuss ab |
-| `cooldown_seconds` | Nachladen nach dem Schuss, bevor sie wieder zielen kann – läuft auch beim Gehen (Medic: 0 = Strahl ohne Pause) |
-| `projectile_speed` | **Pfeil:** fliegt so viele Kacheln pro Sekunde (TABs `ProyectileSpeed`, Ranger 12) und trifft erst beim Ankommen – immer das Ziel, auf das er geschossen wurde, wenn es dann noch lebt. Gezielt wird wie in TAB dorthin, wo der Zombie sein wird. Weglassen = Kugel, trifft sofort |
-| `speed` | Laufgeschwindigkeit |
-| `build_seconds` | Ausbildungszeit in der Kaserne |
-| `requires` | Muss erst stehen, damit sie ausgebildet werden kann – Soldat und Scharfschütze: `"MunitionsFactory"`. Weglassen = nichts. Dazu kann eine Forschung nötig sein (`research.json`) |
-| `trained_in` | Wo sie ausgebildet wird: `"Barracks"` (weglassen) oder `"Inn"` (die Söldner) |
-| `mercenary` | `true` = Söldner: bei Schulden geht er zuerst, schon ab Stufe 2 (`colony.json`), und trägt eine goldene Marke. Weglassen = `false` |
-| `noise` | **Lärm pro Schuss** wie in TAB (Ranger 1, Soldat 3, Scharfschütze 10). Er sammelt sich dort, wo geschossen wird, und halbiert sich jede Sekunde – ein langer Kampf pendelt sich ein (siehe `sound.json`) |
-| `heals` | `true` = schießt nicht, sondern richtet den Strahl auf eigene Einheiten (Medic) … |
-| `heal_per_second` | … und heilt so viele HP pro Sekunde … |
-| `heal_after_seconds` | … aber nur eine Einheit, die so lange nicht getroffen wurde – kein Heilen mitten im Kampf (nicht wie SC2) |
-| `knockback` | Nahkampf (Speerträger): jeder Treffer stößt den Zombie so viele Kacheln zurück – einen großen weniger (Walker-Größe ganz, Fat ≈ halb, Riese ≈ ein Viertel). Weglassen = 0 |
-| `cost_oil`, `oil` | **Öl**: so viel kostet sie (TAB: Lucifer 15, Thanatos 20, Titan 40) und so viel verbraucht sie pro Abrechnung, solange sie lebt (TABs `OilGen`: 1, Titan 2) – wie ihr Essen. Weglassen = 0 |
-| `fire_factor` | **Feuer-Empfindlichkeit** wie TABs `FireDamageFactor`: so viel vom Feuer kommt an (Soldat 0,5, Lucifer 0 – sein Anzug, alle anderen 1). Pflicht in jedem Block |
-| `splash`, `edge_factor` | **Flächenschaden** (TABs `EffectRadius`, `MinFactorDamageInArea`): der Schuss trifft jeden in so vielen Kacheln um den Einschlag, am Rand nur `edge_factor` davon (Titan 0,8 / 1, Thanatos' Rakete 1,8 / 0,2). Weglassen = nur das Ziel |
-| `min_range` | Nichts näher als so viele Kacheln (Thanatos' Rakete 3, TABs `MinTargetDistance`) – außer sein `melee` reicht hin. Weglassen = 0 |
-| `cone_degrees`, `friendly_fire`, `burn_chance` | **Feuerkegel** (Lucifer): trifft jeden in einem Kegel so breit (20°) und so lang wie `range`; `friendly_fire` = auch eigene Einheiten darin (TABs `FriendlyDamage`); so ein Anteil der getroffenen Zombies fängt Feuer (TABs `BurnFactor` 0,7) |
-| `melee` | **Zweiter Angriff aus der Nähe** (Thanatos schlägt mit dem Werfer): `damage`, `range`, `cone_degrees`, `edge_factor`, `windup_seconds`, `cooldown_seconds` – benutzt, wenn das Ziel so nah ist |
-| `skins` | Nur die Optik: ihre **Aussehen** in `assets\` (`"units/ranger"` = `assets\units\ranger.json`, siehe `assets\README.md`). Jede Einheit trägt eins davon ihr Leben lang. Fehlt die Datei, wird es übersprungen. Weglassen = keins |
-| `sprite` | Ihr Bild, wenn keins der `skins` da ist (`"test/figure"` = das graue Testbild). Weglassen = Kästchen |
-
-**Veteranen** (`veterans`): jeder Zombie, der stirbt, gibt seine Erfahrung (`xp` in `zombies.json`), geteilt unter
-deinen Einheiten im Umkreis – ein Veteran nimmt einen halben Anteil. Söldner nehmen nichts (sie sind schon besser).
-
-| Wert | Bedeutung |
-|---|---|
-| `xp` | So viel Erfahrung, und die Einheit ist **Veteran** – silberne Marke, desertiert bei Schulden dreimal seltener |
-| `share_radius` | Einheiten in so vielen Kacheln um den toten Zombie teilen sich seine Erfahrung |
-| `hp_percent`, `damage_percent` | So viel Prozent mehr HP (kommen sofort dazu) und Schaden hat ein Veteran |
-
-## `buildings.json` – Gebäude
-
-Ein Block pro Typ: `command_center`, `barracks` (die Kaserne), `tent`, `wall`, `gate`, `tower`,
-`sawmill`, `mine`, `hunter_cottage`, `fishing_hut`, `farm`, `windmill`, `charcoal_burner`, `wood_workshop`,
-`tesla_tower`, `stone_workshop`, `munitions_factory`, `stone_house`, `stone_wall`, `stone_tower`, `stakes` (die
-Pfahlfalle), `market`, `bank`, `inn` (das Gasthaus – bildet die Söldner aus), `barrel` (das Sprengfass), `foundry` (die
-Gießerei), `ballista` (die Balliste), `machine_gun_tower` (der MG-Turm).
-
-| Wert | Bedeutung |
-|---|---|
-| `name`, `letter` | Name im Spiel, Buchstaben fürs Symbol |
-| `size` | `[Breite, Tiefe]` in Kacheln (das Tor lässt sich drehen) |
-| `explosion` | Nur die Optik: wie es **fällt** – Effekte in `assets\effects\` (`"wood_big"`, `"stone_medium"` …, TABs `ExplosionOnDestroy`); zwei = abwechselnd. Dörfer: dasselbe je Größe in `data\doom.json` |
-| `skins` | Nur die Optik: seine **Aussehen** in `assets\` (`"buildings/tent_1"`, aus `tools\tab_buildings.py`, siehe `assets\README.md`). Jedes Gebäude trägt eins davon, je nach Bauplatz – die Fischerhütte das, das zu ihrem Wasser schaut (TABs vier). Fehlt die Datei, wird es übersprungen. Weglassen oder keins da = Klötze |
-| `hp` | Lebenspunkte – zusammen mit `shield` TABs `Life` |
-| `armor` | Rüstung gegen jeden Zombie-Treffer, ein Anteil. TABs Gebäude haben keine – weglassen = 0 |
-| `shield` | Schild in Punkten, **zusätzlich** zu den HP – TABs `DeffensesLife` (Zelt 15, Kaserne 400, Kommandozentrum 2500). Zombies schlagen erst darauf. Bricht er, ist das Gebäude **infiziert** und seine Leute kommen als Zombies heraus. Ohne Kolonisten ist er nur zusätzliches Leben. Bricht der des Kommandozentrums, ist die Runde verloren (TAB). 0 = kein Schild. Im Spiel ein Balken mit den HP: der Schild graublau dahinter |
-| `colonists` | Kolonisten darin: zahlen Gold und werden bei der Infektion zu Zombies. Wie viele herauskommen, wie TAB: `colonists` + `worker_cost` − `workers` + `extra_infected`, jeder zufällig aus `infected` (`zombies.json`), alle laufen zum Kommandozentrum |
-| `extra_infected` | So viele Zombies kommen bei der Infektion **zusätzlich** heraus (TABs `ExtraUnitsWhenInfected`; Zelt 2 → 4 insgesamt, Steinhaus 8 → 16). Weglassen = 0 |
-| `workers` | **Arbeiter**, die es gibt (Zelt, Kommandozentrum) – infiziert keine |
-| `worker_cost` | Arbeiter, die es braucht, solange es steht. Nicht genug frei: kann nicht gebaut werden (im Editor egal) |
-| `cost` | Preis in Gold, bezahlt beim Platzieren (im Editor kostenlos) |
-| `cost_wood`, `cost_stone`, `cost_coal`, `cost_iron` | Dazu Holz, Stein, Kohle und Eisen (aus der Gießerei) aus dem Vorrat (weglassen = 0) |
-| `requires` | Muss erst stehen, z. B. `"WoodWorkshop"` (Name des Typs wie in den Kartendateien; weglassen = nichts) – wie TABs `BuildingRequisite`. Dazu kann eine Forschung nötig sein (`research.json`) |
-| `energy` | Strom, den es ins Netz gibt (Kommandozentrum, Windmühle, Köhlerei) |
-| `energy_use` | Strom, den es braucht. Gebaut (oder mit Y wieder an) nur, wenn sein Netz so viel übrig hat; fällt danach Strom weg, arbeitet es anteilig langsamer |
-| `power_radius` | Kommandozentrum, Tesla-Turm: so weit (Kacheln ab der Mitte) reicht ihr Netz. Wer Strom erzeugt, braucht oder trägt, muss darin stehen |
-| `burns_wood` | Holz pro Abrechnung – ohne Holz kein Strom (Köhlerei, Kraftwerk wie TAB) |
-| `food` | Nahrung pro Abrechnung – ohne sie zahlen die Kolonisten kein Gold (Zelt) |
-| `food_made` | Nahrung pro Abrechnung aus dem Nichts, ohne Kacheln (Kommandozentrum 20 wie TAB; ein Zelt isst 4) |
-| `gold` | Gold pro Abrechnung, mal Stromanteil – Häuser nur, wenn ihre Kolonisten **satt** sind (wie TAB: Zelt 8, Steinhaus 40, Kommandozentrum 200 ohne zu essen) |
-| `upkeep` | **Unterhalt:** Gold pro Abrechnung, solange es läuft – aus (Y) oder infiziert: nichts. Weglassen = 0 |
-| `gather_range` | Sammler: so viele Kacheln um seine Fläche herum arbeitet es, auf jeder Seite – ein Quadrat (Mine 2 × 2 mit 2 → 6 × 6 wie TAB) |
-| `gather_below` | Sammler: `true` = die Kacheln unter ihm zählen mit (Mine und Steinbrüche: das Erz darunter, die Ölplattform: ihre Quelle). Weglassen = `false`. Bei Sägewerk, Jäger und Fischer ohne Wirkung – sie stehen nie auf Wald oder Wasser |
-| `trap_damage`, `trap_wear` | Falle: Schaden an jedem Zombie darauf (minus Rüstung) alle `trap_every_seconds`, und so viele eigene HP kostet sie jeder Treffer |
-| `slow_percent` | Falle: wer darauf steht – Zombies und deine Einheiten –, läuft so viel Prozent langsamer (TABs Pfähle: 50). Weglassen = 0 |
-| `trade_range`, `house_bonus_percent`, `colonists_per_good` | Markt: seine Häuser sind die, deren Mitte auf ihm oder bis so viele Kacheln drumherum liegt (2 → 7 × 7) – jedes Haus nur für einen Markt, den ältesten. Sie zahlen so viel Prozent mehr Gold, und für je so viele Kolonisten darin verkauft er 1 Ware pro Abrechnung |
-| `gold_storage`, `credit` | Bank: so viel mehr Gold passt ins Lager, und so viel **Dispo** gibt sie – mit Shift darf man so weit ins Minus kaufen, ohne Schuldenstrafen (Zinsen: `colony.json`) |
-| `barrel_storage` | Munitionsfabrik: so viele Sprengfässer fasst ihr Lager |
-| `noise` | **Lärm pro Arbeitstakt** (`work_every_seconds` in `sound.json`), solange es arbeitet – mal Stromanteil, aus/infiziert/ohne Holz (Köhlerei) oder ohne Erz (Gießerei) still. Jägerhütte 50, Sägewerk und Munitionsfabrik 100, Mine, Köhlerei und Gießerei 150. Weglassen = 0 |
-| `smelts`, `smelt_ore`, `smelt_coal` | Gießerei: so viel **Eisen** schmilzt sie bei jeder Abrechnung höchstens (mal Stromanteil), aus je so viel Eisenerz und Kohle – nur so viel, wie im Vorrat ist |
-| `weapon` | Ein Turm, der **selbst schießt** (Balliste, MG-Turm, Shocking Tower, Executor): `damage` pro Schuss (minus Rüstung), `range` (Kacheln ab der Mitte), `reload_seconds` (bei wenig Strom länger), `noise` pro Schuss, `toughest`: `true` = auf den Zombie mit den meisten HP in Reichweite, sonst auf den nächsten; `all_in_range`: `true` = auf **alle** in Reichweite auf einmal (Shocking Tower); `splash`: trifft jeden so viele Kacheln um sein Ziel (Executor 0,6). Weglassen = schießt nicht |
-| `cost_oil` | Dazu **Öl** aus dem Vorrat (TABs späte Gebäude). Weglassen = 0 |
-| `burns_coal` | Kohle pro Abrechnung – ohne Kohle kein Strom (wie `burns_wood`; zurzeit keins – für ein späteres Kohlekraftwerk) |
-| `converts` | Wandelt bei jeder Abrechnung Waren um, solange es läuft (mal Stromanteil): `takes` und `makes`, je `[["Wood", 20], …]` – der Transmutator Holz, Stein und Eisen in Öl, der Victorious verbraucht Öl. Nur wenn alles da ist |
-| `goods_storage` | Lagerhaus: so viel mehr passt von jeder Ware ins Lager – nicht Essen, nicht Gold (TABs `ResourcesStorage` 50) |
-| `boost_range`, `gather_boost_percent`, `gold_boost_percent` | TABs Gebäude, die Nachbarn helfen: wessen ganzer Bauplatz in seinem Bauplatz plus `boost_range` Kacheln liegt, sammelt so viel Prozent mehr (Lagerhaus: 12 Kacheln, 20 %) bzw. zahlt als Haus so viel Prozent mehr Gold (Victorious: 24, 20 %) |
-| `sees_through_forest` | Sieht **über Wald** (TABs `WatchThroughOpaque`: Radar, Aussichtsturm, Wunder) |
-| `only_one` | Nur **eins** davon darf stehen (TABs `MaxInstances` 1 – die Wunder) |
-| `veteran_units` | Solange es läuft, ist **jede** deiner Einheiten ein Veteran (die Akademie, TABs `MakeSoldiersVeteran`) – Söldner nicht |
-| `mine` | Die **Mine** (Falle): tritt ein Zombie drauf, geht sie nach ihrer Verzögerung (0–3, auf ihrer Karte wie TABs `DelayActivation`) × `delay_step_seconds` hoch – `damage` an allen bis `radius` Kacheln (Zombies, Einheiten, Gebäude, wie ein Fass) – und ist weg |
-| `gather_per_tile` | Sammler: so viel bringt jede passende Kachel pro Abrechnung (bei vollem Strom). Was passt, steht im Code: Sägewerk Wald, Jäger Wald, Gras und Erde (jede mit dem Anteil der Karte, `hunting_*` bei `game_maps.json` – TABs 0,8 × Landschaftsfaktor), Fischer Wasser, Mine Erz und Gold (auch unter sich), Farm Gras (nicht Erde, nicht Erz – und sie selbst steht nur auf Gras) |
-| `gold_per_tile` | Mine: so viel **Gold** bringt jede Goldkachel pro Abrechnung, direkt ins Gold (TAB: das 20-Fache einer Steinkachel – 10) |
-| `build_seconds` | **Bauzeit** wie TAB: so lange baut es sich selbst, nachdem es platziert ist – kurz, länger je größer und je höher im Techtree. Bis dahin tut es nichts (keine Arbeiter, kein Gold, kein Strom, keine Ausbildung), nimmt aber schon seine Arbeiter, und Zombies können es treffen. Weglassen oder 0 = steht sofort. Im Editor steht alles sofort |
-| `repair_cost` | Gold für eine **volle** Reparatur (von 0 auf volle HP + Schild); eine kleinere kostet ihren Anteil. Bezahlt beim Start. Später kommen Holz, Stein … dazu |
-| `sight` | Sichtweite ab der Mitte |
-| `height` | Nur die Optik: wie hoch es gezeichnet wird |
-| `joins` | Nur die Optik: verbindet sich mit Mauern zu einer Linie |
-
-Dazu für alle:
-
-| Wert | Bedeutung |
-|---|---|
-| `tower_slots` | So viele Einheiten passen in einen Turm |
-| `tower_bonus` | So viel weiter schießen und sehen Einheiten im Turm |
-| `zombie_free_radius` | So viele Kacheln um einen Bauplatz darf kein Zombie stehen |
-| `replace_refund_percent` | Wird ein Gebäude überbaut (Tor auf Mauern), kommt so viel Prozent seines Preises zurück. Unter 100 bleiben, sonst wären „erst Mauern, dann Tor“ billiger als das Tor |
-| `demolish_refund_percent` | **Abreißen** (Entf): so viel Prozent des Preises kommen zurück – Gold, Holz, Stein, Kohle, Eisen, abgerundet (TABs `FactorResourcesReturn`: 50) |
-| `demolish_unfinished_refund_percent` | … eines Gebäudes, das **noch gebaut wird** (TAB: auch 50) |
-| `repair_seconds` | So viele Sekunden dauert eine volle Reparatur – eine kleinere entsprechend kürzer |
-| `build_start_percent` | Ein Gebäude im Bau fängt mit so viel Prozent seiner HP an und wächst bis voll – erst die HP, dann der Schild. Infiziert werden kann es erst fertig. Ein Treffer im Bau bleibt (später reparieren) |
-| `trap_every_seconds` | So oft treffen Fallen die Zombies auf ihnen |
-| `sell_from_percent`, `sell_prices` | Märkte verkaufen nur, was über so viel Prozent des Lagers liegt, zu diesen Preisen (Gold pro Einheit: `wood`, `stone`, `iron_ore`, `coal`, `food`, `iron` – das Eisen der Gießerei – und `oil`) |
-| `blast` | Sprengfass: `cost` Gold + `cost_coal` Kohle und `build_seconds` in der Munitionsfabrik. Geht es hoch: `damage` an allen bis `radius` Kacheln (Zombies und Einheiten minus Rüstung, Gebäude wie ein Treffer, Häuser der Dörfer wie ein Schuss), so laut wie `noise`. Wer eins trägt, läuft `carry_slow_percent` langsamer und schießt nicht |
-| `scan` | Scan des **Radars**: zeigt `seconds` lang einen Kreis von `radius` Kacheln (der Ring; das Licht reicht 2 Kacheln weiter) – auch über Wald. Höchstens `charges` Ladungen, am Anfang keine, alle `every_seconds` eine neue, solange ein Radar läuft – und solange eine lädt, braucht er `power` Strom mehr |
-
-## `zombies.json` – Zombies
-
-`walker`, `runner`, `fat` (TABs „Chubby“), `armored` (TABs gepanzerter Runner, im Spiel „Riot“), `spitter` (TABs
-Venom), `infested` (StarCraft 2s Infested Marine), `harpy` (TABs Harpyie: hört weit, schlägt laut zu) und `giant` (TABs Riese,
-etwas kleiner – wie viele: `giants` der Karte), je mit:
-
-| Wert | Bedeutung |
-|---|---|
-| `name` | Name im Spiel. In Karten- und Datendateien heißt die Art weiter wie ihr Block (`"Armored"`) – ein neuer Name ist also nur diese Zeile |
-| `awareness` | **Wachsamkeit** wie TABs `ActivityAwarenessFactor`: Wie sicher er bei Lärm kommt, wächst damit (Formel bei `sound.json`). Walker 2, Runner, Fat, Riot, Infested 3, Spitter 4, Harpyie 8 |
-| `speed` | **Renn**-Geschwindigkeit: wenn er angreift, mit einer Welle läuft oder Lärm folgt (TABs `RunSpeed`; jeder Zombie bekommt zufällig ±20 %) |
-| `walk_speed` | **Geh**-Geschwindigkeit beim Wandern (TABs `WalkSpeed`) |
-| `hp` | Lebenspunkte |
-| `armor` | Rüstung gegen jeden Schuss, ein Anteil (Walker 0, Runner 0,05, Fat 0,15, Riese 0,3) |
-| `regen` | **Selbstheilung** wie TABs `LifeRegenFactor` (Takt: `regen_every_seconds` / `regen_after_seconds` in `units.json`): Walker, Runner, Riot, Spitter, Harpyie 0,08 (Walker: 3 HP/s), Fat 0,04, Riese 0,005 (50 HP/s); Infested 0,04 ist unserer. Pflicht in jedem Block |
-| `fire_factor`, `burn_seconds` | **Feuer** wie TAB: so viel vom Feuer kommt an (`FireDamageFactor`: Spitter 1,5, sonst 1) und so lange brennt er, wenn Lucifer ihn anzündet (`BurningTime` 3 s, der Riese fängt kein Feuer: 0) – brennend alle ½ s 5 × `fire_factor` Schaden, ohne Rüstung. Pflicht in jedem Block |
-| `damage` | Schaden pro Treffer – beim Spitter an jedem im Spritzer |
-| `sweep_radius`, `sweep_degrees`, `sweep_hits_zombies` | **Flächenschlag** (TABs Riese: Bogen 120°, Radius 3,5): jeder Treffer trifft sein Ziel und alle vor ihm in diesem Bogen – Einheiten am Boden, Gebäude, mit `sweep_hits_zombies` auch andere Zombies (TABs `FriendlyDamage`). Weglassen = nur das Ziel |
-| `push` | **Rückstoß** (TABs `FactorPush`, Riese 150): wen ein Schlag von ihm tötet, der fliegt weg – `push / mass / 12` Kacheln pro Sekunde (Einheiten: Masse 1), durch alles hindurch wie in TAB, bremst über `push_seconds`. Lebende schiebt er nicht. Weglassen = 0 |
-| `sight` | So weit sieht er Einheiten und **Gebäude mit Leuten** darin (Kommandozentrum, Häuser, Gebäude mit Arbeitern, Türme mit Einheiten – nicht durch Wald). TAB: Walker 5, Runner 6, Fat 5 |
-| `watch_seconds` | So oft **schaut er sich um** (TABs `EntityWatchInterval`: Walker und Riese 1,5, Harpyie 0,67, die anderen 1): nimmt das Nächste, das er sieht, als Ziel. Doppelt so lange, solange er schon ein Ziel hat; 3× so lange außerhalb deiner Sicht, 5× wo du nie warst |
-| `level` | **Rang** (TABs `Level`): Stehen auf seiner Kachel mindestens `contagion_count` Wellen-Zombies mit diesem Rang oder höher, schließt er sich der Welle an – gehört die zur Schlusswelle, er auch. Walker 1, Runner 2, Riot 3, Fat, Harpyie und Infested 4, Spitter 5, Riese 6 |
-| `stroll` | `[mindestens, höchstens]` wie TABs `MinRoamingDistance`, `MaxRoamingDistance`: so weit geht er beim **Wandern** pro Ausflug – auf jeder Achse für sich zwischen den beiden **plus 1** (wie TAB), in beide Richtungen (ein Quadrat), von da, wo er gerade steht. TAB: fast alle 0–1 (also unter 2 Kacheln), Harpyie 1–2, Riese 2–3 – eine leergeräumte Gegend füllt sich nur langsam wieder |
-| `stand_seconds`, `growl_seconds` | So lange steht bzw. knurrt er, wenn er nichts zu tun hat (TAB: so lange wie seine Animationen, `TimeAniNormal`, `TimeAniSpecial`). Weglassen = die Werte für alle (unten) |
-| `roam_ring` | Beim Wandern nie in diesen Kreis ums Kommandozentrum (Kacheln) – außer er steht schon drin. TABs Riese: 54. Weglassen = 0, kein Ring |
-| `roar_every_seconds` | So oft bleibt er stehen und **brüllt** `growl_seconds` lang, egal was er gerade tut (TABs Riese: 12). Wer brüllt, denkt wie TABs Riese: läuft nie dahin, wo er dich aus den Augen verloren hat, und lässt sich nie von einer Welle anstecken. Weglassen = brüllt nie |
-| `radius` | Wie groß er ist (Kacheln): so weit halten andere Zombies und Einheiten Abstand, und so viel weiter reicht er. So groß ist auch der Ring unter ihm (Maus, angeklickt) |
-| `mass` | Wie schwer er ist (TABs `Mass`: Walker 1, Runner 1,25, Riot 3, Fat 6, Riese 1000): im Gedränge gibt der Leichtere nach – ein Riese läuft durch Walker, sie bewegen ihn kaum |
-| `venom` | `true` = seine Treffer sind **Gift** (Spitter, wie TABs Venom): keine Rüstung hilft, eine Einheit bekommt ihren `venom_factor` davon. Weglassen = `false` |
-| `range` | **Fernkampf**: so weit schießt er (Kacheln) – über Mauern, nicht durch Wald. Weglassen = 0: er muss dich berühren. Infested 4,5 = knapp unter dem Soldaten (5) |
-| `splash` | Sein Schuss trifft jeden so nah am Einschlag (Spitter): Einheiten und Gebäude, keine Zombies. Weglassen = nur das Ziel |
-| `attack_seconds` | Zeit zwischen zwei Angriffen – so lange **steht** er dabei (TAB: `StopMovement`). Weglassen = `hit_every_seconds` |
-| `windup_seconds` | **Ausholen** wie TAB (`TimeAction × TimeFactorAction`): der Schlag kommt so lange nach dem Start des Angriffs. Ist die Einheit dann aus seiner Reichweite, trifft er nicht (Schüsse fliegen trotzdem). Walker, Runner, Fat 0,5, Riot 0,4, Spitter 0,42, Harpyie 0,15, Riese 0,16; Infested 0,2 ist unserer. Weglassen = 0: sofort |
-| `projectile_speed` | Sein Schuss fliegt so viele Kacheln pro Sekunde und landet, wo das Ziel stand – wer rechtzeitig weggeht, wird nicht getroffen (Spitter). Weglassen = trifft sofort |
-| `xp` | Erfahrung, wenn er stirbt – geteilt unter deinen Einheiten in der Nähe (`veterans` in `units.json`). Weglassen = 1 |
-| `jump` | Springt über Mauern und Tore bis so viele Kacheln dick, statt sie einzuschlagen – wenn sein Ziel dahinter liegt (Harpyie). Weglassen = 0, springt nie |
-| `hit_noise` | So viel Lärm macht jeder seiner Treffer, wo er steht (holt Zombies, weckt Schlafende; zählt nicht zur Unruhe). Trifft er öfter, als der Lärm sich halbiert (`halve_seconds` in `sound.json`), wird es lauter (Harpyie). Weglassen = `zombie_hit` aus `sound.json` |
-| `skins` | Nur die Optik: seine Aussehen, wie bei den Einheiten – TABs Walker hat drei, der Runner vier. Jeder Zombie trägt eins davon, auch im Schlaf |
-| `sprite` | Sein Bild, wenn keins der `skins` da ist. Weglassen = Kästchen |
-
-Dazu für alle:
-
-| Wert | Bedeutung |
-|---|---|
-| `hit_every_seconds` | Zeit zwischen zwei Treffern |
-| `charge_steps` | So weit (in Schritten) finden stürmende Zombies den Weg zu einer Einheit – um Wasser und Berge herum, durch Mauern hindurch |
-| `idle` | Was ein Zombie **ohne Ziel** als Nächstes tut, gewürfelt mit diesen Gewichten (TAB): `stand` 1300, `growl` 150, `roam` 150 – meistens steht er |
-| `stand_seconds`, `growl_seconds` | So lange steht bzw. knurrt er – für eine Art ohne eigene Werte |
-| `contagion_seconds`, `contagion_count` | **Ansteckung** (TAB): so oft schaut jeder Zombie, der nicht zu einer Welle gehört, auf seine Kachel (TAB 238 Takte, knapp 4 s – knapp neben dem Hinhören, damit nicht beides auf denselben Tick fällt). Stehen dort mindestens so viele Wellen-Zombies mit seinem `level` oder höher, läuft er mit zum Kommandozentrum – Schlafende auch |
-| `infected` | Was aus einem **infizierten Gebäude** kommt und als was deine Toten aufstehen: je einer zufällig aus dieser Liste – TABs acht (WeakA/B/C → Walker, DressedA → Riot, WorkerA/B und MediumA/B → Runner) |
-| `cull_below`, `cull_every_seconds` | **Sicherung** (TAB): Sind weniger als so viele Zombies übrig (wach und schlafend), stirbt alle so viele Sekunden jeder, der keinen Weg zum Kommandozentrum hat – damit die Runde nicht am letzten Zombie auf einer Insel hängt |
-| `rise_min_seconds`, `rise_max_seconds` | Eine tote Einheit steht nach so vielen Sekunden als Zombie auf (zufällig dazwischen, Art aus `infected`) und läuft zum Kommandozentrum |
-| `push_seconds` | So lange rutscht ein weggeschleuderter Körper, bis er liegt (geschätzt – TABs Dämpfung steckt in seiner Physik-DLL) |
-| `die_seconds` | So lange spielt ein getöteter Zombie seinen Tod, dann ist er weg (TABs `TimeAniDie`: 1 s) |
+- [`units\`](units/README.md) – Einheiten: Kampf, Preis, Zeiten, Veteranen
+- [`buildings\`](buildings/README.md) – Gebäude: Preis, Wirtschaft, Strom, Türme, Fallen, Wunder
+- [`zombies\`](zombies/README.md) – Zombies: die acht Arten, ihr Verhalten, Ansteckung
 
 ## `sound.json` – Lärm
 
 **Lärm** genau wie in TAB (aus dessen Code): Er sammelt sich dort, wo etwas passiert (je 4 × 4 Kacheln), und jede
-Sekunde halbiert sich jede Zelle. Wie laut ein Schuss ist: `noise` in `units.json`.
+Sekunde halbiert sich jede Zelle. Wie laut ein Schuss ist: `noise` in `units\`.
 
 **Wer kommt:** Jeder Zombie hört alle `listen_seconds` (jeder zu einem anderen Tick) und nimmt von den lauten Zellen in
 Hörweite die, die er am besten hört: **Lärm × `per_awareness` × `awareness` / Entfernung²** (Kacheln). So viel Prozent
@@ -261,14 +57,14 @@ hat, dahin läuft, wo er es aus den Augen verloren hat, oder mit einer Welle kom
 | `places_listen_seconds` | So oft hören die Häuser des Untergangs und die versteckten Wächter der Beute hin (TAB: 1) |
 | `zombie_hit`, `unit_dies`, `building_placed`, `building_destroyed` | So laut: jeder Treffer eines Zombies, eine sterbende Einheit, ein platziertes Gebäude, ein zerstörtes Gebäude |
 | `building_infected`, `per_infected` | Ein infiziertes Gebäude – plus so viel für jeden, der herauskommt. Ein Gebäude mit Arbeitern, das fällt, ist infiziert: die Arbeiter kommen als Zombies heraus (TAB: eine überrannte Jägerhütte weit draußen lockt die Horde) |
-| `work_every_seconds` | So oft macht jedes arbeitende Gebäude seinen Lärm (`noise` in `buildings.json`) – alle im selben Moment, Nachbarn zählen zusammen |
+| `work_every_seconds` | So oft macht jedes arbeitende Gebäude seinen Lärm (`noise` in `buildings\`) – alle im selben Moment, Nachbarn zählen zusammen |
 | `unrest_per_zombie` | **Unruhe:** aller Lärm der Kolonie (Schüsse, Maschinen, Explosionen, Bauen) zählt zusammen und sinkt nie – je so viel davon bringt jede Seite eines stillen Events (TABs Streuner) für immer einen Zombie mehr |
 
 ## `roaming.json` – Streuner
 
 Die Zombies, die zu Beginn über die Karte streifen (wie viele: `roaming_zombies` der Schwierigkeit). Entfernungen als
 Anteil des Wegs von der Basis zum Rand (0 = Mitte, 1 = Rand). Wie weit sie pro Ausflug wandern: `stroll` der Art in
-`zombies.json`, wie nah ans Kommandozentrum sie zu Beginn liegen: `keep_out` der Schwierigkeit (beim Wandern dürfen sie
+`zombies\`, wie nah ans Kommandozentrum sie zu Beginn liegen: `keep_out` der Schwierigkeit (beim Wandern dürfen sie
 näher, wie in TAB – nur der Riese hält `roam_ring`). Weit weg von deinen Augen schlafen sie, bis etwas sie weckt
 (DESIGN.md 8.5).
 
@@ -290,7 +86,7 @@ Karte („Villages of doom“, „Houses near base“, „Houses at edge“) mal
 
 | Wert | Bedeutung |
 |---|---|
-| `hp`, `armor` | Lebenspunkte eines Hauses je Größe (`small`, `medium`, `big` – TAB 400 / 1500 / 4000), Rüstung gegen jeden Schuss (ein Anteil, TAB: keine) |
+| `hp`, `armor` | Lebenspunkte eines Hauses je Größe (`small`, `medium`, `big` – TAB 400 / 1500 / 4000), Rüstung in Punkten gegen jeden Schuss (TAB: keine) |
 | `max_units` | So viele lässt ein Haus insgesamt heraus, je Größe, mal `population` (TABs `InfectionNestMaxUnits`: 40 / 150 / 500) |
 | `batch_every_seconds` | Höchstens ein Schub so oft pro Haus |
 | `hearing`, `awareness`, `heard_batch` | Hört das Haus **Lärm** so nah (je Größe, TAB: 4 × seine Sichtweite – 20 / 24 / 32) – so sicher wie ein Zombie mit dieser `awareness` (Formel bei `sound.json`) –, geht ein Schub × `heard_batch` zur Mitte der gehörten Zelle |
@@ -435,7 +231,7 @@ mit der Fläche.
 ## `research.json` – Forschung (wie TAB)
 
 TABs Forschung (`Tech…` in seinen `Commands`): jede gehört zu einer Werkstatt, ist einmal zu bezahlen und gilt dann
-die ganze Runde. Was sie freischaltet, braucht außerdem, was es `requires` (`buildings.json`, `units.json`).
+die ganze Runde. Was sie freischaltet, braucht außerdem, was es `requires` (`buildings\`, `units\`).
 
 | Wert | Bedeutung |
 |---|---|
@@ -445,6 +241,8 @@ die ganze Runde. Was sie freischaltet, braucht außerdem, was es `requires` (`bu
 | `researched_in` | Die Werkstatt: `WoodWorkshop`, `StoneWorkshop`, `Foundry` |
 | `slot` | Platz auf ihrer Karte, 0–14 Reihe für Reihe (TABs `PanelPosition` − 1; 8 Reparieren, 10 An/Aus, 14 Abreißen sind belegt) |
 | `time_factor` | Mal `seconds_per_factor` – Wunder 2, Gasthaus 1,5. Weglassen = 1 |
+| `blocked` | `true` = diese Forschung gibt es nicht: sie steht nicht auf der Karte der Werkstatt und lässt sich nicht starten – die Aktion „Research“ eines Triggers schenkt sie trotzdem. Im Standard immer `false`; gedacht für **eine Karte** (Editor → Data → „All researches“, Spalte Blocked), z. B. in einer Kampagne. Was von ihr abhängt (Gebäude, Einheiten, `needs_tech`), bleibt dann gesperrt |
+| `upgrade` | Hebt eine Upgrade-Reihe (`upgrades.json`): `{ "track": "infantry_weapons", "level": 2 }` – die Forschung erscheint, wenn die Reihe auf Stufe 1 steht, und setzt sie auf 2. Was die Stufe den Einheiten gibt, steht in deren Dateien (`upgrades`). Weglassen = keine Reihe |
 | `gold`, `wood`, `stone`, `iron`, `oil` | Was sie kostet – beim Start bezahlt, beim Abbrechen alles zurück |
 | `buildings`, `units` | Was sie freischaltet |
 | `needs_tech`, `needs_building` | Erst sichtbar, wenn diese Forschung fertig ist und dieses Gebäude steht (Thanatos, Titan: Ingenieurszentrum) |
@@ -477,3 +275,16 @@ getrennt. Weglassen = still.
 | `buildings` | je Gebäude: `placed`, `selected` (gewählt), `destroyed`, `infected`, `shot`, `hit`; `structure: true` = TABs Mauern, Tore, Türme, Fallen – kein „Gebäude fertig“ |
 | `doom_small`, `doom_big` | Ein Dorfhaus fällt (das kleine, die anderen) |
 | `ambient` | Der Klang der Landschaft je `look` (TABs `ZXMapTheme.AmbientSound`). Solange es regnet (Skript-Aktion „Weather“, auf VO von Anfang an), `RainLoopA` dazu |
+
+## `upgrades.json` – Upgrade-Reihen (wie SC2)
+
+Eine **Reihe** (`tracks`) hat eine Stufe von 0 bis `levels` (SC2: 3): *Infantry weapons/armor*, *Heavy weapons/armor* (Lucifer, Thanatos, Titan), *Tower weapons*, *Structure armor* (jedes Gebäude) und die der Zombies, *Zombie weapons/armor*. Die Stufe steigt durch
+
+- eine **Forschung** mit `"upgrade": { "track": "infantry_weapons", "level": 1 }` (in `research.json`; sie erscheint, wenn die Reihe eine Stufe darunter ist – Stufe 2 erst nach Stufe 1),
+- den **Start der Karte** (Editor → Data → Upgrades; `upgrades` in der Kartendatei, z. B. eine Kampagnenkarte, die auf Stufe 2 beginnt),
+- die Trigger-Aktion *Research* (schenkt eine Forschung, auch eine blockierte),
+- den Ausdruck `SetUpgrade("zombie_weapons", 2)` in einem Trigger (setzt die Stufe genau; lesen: `UpgradeLevel("…")`) – der Weg für die Reihen der Zombies, für die es keine Forschung gibt.
+
+**Was eine Stufe gibt, steht beim Ding** (`upgrades` in dessen Datei, flach: Soldat +2 Schaden, Ranger +1, Scharfschütze +10) – nicht in der Forschung. Darum gilt ein Upgrade für alles, was schon steht, und für alles, was später gebaut wird; mehr Leben kommt sofort dazu. Karten können die Boni wie jeden Wert ändern (Data). Mitgeliefert sind die Reihen und Boni als Beispiel – **keine Forschung** hebt sie an, solange keine in `research.json` steht.
+
+**Rüstung und Eigenschaften** (Einheit, Zombie, Gebäude): `armor` in Punkten – jeder Treffer verliert sie, mindestens 1 kommt durch (Gift und Feuer ignorieren sie); Gebäude dazu `shield_armor` für Treffer auf den Schild. `attributes`: `light`, `armored`, `massive`, `biological`, `mechanical`, `structure` (Gebäude ohne Angabe: gepanzert + Gebäude). `bonus` (Einheit, Zombie, `weapon` eines Turms): Zusatzschaden je Eigenschaft des Ziels, z. B. `{ "armored": 25 }`; trifft das Ziel mehrere, zählen alle. Eine Stufe kann `bonus_damage` geben – das geht auf jeden Zusatz der Waffe. Bei Zombies zählen aus `upgrades` nur `damage`, `bonus_damage`, `armor`, `attack_speed`.

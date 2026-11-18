@@ -56,6 +56,8 @@ use egui_macroquad::egui::{
 use macroquad::math::Vec2;
 
 mod events;
+mod data_page;
+mod bosses;
 mod map_page;
 mod objects;
 mod regions;
@@ -71,11 +73,12 @@ use crate::draw::{breed_tile_color, Layers, ZOMBIE_TILES_BELOW};
 use crate::hud::Layout;
 use crate::iso::{Camera, START_ZOOM};
 use crate::kinds::{BuildingKind, UnitKind};
+use crate::sim::LootKind;
 use crate::map::{BigRock, Ore, Terrain};
 use crate::map::BORDER;
 use crate::sim::{
     rail_pieces, snap_rail, Area, Axes, Breed, Clip, Nest, Order, OrnamentKind, Owner, Patch, Piece, SpawnMode, Spawner, TerrainClip,
-    WaveFrom, World, Zone, MAP_SIZES, MOST_PER_TILE,
+    Tweak, WaveFrom, World, Zone, MAP_SIZES, MOST_PER_TILE,
 };
 
 /// How wide the panel on the left starts – for the modules with tools, and the wider one for those with pages of
@@ -122,14 +125,15 @@ pub enum Module {
     Triggers,
     Events,
     Map,
+    Data,
 }
 
 impl Module {
     /// The ones that work on the map, then – after a line – the ones with pages of fields.
     const ON_MAP: [Module; 4] = [Module::Terrain, Module::Objects, Module::Zombies, Module::Regions];
-    const PAGES: [Module; 3] = [Module::Triggers, Module::Events, Module::Map];
+    const PAGES: [Module; 4] = [Module::Triggers, Module::Events, Module::Map, Module::Data];
     /// Pages that fill the whole room between the bars (no panels, no map): the map is covered and takes no clicks.
-    const FULL: [Module; 3] = [Module::Triggers, Module::Events, Module::Map];
+    const FULL: [Module; 4] = [Module::Triggers, Module::Events, Module::Map, Module::Data];
 
     fn name(self) -> &'static str {
         match self {
@@ -140,6 +144,7 @@ impl Module {
             Module::Triggers => "Triggers",
             Module::Events => "Events",
             Module::Map => "Map",
+            Module::Data => "Data",
         }
     }
 
@@ -152,6 +157,7 @@ impl Module {
             Module::Triggers => "TAB's game narrative the SC2 way: triggers as sentences, goals, the button, variables",
             Module::Events => "Waves, the final wave, victory - at their day and hour",
             Module::Map => "Name, info, landscape, the round, difficulty, goals",
+            Module::Data => "Every value of data - units, buildings, zombies ... - changed for this map",
         }
     }
 }
@@ -213,6 +219,8 @@ pub enum Tool {
     ZombieDrop,
     /// One giant on the tile clicked.
     Giant,
+    /// One boss on the tile clicked: a zombie of `Editor::boss_breed` with the values of `Editor::boss_tweak`.
+    Boss,
     /// The playing field's edges (the world border) can be grabbed and dragged – inside it, it moves as a whole.
     PlayArea,
     /// One unit at the click.
@@ -229,7 +237,8 @@ pub enum Tool {
     /// `Nest::side`), with as many zombies inside as the generator would put there.
     Doom(Nest),
     /// A pile of loot at the click – what lies in it and its hidden guards rolled like the generator does.
-    Loot,
+    /// A pile of loot of this kind – `None`: rolled like the generator does.
+    Loot(Option<LootKind>),
     /// One of TAB's big rocks of this many tiles each way (`map::BIG_ROCK_SIZES`) at the click – its middle under the
     /// mouse. Its tiles become mountain; painting other ground over it takes it away.
     BigRock(i32),
@@ -258,6 +267,7 @@ impl Tool {
             Tool::ZombieBrush => "Brush",
             Tool::ZombieDrop => "Drop",
             Tool::Giant => "Giant",
+            Tool::Boss => "Boss",
             Tool::PlayArea => "Drag the border",
             Tool::Unit(kind) => &kind.stats().name,
             Tool::Spawner => "+ Spawner",
@@ -268,7 +278,8 @@ impl Tool {
             Tool::Doom(Nest::Small) => "Small house 2 x 2",
             Tool::Doom(Nest::Medium) => "Medium house 3 x 3",
             Tool::Doom(Nest::Big) => "Big house 5 x 5",
-            Tool::Loot => "Loot",
+            Tool::Loot(Some(kind)) => kind.name(),
+            Tool::Loot(None) => "Loot (random)",
             Tool::BigRock(3) => "3 x 3",
             Tool::BigRock(4) => "4 x 4",
             Tool::BigRock(_) => "5 x 5",
@@ -282,7 +293,7 @@ impl Tool {
     /// One of the catalog's things put down with a click (`objects.rs`): after it the tool goes out of the hand –
     /// unless Shift is held, like in SC2's editor.
     pub fn once(self) -> bool {
-        matches!(self, Tool::Unit(_) | Tool::Doom(_) | Tool::Loot | Tool::Ornament(_))
+        matches!(self, Tool::Unit(_) | Tool::Doom(_) | Tool::Loot(_) | Tool::Ornament(_))
     }
 
     /// Does it paint along the way the mouse is dragged (terrain, ore, smoothing, the eraser, the zombie brush)?
@@ -453,10 +464,15 @@ pub struct Editor {
     catalog_search: String,
     /// "Placing": whose the next building or unit is.
     pub place_owner: Owner,
+    /// Units and loot go onto the middle of the tile under the mouse (`true`) – or exactly where it points, like before.
+    pub place_on_grid: bool,
+    /// Which way the unit in hand will face (radians, like `Unit::facing`) – Shift + wheel turns it.
+    pub unit_facing: f32,
     /// The small pictures of the catalog (`thumbs.rs`).
     thumbs: thumbs::Thumbs,
     /// What the Events page keeps (`events.rs`).
     events_page: events::EventsPage,
+    data_page: data_page::DataPage,
     triggers_page: triggers::TriggersPage,
     /// What map this is (generator, seed, days) – set by `game.rs`.
     pub map_info: String,
@@ -482,6 +498,11 @@ pub struct Editor {
     pub per_tile: Vec<(Breed, u32)>,
     /// The drop: which breed, how many.
     pub breed: Breed,
+    /// The Boss tool: which breed, and its values (percents of the breed's).
+    pub boss_breed: Breed,
+    pub boss_tweak: Tweak,
+    /// The boss picked in the Zombies module's list (where it stands) – its values can be changed there.
+    pub boss_pick: Option<(f32, f32)>,
     pub drop: u32,
     /// Which picture a big rock gets (0–2: TAB's A, B, C) – `None`: mixed, picked by the tile (`big_rock`).
     pub rock_variant: Option<u8>,
@@ -553,8 +574,11 @@ impl Editor {
             chip: objects::Chip::All,
             catalog_search: String::new(),
             place_owner: Owner::Colony,
+            place_on_grid: false,
+            unit_facing: std::f32::consts::FRAC_PI_4,
             thumbs: thumbs::Thumbs::default(),
             events_page: events::EventsPage::default(),
+            data_page: data_page::DataPage::default(),
             triggers_page: triggers::TriggersPage::default(),
             zone_asked: None,
             map_info: String::new(),
@@ -571,9 +595,13 @@ impl Editor {
             // A walker on every tile to begin with – the other sliders at 0.
             per_tile: small_breeds().into_iter().map(|b| (b, u32::from(b == Breed::Walker))).collect(),
             breed: Breed::Walker,
+            boss_breed: Breed::Giant,
+            boss_tweak: Tweak { damage: 150, ..Tweak::default() },
+            boss_pick: None,
             drop: 100,
             rock_variant: None,
-            zombie_look: ZombieLook::Auto,
+            // Tiles from the start: tens of thousands of figures on a whole map make the editor lag.
+            zombie_look: ZombieLook::Tiles,
             clip: None,
             clip_request: None,
             pieces: 0,
@@ -740,11 +768,12 @@ impl Editor {
                 ui.add_enabled_ui(enabled, |ui| match self.module {
                     Module::Triggers => self.triggers_page(ui, world, orders),
                     Module::Events => self.events_page(ui, world, orders),
+                    Module::Data => self.data_page(ui, world, orders),
                     _ => self.map_page(ui, world, orders),
                 });
             });
             let k = ctx.pixels_per_point();
-            crate::view::set(Some(macroquad::math::Rect::new(map.min.x * k, map.min.y * k, map.width() * k, map.height() * k)));
+            set_map_view(map, k);
             self.keys_window(ctx);
             keep_focus_for_text(ctx);
             let typing = text_has_focus(ctx);
@@ -766,11 +795,12 @@ impl Editor {
                 ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show(ui, |ui| match self.module {
                     Module::Terrain => self.terrain_module(ui, world, orders),
                     Module::Objects => self.objects_module(ui, world),
-                    Module::Zombies => self.zombies_module(ui, world),
+                    Module::Zombies => self.zombies_module(ui, world, orders),
                     Module::Regions => self.regions_module(ui, world),
                     Module::Triggers => {} // a full page (`Module::FULL`), above
                     Module::Events => {} // a full page (`Module::FULL`), above
                     Module::Map => {} // a full page (`Module::FULL`), above
+                    Module::Data => {} // a full page (`Module::FULL`), above
                 });
             });
         });
@@ -789,7 +819,7 @@ impl Editor {
         // The middle: the map. egui's points → the screen's pixels (the same unless Windows scales the window).
         let map = ctx.available_rect();
         let k = ctx.pixels_per_point();
-        crate::view::set(Some(macroquad::math::Rect::new(map.min.x * k, map.min.y * k, map.width() * k, map.height() * k)));
+        set_map_view(map, k);
         self.floating_bars(ctx, map, enabled, camera, grid);
         self.properties_window(ctx, world, enabled, orders);
         self.keys_window(ctx);
@@ -871,7 +901,7 @@ impl Editor {
                 self.menu_entry(ui, "Camera to the base", "", EditorRequest::Locate(world.base), true);
             });
             ui.menu_button("Map", |ui| {
-                for (module, text) in [(Module::Map, "Name, info and the round"), (Module::Events, "Events"), (Module::Triggers, "Triggers")] {
+                for (module, text) in [(Module::Map, "Name, info and the round"), (Module::Events, "Events"), (Module::Triggers, "Triggers"), (Module::Data, "Data")] {
                     if ui.button(text).clicked() {
                         self.module = module;
                         ui.close_menu();
@@ -1082,7 +1112,7 @@ impl Editor {
             });
         });
         // Above the top of TAB's bar – `Layout` knows it now that `view.rs` has the map's room.
-        let bar_top = (Layout::new().panel.y / ctx.pixels_per_point()).clamp(map.min.y, map.max.y);
+        let bar_top = (Layout::new().panel.y * macroquad::window::screen_dpi_scale() / ctx.pixels_per_point()).clamp(map.min.y, map.max.y);
         let above_bar = egui::Rect::from_min_max(map.min, egui::pos2(map.max.x, bar_top));
         // `interactable(false)`: only a text – a click on it still goes to the map.
         egui::Area::new(egui::Id::new("hint bar")).constrain_to(above_bar).anchor(Align2::LEFT_BOTTOM, [FLOAT_PAD, -FLOAT_PAD]).interactable(false).show(ctx, |ui| {
@@ -1112,6 +1142,7 @@ impl Editor {
                 };
                 format!("{} - {how} - {away}", tool.name())
             }
+            (Some(tool @ Tool::Unit(_)), _) => format!("{} - click, Shift: keep it, Shift + wheel: turn it - {away}", tool.name()),
             (Some(tool), _) if tool.once() => format!("{} - click, Shift: keep it - {away}", tool.name()),
             (Some(tool), _) => format!("{} - click - {away}", tool.name()),
             (None, Some(kind)) => format!("{} - click, drag: a line, R turns - {away}", kind.stats().name),
@@ -1158,6 +1189,17 @@ impl Editor {
         self.keys_open = open;
     }
 
+    /// Turn the unit in hand by `notches` steps of 45° (Shift + wheel; up = clockwise on the screen).
+    pub fn turn_unit(&mut self, notches: f32) {
+        let step = std::f32::consts::FRAC_PI_4;
+        self.unit_facing = (self.unit_facing + notches.signum() * step).rem_euclid(std::f32::consts::TAU);
+    }
+
+    /// Where a unit or a pile of loot goes: the mouse's point – on the grid (`place_on_grid`) the middle of its tile.
+    pub fn placed_point(&self, point: Vec2) -> Vec2 {
+        if self.place_on_grid { Vec2::new(point.x.floor() + 0.5, point.y.floor() + 0.5) } else { point }
+    }
+
     /// The panel on the right: what's selected – a spawner, a placed thing –, in "Events" first the waves to send now,
     /// in "Terrain" what lies under the mouse.
     fn properties_panel(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>, camera: &Camera, grid: &mut bool) {
@@ -1173,7 +1215,8 @@ impl Editor {
             return;
         }
         self.spawner_section(ui, world, orders);
-        let things = self.things_section(ui, world, orders);
+        let mut things = self.things_section(ui, world, orders);
+        things |= self.loot_section(ui, world, orders);
         if self.spawner.and_then(|id| world.find_spawner(id)).is_none() && !things {
             section(ui, "Selection", "", |ui| {
                 ui.label(RichText::new("Nothing selected. Click a building, unit or spawner on the map, drag a box - or click a line of Objects, \"Placed\".").weak());
@@ -1259,7 +1302,7 @@ impl Editor {
     }
 
     /// Zombies by the tile (brush), by the crowd (drop), one giant; spawners; the houses of a village of doom.
-    fn zombies_module(&mut self, ui: &mut Ui, world: &World) {
+    fn zombies_module(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) {
         section_from(ui, "Brush", Some(Origin::Tab), "on every tile of the brush - hold and drag", |ui| {
             self.tool_button(ui, Tool::ZombieBrush);
             ui.label(format!("On every tile, at most {MOST_PER_TILE} of each (like TAB):"));
@@ -1288,7 +1331,8 @@ impl Editor {
                 breed_list_box(ui, "drop breed", &mut self.breed, &small_breeds());
             });
         });
-        section(ui, "They", "brush, drop and giant", |ui| {
+        self.boss_section(ui, world, orders);
+        section(ui, "They", "brush, drop, giant and boss", |ui| {
             ui.radio_value(&mut self.wander, true, "sleep and wander");
             ui.radio_value(&mut self.wander, false, "storm the CC");
         });
@@ -1635,6 +1679,15 @@ fn style(ctx: &egui::Context) {
         ]
         .into();
     });
+}
+
+/// The map's part of the window (`view.rs`): what egui has left over in the middle (points), in the units everything else
+/// of macroquad counts in. egui counts the window's real pixels (`k` of them to a point); macroquad's drawing and mouse
+/// are in the window's pixels divided by the DPI factor – so with Windows scaling at 125 % the bar and the camera
+/// would otherwise sit a quarter too far out and too big, half under the editor's panels.
+fn set_map_view(map: egui::Rect, k: f32) {
+    let scale = k / macroquad::window::screen_dpi_scale();
+    crate::view::set(Some(macroquad::math::Rect::new(map.min.x * scale, map.min.y * scale, map.width() * scale, map.height() * scale)));
 }
 
 /// Tab hands egui's keyboard focus on to the next button – and then Space or Enter would press it. In this game Tab

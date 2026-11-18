@@ -1,5 +1,5 @@
 //! Towers that shoot by themselves (DESIGN.md decision 33): the ballista and the machine gun tower – no units inside,
-//! a `weapon` in `data\buildings.json` instead: damage, range, reload, noise per shot, and whom it aims at. Unlike your
+//! a `weapon` in `data\buildings\` instead: damage, range, reload, noise per shot, and whom it aims at. Unlike your
 //! units it doesn't turn or aim: once reloaded it shoots at what's in range and in sight (not through forest).
 //!
 //! It shoots while it works (`Building::works` – finished, switched on, not infected). One that takes power reloads
@@ -11,7 +11,8 @@ use macroquad::math::Vec2;
 
 use super::areas::Blow;
 use super::zombies::Aim;
-use super::{after_armor, Fx, World};
+use super::{after_armor, Fx, Tweak, World};
+use crate::attrs::ExtraDamage;
 
 impl World {
     /// Every tick: towers reload – and shoot when they're ready and something is in range.
@@ -37,13 +38,17 @@ impl World {
             }
             let from = building.center();
             let (id, kind) = (building.id, building.kind);
+            let tweak = building.tweak;
+            let up_attack = building.up.attack;
+            let (range, damage) = ((weapon.range + building.up.range) * tweak.range as f32 / 100.0, Tweak::scale(weapon.damage + building.up.damage, tweak.damage));
+            let extra = ExtraDamage::new(&weapon.bonus, building.up.bonus_damage);
             // The shocking tower: every zombie in range at once. The others: one.
             let targets: Vec<usize> = if weapon.all_in_range {
-                self.zombies_in_shot(from, weapon.range)
+                self.zombies_in_shot(from, range)
             } else if weapon.toughest {
-                self.toughest_zombie(from, weapon.range).into_iter().collect()
+                self.toughest_zombie(from, range).into_iter().collect()
             } else {
-                self.nearest_zombie(from, weapon.range, |_| true).into_iter().collect()
+                self.nearest_zombie(from, range, |_| true).into_iter().collect()
             };
             // Nothing in range: it stays loaded and shoots the moment something comes.
             if targets.is_empty() {
@@ -60,17 +65,17 @@ impl World {
                 }
                 if weapon.splash > 0.0 {
                     // The executor: everyone round its target, all of it (`areas.rs`).
-                    let blow = Blow { damage: weapon.damage, edge: 1.0, shooter: 0, by, fire: false, burn_chance: 0.0, friendly: false };
+                    let blow = Blow { damage, edge: 1.0, shooter: 0, by, fire: false, burn_chance: 0.0, friendly: false, extra, keep: 1000 };
                     self.hit_splash(to, weapon.splash, &blow);
                     continue;
                 }
                 let zombie = &mut self.zombies[z];
-                let damage = after_armor(weapon.damage, zombie.breed.stats().armor);
+                let damage = after_armor(damage + extra.against(zombie.attributes()), zombie.armor());
                 zombie.hurt(damage, self.tick);
                 self.zombie_hit_by(z, by);
             }
             self.make_colony_sound(from, weapon.noise);
-            self.buildings[b].reload = weapon.reload * 1000;
+            self.buildings[b].reload = tweak.quicker_with(weapon.reload, up_attack) * 1000;
         }
     }
 
@@ -127,6 +132,6 @@ impl World {
     /// How much of its reload a tower still has to go, as a share (0 = ready) – for the panel.
     pub fn reload_share(&self, b: usize) -> f32 {
         let building = &self.buildings[b];
-        building.stats().weapon.as_ref().map_or(0.0, |w| building.reload as f32 / (w.reload.max(1) * 1000) as f32)
+        building.stats().weapon.as_ref().map_or(0.0, |w| building.reload as f32 / (building.tweak.quicker_with(w.reload, building.up.attack).max(1) * 1000) as f32)
     }
 }

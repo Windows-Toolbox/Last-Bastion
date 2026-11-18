@@ -387,7 +387,7 @@ impl World {
         self.units.iter().map(|u| u.stats().food).sum()
     }
 
-    /// Oil per payout for every living unit – TAB's engineering-center units burn it (`oil` in `data\units.json`).
+    /// Oil per payout for every living unit – TAB's engineering-center units burn it (`oil` in `data\units\`).
     fn units_oil(&self) -> u32 {
         self.units.iter().map(|u| u.stats().oil).sum()
     }

@@ -14,8 +14,15 @@ use macroquad::math::{vec2, Vec2};
 use super::events::Notice;
 use super::fx::Fx;
 use super::rails::RailLine;
+use super::buildings::Building;
 use super::{after_armor, Place, World, UNIT_RADIUS};
 use crate::data::{self, TrainValues};
+use crate::kinds::BuildingKind;
+
+/// How far from a station's site the track may run for a train to stop there (tiles) – the track right next to it.
+pub const STATION_REACH: f32 = 1.0;
+/// The Name-ID of the station where a train stops for the command center (`Action::Train`).
+pub const COMMAND_CENTER_STATION: &str = "Command Center";
 
 /// What a car of a train is – TAB's `TypeOfCarriage`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +100,9 @@ pub struct TrainPlan {
     pub start: f32,
     pub stop: f32,
     pub end: f32,
+    /// The stop lies behind where the train comes in, from both ends – the train stops right where it comes in. The
+    /// editor warns.
+    pub cramped: bool,
 }
 
 impl TrainPlan {
@@ -130,35 +140,83 @@ impl Train {
 }
 
 impl World {
+    /// Where a train stops for the station `station`, on `line`: the locomotive's middle at the point of the track
+    /// closest to the station's middle – if the track runs at most `STATION_REACH` tiles from the station's site.
+    /// `None`: the track doesn't pass it.
+    pub fn station_stop(&self, line: &RailLine, station: &Building) -> Option<f32> {
+        let (offset, _) = line.nearest(station.center());
+        let (corner, far) = (station.corner(), station.far_corner());
+        let at = line.point_at(offset);
+        let outside = vec2((corner.x - at.x).max(at.x - far.x).max(0.0), (corner.y - at.y).max(at.y - far.y).max(0.0));
+        (outside.length() <= STATION_REACH).then_some(offset)
+    }
+
+    /// The station for the command center: the train station with the Name-ID `Command Center`, if the editor put one
+    /// down and it still stands (a destroyed one stops no train).
+    pub fn command_center_station(&self) -> Option<&Building> {
+        self.buildings.iter().find(|b| {
+            b.kind == BuildingKind::TrainStation && b.alive() && b.tag.as_deref().is_some_and(|t| t.name_id == COMMAND_CENTER_STATION)
+        })
+    }
+
     /// Where a train sent now would run (`Action::Train`): a locomotive with a colonists', an armoured and a goods
     /// car, like TAB's – on the line the whole train fits on that passes closest to the command center, from its end
     /// nearer the edge of the map (`reverse`: from the other one). `None`: no such line on the map. The editor shows it
     /// (`TrainPlan`).
+    ///
+    /// It stops at the station `Command Center` if there is one: only on a line that passes it, and from the end it can
+    /// be reached from – a station closer to the start than the train is long is reached from the other end (if it can
+    /// from there; `TrainPlan::cramped` otherwise). Without that station it stops at the piece of track closest to the
+    /// command center, like TAB's.
     pub fn train_plan(&self, reverse: bool) -> Option<TrainPlan> {
         let gap = data::get().trains.gap;
         let cars = vec![CarKind::Locomotive, CarKind::Colonists, CarKind::Armored, CarKind::Goods];
         let full = cars.iter().map(|c| c.length()).sum::<f32>() + gap * (cars.len() - 1) as f32;
         let center = self.command_center_middle();
+        let station = self.command_center_station();
         let size = self.map.size as f32;
         let to_edge = |p: Vec2| p.x.min(p.y).min(size - p.x).min(size - p.y);
-        // Only a line the whole train fits on.
-        let line = self.rail_lines().into_iter().filter(|l| l.length() >= full).min_by(|a, b| {
-            let d = |l: &RailLine| l.stop_near(center).map_or(f32::MAX, |o| l.point_at(o).distance_squared(center));
-            d(a).total_cmp(&d(b))
-        })?;
+        // Where it stops on a line: at the station, else TAB's piece closest to the command center.
+        let stop_on = |l: &RailLine| match station {
+            Some(station) => self.station_stop(l, station),
+            None => l.stop_near(center),
+        };
+        // Only a line the whole train fits on – and, with a station, one that passes it.
+        let line = self
+            .rail_lines()
+            .into_iter()
+            .filter(|l| l.length() >= full && (station.is_none() || stop_on(l).is_some()))
+            .min_by(|a, b| {
+                let d = |l: &RailLine| stop_on(l).map_or(f32::MAX, |o| l.point_at(o).distance_squared(center));
+                d(a).total_cmp(&d(b))
+            })?;
+        // Whole on the line at its start; the locomotive's front at most at the end.
+        let first = cars[0].length() / 2.0;
+        let reach = |l: &RailLine| {
+            let end = l.length() - first;
+            ((full - first).min(end), end, stop_on(l))
+        };
         let (a, b) = (line.point_at(0.0), line.point_at(line.length()));
         let mut line = if to_edge(b) < to_edge(a) { line.reversed() } else { line };
+        // A station closer to the start than the train is long can't be reached from there – it comes in from the other
+        // end then, if it can from there.
+        if station.is_some() {
+            let (start, _, stop) = reach(&line);
+            let back = line.reversed();
+            let (back_start, _, back_stop) = reach(&back);
+            if stop.is_some_and(|s| s < start) && back_stop.is_some_and(|s| s >= back_start) {
+                line = back;
+            }
+        }
         if reverse {
             line = line.reversed();
         }
-        // Whole on the line at its start; the locomotive's front at most at the end.
-        let first = cars[0].length() / 2.0;
-        let end = line.length() - first;
-        let start = (full - first).min(end);
-        // TAB's stop at the command center: the middle of the piece of track closest to it – one behind the start
-        // can't be reached going forward (TAB's train never got there), so the train stops right at its start then.
-        let stop = line.stop_near(center).map_or(start, |o| o.clamp(start, end));
-        Some(TrainPlan { line, cars, start, stop, end })
+        let (start, end, stop) = reach(&line);
+        // One behind the start can't be reached going forward (TAB's train never got there), so the train stops right at
+        // its start then.
+        let cramped = stop.is_some_and(|s| s < start);
+        let stop = stop.map_or(start, |o| o.clamp(start, end));
+        Some(TrainPlan { line, cars, start, stop, end, cramped })
     }
 
     /// A train sets off (`Action::Train`, `train_plan`). `stop`: it stops next to the command center and `on_arrival`
@@ -296,7 +354,7 @@ impl World {
             for zombie in self.zombies.iter_mut().filter(|z| z.is_alive()) {
                 if let Some(to) = in_way(car, zombie.pos, zombie.radius) {
                     if *hits {
-                        zombie.hurt(after_armor(t.damage, zombie.breed.stats().armor), tick);
+                        zombie.hurt(after_armor(t.damage, zombie.armor()), tick);
                     }
                     zombie.pos = to;
                 }

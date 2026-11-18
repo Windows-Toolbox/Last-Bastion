@@ -25,6 +25,7 @@ use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use super::fx::{Fallen, Fx};
+use super::story::TriggerEvent;
 use super::zombies::{Breed, Lure};
 use super::{after_armor, World, DAY_TICKS, HOUR_TICKS};
 use crate::data;
@@ -201,23 +202,44 @@ fn grown(r: (i32, i32, i32, i32), by: i32) -> (i32, i32, i32, i32) {
     (r.0 - by, r.1 - by, r.2 + by, r.3 + by)
 }
 
-/// What lies in a pile of loot: gold, one of the goods of the stock – or a supply of food or energy for the command
-/// center.
+/// What lies in a pile of loot: gold, a good of the stock – or a supply of food or energy for the command center.
+/// The generator only puts down gold, wood, stone, iron ore and coal (`GOODS`) and the supplies; the editor can put down
+/// every one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum LootKind {
     Gold,
     Wood,
     Stone,
-    Iron,
+    /// Iron ore – TAB's "iron" loot, so it's still called `Iron` in the files.
+    #[serde(rename = "Iron")]
+    IronOre,
     Coal,
     /// TAB's food and energy supplies: the command center makes `amount` more food per payout / power from now on.
     Food,
     Energy,
+    /// Iron (smelted in the foundry), oil and food for the stock.
+    IronBar,
+    Oil,
+    Provisions,
 }
 
 impl LootKind {
-    /// The goods – gold is apart (`gold_share` in `data\loot.json`).
-    pub const GOODS: [LootKind; 4] = [LootKind::Wood, LootKind::Stone, LootKind::Iron, LootKind::Coal];
+    /// The goods the generator rolls – gold is apart (`gold_share` in `data\loot.json`).
+    pub const GOODS: [LootKind; 4] = [LootKind::Wood, LootKind::Stone, LootKind::IronOre, LootKind::Coal];
+
+    /// Every kind, for the editor's list: gold, the goods in the order of the stock, then the supplies.
+    pub const ALL: [LootKind; 10] = [
+        LootKind::Gold,
+        LootKind::Wood,
+        LootKind::Stone,
+        LootKind::IronOre,
+        LootKind::Coal,
+        LootKind::Provisions,
+        LootKind::IronBar,
+        LootKind::Oil,
+        LootKind::Food,
+        LootKind::Energy,
+    ];
 
     /// Where it goes in the stock – `None` for gold (`World::gold`) and the supplies (`World::found_food`, `found_power`).
     pub fn resource(self) -> Option<Resource> {
@@ -225,8 +247,11 @@ impl LootKind {
             LootKind::Gold | LootKind::Food | LootKind::Energy => None,
             LootKind::Wood => Some(Resource::Wood),
             LootKind::Stone => Some(Resource::Stone),
-            LootKind::Iron => Some(Resource::IronOre),
+            LootKind::IronOre => Some(Resource::IronOre),
             LootKind::Coal => Some(Resource::Coal),
+            LootKind::IronBar => Some(Resource::Iron),
+            LootKind::Oil => Some(Resource::Oil),
+            LootKind::Provisions => Some(Resource::Food),
         }
     }
 
@@ -236,6 +261,30 @@ impl LootKind {
             LootKind::Food => "Food supply",
             LootKind::Energy => "Energy supply",
             _ => self.resource().map_or("", Resource::name),
+        }
+    }
+
+    /// How much one pile holds when the editor puts it down (`data\loot.json`).
+    pub fn usual_amount(self) -> u32 {
+        let loot = &data::get().loot;
+        match self {
+            LootKind::Gold => loot.gold,
+            LootKind::Food => loot.food,
+            LootKind::Energy => loot.energy,
+            _ => loot.goods,
+        }
+    }
+
+    /// The portrait's name in `assets\ui\portraits\` (TAB has one for each of its five and the supplies).
+    pub fn portrait(self) -> &'static str {
+        match self {
+            LootKind::Gold => "LootGold",
+            LootKind::Wood => "LootWood",
+            LootKind::Stone => "LootStone",
+            LootKind::IronOre | LootKind::IronBar => "LootIron",
+            LootKind::Coal | LootKind::Oil => "LootCoal",
+            LootKind::Food | LootKind::Provisions => "LootFood",
+            LootKind::Energy => "LootEnergy",
         }
     }
 }
@@ -249,6 +298,8 @@ pub struct Loot {
     pub amount: u32,
     /// Zombies hidden around it. They come out all at once when a unit comes close – then 0.
     pub guards: u32,
+    /// The name triggers know it by (the editor's Name ID, `TriggerEvent::PickedUp`) – empty: none.
+    pub name_id: String,
 }
 
 impl World {
@@ -284,7 +335,18 @@ impl World {
     /// A pile of loot, with `guards` zombies hidden around it.
     pub fn add_loot(&mut self, pos: Vec2, kind: LootKind, amount: u32, guards: u32) {
         self.next_loot_id += 1;
-        self.loot.push(Loot { id: self.next_loot_id, pos, kind, amount, guards });
+        self.loot.push(Loot { id: self.next_loot_id, pos, kind, amount, guards, name_id: String::new() });
+    }
+
+    /// The editor puts down a pile of `kind` (`None`: rolled like the generator does) – the usual amount, and as many
+    /// guards as the generator would hide there.
+    pub(super) fn place_loot(&mut self, pos: Vec2, kind: Option<LootKind>) {
+        let guards = data::get().difficulty(&self.difficulty).loot_guards;
+        let (kind, amount, guards) = match kind {
+            None => self.roll_loot(pos, guards),
+            Some(kind) => (kind, kind.usual_amount(), self.grows_outwards(pos, guards[0], guards[1])),
+        };
+        self.add_loot(pos, kind, amount, guards);
     }
 
     /// What lies in a pile at `pos`, as the generator and the editor put it there: gold or goods (`gold_share`), and how
@@ -388,6 +450,7 @@ impl World {
             .filter(|&l| units.iter().any(|u| !u.is_inside() && u.pos.distance(self.loot[l].pos) <= LOOT_REACH))
             .collect();
         // From the back, so the indices in front stay right.
+        let mut named = Vec::new();
         for &l in picked.iter().rev() {
             let at = self.loot[l].pos;
             self.raise_guards(l, Bound::To(Lure::seen(at, tick)));
@@ -404,6 +467,12 @@ impl World {
                 }
             }
             self.score.loot_found += 1;
+            if !loot.name_id.is_empty() {
+                named.push(loot.name_id);
+            }
+        }
+        for name_id in named {
+            self.fire(&TriggerEvent::PickedUp { name_id });
         }
     }
 

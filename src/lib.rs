@@ -6,6 +6,7 @@
 
 pub mod app;
 mod aggro;
+mod attrs;
 mod audio;
 mod building_sprites;
 mod cursor;
@@ -39,6 +40,7 @@ mod placement;
 mod post;
 mod rail_planner;
 mod rng;
+mod screen;
 mod settings;
 mod sim;
 mod sprites;

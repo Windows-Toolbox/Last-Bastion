@@ -1,0 +1,16 @@
+{
+  "hit_every_seconds": 1.0,
+  "charge_steps": 36,
+  "idle": { "stand": 1300, "growl": 150, "roam": 150 },
+  "stand_seconds": 2.0,
+  "growl_seconds": 2.0,
+  "contagion_seconds": 3.95,
+  "contagion_count": 3,
+  "infected": ["Walker", "Walker", "Walker", "Armored", "Runner", "Runner", "Runner", "Runner"],
+  "cull_below": 100,
+  "cull_every_seconds": 120.0,
+  "rise_min_seconds": 2.0,
+  "rise_max_seconds": 6.0,
+  "push_seconds": 0.5,
+  "die_seconds": 1.0
+}

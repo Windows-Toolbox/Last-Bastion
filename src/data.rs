@@ -1,7 +1,8 @@
 //! All values of the game in one place: the JSON files in `data\` (DESIGN.md 12.4) – units, buildings, zombies, sound,
 //! the roaming zombies, the villages of doom, loot, the colony, the events of a new round (TAB's survival plan), and
 //! what you pick before a round (like TAB): the difficulties, the durations and the maps. What each value means is in
-//! `data\README.md`.
+//! `data\README.md`. Units, buildings and zombies have a folder each with a file per thing (`data\units\soldier.json`,
+//! and a `.md` beside it) – `read_source` puts them together into the one block the code reads.
 //!
 //! The files are built into the program (`include_str!`), so the game also runs without the folder (`dist\`). If a
 //! folder `data\` lies next to where the game is started (or next to the exe), `reload` reads it instead – before
@@ -15,13 +16,16 @@
 //! Co-op (DESIGN.md 12.8): both PCs need the same values, or they compute different games. Checking that comes with
 //! the network code.
 
+mod files;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::kinds::{BuildingKind, BuildingStats, Resource, Stats, UnitKind};
+use crate::attrs::{Attributes, Extra};
+use crate::kinds::{BuildingKind, BuildingStats, Resource, Stats, UnitKind, UpgradeBonus};
 use crate::mapgen::MapSetup;
 use crate::sim::{Breed, Event, TICKS_PER_SECOND};
 
@@ -51,6 +55,8 @@ pub struct GameData {
     pub audio: AudioData,
     /// `data\trains.json`: how TAB's train runs (`sim/trains.rs`).
     pub trains: TrainValues,
+    /// `data\upgrades.json`: the tracks of upgrades and their levels (`sim/upgrades.rs`).
+    pub upgrades: Upgrades,
 }
 
 /// `data\trains.json`: TAB's `Locomotive` and `TrainCarriage` – in the file per second, here per tick.
@@ -149,6 +155,31 @@ pub struct Research {
     pub techs: Vec<Tech>,
 }
 
+/// `data\upgrades.json`: the tracks of upgrades like StarCraft 2's (`sim/upgrades.rs`).
+#[derive(Deserialize)]
+pub struct Upgrades {
+    pub tracks: Vec<Track>,
+}
+
+/// One track: "Infantry weapons", with its levels. What a level gives is in the files of the units and buildings
+/// (`upgrades`).
+#[derive(Deserialize)]
+pub struct Track {
+    pub id: String,
+    /// Its name – the editor's page reads it from the JSON.
+    #[allow(dead_code)]
+    pub name: String,
+    /// How many levels it has (SC2: 3).
+    pub levels: u32,
+}
+
+/// What a research does to a track: it brings it to `level` (the one before has to be done: levels come in order).
+#[derive(Deserialize)]
+pub struct TechUpgrade {
+    pub track: String,
+    pub level: u32,
+}
+
 /// One research (TAB's `Tech…`): done once, in its workshop, and from then on what it unlocks can be built or trained
 /// – as long as what that `requires` stands, too.
 #[derive(Deserialize)]
@@ -164,6 +195,11 @@ pub struct Tech {
     pub slot: usize,
     #[serde(default = "one_f32")]
     pub time_factor: f32,
+    /// A map can block it (`"research.techs.3.blocked": true` in its `data`, the Data module): it isn't offered on the
+    /// workshop's card and can't be started. A script's action "Research" still grants it – a campaign gives what the
+    /// player can't research.
+    #[serde(default)]
+    pub blocked: bool,
     pub gold: u32,
     #[serde(default)]
     pub wood: u32,
@@ -184,6 +220,10 @@ pub struct Tech {
     pub needs_tech: Option<String>,
     #[serde(default)]
     pub needs_building: Option<BuildingKind>,
+    /// It raises a track of upgrades (`sim/upgrades.rs`) to this level – besides or instead of unlocking things. It is
+    /// offered when the track is one level below.
+    #[serde(default)]
+    pub upgrade: Option<TechUpgrade>,
 }
 
 impl Tech {
@@ -226,7 +266,7 @@ fn one_f32() -> f32 {
     1.0
 }
 
-/// `data\units.json`
+/// `data\units\`
 #[derive(Deserialize)]
 pub struct Units {
     pub soldier: Stats,
@@ -258,7 +298,7 @@ pub struct Units {
     pub search: u32,
 }
 
-/// How a unit becomes a veteran: every killed zombie gives its `xp` (`data\zombies.json`), split among your units
+/// How a unit becomes a veteran: every killed zombie gives its `xp` (`data\zombies\`), split among your units
 /// within `share_radius` tiles – a veteran takes half a share. `xp` of it and the unit is a veteran: `hp_percent` more hit
 /// points, `damage_percent` more damage. Mercenaries don't take a share – they are better than veterans already.
 #[derive(Deserialize)]
@@ -269,7 +309,7 @@ pub struct Veterans {
     pub damage_percent: u32,
 }
 
-/// `data\buildings.json`
+/// `data\buildings\`
 #[derive(Deserialize)]
 pub struct Buildings {
     pub command_center: BuildingStats,
@@ -320,6 +360,7 @@ pub struct Buildings {
     pub victorious: BuildingStats,
     pub transmutator: BuildingStats,
     pub crystal_palace: BuildingStats,
+    pub train_station: BuildingStats,
     /// Markets sell only what lies above this many percent of the storage (`sim/market.rs`) …
     pub sell_from_percent: u32,
     /// … at these prices (gold per unit).
@@ -394,7 +435,7 @@ pub struct Scan {
     pub power: u32,
 }
 
-/// `data\zombies.json`
+/// `data\zombies\`
 #[derive(Deserialize)]
 pub struct Zombies {
     pub walker: BreedStats,
@@ -478,7 +519,7 @@ pub struct Roaming {
 
 /// `data\sound.json`: sound like in TAB (`sim/sound.rs`): every event adds noise where it happens; it adds up and
 /// halves every second. A zombie comes by chance – the louder and the closer, the surer. The shots of your units:
-/// `noise` in `data\units.json`.
+/// `noise` in `data\units\`.
 #[derive(Deserialize)]
 pub struct SoundValues {
     /// It hears this many times as far as it sees (TAB: 4).
@@ -523,8 +564,8 @@ pub struct Mix {
 #[derive(Deserialize)]
 pub struct Doom {
     pub hp: PerNest<u32>,
-    /// This share of every shot doesn't get through, like a zombie's armor (TAB's houses: none).
-    pub armor: f32,
+    /// Armor points: they come off every shot, like a zombie's armor (TAB's houses: none).
+    pub armor: u32,
     /// How many a house lets out in all (TAB's `InfectionNestMaxUnits`), times the difficulty's population.
     pub max_units: PerNest<u32>,
     /// At most one batch every this long per house.
@@ -619,10 +660,21 @@ pub struct BreedStats {
     #[serde(default, rename = "growl_seconds", deserialize_with = "some_seconds")]
     pub growl: Option<u32>,
     pub hp: u32,
-    /// Armor like TAB's: this share of every shot doesn't get through (`after_armor`, at least 1 always does).
-    pub armor: f32,
+    /// Armor like StarCraft 2's: this many points come off every shot (`after_armor`, at least 1 always gets through).
+    #[serde(default)]
+    pub armor: u32,
+    /// What it is (`attrs.rs`): `["light", "biological"]` – what a unit's or tower's `bonus` is checked against.
+    #[serde(default)]
+    pub attributes: Attributes,
+    /// Extra damage per attribute of its target, on top of `damage` (SC2's "+10 vs Armored"): `{ "structure": 20 }`.
+    #[serde(default)]
+    pub bonus: Extra,
+    /// What one level of a track of upgrades gives it (`sim/upgrades.rs`) – the zombies' own tracks, raised by the map
+    /// or a script: damage, extra damage, armor, speed and attack speed count.
+    #[serde(default)]
+    pub upgrades: std::collections::BTreeMap<String, UpgradeBonus>,
     /// It heals itself like TAB's zombies (`LifeRegenFactor`): this share of its full hit points (rounded up) every
-    /// `regen_every_seconds` of `data\units.json`, once it hasn't been hit for `regen_after_seconds` – a zombie shot at
+    /// `regen_every_seconds` of `data\units\`, once it hasn't been hit for `regen_after_seconds` – a zombie shot at
     /// and then let go is whole again soon.
     pub regen: f32,
     /// How much fire hurts it (TAB's `FireDamageFactor` – the spitter 1.5) …
@@ -660,7 +712,7 @@ pub struct BreedStats {
     /// walkers, they hardly move it. TAB's `Mass` (unknown, estimated).
     pub mass: f32,
     /// Its hits are venom, like TAB's venom (the spitter): armor doesn't stop them, a unit takes its `venom_factor` of
-    /// them (`data\units.json`). Left out: `false` – armor counts.
+    /// them (`data\units\`). Left out: `false` – armor counts.
     #[serde(default)]
     pub venom: bool,
     /// A ranged zombie: it attacks from this far (tiles). Left out: 0 – it has to touch you.
@@ -819,7 +871,7 @@ pub struct Difficulty {
     pub loot_guards: [u32; 2],
 }
 
-/// One number of tiles per breed – named like the blocks in `zombies.json`.
+/// One number of tiles per breed – named like the blocks in `zombies\`.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct KeepOut {
     pub walker: f32,
@@ -1034,6 +1086,7 @@ impl GameData {
             BuildingKind::Victorious => &self.buildings.victorious,
             BuildingKind::Transmutator => &self.buildings.transmutator,
             BuildingKind::CrystalPalace => &self.buildings.crystal_palace,
+            BuildingKind::TrainStation => &self.buildings.train_station,
         }
     }
 
@@ -1071,7 +1124,13 @@ impl GameData {
 
     /// The values built into the program – the files as they were when it was built.
     fn built_in() -> GameData {
-        GameData::parse(BUILT_IN).unwrap_or_else(|e| panic!("the built-in data is broken: {e}"))
+        GameData::parse_texts(&built_in_texts()).unwrap_or_else(|e| panic!("the built-in data is broken: {e}"))
+    }
+
+    /// The same from texts that aren't an array (`ensure`): exactly `FILES.len()` of them.
+    fn parse_texts(texts: &[String]) -> Result<GameData, String> {
+        let list: [&str; FILES.len()] = std::array::from_fn(|i| texts[i].as_str());
+        GameData::parse(list)
     }
 
     /// The files' contents, in the order of `FILES`. The error names the file and the spot.
@@ -1095,6 +1154,7 @@ impl GameData {
             research: one(texts[12], FILES[12])?,
             audio: one(texts[13], FILES[13])?,
             trains: one(texts[14], FILES[14])?,
+            upgrades: one(texts[15], FILES[15])?,
         };
         data.research.check()?;
         // The lookups (`difficulty`, `duration`, `game_map`) need at least one of each.
@@ -1110,11 +1170,12 @@ impl GameData {
     }
 }
 
-/// The files in `data\` – a new one goes here and into `BUILT_IN`, in the same place.
-const FILES: [&str; 15] = [
-    "units.json",
-    "buildings.json",
-    "zombies.json",
+/// The files in `data\` – a new one goes here and into `BUILT_IN`, in the same place. Units, buildings and zombies are
+/// folders (`data\units\soldier.json` …, `THINGS`): a name without `.json`.
+const FILES: [&str; 16] = [
+    "units",
+    "buildings",
+    "zombies",
     "sound.json",
     "roaming.json",
     "doom.json",
@@ -1127,13 +1188,66 @@ const FILES: [&str; 15] = [
     "research.json",
     "audio.json",
     "trains.json",
+    "upgrades.json",
 ];
 
+/// The three types with a folder, a file for every thing in it: `data\units\soldier.json` is the soldier, `_general.json`
+/// has the loose values of the type. Together they are the same JSON the one file was before (`merge_things`) – so keys
+/// like `units.soldier.hp` (`Overrides`) did not change. Each thing also has a `.md` next to it that says what its
+/// values do.
+const THINGS: [&str; 3] = ["units", "buildings", "zombies"];
+
+/// A file name without `.json` – what a map's `Overrides` call the file.
+fn stem(file: &str) -> &str {
+    file.strip_suffix(".json").unwrap_or(file)
+}
+
+/// The text of one file of `FILES` out of the folder `data\`: a single file, or – for `THINGS` – every `.json` in the
+/// folder of that name, put together.
+fn read_source(folder: &std::path::Path, file: &str) -> Result<String, String> {
+    if !THINGS.contains(&file) {
+        let path = folder.join(file);
+        return std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()));
+    }
+    let dir = folder.join(file);
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if path.extension().is_some_and(|e| e == "json")
+            && let Some(name) = path.file_stem().and_then(|n| n.to_str())
+        {
+            let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            found.push((name.to_owned(), text));
+        }
+    }
+    found.sort();
+    merge_things(file, &found)
+}
+
+/// The files of a folder (`(name without .json, text)`) as the one JSON text they make: every file is the object of a
+/// thing under its name, except `_general`, whose values stand loose beside them. A broken file is named.
+fn merge_things(folder: &str, files: &[(String, String)]) -> Result<String, String> {
+    let mut root = serde_json::Map::new();
+    for (name, text) in files {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("data\\{folder}\\{name}.json: {e}"))?;
+        if name == "_general" {
+            let serde_json::Value::Object(loose) = value else {
+                return Err(format!("data\\{folder}\\_general.json: an object with values, please"));
+            };
+            root.extend(loose);
+        } else {
+            root.insert(name.clone(), value);
+        }
+    }
+    Ok(serde_json::Value::Object(root).to_string())
+}
+
 /// The files as they were when the program was built (`include_str!` only takes a written-out path, no `FILES[i]`).
+/// The folders of `THINGS` are empty here: their files are in `files.rs` (`built_in_texts` puts them together).
 const BUILT_IN: [&str; FILES.len()] = [
-    include_str!("../data/units.json"),
-    include_str!("../data/buildings.json"),
-    include_str!("../data/zombies.json"),
+    "",
+    "",
+    "",
     include_str!("../data/sound.json"),
     include_str!("../data/roaming.json"),
     include_str!("../data/doom.json"),
@@ -1146,6 +1260,7 @@ const BUILT_IN: [&str; FILES.len()] = [
     include_str!("../data/research.json"),
     include_str!("../data/audio.json"),
     include_str!("../data/trains.json"),
+    include_str!("../data/upgrades.json"),
 ];
 
 /// The values in use. A `&'static` reference to them, so `kind.stats()` can hand out references that live on.
@@ -1156,7 +1271,18 @@ static PROBLEM: Mutex<Option<String>> = Mutex::new(None);
 
 /// The values in use.
 pub fn get() -> &'static GameData {
+    // Tests run at the same time and each may play a map with values of its own: those are kept per thread (`ensure`).
+    #[cfg(test)]
+    if let Some(data) = LOCAL.with(|l| l.get()) {
+        return data;
+    }
     *DATA.read().unwrap_or_else(|e| e.into_inner())
+}
+
+// Test builds: the values of the map the test thread plays – `None`: the standard ones.
+#[cfg(test)]
+thread_local! {
+    static LOCAL: std::cell::Cell<Option<&'static GameData>> = const { std::cell::Cell::new(None) };
 }
 
 /// What was wrong with the files at the last `reload` (`None`: nothing).
@@ -1170,27 +1296,239 @@ pub fn reload() {
     let Some(folder) = folder("data") else {
         return; // no folder: the built-in values
     };
-    let read = || -> Result<GameData, String> {
+    let read = || -> Result<(GameData, Vec<String>), String> {
         let mut texts = Vec::new();
         for file in FILES {
-            let path = folder.join(file);
-            texts.push(std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?);
+            texts.push(read_source(&folder, file)?);
         }
         // `from_fn`: an array made by calling this for every place 0, 1, 2 … – here a `&str` borrowed from each `String`.
-        GameData::parse(std::array::from_fn(|i| texts[i].as_str()))
+        GameData::parse(std::array::from_fn(|i| texts[i].as_str())).map(|data| (data, texts))
     };
     let result = read();
     let mut problem = PROBLEM.lock().unwrap_or_else(|e| e.into_inner());
     match result {
-        Ok(data) => {
+        Ok((data, texts)) => {
             // The old values are never freed – a few kilobytes per round, and every reference to them stays valid.
             *DATA.write().unwrap_or_else(|e| e.into_inner()) = Box::leak(Box::new(data));
+            // These are the standard values now, with no map's overrides on them (`ensure` puts them back on).
+            *BASE.lock().unwrap_or_else(|e| e.into_inner()) = Some(texts);
+            *INSTALLED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            MADE.lock().unwrap_or_else(|e| e.into_inner()).clear();
             *problem = None;
         }
         Err(e) => *problem = Some(e),
     }
 }
 
+
+// ---- Values a map overrides (DESIGN.md 12.9, step 8: SC2's data editor, light) ----
+
+/// The files a map may override values in (`FILES` by name without `.json`). Not the ones a new round copies into its
+/// map file or that are only chosen from before a round: `spawning` (the map's events), `game_difficulties`,
+/// `game_durations`, `game_maps`.
+pub const OVERRIDABLE: [&str; 12] = ["units", "buildings", "zombies", "sound", "roaming", "doom", "loot", "colony", "research", "audio", "trains", "upgrades"];
+
+/// The values one map changes: a key like `units.soldier.hp` (file without `.json`, then the names and list places on
+/// the way down) and a number or a yes/no. Everything else comes from `data\`. Kept in the map file (`MapFile::data`),
+/// carried by `World::overrides`, and read through `ensure`: from then on `data::get()` gives the changed values for
+/// every part of the game – the same for everyone who plays the map (co-op, replays).
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Overrides(pub std::collections::BTreeMap<String, serde_json::Value>);
+
+impl Overrides {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        self.0.get(key)
+    }
+
+    /// This value is changed to `value` – `None` puts it back to what `data\` says.
+    pub fn set(&mut self, key: &str, value: Option<serde_json::Value>) {
+        match value {
+            Some(v) => {
+                self.0.insert(key.to_owned(), v);
+            }
+            None => {
+                self.0.remove(key);
+            }
+        }
+    }
+
+    /// The keys that are `prefix` or start with `prefix` and a dot: "units.soldier" → all of the soldier's.
+    pub fn under<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = (&'a String, &'a serde_json::Value)> {
+        self.0.iter().filter(move |(k, _)| k.as_str() == prefix || k.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('.')))
+    }
+}
+
+/// The files as they are now (the folder's or the built-in ones), without any map's overrides – what the editor shows
+/// as the standard, and what `ensure` starts from.
+fn base_texts() -> Vec<String> {
+    match BASE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        Some(texts) => texts.clone(),
+        None => built_in_texts(),
+    }
+}
+
+/// One file of the standard values as a JSON tree: `file` is a name from `OVERRIDABLE`. For the Data module's lists.
+pub fn base_json(file: &str) -> Option<serde_json::Value> {
+    let at = FILES.iter().position(|f| stem(f) == file)?;
+    serde_json::from_str(&base_texts()[at]).ok()
+}
+
+/// The standard value at `key` (see `Overrides`) – a number or yes/no. `None`: there is no such value.
+pub fn base_value(key: &str) -> Option<serde_json::Value> {
+    let (file, rest) = key.split_once('.')?;
+    let tree = base_json(file)?;
+    let mut at = &tree;
+    for part in rest.split('.') {
+        at = step_into(at, part)?;
+    }
+    matches!(at, serde_json::Value::Number(_) | serde_json::Value::Bool(_)).then(|| at.clone())
+}
+
+fn step_into<'a>(at: &'a serde_json::Value, part: &str) -> Option<&'a serde_json::Value> {
+    match at {
+        serde_json::Value::Object(map) => map.get(part),
+        serde_json::Value::Array(list) => list.get(part.parse::<usize>().ok()?),
+        _ => None,
+    }
+}
+
+fn step_into_mut<'a>(at: &'a mut serde_json::Value, part: &str) -> Option<&'a mut serde_json::Value> {
+    match at {
+        serde_json::Value::Object(map) => map.get_mut(part),
+        serde_json::Value::Array(list) => list.get_mut(part.parse::<usize>().ok()?),
+        _ => None,
+    }
+}
+
+/// The files with the overrides put in. A key that names nothing, a file a map may not change, or the wrong kind of
+/// value (a yes/no where there's a number) is an error that says which.
+fn apply_overrides(texts: &[String], overrides: &Overrides) -> Result<Vec<String>, String> {
+    let mut trees: Vec<Option<serde_json::Value>> = vec![None; texts.len()];
+    for (key, value) in &overrides.0 {
+        let (file, rest) = key.split_once('.').ok_or_else(|| format!("map data \"{key}\": no file named"))?;
+        if !OVERRIDABLE.contains(&file) {
+            return Err(format!("map data \"{key}\": {file}.json can't be changed per map"));
+        }
+        let at = FILES.iter().position(|f| stem(f) == file).ok_or_else(|| format!("map data \"{key}\": no such file"))?;
+        if trees[at].is_none() {
+            trees[at] = Some(serde_json::from_str(&texts[at]).map_err(|e| format!("data\\{}: {e}", FILES[at]))?);
+        }
+        let mut place = trees[at].as_mut().expect("just made");
+        let parts: Vec<&str> = rest.split('.').collect();
+        let mut put_in = false;
+        for (i, part) in parts.iter().enumerate() {
+            // A value a thing leaves out (`cost_wood` of a unit that costs none): a map may give it one – it is put in
+            // beside the others. Only a number or a yes/no, and only into an object that is there.
+            if i + 1 == parts.len()
+                && let serde_json::Value::Object(map) = place
+                && !map.contains_key(*part)
+            {
+                if !matches!(value, serde_json::Value::Number(_) | serde_json::Value::Bool(_)) {
+                    return Err(format!("map data \"{key}\": a number or yes/no, please"));
+                }
+                map.insert((*part).to_owned(), value.clone());
+                put_in = true;
+                break;
+            }
+            place = step_into_mut(place, part).ok_or_else(|| format!("map data \"{key}\": there is no such value"))?;
+        }
+        if put_in {
+            continue;
+        }
+        let new = match (&*place, value) {
+            // A whole number where the file has one: `150.0` from a drag field becomes `150`.
+            (serde_json::Value::Number(old), serde_json::Value::Number(new)) if !old.is_f64() => {
+                let whole = new.as_f64().filter(|f| f.fract() == 0.0 && f.abs() < 4e9).ok_or_else(|| format!("map data \"{key}\": a whole number, please"))?;
+                serde_json::Value::from(whole as i64)
+            }
+            (serde_json::Value::Number(_), serde_json::Value::Number(_)) | (serde_json::Value::Bool(_), serde_json::Value::Bool(_)) => value.clone(),
+            _ => return Err(format!("map data \"{key}\": that is not the kind of value the file has there")),
+        };
+        *place = new;
+    }
+    Ok(texts.iter().zip(trees).map(|(text, tree)| tree.map_or_else(|| text.clone(), |t| t.to_string())).collect())
+}
+
+/// What `ensure` last put in.
+static INSTALLED: Mutex<Option<Overrides>> = Mutex::new(None);
+/// The files built into the program, as texts (the folders of `THINGS` put together from `files.rs`).
+fn built_in_texts() -> Vec<String> {
+    FILES
+        .iter()
+        .zip(BUILT_IN)
+        .map(|(file, text)| match files::of(file) {
+            Some(list) => {
+                let list: Vec<(String, String)> = list.iter().map(|(n, t)| ((*n).to_owned(), (*t).to_owned())).collect();
+                merge_things(file, &list).unwrap_or_else(|e| panic!("the built-in data is broken: {e}"))
+            }
+            None => text.to_owned(),
+        })
+        .collect()
+}
+
+/// The standard files of the folder – `None`: the built-in ones.
+static BASE: Mutex<Option<Vec<String>>> = Mutex::new(None);
+/// Values made from overrides before – going back and forth with undo costs no new copy each time.
+static MADE: Mutex<Vec<(Overrides, &'static GameData)>> = Mutex::new(Vec::new());
+
+/// Makes `get()` give the standard values with these overrides – cheap when it's so already (every order list asks).
+/// A map with other overrides (or none) replaces the last one's. Wrong overrides: the values in use stay,
+/// `problem` says what's wrong.
+pub fn ensure(overrides: &Overrides) {
+    #[cfg(test)]
+    ensure_local(overrides);
+    #[cfg(not(test))]
+    ensure_global(overrides);
+}
+
+/// `ensure` in a test: only this thread sees the map's values – the others go on with the standard ones.
+#[cfg(test)]
+fn ensure_local(overrides: &Overrides) {
+    let data = if overrides.is_empty() {
+        None
+    } else {
+        let built = apply_overrides(&base_texts(), overrides).and_then(|changed| GameData::parse_texts(&changed));
+        Some(&*Box::leak(Box::new(built.unwrap_or_else(|e| panic!("{e}")))))
+    };
+    LOCAL.with(|l| l.set(data));
+}
+
+/// `ensure` for the game itself.
+#[cfg(not(test))]
+fn ensure_global(overrides: &Overrides) {
+    let mut installed = INSTALLED.lock().unwrap_or_else(|e| e.into_inner());
+    if installed.as_ref().unwrap_or(&Overrides::default()) == overrides {
+        return;
+    }
+    *installed = Some(overrides.clone());
+    let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    let data: &'static GameData = if let Some((_, data)) = made.iter().find(|(o, _)| o == overrides) {
+        data
+    } else {
+        let built = apply_overrides(&base_texts(), overrides).and_then(|changed| GameData::parse_texts(&changed));
+        match built {
+            Ok(data) => {
+                let data: &'static GameData = Box::leak(Box::new(data));
+                // Only a few are kept; a long editing session doesn't pile them up.
+                if made.len() >= 32 {
+                    made.remove(0);
+                }
+                made.push((overrides.clone(), data));
+                data
+            }
+            Err(e) => {
+                *PROBLEM.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
+                return;
+            }
+        }
+    };
+    *DATA.write().unwrap_or_else(|e| e.into_inner()) = data;
+}
 /// The folder `name` (`data\`, `assets\`) in the folder the game was started in, otherwise next to the exe.
 pub fn folder(name: &str) -> Option<PathBuf> {
     let here = std::env::current_dir().ok().map(|d| d.join(name));
@@ -1255,12 +1593,117 @@ mod tests {
         assert_eq!(problem(), None);
     }
 
+    /// A map's own values: put into the files they change exactly those, a wrong key or kind of value is an error that
+    /// says which – and none of the names in `data\` has a dot (a key is the names joined by dots).
+    #[test]
+    fn overrides_change_exactly_their_values() {
+        let texts = built_in_texts();
+        let mut over = Overrides::default();
+        over.set("units.soldier.hp", Some(serde_json::json!(150.0)));
+        over.set("units.soldier.windup_seconds", Some(serde_json::json!(0.5)));
+        over.set("buildings.command_center.joins", Some(serde_json::json!(true)));
+        let changed = GameData::parse_texts(&apply_overrides(&texts, &over).unwrap()).unwrap();
+        let standard = GameData::built_in();
+        assert_eq!(changed.units.soldier.hp, 150, "150.0 is a whole number: it goes into an integer field");
+        assert_eq!(changed.units.soldier.windup, 10, "0.5 s are 10 ticks");
+        assert!(changed.buildings.command_center.joins && !standard.buildings.command_center.joins, "a yes/no changes too");
+        assert_eq!(changed.units.ranger.hp, standard.units.ranger.hp, "the others stay");
+        assert_eq!(changed.units.soldier.cooldown, standard.units.soldier.cooldown);
+
+        for (key, value, what) in [
+            ("units.nonsense.hp", serde_json::json!(1), "a thing that isn't there"),
+            ("units.soldier.hp", serde_json::json!(true), "a yes/no where a number is"),
+            ("units.soldier.hp", serde_json::json!(12.5), "a fraction in a whole number"),
+            ("spawning.events.0.hour", serde_json::json!(5), "a file a map doesn't change"),
+            ("units", serde_json::json!(5), "no value named"),
+        ] {
+            let mut bad = Overrides::default();
+            bad.set(key, Some(value));
+            let error = apply_overrides(&texts, &bad).unwrap_err();
+            assert!(error.contains(key), "{what}: {error}");
+        }
+
+        // Nothing changed, nothing to write: the text stays as it was.
+        assert_eq!(apply_overrides(&texts, &Overrides::default()).unwrap(), texts);
+        assert_eq!(over.under("units.soldier").count(), 2);
+        assert_eq!(over.under("units.sold").count(), 0, "a prefix is whole names");
+    }
+
+    /// A key is the names joined by dots – so no name in `data\` may have one, or `Overrides` couldn't find its value.
+    #[test]
+    fn no_name_in_the_data_has_a_dot() {
+        fn walk(value: &serde_json::Value, path: &str, bad: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (k, v) in map {
+                        if k.contains('.') {
+                            bad.push(format!("{path}.{k}"));
+                        }
+                        walk(v, &format!("{path}.{k}"), bad);
+                    }
+                }
+                serde_json::Value::Array(list) => list.iter().enumerate().for_each(|(i, v)| walk(v, &format!("{path}.{i}"), bad)),
+                _ => {}
+            }
+        }
+        let mut bad = Vec::new();
+        for file in OVERRIDABLE {
+            walk(&base_json(file).unwrap(), file, &mut bad);
+        }
+        assert!(bad.is_empty(), "names with a dot: {bad:?}");
+        assert_eq!(base_value("units.soldier.hp"), Some(serde_json::json!(198)));
+        assert_eq!(base_value("units.soldier.name"), None, "a text isn't a value to change");
+    }
+
+    /// Every file in `data\units\`, `buildings\` and `zombies\` is built in (`files.rs`) – and every built-in one is
+    /// there – and reading the folder gives the same values as the built-in ones.
+    #[test]
+    fn the_folders_and_the_built_in_files_agree() {
+        let folder = folder("data").expect("no data folder found");
+        for kind in THINGS {
+            let mut on_disk: Vec<String> = std::fs::read_dir(folder.join(kind))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.path().file_stem().and_then(|n| n.to_str()).map(str::to_owned).filter(|_| e.path().extension().is_some_and(|x| x == "json")))
+                .collect();
+            on_disk.sort();
+            let mut built: Vec<String> = files::of(kind).unwrap().iter().map(|(n, _)| (*n).to_owned()).collect();
+            built.sort();
+            assert_eq!(on_disk, built, "data\\{kind}\\ and files.rs differ - a new file goes into files.rs too");
+            // Every thing has its description next to it.
+            for name in on_disk.iter().filter(|n| *n != "_general") {
+                assert!(folder.join(kind).join(format!("{name}.md")).is_file(), "data\\{kind}\\{name}.md is missing");
+            }
+            let text = read_source(&folder, kind).unwrap();
+            let made = built_in_texts();
+            let at = FILES.iter().position(|f| *f == kind).unwrap();
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), serde_json::from_str::<serde_json::Value>(&made[at]).unwrap(), "{kind}");
+        }
+    }
+
+    /// A value a thing leaves out can be given by a map (`cost_wood` of the soldier) – it's put in beside the others;
+    /// and `blocked` of a research is there for every tech.
+    #[test]
+    fn a_map_can_give_a_value_the_file_leaves_out() {
+        let texts = built_in_texts();
+        assert!(base_value("units.soldier.cost_wood").is_none(), "the soldier costs no wood in the file");
+        let mut over = Overrides::default();
+        over.set("units.soldier.cost_wood", Some(serde_json::json!(3)));
+        over.set("research.techs.2.blocked", Some(serde_json::json!(true)));
+        over.set("research.techs.2.wood", Some(serde_json::json!(40)));
+        let changed = GameData::parse_texts(&apply_overrides(&texts, &over).unwrap()).unwrap();
+        assert_eq!(changed.units.soldier.cost_wood, 3);
+        assert!(changed.research.techs[2].blocked && !GameData::built_in().research.techs[2].blocked);
+        assert_eq!(changed.research.techs[2].wood, 40);
+        assert!(GameData::built_in().research.techs.iter().all(|t| !t.blocked), "nothing is blocked by the standard");
+    }
+
     /// A broken file is reported with its name, not a crash.
     #[test]
     fn broken_file_names_itself() {
-        let mut texts = BUILT_IN;
-        texts[1] = "{ \"tent\": 5 }";
-        let error = GameData::parse(texts).err().unwrap();
-        assert!(error.contains("buildings.json"), "{error}");
+        let mut texts = built_in_texts();
+        texts[1] = "{ \"tent\": 5 }".to_owned();
+        let error = GameData::parse_texts(&texts).err().unwrap();
+        assert!(error.contains("buildings"), "{error}");
     }
 }

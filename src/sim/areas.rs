@@ -14,6 +14,7 @@
 use macroquad::math::Vec2;
 
 use super::{zombies, World};
+use crate::attrs::ExtraDamage;
 
 /// What one area attack does.
 pub(super) struct Blow {
@@ -29,6 +30,10 @@ pub(super) struct Blow {
     pub burn_chance: f32,
     /// Your units in it are hurt too.
     pub friendly: bool,
+    /// The weapon's extra damage against attributes (`attrs.rs`) – worked out for every zombie in it – and the debt's
+    /// share of it in thousandths (1000: all). `damage` is without the extra.
+    pub extra: ExtraDamage,
+    pub keep: u32,
 }
 
 impl World {
@@ -65,7 +70,8 @@ impl World {
         hit.sort_unstable();
         for z in hit {
             let factor = if blow.fire { self.zombies[z].breed.stats().fire_factor } else { 1.0 };
-            let damage = (blow.damage as f32 * share(self.zombies[z].pos) * factor).round() as u32;
+            let full = blow.damage + blow.extra.against(self.zombies[z].attributes()) * blow.keep / 1000;
+            let damage = (full as f32 * share(self.zombies[z].pos) * factor).round() as u32;
             if damage > 0 {
                 self.hit_zombie(z, damage, blow.shooter, blow.by);
             }
@@ -79,7 +85,8 @@ impl World {
         let tick = self.tick;
         for unit in self.units.iter_mut().filter(|u| u.id != blow.shooter && u.hp > 0 && !u.is_inside() && inside(u.pos)) {
             let factor = if blow.fire { unit.stats().fire_factor } else { 1.0 };
-            let damage = (blow.damage as f32 * share(unit.pos) * factor).round() as u32;
+            let full = blow.damage + blow.extra.against(unit.attributes()) * blow.keep / 1000;
+            let damage = (full as f32 * share(unit.pos) * factor).round() as u32;
             if damage > 0 {
                 unit.take_hit(damage, tick);
             }

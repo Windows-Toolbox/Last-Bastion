@@ -80,6 +80,7 @@ impl History {
             edit(&mut rebuilt, orders);
         }
         *world = rebuilt;
+        world.use_data();
         self.undone.push(step);
         self.open = false;
         true

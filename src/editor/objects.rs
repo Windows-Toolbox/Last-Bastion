@@ -14,7 +14,7 @@ use macroquad::math::Vec2;
 
 use super::{section, section_from, settled, settled_text, Editor, EditorRequest, Filter, Origin, Tool};
 use crate::kinds::{BuildingKind, UnitKind};
-use crate::sim::{Neutral, Nest, Order, OrnamentKind, Owner, Piece, Tag, Thing, ThingRef, TriggerEvent, World};
+use crate::sim::{LootKind, Neutral, Nest, Order, OrnamentKind, Owner, Piece, Tag, Thing, ThingRef, Tweak, TriggerEvent, World, MOST_ARMOR, MOST_LIFE, PERCENT};
 
 /// A line of the catalog and its picture (points).
 const ITEM_H: f32 = 30.0;
@@ -158,7 +158,11 @@ fn catalog(look: &str) -> Vec<Entry> {
     list.extend(OrnamentKind::SITES.into_iter().chain(towers).map(|kind| ornament(kind, Group::Decor)));
     list.push(Entry { tool: Tool::RailPlanner, group: Group::Railway, name: "Rail planner (like Factorio)".to_owned(), art: "decor/rail_curve_ne".to_owned(), size: None });
     list.extend(OrnamentKind::RAILWAY.into_iter().map(|kind| ornament(kind, Group::Railway)));
-    list.push(Entry { tool: Tool::Loot, group: Group::Loot, name: "Loot".to_owned(), art: "ui/portraits/LootGold".to_owned(), size: None });
+    // Every kind of pile – with its usual amount; what it holds can be changed once it lies there (`loot_section`).
+    for kind in LootKind::ALL {
+        list.push(Entry { tool: Tool::Loot(Some(kind)), group: Group::Loot, name: kind.name().to_owned(), art: format!("ui/portraits/{}", kind.portrait()), size: None });
+    }
+    list.push(Entry { tool: Tool::Loot(None), group: Group::Loot, name: "Loot (random)".to_owned(), art: "ui/portraits/LootRandom".to_owned(), size: None });
     list
 }
 
@@ -190,9 +194,8 @@ impl Editor {
             }
             found += shown.len();
             let title = RichText::new(format!("{} ({})", group.name(), shown.len())).strong();
-            // The big groups start open, the rest folded – a search or a filter opens what it found.
-            let open = matches!(group, Group::Colony | Group::Defense | Group::Units);
-            let mut header = CollapsingHeader::new(title).id_salt(("catalog", group.name())).default_open(open);
+            // Every group starts folded – a search or a filter opens what it found.
+            let mut header = CollapsingHeader::new(title).id_salt(("catalog", group.name())).default_open(false);
             if !search.is_empty() || self.chip != Chip::All {
                 header = header.open(Some(true));
             }
@@ -214,6 +217,11 @@ impl Editor {
                 for (owner, text, hint) in OWNERS {
                     ui.selectable_value(&mut self.place_owner, owner, text).on_hover_text(hint);
                 }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Position");
+                ui.selectable_value(&mut self.place_on_grid, false, "Free").on_hover_text("Units and loot go exactly where the mouse points");
+                ui.selectable_value(&mut self.place_on_grid, true, "Grid").on_hover_text("Units and loot go onto the middle of the tile under the mouse");
             });
             ui.label(RichText::new("Shift: keep it in hand for the next one - R turns a gate - drag: a line of buildings.").small().weak());
         });
@@ -298,6 +306,74 @@ impl Editor {
         });
     }
 
+    /// The right panel's part for one selected pile of loot: what it holds – kind and amount –, how many zombies are
+    /// hidden around it, and the name ID triggers know it by ("When it is picked up"). `false`: no pile is selected.
+    pub(super) fn loot_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) -> bool {
+        let piles: Vec<u32> = self.selection.iter().filter_map(|p| if let Piece::Loot(id) = *p { world.find_loot(id).map(|_| id) } else { None }).collect();
+        let [id] = piles[..] else {
+            return !piles.is_empty();
+        };
+        let Some(pile) = world.find_loot(id).map(|l| &world.loot[l]) else {
+            return false;
+        };
+        let art = format!("ui/portraits/{}", pile.kind.portrait());
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(44.0), Sense::hover());
+            self.thumbs.paint(ui, rect, &art, pile.kind.name());
+            ui.vertical(|ui| {
+                ui.label(RichText::new(format!("Loot: {}", pile.kind.name())).strong().size(17.0));
+                ui.label(RichText::new(format!("#{id} - tile {}, {}", pile.pos.x.floor() as i32, pile.pos.y.floor() as i32)).small().weak());
+            });
+        });
+        section_from(ui, "Loot", Some(Origin::New), "what lies there, and who guards it", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Locate").clicked() {
+                    self.request = Some(EditorRequest::Locate(pile.pos));
+                }
+                if ui.button("Delete").clicked() {
+                    orders.push(Order::RemovePieces { pieces: vec![Piece::Loot(id)] });
+                    self.select = Some((Vec::new(), false));
+                }
+            });
+            let set = |kind: LootKind, amount: u32, guards: u32, name_id: &str| Order::SetLoot { id, kind, amount, guards, name_id: name_id.to_owned() };
+            let mut kind = pile.kind;
+            egui::ComboBox::from_id_salt(("loot kind", id)).selected_text(kind.name()).show_ui(ui, |ui| {
+                for k in LootKind::ALL {
+                    ui.selectable_value(&mut kind, k, k.name());
+                }
+            });
+            if kind != pile.kind {
+                // The usual amount of the new kind, unless the amount was changed by hand.
+                let amount = if pile.amount == pile.kind.usual_amount() { kind.usual_amount() } else { pile.amount };
+                orders.push(set(kind, amount, pile.guards, &pile.name_id));
+            }
+            egui::Grid::new(("loot values", id)).num_columns(2).show(ui, |ui| {
+                ui.label("Amount").on_hover_text("Gold, goods - or what the command center makes more per payout, for a supply");
+                if let Some(amount) = settled(ui, pile.amount, |v| DragValue::new(v).range(1..=1_000_000).speed(5)) {
+                    orders.push(set(pile.kind, amount, pile.guards, &pile.name_id));
+                }
+                ui.end_row();
+                ui.label("Guards").on_hover_text("Zombies hidden around it - they come out when a unit comes close");
+                if let Some(guards) = settled(ui, pile.guards, |v| DragValue::new(v).range(0..=500)) {
+                    orders.push(set(pile.kind, pile.amount, guards, &pile.name_id));
+                }
+                ui.end_row();
+                ui.label("Name ID").on_hover_text("The name the triggers know it by");
+                if let Some(text) = settled_text(ui, &pile.name_id, false) {
+                    orders.push(set(pile.kind, pile.amount, pile.guards, &text));
+                }
+                ui.end_row();
+            });
+            if pile.name_id.is_empty() {
+                ui.label(RichText::new("Give it a name ID to attach triggers.").small().weak());
+            } else {
+                let picked = TriggerEvent::PickedUp { name_id: pile.name_id.clone() };
+                crate::story_panel::linked_triggers(ui, egui::Id::new(("loot triggers", id)), world, orders, &picked, "When it is picked up");
+            }
+        });
+        true
+    }
+
     /// The selected buildings, units and neutral things that are (still) on the map.
     pub(super) fn things(&self, world: &World) -> Vec<ThingRef> {
         let thing = |piece: &Piece| match *piece {
@@ -309,6 +385,163 @@ impl Editor {
         self.selection.iter().filter_map(thing).filter(|&t| world.thing_center(t).is_some()).collect()
     }
 
+    /// "Combat values": the selected units' and buildings' own hit points, damage, attack speed, range, sight, speed and armor,
+    /// as percents of their kind's (`sim/tweak.rs`, `Order::SetTweak`) – a change goes to all of them. A map's values for a whole
+    /// kind are in the Data module.
+    fn combat_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>, things: &[ThingRef]) {
+        let units: Vec<(ThingRef, Tweak)> = things
+            .iter()
+            .filter_map(|&thing| match thing {
+                ThingRef::Unit(id) => world.find_unit(id).map(|i| (thing, world.units[i].tweak)),
+                ThingRef::Building(id) => world.find_building(id).map(|i| (thing, world.buildings[i].tweak)),
+                ThingRef::Neutral(_) => None,
+            })
+            .collect();
+        if units.is_empty() {
+            return;
+        }
+        // The field's name, where it is in a `Tweak`, and what it does.
+        type Get = fn(&Tweak) -> &u16;
+        type Put = fn(&mut Tweak) -> &mut u16;
+        const FIELDS: [(&str, Get, Put, &str); 5] = [
+            ("Damage", |t| &t.damage, |t| &mut t.damage, "Damage of every shot"),
+            ("Attack speed", |t| &t.attack_speed, |t| &mut t.attack_speed, "150 % shoots one and a half times as often: all the times of the weapon get shorter"),
+            ("Range", |t| &t.range, |t| &mut t.range, "How far it shoots"),
+            ("Sight", |t| &t.sight, |t| &mut t.sight, "How far it sees"),
+            ("Speed", |t| &t.speed, |t| &mut t.speed, "How fast it walks"),
+        ];
+        // What a thing can do: only units walk, only units and towers shoot.
+        let walks = units.iter().any(|(thing, _)| matches!(thing, ThingRef::Unit(_)));
+        let shoots = units.iter().any(|&(thing, _)| match thing {
+            ThingRef::Unit(_) => true,
+            ThingRef::Building(id) => world.find_building(id).is_some_and(|i| world.buildings[i].stats().weapon.is_some()),
+            ThingRef::Neutral(_) => false,
+        });
+        // A shield only where a thing has or may have one: buildings (a wall has only a shield).
+        let shows_shield = units.iter().any(|&(thing, _)| matches!(thing, ThingRef::Building(_)));
+        let title = if units.len() == 1 { "Combat values".to_owned() } else { format!("Combat values ({} things)", units.len()) };
+        section_from(ui, &title, Some(Origin::New), "life and armor in points, the rest in percent of what its kind has - 100 changes nothing", |ui| {
+            egui::Grid::new("combat values").num_columns(2).show(ui, |ui| {
+                // Hit points and shield are numbers: 800 and 200 make a life of 1000. A wall has only a shield; it falls
+                // when both are 0. What it has now is shown (its kind's if the editor didn't change it).
+                let life = |thing: ThingRef| -> (u32, u32) {
+                    match thing {
+                        ThingRef::Unit(id) => world.find_unit(id).map_or((0, 0), |i| (world.units[i].max_hp(), 0)),
+                        ThingRef::Building(id) => world.find_building(id).map_or((0, 0), |i| (world.buildings[i].max_hp(), world.buildings[i].max_shield())),
+                        ThingRef::Neutral(_) => (0, 0),
+                    }
+                };
+                // The kind's own, to write `None` when a field is set back to it.
+                let kinds = |thing: ThingRef| -> (u32, u32) {
+                    match thing {
+                        ThingRef::Unit(id) => world.find_unit(id).map_or((0, 0), |i| (world.units[i].stats().hp, 0)),
+                        ThingRef::Building(id) => world.find_building(id).map_or((0, 0), |i| (world.buildings[i].stats().hp, world.buildings[i].stats().max_shield())),
+                        ThingRef::Neutral(_) => (0, 0),
+                    }
+                };
+                for (name, shield) in [("Hit points", false), ("Shield", true)] {
+                    if shield && !shows_shield {
+                        continue;
+                    }
+                    ui.label(name).on_hover_text(if shield { "A building's shield - zombies hit it first" } else { "Hit points - a wall may have 0 and only a shield" });
+                    ui.horizontal(|ui| {
+                        let pick = |thing: ThingRef| if shield { life(thing).1 } else { life(thing).0 };
+                        let first = pick(units[0].0);
+                        if let Some(points) = settled(ui, first, |v| DragValue::new(v).range(0..=MOST_LIFE).speed(5.0)) {
+                            for &(thing, mut tweak) in &units {
+                                let own = if shield { kinds(thing).1 } else { kinds(thing).0 };
+                                let value = (points != own).then_some(points);
+                                if shield {
+                                    tweak.shield = value;
+                                } else {
+                                    tweak.hp = value;
+                                }
+                                orders.push(Order::SetTweak { thing, tweak });
+                            }
+                        }
+                        if units.iter().any(|&(t, _)| pick(t) != first) {
+                            ui.label(RichText::new("mixed").weak());
+                        }
+                    });
+                    ui.end_row();
+                }
+                if shows_shield {
+                    ui.label("Life").on_hover_text("Hit points and shield together - it falls when both are 0");
+                    ui.label(RichText::new(format!("{} in all", life(units[0].0).0 + life(units[0].0).1)).strong());
+                    ui.end_row();
+                }
+                // Armor is a number of points too: they come off every hit. A building's shield has its own (the hit points
+                // keep theirs). What it has now is shown (its kind's if the editor didn't change it) – upgrades come on top.
+                let armors = |thing: ThingRef, kind: bool| -> (u32, u32) {
+                    match thing {
+                        ThingRef::Unit(id) => world.find_unit(id).map_or((0, 0), |i| {
+                            let u = &world.units[i];
+                            (if kind { u.stats().armor } else { u.tweak.armor_of(u.stats().armor) }, 0)
+                        }),
+                        ThingRef::Building(id) => world.find_building(id).map_or((0, 0), |i| {
+                            let b = &world.buildings[i];
+                            let s = b.stats();
+                            if kind { (s.armor, s.shield_armor) } else { (b.tweak.armor_of(s.armor), b.tweak.shield_armor_of(s.shield_armor)) }
+                        }),
+                        ThingRef::Neutral(_) => (0, 0),
+                    }
+                };
+                for (name, shield) in [("Armor", false), ("Shield armor", true)] {
+                    if shield && !shows_shield {
+                        continue;
+                    }
+                    ui.label(name).on_hover_text(if shield {
+                        "Armor points of the shield: they come off every hit that lands on it"
+                    } else {
+                        "Armor points: they come off every hit (at least 1 gets through)"
+                    });
+                    ui.horizontal(|ui| {
+                        let pick = |thing: ThingRef| if shield { armors(thing, false).1 } else { armors(thing, false).0 };
+                        let first = pick(units[0].0);
+                        if let Some(points) = settled(ui, first, |v| DragValue::new(v).range(0..=MOST_ARMOR).speed(0.2)) {
+                            for &(thing, mut tweak) in &units {
+                                let own = if shield { armors(thing, true).1 } else { armors(thing, true).0 };
+                                let value = (points != own).then_some(points);
+                                if shield {
+                                    tweak.shield_armor = value;
+                                } else {
+                                    tweak.armor = value;
+                                }
+                                orders.push(Order::SetTweak { thing, tweak });
+                            }
+                        }
+                        if units.iter().any(|&(t, _)| pick(t) != first) {
+                            ui.label(RichText::new("mixed").weak());
+                        }
+                    });
+                    ui.end_row();
+                }
+                for (name, get, put, hint) in FIELDS {
+                    if (name == "Speed" && !walks) || (matches!(name, "Damage" | "Attack speed" | "Range") && !shoots) {
+                        continue;
+                    }
+                    ui.label(name).on_hover_text(hint);
+                    ui.horizontal(|ui| {
+                        let first = *get(&units[0].1);
+                        if let Some(percent) = settled(ui, first, |v| DragValue::new(v).range(PERCENT).suffix(" %")) {
+                            for &(thing, mut tweak) in &units {
+                                *put(&mut tweak) = percent;
+                                orders.push(Order::SetTweak { thing, tweak });
+                            }
+                        }
+                        if units.iter().any(|(_, t)| get(t) != get(&units[0].1)) {
+                            ui.label(RichText::new("mixed").weak());
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            if units.iter().any(|(_, t)| !t.is_default()) && ui.button("Back to its kind's values").clicked() {
+                orders.extend(units.iter().map(|&(thing, _)| Order::SetTweak { thing, tweak: Tweak::default() }));
+            }
+        });
+    }
+
     /// The right panel's part for placed things: one selected – all its properties; several – the ones they share.
     /// `false`: none is selected.
     pub(super) fn things_section(&mut self, ui: &mut Ui, world: &World, orders: &mut Vec<Order>) -> bool {
@@ -318,6 +551,7 @@ impl Editor {
             [thing] => self.object_section(ui, world, orders, *thing),
             many => self.many_section(ui, world, orders, many),
         }
+        self.combat_section(ui, world, orders, &things);
         true
     }
 
@@ -615,7 +849,7 @@ fn cells(world: &World, row: Row) -> Cells {
         Row::Building(b) => {
             let b = &world.buildings[b];
             let kind = if b.infected { format!("{kind} (infected)") } else { kind.to_owned() };
-            Cells { piece: Piece::Building(b.id), kind, name_id: name_id(b.tag.as_deref()), at: b.center(), tile: b.tile, owner: "Colony", life: percent(b.hp, b.stats().hp), scripts: String::new() }
+            Cells { piece: Piece::Building(b.id), kind, name_id: name_id(b.tag.as_deref()), at: b.center(), tile: b.tile, owner: "Colony", life: percent(b.hp, b.max_hp()), scripts: String::new() }
         }
         Row::Unit(u) => {
             let u = &world.units[u];
@@ -641,7 +875,7 @@ fn cells(world: &World, row: Row) -> Cells {
         Row::Loot(l) => {
             let l = &world.loot[l];
             let kind = format!("{kind} - {:?}", l.kind);
-            Cells { piece: Piece::Loot(l.id), kind, name_id: String::new(), at: l.pos, tile: floor(l.pos), owner: "-", life: "-".to_owned(), scripts: format!("{} in it, {} guards", l.amount, l.guards) }
+            Cells { piece: Piece::Loot(l.id), kind, name_id: l.name_id.clone(), at: l.pos, tile: floor(l.pos), owner: "-", life: "-".to_owned(), scripts: format!("{} in it, {} guards", l.amount, l.guards) }
         }
     }
 }
@@ -702,7 +936,7 @@ pub(super) fn describe(world: &World, thing: ThingRef) -> Facts {
         ThingRef::Building(id) => {
             let b = world.buildings.iter().find(|b| b.id == id).expect("looked up before");
             let (name, art, clone) = building(b.kind);
-            let (percent, mark) = (percent(b.hp, b.stats().hp), Some(("Infected", b.infected)));
+            let (percent, mark) = (percent(b.hp, b.max_hp()), Some(("Infected", b.infected)));
             Facts { thing, id, name, art, owner: Owner::Colony, percent, mark, clone, at: b.center(), tile: b.tile, size: Some(b.kind.footprint(b.turned)) }
         }
         ThingRef::Unit(id) => {

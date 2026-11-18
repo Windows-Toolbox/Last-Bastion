@@ -20,7 +20,7 @@
 //! that aren't after anything go for the shooter (`zombie_hit_by`). The delays are TAB's on purpose: a crowd doesn't
 //! turn as one.
 //!
-//! The numbers (sight, how often they look, their ranks, how they idle …) are in `data\zombies.json`. Here only what
+//! The numbers (sight, how often they look, their ranks, how they idle …) are in `data\zombies\`. Here only what
 //! isn't a game value but how the crowd is computed.
 //!
 //! **Calm zombies are cheap** (`is_calm`): most of the horde only idles around its place, far from everything. Such a
@@ -44,7 +44,8 @@ use super::terrain::nearest_free_tile;
 use super::crowd::{rock_ticks, UNIT_MASS};
 use super::fallen::Fling;
 use super::fx::{Fx, Struck};
-use super::{after_armor, clear_line, Building, World, TICK, TICKS_PER_SECOND, UNIT_RADIUS};
+use super::{after_armor, clear_line, Bonus, Building, Tweak, World, TICK, TICKS_PER_SECOND, UNIT_RADIUS};
+use crate::attrs::{Attribute, ExtraDamage};
 use crate::data::{self, BreedStats};
 use crate::kinds::BuildingKind;
 use crate::lure::LureField;
@@ -156,13 +157,20 @@ pub struct Zombie {
     pub(super) leap: Option<Leap>,
     /// Ticks left of a giant's roar (`roar_every_seconds`) – it stands still meanwhile.
     pub(super) roar: u32,
-    /// Which of its breed's skins it wears (`skins` in `data\zombies.json`, `sprites.rs`) – only for the picture, the
+    /// Which of its breed's skins it wears (`skins` in `data\zombies\`, `sprites.rs`) – only for the picture, the
     /// simulation never looks at it. Fixed for life, also while it sleeps (`Sleeper`).
     pub look: u8,
     /// Ticks it still burns – Lucifer's fire set it alight (`fire.rs`). 0: it doesn't.
     pub burning: u32,
+    /// A boss (the editor's Boss tool): its own combat values as percents of its breed's – hit points, damage, attack
+    /// speed, speed, armor (`tweak.rs`). `Box`: nearly every zombie has none. Damage doesn't reach the ranged breeds'
+    /// shots yet.
+    pub boss: Option<Box<Tweak>>,
     /// Killed by a blow that throws (`push`, `fallen.rs`): how its body flies. Default: it doesn't.
     pub(super) fling: Fling,
+    /// What the levels of the zombies' upgrade tracks give it (`upgrades.rs`) – and the `upgrade_rev` they are from.
+    pub up: Bonus,
+    pub(super) up_rev: u32,
 }
 
 /// A skin number out of any number – the same number always gives the same skin, neighbouring numbers very
@@ -278,7 +286,7 @@ impl Lure {
     }
 }
 
-/// What kind of zombie (DESIGN.md 8.1). Most of them only differ in their numbers (`data\zombies.json`); the ranged
+/// What kind of zombie (DESIGN.md 8.1). Most of them only differ in their numbers (`data\zombies\`); the ranged
 /// ones (`range`) attack from afar (`ranged.rs`). `Serialize, Deserialize`: can be written into a map file
 /// (`mapfile.rs`) and named in `data\` – by these names, whatever `name` the game shows. TAB's breeds are ours like
 /// this: WeakA/B/C → walker, WorkerA/B and MediumA/B → runner, DressedA → riot, StrongA (Chubby) → fat, Venom →
@@ -331,13 +339,13 @@ impl Breed {
         self as usize
     }
 
-    /// The name the game shows – from `data\zombies.json`. `&'static`: the values live as long as the program
+    /// The name the game shows – from `data\zombies\`. `&'static`: the values live as long as the program
     /// (`data::get`).
     pub fn name(self) -> &'static str {
         &self.stats().name
     }
 
-    /// Does it attack from afar (`range` in `data\zombies.json`)?
+    /// Does it attack from afar (`range` in `data\zombies\`)?
     pub fn is_ranged(self) -> bool {
         self.stats().range > 0.0
     }
@@ -377,6 +385,44 @@ impl Breed {
 }
 
 impl Zombie {
+    /// Full hit points: its breed's, or a boss's own.
+    pub fn max_hp(&self) -> u32 {
+        let hp = self.breed.stats().hp;
+        self.boss.as_ref().and_then(|t| t.hp).unwrap_or(hp).max(1)
+    }
+
+    /// Its armor points: its breed's (a boss's own number instead), and what the upgrades give on top.
+    pub fn armor(&self) -> u32 {
+        let armor = self.breed.stats().armor;
+        self.boss.as_ref().map_or(armor, |t| t.armor_of(armor)) + self.up.armor
+    }
+
+    /// The damage of one blow before the target's attributes: its breed's and the upgrades', with a boss's percent.
+    pub fn damage(&self) -> u32 {
+        let damage = self.breed.stats().damage + self.up.damage;
+        self.boss.as_ref().map_or(damage, |t| Tweak::scale(damage, t.damage))
+    }
+
+    /// What it is (`attrs.rs`).
+    pub fn attributes(&self) -> &'static [Attribute] {
+        &self.breed.stats().attributes
+    }
+
+    /// Its extra damage against attributes, upgrades included (`attrs.rs`).
+    pub fn extra(&self) -> ExtraDamage {
+        ExtraDamage::new(&self.breed.stats().bonus, self.up.bonus_damage)
+    }
+
+    /// One blow against a target with these attributes: `damage` and the extra damage against them.
+    pub fn damage_against(&self, target: &[Attribute]) -> u32 {
+        self.damage() + self.extra().against(target)
+    }
+
+    /// A time of its attack (ticks) with a boss's attack speed and the upgrades'.
+    pub fn quicker(&self, ticks: u32) -> u32 {
+        self.boss.as_ref().map_or(Tweak::default(), |t| **t).quicker_with(ticks, self.up.attack)
+    }
+
     pub fn is_alive(&self) -> bool {
         self.hp > 0
     }
@@ -390,6 +436,11 @@ impl Zombie {
     pub(super) fn hurt(&mut self, damage: u32, tick: u64) {
         self.hp = self.hp.saturating_sub(damage);
         self.hurt_at = tick;
+    }
+
+    /// Cured by `points`, up to full hit points (a script's `CureAll`).
+    pub(super) fn heal(&mut self, points: u32) {
+        self.hp = (self.hp + points).min(self.max_hp()).max(self.hp);
     }
 
     /// Its own speed (tiles per second) – for the panel when it's clicked.
@@ -497,6 +548,9 @@ impl World {
             look: look_from(id),
             fling: Fling::default(),
             burning: 0,
+            boss: None,
+            up: Bonus::default(),
+            up_rev: 0,
         });
     }
 
@@ -509,7 +563,7 @@ impl World {
         }
     }
 
-    /// One of TAB's infected at random (`infected` in `data\zombies.json`) – out of an infected building, out of one
+    /// One of TAB's infected at random (`infected` in `data\zombies\`) – out of an infected building, out of one
     /// of your fallen units.
     pub(super) fn infected_breed(&mut self) -> Breed {
         let breeds = &values().infected;
@@ -766,9 +820,9 @@ impl World {
             // A new attack: the animation starts now (`since_hit`), the blow lands after its wind-up – always before
             // the next attack could start.
             if let Some(at) = swing_at {
-                let attack = zombie.breed.attack_ticks();
+                let attack = zombie.quicker(zombie.breed.attack_ticks());
                 zombie.cooldown = attack;
-                zombie.swing = Some(Swing { at, left: zombie.breed.stats().windup.min(attack - 1) });
+                zombie.swing = Some(Swing { at, left: zombie.quicker(zombie.breed.stats().windup).min(attack - 1) });
             }
             if let Some(swing) = zombie.swing.as_mut() {
                 if swing.left == 0 {
@@ -791,8 +845,8 @@ impl World {
         for b in infected {
             self.infect(b);
         }
-        for (from, breed, hit) in shots {
-            self.zombie_shoots(from, breed, hit);
+        for (from, breed, hit, damage, extra) in shots {
+            self.zombie_shoots(from, breed, hit, damage, extra);
         }
         // The grid now matches the new positions – the units look up their zombies in it afterwards.
         self.fill_zombie_grid();
@@ -812,7 +866,7 @@ impl World {
     /// The blow makes its noise (`sound.rs`: it brings zombies and wakes sleepers, but doesn't add to your colony's
     /// unrest) and its sound (`audio.rs`). Buildings whose shield breaks go into `infected`, the ranged ones' shots into
     /// `shots` – both need all of `self`, after the crowd walked.
-    fn blow(&mut self, z: usize, at: Aim, infected: &mut Vec<usize>, shots: &mut Vec<(Vec2, Breed, Hit)>) {
+    fn blow(&mut self, z: usize, at: Aim, infected: &mut Vec<usize>, shots: &mut Vec<(Vec2, Breed, Hit, u32, ExtraDamage)>) {
         let (pos, breed, radius) = (self.zombies[z].pos, self.zombies[z].breed, self.zombies[z].radius);
         let stats = breed.stats();
         let hit = match at {
@@ -825,6 +879,12 @@ impl World {
                 _ => return,
             },
         };
+        // Its blow against what it hits: the extra damage against that one's attributes (`attrs.rs`).
+        let attributes = match hit {
+            Hit::Unit(u) => self.units[u].attributes(),
+            Hit::Building(b) => self.buildings[b].attributes(),
+        };
+        let damage = self.zombies[z].damage_against(attributes);
         let claw = !breed.is_ranged() && stats.sweep_radius <= 0.0;
         if let Hit::Unit(u) = hit
             && claw
@@ -840,11 +900,11 @@ impl World {
         };
         self.fx.push(Fx::ZombieStruck { at: pos, breed, what });
         match hit {
-            _ if breed.is_ranged() => shots.push((pos, breed, hit)),
+            _ if breed.is_ranged() => shots.push((pos, breed, hit, self.zombies[z].damage(), self.zombies[z].extra())),
             _ if stats.sweep_radius > 0.0 => self.sweep(z, hit, infected),
-            Hit::Unit(u) => self.units[u].take_hit(stats.damage, self.tick),
+            Hit::Unit(u) => self.units[u].take_hit(damage, self.tick),
             Hit::Building(b) => {
-                if self.buildings[b].take_damage(stats.damage) {
+                if self.buildings[b].take_damage(damage) {
                     infected.push(b);
                 }
             }
@@ -859,7 +919,7 @@ impl World {
     pub(super) fn sweep(&mut self, z: usize, hit: Hit, infected: &mut Vec<usize>) {
         let (from, breed) = (self.zombies[z].pos, self.zombies[z].breed);
         let stats = breed.stats();
-        let (damage, radius, tick) = (stats.damage, stats.sweep_radius, self.tick);
+        let (damage, extra, radius, tick) = (self.zombies[z].damage(), self.zombies[z].extra(), stats.sweep_radius, self.tick);
         // The point of a building nearest to it – its target, and how far any building is.
         let nearest = |b: &Building| from.clamp(b.corner(), b.far_corner());
         let aim = match hit {
@@ -878,7 +938,7 @@ impl World {
         let push = stats.push;
         for (u, unit) in self.units.iter_mut().enumerate() {
             if unit.hp > 0 && !unit.is_inside() && (hit == Hit::Unit(u) || in_arc(unit.pos, UNIT_RADIUS)) {
-                unit.take_hit(damage, tick);
+                unit.take_hit(damage + extra.against(unit.attributes()), tick);
                 if unit.hp == 0 && push > 0.0 {
                     unit.fling = Fling::new(from, unit.pos, push, UNIT_MASS);
                 }
@@ -887,14 +947,14 @@ impl World {
         for (b, building) in self.buildings.iter_mut().enumerate() {
             let target = hit == Hit::Building(b);
             let open = building.hp > 0 && !building.zombies_ignore();
-            if open && (target || in_arc(nearest(building), 0.0)) && building.take_damage(damage) {
+            if open && (target || in_arc(nearest(building), 0.0)) && building.take_damage(damage + extra.against(building.attributes())) {
                 infected.push(b);
             }
         }
         if stats.sweep_hits_zombies {
             for (j, other) in self.zombies.iter_mut().enumerate() {
                 if j != z && other.is_alive() && other.leap.is_none() && in_arc(other.pos, other.radius) {
-                    other.hurt(after_armor(damage, other.breed.stats().armor), tick);
+                    other.hurt(after_armor(damage + extra.against(other.attributes()), other.armor()), tick);
                     if !other.is_alive() && push > 0.0 {
                         other.fling = Fling::new(from, other.pos, push, other.breed.stats().mass);
                     }
@@ -1396,7 +1456,7 @@ impl World {
         }
     }
 
-    /// A harpy (`jump` in `data\zombies.json`) about to hit a wall or a gate leaps over it instead – if what it is after
+    /// A harpy (`jump` in `data\zombies\`) about to hit a wall or a gate leaps over it instead – if what it is after
     /// lies behind it: `goal`, where it's heading (otherwise the command center). Straight towards that it looks for
     /// free ground behind the wall, at most `jump` tiles of wall away: where it lands (the middle of that tile). Not
     /// over anything else – a house, a tower, water, a mountain, a forest, a wall too thick: it hits.
@@ -1491,7 +1551,7 @@ impl World {
     }
 }
 
-/// The zombies' values from `data\zombies.json`.
+/// The zombies' values from `data\zombies\`.
 pub(super) fn values() -> &'static data::Zombies {
     &data::get().zombies
 }

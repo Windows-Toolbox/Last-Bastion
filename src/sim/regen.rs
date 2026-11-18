@@ -1,4 +1,4 @@
-//! Healing themselves, like TAB's `CLife`: every `regen_every_seconds` (`data\units.json`) every unit and zombie
+//! Healing themselves, like TAB's `CLife`: every `regen_every_seconds` (`data\units\`) every unit and zombie
 //! that hasn't been hit for `regen_after_seconds` gets its `regen` share of its full hit points back, rounded up
 //! (TAB's `LifeRegenerationPerPeriod`: a walker 3 of 35, a giant 50 of 10,000) – each one on its own tick, by its
 //! number. Asleep they heal too: what they would have got is added when they wake (`sleep.rs`).
@@ -25,7 +25,8 @@ impl World {
         }
         for zombie in self.zombies.iter_mut().filter(|z| z.is_alive() && due(z.id, z.hurt_at)) {
             let stats = zombie.breed.stats();
-            zombie.hp = (zombie.hp + regen_amount(stats.hp, stats.regen)).min(stats.hp);
+            let max = zombie.max_hp();
+            zombie.hp = (zombie.hp + regen_amount(max, stats.regen)).min(max);
         }
     }
 }

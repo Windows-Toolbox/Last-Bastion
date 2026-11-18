@@ -1,0 +1,22 @@
+{
+  "name": "Lookout Tower",
+  "letter": "LT",
+  "skins": ["buildings/lookout_tower"],
+  "explosion": ["wood_medium"],
+  "size": [1, 1],
+  "hp": 225,
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 1,
+  "cost": 300,
+  "cost_wood": 10,
+  "requires": "WoodWorkshop",
+  "sees_through_forest": true,
+  "build_seconds": 36.4,
+  "sight": 24.0,
+  "height": 1.3,
+  "repair_cost": 15,
+  "joins": false,
+  "shield": 75,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

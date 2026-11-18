@@ -12,7 +12,8 @@ use super::neutral::Tag;
 use super::combat::{Aim, Target};
 use super::crowd;
 use super::commands::{Prey, Task, Waypoint};
-use super::{after_armor, clear_line, push_apart, slide, World, TICK, UNIT_RADIUS};
+use super::{after_armor, clear_line, push_apart, slide, Bonus, Tweak, World, TICK, UNIT_RADIUS};
+use crate::attrs::{Attribute, ExtraDamage};
 use crate::data;
 use crate::flow::{FlowField, Walker};
 use crate::kinds::{Stats, UnitKind};
@@ -52,7 +53,7 @@ pub struct Unit {
     pub facing: f32,
     /// Ticks left until the weapon is reloaded (`combat.rs`).
     pub(super) cooldown: u32,
-    /// Ticks it has aimed at `aim_at` so far – holding the aim, then the wind-up: at `aim + windup` (`data\units.json`)
+    /// Ticks it has aimed at `aim_at` so far – holding the aim, then the wind-up: at `aim + windup` (`data\units\`)
     /// it shoots.
     pub(super) aim: u32,
     /// Whom it is aiming at – kept from tick to tick (`combat.rs`).
@@ -72,9 +73,14 @@ pub struct Unit {
     pub barrel: bool,
     /// Experience in thousandths, from the zombies killed near it (`veterans.rs`) – enough, and it's a veteran.
     pub xp: u32,
-    /// A veteran (DESIGN.md 7.3): more hit points and damage (`veterans` in `data\units.json`), a mark over its head,
+    /// A veteran (DESIGN.md 7.3): more hit points and damage (`veterans` in `data\units\`), a mark over its head,
     /// less likely to desert.
     pub veteran: bool,
+    /// What the editor changed on this one unit: percents of its kind's combat values (`tweak.rs`).
+    pub tweak: Tweak,
+    /// What the levels of the upgrade tracks give it (`upgrades.rs`) – and the `upgrade_rev` they are from.
+    pub up: Bonus,
+    pub(super) up_rev: u32,
     /// The tick it was last hit – a medic only heals a unit that hasn't been hit for a while (`heal_after_seconds`).
     pub(super) hurt_at: u64,
     /// Medic: thousandths of a hit point healed but not given yet – `heal_per_second` is rarely whole per tick.
@@ -95,10 +101,10 @@ impl Unit {
         self.inside.is_some()
     }
 
-    /// Full hit points – a veteran has `hp_percent` more (`veterans` in `data\units.json`).
+    /// Full hit points – a veteran has `hp_percent` more (`veterans` in `data\units\`).
     pub fn max_hp(&self) -> u32 {
         let bonus = if self.veteran { data::get().units.veterans.hp_percent } else { 0 };
-        self.stats().hp * (100 + bonus) / 100
+        (self.tweak.hp.unwrap_or(self.stats().hp).max(1) + self.up.hp) * (100 + bonus) / 100
     }
 
     /// It becomes a veteran (`veterans.rs`, or the editor): the extra hit points come right away – a veteran isn't
@@ -113,12 +119,12 @@ impl Unit {
     /// Damage of one shot before the debt's penalty – a veteran's `damage_percent` more.
     pub fn damage(&self) -> u32 {
         let bonus = if self.veteran { data::get().units.veterans.damage_percent } else { 0 };
-        self.stats().damage * (100 + bonus) / 100
+        Tweak::scale((self.stats().damage + self.up.damage) * (100 + bonus) / 100, self.tweak.damage)
     }
 
     /// A hit of `damage` – after its armor, at least 1 always gets through – at `tick` (a medic waits a while after it).
     pub(super) fn take_hit(&mut self, damage: u32, tick: u64) {
-        self.hp = self.hp.saturating_sub(after_armor(damage, self.stats().armor));
+        self.hp = self.hp.saturating_sub(after_armor(damage, self.armor()));
         self.hurt_at = tick;
     }
 
@@ -145,11 +151,45 @@ impl Unit {
 
     /// Range and sight – in a tower both are longer.
     pub fn range(&self) -> f32 {
-        self.stats().range + if self.is_inside() { data::get().buildings.tower_bonus } else { 0.0 }
+        self.base_range() + if self.is_inside() { data::get().buildings.tower_bonus } else { 0.0 }
     }
 
     pub fn sight(&self) -> f32 {
-        self.stats().sight + if self.is_inside() { data::get().buildings.tower_bonus } else { 0.0 }
+        self.base_sight() + if self.is_inside() { data::get().buildings.tower_bonus } else { 0.0 }
+    }
+
+    /// Its range without a tower's bonus, with what the editor changed (`tweak`).
+    pub fn base_range(&self) -> f32 {
+        (self.stats().range + self.up.range) * self.tweak.range as f32 / 100.0
+    }
+
+    pub fn base_sight(&self) -> f32 {
+        (self.stats().sight + self.up.sight) * self.tweak.sight as f32 / 100.0
+    }
+
+    /// Tiles per second.
+    pub fn speed(&self) -> f32 {
+        (self.stats().speed + self.up.speed) * self.tweak.speed as f32 / 100.0
+    }
+
+    /// Armor points: the kind's (or the editor's own number) and what the upgrades give on top.
+    pub fn armor(&self) -> u32 {
+        self.tweak.armor_of(self.stats().armor) + self.up.armor
+    }
+
+    /// What it is (`attrs.rs`).
+    pub fn attributes(&self) -> &'static [Attribute] {
+        &self.stats().attributes
+    }
+
+    /// Its extra damage against attributes, upgrades included (`attrs.rs`).
+    pub fn extra(&self) -> ExtraDamage {
+        ExtraDamage::new(&self.stats().bonus, self.up.bonus_damage)
+    }
+
+    /// A time of its weapon in ticks (raise, aim, wind-up, cooldown …) with its attack speed.
+    pub fn quicker(&self, ticks: u32) -> u32 {
+        self.tweak.quicker_with(ticks, self.up.attack)
     }
 
     pub fn is_holding(&self) -> bool {
@@ -261,6 +301,45 @@ impl World {
         self.units.iter().position(|u| u.id == id)
     }
 
+    /// `Order::SetTweak`: this unit's combat values change – its life stays the same share of the new maximum.
+    pub fn set_tweak(&mut self, thing: super::neutral::ThingRef, tweak: Tweak) {
+        match thing {
+            super::neutral::ThingRef::Unit(id) => {
+                let Some(i) = self.find_unit(id) else {
+                    return;
+                };
+                let unit = &mut self.units[i];
+                let before = unit.max_hp().max(1);
+                unit.tweak = tweak.clamped();
+                unit.hp = (unit.hp * unit.max_hp() / before).max(1);
+            }
+            // A building: hit points and shield keep their share of the new maximum.
+            super::neutral::ThingRef::Building(id) => {
+                let Some(i) = self.find_building(id) else {
+                    return;
+                };
+                let building = &mut self.buildings[i];
+                let (hp, shield) = (building.max_hp(), building.max_shield());
+                building.tweak = tweak.clamped();
+                let (new_hp, new_shield) = (building.max_hp(), building.max_shield());
+                // A maximum of 0 leaves nothing; one that was 0 and isn't any more starts full (a wall that gets a
+                // shield); the rest keep their share.
+                let keep = |now: u32, before: u32, after: u32| match (before, after) {
+                    (_, 0) => 0,
+                    (0, after) => after,
+                    (before, after) => (now as u64 * after as u64 / before as u64).max(1) as u32,
+                };
+                building.hp = keep(building.hp, hp, new_hp);
+                building.shield = match (shield, new_shield) {
+                    (_, 0) => 0,
+                    (0, after) => after,
+                    (before, after) => (building.shield as u64 * after as u64 / before as u64) as u32,
+                };
+            }
+            super::neutral::ThingRef::Neutral(_) => {}
+        }
+    }
+
     pub(super) fn spawn_unit(&mut self, kind: UnitKind, pos: Vec2) {
         self.next_unit_id += 1;
         self.units.push(Unit {
@@ -286,6 +365,9 @@ impl World {
             barrel: false,
             xp: 0,
             veteran: false,
+            tweak: Tweak::default(),
+            up: Bonus::default(),
+            up_rev: 0,
             hurt_at: 0,
             heal: 0,
             tag: None,
@@ -356,9 +438,9 @@ impl World {
         }
         // `shoots`: attack and beam need a clear view of the target, following doesn't.
         let (target, close_enough, shoots) = match unit.queue.front() {
-            Some(Task::Attack { prey, .. }) => (self.prey_spot(*prey, pos).map(|(_, at)| at), unit.stats().range, true),
+            Some(Task::Attack { prey, .. }) => (self.prey_spot(*prey, pos).map(|(_, at)| at), unit.base_range(), true),
             Some(Task::Heal { unit: other, .. }) => {
-                (self.find_unit(*other).map(|o| self.units[o].pos), unit.stats().range, true)
+                (self.find_unit(*other).map(|o| self.units[o].pos), unit.base_range(), true)
             }
             Some(Task::Follow { unit: other, .. }) => {
                 (self.find_unit(*other).map(|o| self.units[o].pos), FOLLOW_DISTANCE, false)
@@ -405,7 +487,6 @@ impl World {
     /// otherwise the nearest zombie not yet taken care of, for medics the nearest hurt unit.
     fn intent(&self, i: usize, nearby: Option<Target>) -> Intent {
         let unit = &self.units[i];
-        let stats = unit.stats();
         // In a tower: stand still and shoot from up there.
         if unit.is_inside() {
             return Intent { velocity: Vec2::ZERO, walking: false, target: nearby };
@@ -424,12 +505,12 @@ impl World {
             },
             // A particular zombie, unit or building: shoot when in range and in sight, otherwise go after it.
             Some(Task::Attack { prey, chase }) => match self.prey_spot(*prey, unit.pos) {
-                Some((target, at)) if self.in_shot(unit.pos, at, stats.range) => (None, Some(target)),
+                Some((target, at)) if self.in_shot(unit.pos, at, unit.base_range()) => (None, Some(target)),
                 _ => (chase.as_ref(), None),
             },
             // Medic on a particular unit: beam when in range and in sight (hurt or not), otherwise go after it.
             Some(Task::Heal { unit: other, chase }) => match self.find_unit(*other) {
-                Some(o) if self.in_shot(unit.pos, self.units[o].pos, stats.range) => (None, Some(Target::Ally(o))),
+                Some(o) if self.in_shot(unit.pos, self.units[o].pos, unit.base_range()) => (None, Some(Target::Ally(o))),
                 _ => (chase.as_ref(), None),
             },
             // Follow: close enough → stand still (and don't shoot, like in StarCraft).
@@ -446,7 +527,7 @@ impl World {
         // Deep in debt they drag their feet (`debt.rs`) – and a barrel is heavy.
         let carrying = if unit.barrel { (100 - data::get().buildings.blast.carry_slow_percent.min(100)) as f32 / 100.0 } else { 1.0 };
         // The landscape (`landscape.rs`) and stakes underfoot (`ground_pace`) slow them too.
-        let step = stats.speed * TICK * (self.army_pace as f32 / 1000.0) * carrying * self.unit_pace() * self.ground_pace(unit.pos);
+        let step = unit.speed() * TICK * (self.army_pace as f32 / 1000.0) * carrying * self.unit_pace() * self.ground_pace(unit.pos);
         let mut velocity = match walk_to {
             Some(to) => {
                 let to_goal = to.point - unit.pos;

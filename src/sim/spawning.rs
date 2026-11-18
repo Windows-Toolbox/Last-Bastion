@@ -320,7 +320,7 @@ impl World {
     }
 
     /// Units that died this tick lie down – they rise after `rise_min_seconds` to `rise_max_seconds`
-    /// (`data\zombies.json`). Before they're removed (`remove_dead`).
+    /// (`data\zombies\`). Before they're removed (`remove_dead`).
     pub(super) fn lay_down_dead_units(&mut self) {
         let (min, max) = (values().rise_min, values().rise_max);
         for i in 0..self.units.len() {
@@ -331,6 +331,7 @@ impl World {
                 self.corpses.push(Corpse { pos, prev: pos, kind, id, facing, died: self.tick, rise_in, fling });
                 self.fx.push(Fx::UnitDied { at: pos, kind });
                 self.score.units_lost += 1;
+                self.count_dead("unit", &kind.stats().name);
                 // Dying is loud (`sound.rs`).
                 self.make_sound(pos, data::get().sound.unit_dies);
             }

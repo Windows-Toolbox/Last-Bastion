@@ -1,8 +1,9 @@
-//! Unit and building types (DESIGN.md 6, 7.2). Their values are in `data\units.json` and `data\buildings.json`
+//! Unit and building types (DESIGN.md 6, 7.2). Their values are in `data\units\` and `data\buildings\`
 //! (loaded by `data.rs`) – here only what a value means.
 
 use serde::{Deserialize, Serialize};
 
+use crate::attrs::{self, Attributes, Extra};
 use crate::data;
 use crate::map::Ore;
 
@@ -49,7 +50,7 @@ pub struct Melee {
     pub cooldown: u32,
 }
 
-/// The values of a unit type – one block in `data\units.json`.
+/// The values of a unit type – one block in `data\units\`.
 #[derive(Deserialize)]
 pub struct Stats {
     pub name: String,
@@ -81,10 +82,17 @@ pub struct Stats {
     #[serde(default)]
     pub oil: u32,
     pub hp: u32,
-    /// Armor like TAB's: this share of every zombie's hit doesn't get through (`after_armor`; 0.4 = 40 % less, at
-    /// least 1 always does).
-    pub armor: f32,
+    /// Armor like StarCraft 2's: this many points come off every zombie hit (`after_armor`; at least 1 always gets
+    /// through). Venom and fire ignore it.
+    #[serde(default)]
+    pub armor: u32,
+    /// What it is (`attrs.rs`): `["light", "biological"]` – what a weapon's `bonus` is checked against.
+    #[serde(default)]
+    pub attributes: Attributes,
     pub damage: u32,
+    /// Extra damage per attribute of the target, on top of `damage` (SC2's "+10 vs Armored"): `{ "armored": 10 }`.
+    #[serde(default)]
+    pub bonus: Extra,
     /// Range in tiles.
     pub range: f32,
     /// How far it sees, in tiles – at least as far as it shoots (forest blocks the view).
@@ -153,10 +161,10 @@ pub struct Stats {
     pub knockback: f32,
     /// How much of venom (the spitter's acid) hurts it – its own resistance, TAB's `VenomDamageFactor`: 1 = all of it,
     /// 0.5 = half. Armor doesn't count against venom (`Unit::take_venom`). Every type has its own, so it's in every
-    /// block of `data\units.json` – no default.
+    /// block of `data\units\` – no default.
     pub venom_factor: f32,
     /// It heals itself like TAB's units (`LifeRegenFactor`): every `regen_every_seconds` this share of its full hit
-    /// points (rounded up), once it hasn't been hit for `regen_after_seconds` (`data\units.json`, `sim/units.rs`). In
+    /// points (rounded up), once it hasn't been hit for `regen_after_seconds` (`data\units\`, `sim/units.rs`). In
     /// every block – no default.
     pub regen: f32,
     /// Its shot hits everyone within this many tiles of where it lands (TAB's `EffectRadius`) – 0: only its target …
@@ -190,6 +198,31 @@ pub struct Stats {
     pub skins: Vec<String>,
     /// Its picture if none of its `skins` is there, e.g. `"test/figure"`. Missing too: a box.
     pub sprite: Option<String>,
+    /// What one level of a track of upgrades gives it (`sim/upgrades.rs`): `{ "infantry_weapons": { "damage": 1 } }`.
+    #[serde(default)]
+    pub upgrades: std::collections::BTreeMap<String, UpgradeBonus>,
+}
+
+/// What one level of an upgrade track gives one kind of unit or building – flat, like in SC2 (a marine +1, a marauder
+/// +2). Left out: 0.
+#[derive(Deserialize, Clone, Copy, Default, Debug, PartialEq)]
+#[serde(default)]
+pub struct UpgradeBonus {
+    pub hp: u32,
+    pub shield: u32,
+    pub damage: u32,
+    /// Armor points (SC2: +1 per level).
+    pub armor: u32,
+    /// A building's shield armor points.
+    pub shield_armor: u32,
+    /// Added to *every* extra damage of the weapon (`bonus`, `attrs.rs`) – SC2's marauder: +1 (+1 vs Armored).
+    pub bonus_damage: u32,
+    pub range: f32,
+    pub sight: f32,
+    /// Tiles per second.
+    pub speed: f32,
+    /// Percent points of attack speed.
+    pub attack_speed: u32,
 }
 
 impl UnitKind {
@@ -326,11 +359,14 @@ pub enum BuildingKind {
     Victorious,
     Transmutator,
     CrystalPalace,
+    /// A stop for trains (`docs/trains.md` step 3): a building with life that zombies can hit. A train stops on the
+    /// track next to it (`World::station_stop`). Only the editor sets it – never in a build menu.
+    TrainStation,
 }
 
 impl BuildingKind {
     /// Every type, in the order above – `kind as usize` is its place in this list.
-    pub const ALL: [BuildingKind; 48] = [
+    pub const ALL: [BuildingKind; 49] = [
         BuildingKind::CommandCenter,
         BuildingKind::Barracks,
         BuildingKind::Tent,
@@ -379,6 +415,7 @@ impl BuildingKind {
         BuildingKind::Victorious,
         BuildingKind::Transmutator,
         BuildingKind::CrystalPalace,
+        BuildingKind::TrainStation,
     ];
 }
 
@@ -392,7 +429,7 @@ pub enum Resource {
     IronOre,
     Coal,
     Food,
-    /// Iron – smelted in the foundry from iron ore and coal (`smelts` in `data\buildings.json`). The second tier of
+    /// Iron – smelted in the foundry from iron ore and coal (`smelts` in `data\buildings\`). The second tier of
     /// defence costs it: the machine gun tower.
     Iron,
     /// Oil – pumped by the oil platform from an oil node (DESIGN.md 5.1). TAB's late units and buildings cost it.
@@ -459,7 +496,7 @@ pub enum Source {
     Oil,
 }
 
-/// The values of a building type – one block in `data\buildings.json`.
+/// The values of a building type – one block in `data\buildings\`.
 #[derive(Deserialize)]
 pub struct BuildingStats {
     pub name: String,
@@ -467,9 +504,17 @@ pub struct BuildingStats {
     /// Width (along x) and depth (along y) in tiles, not turned.
     pub size: (i32, i32),
     pub hp: u32,
-    /// This share of every zombie hit doesn't get through (`after_armor`). TAB's buildings have none – left out: 0.
+    /// Armor points of its hit points: they come off every hit that reaches them (`after_armor`, at least 1 gets
+    /// through). TAB's buildings have none – left out: 0.
     #[serde(default)]
-    pub armor: f32,
+    pub armor: u32,
+    /// Armor points of its shield – SC2's shield armor (Protoss): they come off every hit that lands on the shield, and
+    /// the hit points keep their own `armor`. Left out: 0.
+    #[serde(default)]
+    pub shield_armor: u32,
+    /// What it is (`attrs.rs`). Left out: armored and a structure.
+    #[serde(default = "attrs::building_default")]
+    pub attributes: Attributes,
     /// Infection like in TAB (DESIGN.md 6): zombies first hit the shield. When it breaks, the building is infected –
     /// its people come out as zombies (`World::infect`) – and only then do the hit points go down. In points, on top of
     /// `hp`: TAB's `DeffensesLife` – TAB's `Life` is `hp` + `shield`. 0: no shield. Without colonists a shield is just
@@ -646,13 +691,19 @@ pub struct BuildingStats {
     /// – with two, every other one. Only the look.
     #[serde(default)]
     pub explosion: Vec<String>,
+    /// What one level of a track of upgrades gives it (`sim/upgrades.rs`) – a tower's damage, range, attack speed, life.
+    #[serde(default)]
+    pub upgrades: std::collections::BTreeMap<String, UpgradeBonus>,
 }
 
-/// The gun of a tower that shoots by itself – one block `weapon` in `data\buildings.json`.
+/// The gun of a tower that shoots by itself – one block `weapon` in `data\buildings\`.
 #[derive(Deserialize)]
 pub struct Weapon {
     /// Per shot, minus the zombie's armor (at least 1).
     pub damage: u32,
+    /// Extra damage per attribute of the zombie, on top of `damage` (SC2's "+50 vs Massive"): `{ "massive": 50 }`.
+    #[serde(default)]
+    pub bonus: Extra,
     /// Tiles from its middle.
     pub range: f32,
     /// Ticks from one shot to the next – in the file in seconds (`reload_seconds`). Short of power it reloads slower.
@@ -706,7 +757,7 @@ impl BuildingKind {
     }
 
     /// Does it train units (a production queue and a rally point)? The barracks – and the inn its mercenaries. Which
-    /// unit where: `trained_in` in `data\units.json`.
+    /// unit where: `trained_in` in `data\units\`.
     pub fn trains(self) -> bool {
         matches!(self, BuildingKind::Barracks | BuildingKind::Inn | BuildingKind::EngineeringCenter)
     }
@@ -714,6 +765,11 @@ impl BuildingKind {
     /// Does it make barrels (a production queue of them, `sim/blast.rs`)? The munitions factory.
     pub fn makes_barrels(self) -> bool {
         self.stats().barrel_storage > 0
+    }
+
+    /// Only the editor puts it down – it isn't in any build menu (the train station).
+    pub fn editor_only(self) -> bool {
+        self == BuildingKind::TrainStation
     }
 
     /// TAB's wonders – the build menu Y.

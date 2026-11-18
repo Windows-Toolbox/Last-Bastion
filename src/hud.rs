@@ -10,6 +10,8 @@
 
 use std::cell::Cell;
 
+mod stats;
+
 use macroquad::prelude::*;
 
 use crate::draw::{breed_color, building_color, kind_color, loot_color, ZOMBIE};
@@ -24,6 +26,7 @@ use crate::picture::MapPicture;
 use crate::sim::{researched_in, tech, DebtStage, LootKind, Power, Product, RepairPlan, World, Zombie, MAX_PRODUCTION, TICKS_PER_SECOND};
 use crate::ui::{Pick, Place, Sub, Ui};
 use crate::ui_art;
+use stats::Stat;
 
 /// TAB's screen the bar is laid out on (`MapGUI`): 1280 x 720 – our window's first size.
 const REF_W: f32 = 1280.0;
@@ -606,6 +609,8 @@ fn place_slot(kind: BuildingKind) -> usize {
         MineTrap => 10,
         ShockingTower => 11,
         Executor => 12,
+        // Not in a build menu – only the editor puts it down.
+        TrainStation => 0,
     }
 }
 
@@ -691,6 +696,7 @@ fn place_help(kind: BuildingKind) -> &'static str {
         BuildingKind::Academy => "The Academy (4 x 4, wonder). While it works every one of your units is a veteran. Only one. Needs power and a stone workshop.",
         BuildingKind::Victorious => "The Victorious (4 x 4, wonder). A fortress (10,000 HP, armor) - houses within 24 tiles of it pay 20 % more gold. Eats 10 oil every payout. Only one. Needs power and a stone workshop.",
         BuildingKind::Transmutator => "The Transmutator (5 x 5, wonder). Turns 20 wood, 20 stone and 10 iron into 40 oil at every payout. Only one. Needs a lot of power and a foundry.",
+        BuildingKind::TrainStation => "A train station (2 x 2). Trains stop on the track next to it. Zombies can hit it - destroyed, no train stops there.",
         BuildingKind::CrystalPalace => "The Crystal Palace (6 x 6, wonder). 60 colonists - and 800 food at every payout, out of nothing. Only one. Needs a wood workshop.",
     }
 }
@@ -1421,7 +1427,7 @@ fn draw_events(layout: &Layout, world: &World, ui: &Ui) {
             Some(t) => draw_picture(&t, picture, tint),
             None => draw_rectangle(picture.x, picture.y, picture.w, picture.h, Color { a: fade, ..BORDER }),
         }
-        draw_wrapped(&event.text, r.x + 40.0, r.y + 15.0, 276.0, 12.0, 2, Color::new(1.0, 1.0, 1.0, fade));
+        draw_wrapped(&event.text, r.x + 40.0, r.y + 15.0, 276.0, 12.0, 2, Color { a: fade, ..event.color });
         y += 40.0;
     }
 }
@@ -1449,7 +1455,7 @@ fn draw_selection(layout: &Layout, world: &World, ui: &Ui) {
     }
 }
 
-/// Ticks → seconds, for showing the times of `data\units.json` the way they are written there.
+/// Ticks → seconds, for showing the times of `data\units\` the way they are written there.
 fn seconds(ticks: u32) -> f32 {
     ticks as f32 / TICKS_PER_SECOND
 }
@@ -1483,16 +1489,40 @@ fn draw_title(layout: &Layout, name: &str, hp: (u32, u32), shield: (u32, u32)) -
 
 /// The values right of the text, one box each: a small label above, the number below. As many as fit.
 fn draw_cells(layout: &Layout, cells: &[(&str, String)]) {
+    let stats: Vec<Stat> = cells.iter().map(|(label, value)| Stat::plain(label, value.clone())).collect();
+    draw_stats(layout, &stats);
+}
+
+/// The same boxes with what the upgrades add in green behind the number, and a tooltip above the bar for the box under the
+/// mouse - like StarCraft 2's weapon and armor icons (`stats.rs`).
+fn draw_stats(layout: &Layout, cells: &[Stat]) {
     let area = layout.cells();
     let cols = ((area.w / CELL_W) as usize).max(1);
     let rows = (area.h / CELL_H) as usize;
-    for (k, (label, value)) in cells.iter().take(cols * rows).enumerate() {
+    let mut hovered: Option<(&Stat, Rect)> = None;
+    for (k, cell) in cells.iter().take(cols * rows).enumerate() {
         let (x, y) = (area.x + (k % cols) as f32 * CELL_W, area.y + (k / cols) as f32 * CELL_H);
         let r = Rect::new(x, y, CELL_W - 3.0, CELL_H - 3.0);
         draw_rectangle(r.x, r.y, r.w, r.h, Color { a: 0.75, ..BOX_BG });
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, BORDER);
-        draw_fitted(label, r.x + r.w / 2.0, r.y + 10.0, r.w - 3.0, 10.0, DIM);
-        draw_fitted(value, r.x + r.w / 2.0, r.bottom() - 4.0, r.w - 3.0, 13.0, GLOW);
+        draw_fitted(cell.label, r.x + r.w / 2.0, r.y + 10.0, r.w - 3.0, 10.0, DIM);
+        if cell.up == 0 {
+            draw_fitted(&cell.value, r.x + r.w / 2.0, r.bottom() - 4.0, r.w - 3.0, 13.0, GLOW);
+        } else {
+            // The number in white-gold, what the upgrades give behind it in green: "16+2".
+            let extra = format!("+{}", cell.up);
+            let size = fitted_size(&format!("{}{extra}", cell.value), r.w - 3.0, 13.0);
+            let left = r.x + r.w / 2.0 - (text_width(&cell.value, size) + text_width(&extra, size)) / 2.0;
+            draw_text(&cell.value, left, r.bottom() - 4.0, size, GLOW);
+            draw_text(&extra, left + text_width(&cell.value, size), r.bottom() - 4.0, size, GREEN);
+        }
+        if !cell.tip.is_empty() && r.contains(mouse()) {
+            hovered = Some((cell, r));
+        }
+    }
+    if let Some((cell, r)) = hovered {
+        let lines: Vec<&str> = cell.tip.iter().map(String::as_str).collect();
+        draw_tooltip(&lines, r.x, layout.top - 4.0);
     }
 }
 
@@ -1515,38 +1545,37 @@ fn draw_single(layout: &Layout, world: &World, i: usize) {
     let about = tag.filter(|t| !t.text.is_empty()).map_or(unit_text(unit.kind), |t| t.text.as_str());
     draw_wrapped(about, text.x, y + 15.0, text.w, 12.0, 4, DIM);
 
-    let mut cells = vec![
-        ("HP", format!("{}/{}", unit.hp, unit.max_hp())),
-        ("Damage", world.army_damage(unit.damage()).to_string()),
-        ("Armor", percent(stats.armor)),
-        ("Upkeep", format!("-{}", stats.upkeep)),
-    ];
+    // Weapon and armor first, like StarCraft 2's icons: hover for the numbers behind them (`stats.rs`).
+    let mut cells = vec![Stat::plain("HP", format!("{}/{}", unit.hp, unit.max_hp()))];
+    cells.extend(stats::unit_weapon(world, unit));
+    cells.push(stats::unit_armor(world, unit));
+    cells.push(Stat::plain("Upkeep", format!("-{}", stats.upkeep)));
     if stats.food > 0 {
-        cells.push(("Food", format!("-{}", stats.food)));
+        cells.push(Stat::plain("Food", format!("-{}", stats.food)));
     }
     // Carrying a barrel: it doesn't shoot – D puts it down.
     if unit.barrel {
-        cells.insert(0, ("Barrel", "D: drop".to_owned()));
+        cells.insert(0, Stat::plain("Barrel", "D: drop"));
     }
     if stats.heals {
-        cells.push(("Beam", format!("{}", stats.range)));
+        cells.push(Stat::plain("Beam", tidy(unit.base_range())));
     } else {
-        cells.push(("Range", format!("{}", stats.range)));
-        cells.push(("Shots/s", format!("{:.1}", TICKS_PER_SECOND / stats.shot_ticks() as f32)));
+        cells.push(Stat::plain("Range", tidy(unit.base_range())));
+        cells.push(Stat::plain("Shots/s", format!("{:.1}", TICKS_PER_SECOND / unit.quicker(stats.shot_ticks()).max(1) as f32)));
     }
     cells.extend([
-        ("Speed", format!("{}", stats.speed)),
-        ("Sight", format!("{}", stats.sight)),
-        ("Kills", unit.kills.to_string()),
+        Stat::plain("Speed", tidy(unit.speed())),
+        Stat::plain("Sight", tidy(unit.base_sight())),
+        Stat::plain("Kills", unit.kills.to_string()),
         // Experience towards a veteran (`sim/veterans.rs`) – mercenaries don't gather any.
-        ("XP", if stats.mercenary { "-".to_owned() } else { format!("{}/{}", unit.xp / 1000, data::get().units.veterans.xp) }),
+        Stat::plain("XP", if stats.mercenary { "-".to_owned() } else { format!("{}/{}", unit.xp / 1000, data::get().units.veterans.xp) }),
         // Bringing the weapon up once, then before every shot: aiming and the wind-up (`sim/combat.rs`).
-        ("Raise", format!("{:.2} s", seconds(stats.raise))),
-        ("Aim", format!("{:.2} s", seconds(stats.aim + stats.windup))),
-        ("Turn", format!("{:.2} s", seconds(stats.turn_around))),
-        ("Noise", format!("{}", stats.noise)),
+        Stat::plain("Raise", format!("{:.2} s", seconds(unit.quicker(stats.raise)))),
+        Stat::plain("Aim", format!("{:.2} s", seconds(unit.quicker(stats.aim) + unit.quicker(stats.windup)))),
+        Stat::plain("Turn", format!("{:.2} s", seconds(stats.turn_around))),
+        Stat::plain("Noise", format!("{}", stats.noise)),
     ]);
-    draw_cells(layout, &cells);
+    draw_stats(layout, &cells);
 }
 
 /// What a unit type is, in one line.
@@ -1572,28 +1601,28 @@ fn draw_zombie(layout: &Layout, world: &World, zombie: &Zombie) {
     draw_portrait(layout, portrait_of(zombie.breed), false, breed_color(zombie.breed), "Z", RED);
     let text = layout.text_column();
     let title = if zombie.final_wave { format!("{} (final wave)", zombie.breed.name()) } else { zombie.breed.name().to_owned() };
-    let y = draw_title(layout, &title, (zombie.hp(), stats.hp), (0, 0));
+    let y = draw_title(layout, &title, (zombie.hp(), zombie.max_hp()), (0, 0));
     draw_wrapped(world.zombie_doing(zombie), text.x, y, text.w, 13.0, 5, WHITE);
 
     let mut cells = vec![
-        ("HP", format!("{}/{}", zombie.hp(), stats.hp)),
-        ("Damage", stats.damage.to_string()),
-        ("Armor", percent(stats.armor)),
-        ("Hits", format!("{:.1} s", seconds(zombie.breed.attack_ticks()))),
+        Stat::plain("HP", format!("{}/{}", zombie.hp(), zombie.max_hp())),
+        stats::zombie_weapon(world, zombie),
+        stats::zombie_armor(world, zombie),
+        Stat::plain("Hits", format!("{:.1} s", seconds(zombie.quicker(zombie.breed.attack_ticks())))),
     ];
     if zombie.breed.is_ranged() {
-        cells.push(("Range", format!("{}", stats.range)));
+        cells.push(Stat::plain("Range", format!("{}", stats.range)));
     }
     if stats.splash > 0.0 {
-        cells.push(("Splash", format!("{}", stats.splash)));
+        cells.push(Stat::plain("Splash", format!("{}", stats.splash)));
     }
     cells.extend([
-        ("Speed", format!("{:.2}", zombie.speed())),
-        ("Sight", format!("{}", stats.sight)),
-        ("Hears", format!("{}", zombie.breed.hearing_range())),
-        ("Rank", stats.level.to_string()),
+        Stat::plain("Speed", format!("{:.2}", zombie.speed())),
+        Stat::plain("Sight", format!("{}", stats.sight)),
+        Stat::plain("Hears", format!("{}", zombie.breed.hearing_range())),
+        Stat::plain("Rank", stats.level.to_string()),
     ]);
-    draw_cells(layout, &cells);
+    draw_stats(layout, &cells);
 }
 
 /// A house of doom or a pile of loot clicked on: what it is, what it holds and what it does. Returns `false` if it's
@@ -1632,7 +1661,7 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
                 &[
                     ("HP", format!("{}/{}", house.hp, house.full_hp())),
                     ("Left", house.inside.to_string()),
-                    ("Armor", percent(doom.armor)),
+                    ("Armor", doom.armor.to_string()),
                     ("House", house.nest().name().to_owned()),
                     ("Size", format!("{w} x {h}")),
                 ],
@@ -1644,7 +1673,7 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
             };
             let loot = &world.loot[l];
             let letter = if loot.kind == LootKind::Gold { "$" } else { &loot.kind.name()[..1] };
-            draw_portrait(layout, ui_art::get(&format!("portraits/Loot{:?}", loot.kind)), true, loot_color(loot.kind), letter, BORDER);
+            draw_portrait(layout, ui_art::get(&format!("portraits/{}", loot.kind.portrait())), true, loot_color(loot.kind), letter, BORDER);
             draw_fitted_left(&format!("Loot: {} {}", loot.amount, loot.kind.name().to_lowercase()), text.x, text.y + 15.0, text.w, 17.0, BRASS);
             let about = if loot.guards > 0 {
                 format!("Walk onto it to pick it up - but zombies lie hidden around it and come out within {} tiles.", data::get().loot.wake_radius)
@@ -1659,6 +1688,17 @@ fn draw_place(layout: &Layout, world: &World, place: Place) -> bool {
     true
 }
 
+/// A building's boxes: the plain ones with its weapon (a tower), armor and shield armor behind the hit points - hover for
+/// the numbers (`stats.rs`).
+fn with_weapon_and_armor<'a>(world: &World, building: &crate::sim::Building, cells: &[(&'a str, String)]) -> Vec<Stat<'a>> {
+    let mut shown: Vec<Stat> = cells.iter().map(|(label, value)| Stat::plain(label, value.clone())).collect();
+    let extra = stats::building_weapon(world, building).into_iter().chain(Some(stats::building_armor(world, building))).chain(stats::building_shield_armor(world, building));
+    for (k, stat) in extra.enumerate() {
+        shown.insert((1 + k).min(shown.len()), stat);
+    }
+    shown
+}
+
 /// One building selected: picture, health, what it does – for the barracks the production queue, for a tower who
 /// sits in it – and its values below.
 fn draw_building(layout: &Layout, world: &World, b: usize) {
@@ -1669,11 +1709,11 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     let text = layout.text_column();
     let tag = building.tag.as_deref();
     let name = tag.filter(|t| !t.name.is_empty()).map_or(stats.name.as_str(), |t| t.name.as_str());
-    let y = draw_title(layout, name, (building.hp, stats.hp), (building.shield, stats.max_shield()));
+    let y = draw_title(layout, name, (building.hp, building.max_hp()), (building.shield, building.max_shield()));
 
-    let mut cells = vec![("HP", format!("{}/{}", building.hp, stats.hp))];
-    if stats.max_shield() > 0 {
-        cells.push(("Shield", format!("{} %", building.shield * 100 / stats.max_shield())));
+    let mut cells = vec![("HP", format!("{}/{}", building.hp, building.max_hp()))];
+    if building.max_shield() > 0 {
+        cells.push(("Shield", format!("{} %", building.shield * 100 / building.max_shield())));
     }
     // Every + and - in these boxes is per payout (`economy_every_seconds`).
     if stats.colonists > 0 {
@@ -1687,9 +1727,6 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     }
     if stats.food_made > 0 {
         cells.push(("Food", format!("+{}", world.food_made(building))));
-    }
-    if stats.armor > 0.0 {
-        cells.push(("Armor", percent(stats.armor)));
     }
     // What it gathers per payout, right now.
     let rate = world.gather_rate(building.kind, building.tile, b, power.share(world, b));
@@ -1727,7 +1764,6 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     }
     // A tower that shoots by itself: its gun, and how far it is through reloading.
     if let Some(weapon) = &stats.weapon {
-        cells.push(("Damage", weapon.damage.to_string()));
         cells.push(("Range", format!("{}", weapon.range)));
         cells.push(("Reload", format!("{:.1} s", seconds(weapon.reload))));
         cells.push(("Ready", format!("{} %", ((1.0 - world.reload_share(b)) * 100.0).round())));
@@ -1781,7 +1817,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         let done = 100 - building.construction * 100 / stats.build_time.max(1);
         cells.insert(1, ("Built", format!("{done} %")));
         draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 12.0, 5, DIM);
-        draw_cells(layout, &cells);
+        draw_stats(layout, &with_weapon_and_armor(world, building, &cells));
         return;
     }
     if building.kind.is_tower() {
@@ -1806,12 +1842,12 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
         }
         cells.insert(1, ("Garrison", format!("{}/{}", inside.len(), data::get().buildings.tower_slots)));
         cells.insert(2, ("Rally", if building.rally.is_some() { "set" } else { "none" }.to_owned()));
-        draw_cells(layout, &cells);
+        draw_stats(layout, &with_weapon_and_armor(world, building, &cells));
         return;
     }
     if !building.kind.trains() && !building.kind.makes_barrels() && researched_in(building.kind).next().is_none() {
         draw_wrapped(&building_text(world, &power, b), text.x, y, text.w, 12.0, 5, DIM);
-        draw_cells(layout, &cells);
+        draw_stats(layout, &with_weapon_and_armor(world, building, &cells));
         return;
     }
     // Production queue: 5 spots, the front one with a progress bar. A click cancels.
@@ -1858,7 +1894,7 @@ fn draw_building(layout: &Layout, world: &World, b: usize) {
     } else {
         cells.insert(2, ("Barrels", format!("{}/{}", world.barrels, world.barrel_room())));
     }
-    draw_cells(layout, &cells);
+    draw_stats(layout, &with_weapon_and_armor(world, building, &cells));
 }
 
 /// What a building does, in a sentence or two – like TAB's text next to the portrait. What's wrong with it comes
@@ -1969,7 +2005,7 @@ fn icon_info(world: &World, pick: Pick) -> IconInfo {
             let building = &world.buildings[b];
             let stats = building.stats();
             let (letter, name) = (stats.letter.as_str(), stats.name.as_str());
-            let (hp, shield) = ((building.hp, stats.hp), (building.shield, stats.max_shield()));
+            let (hp, shield) = ((building.hp, building.max_hp()), (building.shield, building.max_shield()));
             let picture = portrait_of(building.kind);
             IconInfo { sub: Sub::Building(building.kind), color: building_color(building.kind), letter, name, hp, shield, picture, figure: false }
         }
@@ -2200,6 +2236,9 @@ fn price_text(button: Button, gold: u32, world: &World) -> String {
 /// "Research X in the wood workshop first" – what a locked button or a refused order says.
 pub fn research_first(t: u16) -> String {
     let tech = tech(t);
+    if tech.blocked {
+        return format!("{} can't be researched on this map", tech.name.to_lowercase());
+    }
     format!("research {} in the {} first", tech.name.to_lowercase(), tech.researched_in.stats().name.to_lowercase())
 }
 
@@ -2520,7 +2559,7 @@ mod tests {
     }
 }
 
-/// Armor like TAB's (a share of every hit) as the panel shows it: "40 %".
-fn percent(share: f32) -> String {
-    format!("{} %", (share * 100.0).round())
+/// A value with a percent put on it, without the noise of floats: 3.6000001 → "3.6".
+fn tidy(value: f32) -> String {
+    format!("{}", (value * 100.0).round() / 100.0)
 }

@@ -8,7 +8,7 @@
 //! and another, until it's enough. A map whose noise already put a forest there stays untouched. The clearing stays
 //! free: if it's wider than the grid, the forest lies one tesla tower further out.
 //!
-//! How far the grid reaches and how big a sawmill is and how far it works come from `data\buildings.json` – change
+//! How far the grid reaches and how big a sawmill is and how far it works come from `data\buildings\` – change
 //! them there and the start area follows.
 
 use macroquad::math::vec2;

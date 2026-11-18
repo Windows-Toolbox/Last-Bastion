@@ -16,14 +16,14 @@ use std::time::{Duration, SystemTime};
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::data::{self, Modifiers};
+use crate::data::{self, Modifiers, Overrides};
 use crate::kinds::{BuildingKind, Resource, UnitKind};
 use crate::map::{BigRock, Deposit, Map, Ore, Terrain};
 use crate::mapgen::MapSetup;
 use crate::settings;
 use crate::sim::{
     Axes, Breed, Building, DoomHouse, Event, Loot, LootKind, Neutral, Ornament, Sleeper, SpawnMode, Spawner, Story, Tag,
-    Thing, ThingRef, Unit, WaveFrom, WaveGroup, World, Zombie, Spot, Zone,
+    Thing, ThingRef, Tweak, Unit, WaveFrom, WaveGroup, World, Zombie, Spot, Zone,
 };
 
 /// Which version of the file format – if it ever changes, old files can still be recognised.
@@ -43,7 +43,11 @@ use crate::sim::{
 /// are (a goal's old condition becomes its expressions).
 /// 11: more events for triggers (time, buildings, kills, regions, things reached) and the actions Camera and Noise
 /// (`sim/watch.rs`) – an older game can't read them.
-const VERSION: u32 = 11;
+/// 12: the actions Research (TAB's "Grant Technologies") and Sound, the colour and picture of a notification, the mood
+/// and picture of a window, `{expression}` in texts – an older game can't read the new actions.
+/// 13: loot of every good with a name ID and the event "loot picked up", the train station, the way a unit faces, the action "Playing field", the map's own `data`, a unit's and a building's `tweak`, the upgrade levels (`upgrades`), a boss's `tweak` – an
+/// older game can't read them.
+const VERSION: u32 = 13;
 
 /// The fields in the order they are in the file: the short ones on top, the terrain at the end.
 /// `#[serde(default …)]`: a field a file from version 1 doesn't have yet gets this value instead of an error.
@@ -79,6 +83,12 @@ pub struct MapFile {
     /// changes. Also with `regenerate`: the file's, not the setup's.
     #[serde(default, skip_serializing_if = "Modifiers::is_default")]
     pub modifiers: Modifiers,
+    /// The values of `data` this map changes for itself (`data::Overrides`, the Data module) – not written when none.
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub data: Overrides,
+    /// The levels the upgrade tracks start on (`sim/upgrades.rs`) – not written when all are 0.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub upgrades: std::collections::BTreeMap<String, u32>,
     /// Which of TAB's landscapes it's drawn as (`MapSetup::look`) – not written when it's BR's (`""`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub look: String,
@@ -163,7 +173,7 @@ impl Default for RoundData {
 /// was saved.
 fn zombie_data(world: &World) -> Vec<ZombieData> {
     let awake = world.zombies.iter().map(|z| ZombieData::awake(world, z));
-    let asleep = world.sleep.iter().map(ZombieData::asleep);
+    let asleep = world.sleep.iter().map(|s| ZombieData::asleep(world, s));
     let mut zombies: Vec<ZombieData> = awake.chain(asleep).collect();
     zombies.sort_by(|a, b| a.pos.1.total_cmp(&b.pos.1).then(a.pos.0.total_cmp(&b.pos.0)));
     zombies
@@ -287,6 +297,9 @@ pub struct BuildingData {
     pub infected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<Tag>,
+    /// What differs from its kind (`sim/tweak.rs`) – left out when nothing does.
+    #[serde(default, skip_serializing_if = "Tweak::is_default")]
+    pub tweak: Tweak,
 }
 
 /// A unit of the colony – the same, and a veteran or not.
@@ -300,6 +313,20 @@ pub struct UnitData {
     pub veteran: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<Tag>,
+    /// Which way it faces (radians) – left out: towards the player, like a unit that was just made.
+    #[serde(default = "towards_the_player", skip_serializing_if = "is_towards_the_player")]
+    pub facing: f32,
+    /// What differs from its kind: percents of its combat values (`sim/tweak.rs`) – left out when nothing does.
+    #[serde(default, skip_serializing_if = "Tweak::is_default")]
+    pub tweak: Tweak,
+}
+
+fn towards_the_player() -> f32 {
+    std::f32::consts::FRAC_PI_4
+}
+
+fn is_towards_the_player(facing: &f32) -> bool {
+    *facing == std::f32::consts::FRAC_PI_4
 }
 
 /// A neutral building or unit (`sim/neutral.rs`): what it is, whether it joins the colony when a unit comes close, and
@@ -327,16 +354,16 @@ fn is_hundred(n: &u32) -> bool {
     *n == 100
 }
 
-/// A thing's hit points in percent of its full ones, rounded down – at least 1.
-fn percent(hp: u32, full: u32) -> u32 {
-    (hp * 100 / full.max(1)).clamp(1, 100)
-}
+use crate::sim::hp_percent as percent;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct ZombieData {
     pub pos: (f32, f32),
     pub breed: Breed,
     pub wander: bool,
+    /// A boss: its own values as percents of its breed's (`sim/tweak.rs`) – left out for an ordinary zombie.
+    #[serde(default, skip_serializing_if = "Tweak::is_default")]
+    pub tweak: Tweak,
 }
 
 /// A house of a village of doom: its top left tile, width and depth, how many zombies it may still let out, and how
@@ -362,6 +389,9 @@ pub struct LootData {
     pub pos: (f32, f32),
     pub amount: u32,
     pub guards: u32,
+    /// The name triggers know it by – left out: none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name_id: String,
 }
 
 // Every thing of the map as the file keeps it (`of`), and back onto a world (`add_to`). `from_world` and `to_world` go
@@ -385,9 +415,10 @@ impl BuildingData {
             kind: b.kind,
             tile: b.tile,
             turned: b.turned,
-            hp_percent: percent(b.hp, b.stats().hp),
+            hp_percent: percent(b.hp, b.max_hp()),
             infected: b.infected,
             tag: b.tag.as_deref().cloned(),
+            tweak: b.tweak,
         }
     }
 
@@ -397,6 +428,8 @@ impl BuildingData {
         world.add_building_anywhere(self.kind, self.tile, self.turned);
         // What the editor gave it – if it's there.
         if let Some(id) = world.buildings.get(before).map(|built| built.id) {
+            // Before its life: `hp_percent` is of the changed maximum.
+            world.set_tweak(ThingRef::Building(id), self.tweak);
             world.edit_thing(ThingRef::Building(id), self.hp_percent, self.infected, self.tag.as_ref());
         }
     }
@@ -404,12 +437,17 @@ impl BuildingData {
 
 impl UnitData {
     pub fn of(u: &Unit) -> UnitData {
-        UnitData { kind: u.kind, pos: (u.pos.x, u.pos.y), hp_percent: percent(u.hp, u.max_hp()), veteran: u.veteran, tag: u.tag.as_deref().cloned() }
+        UnitData { kind: u.kind, pos: (u.pos.x, u.pos.y), hp_percent: percent(u.hp, u.max_hp()), veteran: u.veteran, tag: u.tag.as_deref().cloned(), facing: u.facing, tweak: u.tweak }
     }
 
     pub fn add_to(&self, world: &mut World) {
         world.add_unit(self.kind, vec2(self.pos.0, self.pos.1));
         let id = world.units.last().map_or(0, |unit| unit.id);
+        if let Some(unit) = world.units.last_mut() {
+            unit.facing = self.facing;
+            // Before its life: `hp_percent` is of the changed maximum.
+            unit.tweak = self.tweak.clamped();
+        }
         world.edit_thing(ThingRef::Unit(id), self.hp_percent, self.veteran, self.tag.as_ref());
     }
 }
@@ -433,18 +471,21 @@ impl NeutralData {
 
 impl ZombieData {
     pub fn awake(world: &World, z: &Zombie) -> ZombieData {
-        ZombieData { pos: (z.pos.x, z.pos.y), breed: z.breed, wander: world.is_wanderer(z) }
+        ZombieData { pos: (z.pos.x, z.pos.y), breed: z.breed, wander: world.is_wanderer(z), tweak: z.boss.as_deref().copied().unwrap_or_default() }
     }
 
     /// A sleeper is a wanderer – put on a world, it lies down asleep again.
-    pub fn asleep(s: &Sleeper) -> ZombieData {
-        ZombieData { pos: (s.pos.x, s.pos.y), breed: s.breed, wander: true }
+    pub fn asleep(world: &World, s: &Sleeper) -> ZombieData {
+        let tweak = if s.boss > 0 { world.bosses[s.boss as usize - 1] } else { Tweak::default() };
+        ZombieData { pos: (s.pos.x, s.pos.y), breed: s.breed, wander: true, tweak }
     }
 
     /// Wanderers lie down asleep, the others storm.
     pub fn add_to(&self, world: &mut World) {
         let pos = vec2(self.pos.0, self.pos.1);
-        if self.wander {
+        if !self.tweak.is_default() {
+            world.add_boss(pos, self.breed, self.wander, self.tweak);
+        } else if self.wander {
             world.add_sleeper(pos, self.breed);
         } else {
             world.add_zombie(pos, self.breed, false);
@@ -464,11 +505,14 @@ impl DoomData {
 
 impl LootData {
     pub fn of(l: &Loot) -> LootData {
-        LootData { loot: l.kind, pos: (l.pos.x, l.pos.y), amount: l.amount, guards: l.guards }
+        LootData { loot: l.kind, pos: (l.pos.x, l.pos.y), amount: l.amount, guards: l.guards, name_id: l.name_id.clone() }
     }
 
     pub fn add_to(&self, world: &mut World) {
         world.add_loot(vec2(self.pos.0, self.pos.1), self.loot, self.amount, self.guards);
+        if let Some(pile) = world.loot.last_mut() {
+            pile.name_id = self.name_id.clone();
+        }
     }
 }
 
@@ -517,6 +561,8 @@ impl MapFile {
             }),
             round: RoundData { days: world.days, gold: world.gold, wood: world.stock.get(Resource::Wood), difficulty: world.difficulty.clone() },
             modifiers: world.modifiers,
+            data: world.overrides.clone(),
+            upgrades: world.upgrade_levels.clone(),
             look: world.look.clone(),
             events: world.events.clone(),
             waves: Vec::new(),
@@ -545,6 +591,9 @@ impl MapFile {
         world.set_difficulty(data::get().difficulty(&self.round.difficulty));
         // Before the zombies: their speed is rolled with it.
         world.modifiers = self.modifiers;
+        world.overrides = self.data.clone();
+        world.upgrade_levels = self.upgrades.clone();
+        world.use_data();
         world.set_look(&self.look);
         world.days = self.round.days;
         world.gold = self.round.gold;
@@ -928,7 +977,7 @@ fn pretty(json: &str) -> String {
     let mut text = json.to_owned();
     // The fields of `MapFile` – `replacen(…, 1)`: only the first time, that's the field of the map (they come first, in
     // the order of the struct; spawners and the setup further down have fields with the same names).
-    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "modifiers", "look", "events", "story", "setup", "spawners", "regions", "points", "buildings", "units", "zombies", "neutral", "doom", "loot", "ornaments", "deposits", "big_rocks", "pictures", "terrain"] {
+    for key in ["name", "custom", "author", "description", "picture", "regenerate", "seed", "size", "border", "play_area", "round", "modifiers", "data", "upgrades", "look", "events", "story", "setup", "spawners", "regions", "points", "buildings", "units", "zombies", "neutral", "doom", "loot", "ornaments", "deposits", "big_rocks", "pictures", "terrain"] {
         text = text.replacen(&format!(",\"{key}\":"), &format!(",\n\"{key}\":"), 1);
     }
     // One entry per line: events and spawners start with "name", the groups of events with "from", buildings and units
@@ -1080,7 +1129,7 @@ mod tests {
         (file.author, file.description, file.picture, file.regenerate) = ("Me".into(), "A test, \"quoted\".".into(), "pic.png".into(), true);
         file.story.triggers = vec![crate::sim::Trigger {
             comment: "Greets the player.".into(),
-            actions: vec![crate::sim::Action::Window { title: "Hi".into(), text: "Welcome.".into() }.into()],
+            actions: vec![crate::sim::Action::window("Hi", "Welcome.").into()],
             ..crate::sim::Trigger::new("Welcome", crate::sim::TriggerEvent::Start)
         }];
         file.story.variables = vec![crate::sim::Variable { name: "keys".into(), kind: crate::sim::VarKind::Number, start: crate::sim::Value::Number(2) }];
@@ -1263,7 +1312,7 @@ mod tests {
         trigger.actions = vec![
             Step::new(Action::Reveal),
             Step {
-                action: Action::Notify { text: "hi".into() },
+                action: Action::notify("hi"),
                 when: Some(crate::sim::parse_condition("keys = 0", scope).unwrap()),
                 code: crate::sim::parse_code("keys += 1", scope).unwrap(),
             },
@@ -1373,6 +1422,25 @@ mod tests {
             .collect();
         let text = pretty(&serde_json::to_string(&file).unwrap());
         let again = MapFile::parse(&text).unwrap();
+        assert_eq!(again.story, file.story);
+        assert_eq!(again.version, VERSION);
+    }
+
+    /// Format 12: the action Research, the colour and picture of a notification, the mood and picture of a window and the
+    /// action Sound are written and read back the same.
+    #[test]
+    fn the_research_action_of_format_12_is_written_and_read_back() {
+        use crate::sim::{Action, Step, Trigger};
+        let mut file = MapFile::from_world(&World::new(4), "x");
+        let mut t = Trigger::new("t", TriggerEvent::Start);
+        t.actions = vec![
+            Step::new(Action::Research { ids: vec!["TechWoodHouse".into()] }),
+            Step::new(Action::Notify { text: "Keys: {keys}".into(), color: crate::sim::Tint::Gold, icon: crate::sim::Icon::Reward }),
+            Step::new(Action::Window { title: "T".into(), text: "x".into(), mood: crate::sim::Mood::Sad, picture: "a.png".into() }),
+            Step::new(Action::Sound { mood: crate::sim::Mood::Tension }),
+        ];
+        file.story.triggers = vec![t];
+        let again = MapFile::parse(&pretty(&serde_json::to_string(&file).unwrap())).unwrap();
         assert_eq!(again.story, file.story);
         assert_eq!(again.version, VERSION);
     }

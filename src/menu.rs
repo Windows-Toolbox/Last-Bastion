@@ -73,7 +73,7 @@ impl Menu {
         match self.page {
             Page::Main => self.main_page(),
             Page::Settings => {
-                let mut col = Column::centered("Settings", 13, SETTINGS_WIDTH);
+                let mut col = Column::centered("Settings", 14, SETTINGS_WIDTH);
                 if settings_page(&mut col, settings) {
                     self.page = Page::Main;
                 }
@@ -163,6 +163,16 @@ pub fn settings_page(col: &mut Column, s: &mut Settings) -> bool {
             WindowMode::Window => WindowMode::Borderless,
             WindowMode::Borderless => WindowMode::Window,
         };
+    }
+    // The monitor the window is on – or the borderless one covers (`screen.rs`).
+    let monitors = crate::screen::monitors();
+    let shown = s.monitor.min(monitors.len().saturating_sub(1));
+    let (label, value) = match monitors.get(shown) {
+        Some(m) => (format!("Monitor ({} x {})", m.width, m.height), format!("{}{}", shown + 1, if m.primary { " (main)" } else { "" })),
+        None => ("Monitor".to_owned(), "-".to_owned()),
+    };
+    if choice(col.row(), &label, &value) && monitors.len() > 1 {
+        s.monitor = (shown + 1) % monitors.len();
     }
     if choice(col.row(), "Health bars", s.health_bars.name()) {
         s.health_bars = s.health_bars.next();

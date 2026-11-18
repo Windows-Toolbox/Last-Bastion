@@ -37,7 +37,7 @@ Alle Bilder des Spiels – vorgerenderte **Sprite-Sheets** wie in TAB (DESIGN.md
 - **Geliehen** (`ALIASES` in `tab_skins.py`): `medic.json` = das Bild von `soldier_silver`, `spearman.json` = das von
   `soldier_marine` – nur eine eigene JSON, ohne `attack`/`load`/`fight` (ein Schuss sähe falsch aus): sie stehen beim
   Arbeiten.
-- **Lucifer, Thanatos, Titan:** die Einheiten aus dem Ingenieurszentrum (`data\units.json`).
+- **Lucifer, Thanatos, Titan:** die Einheiten aus dem Ingenieurszentrum (`data\units\`).
   Titan hat kein Gehen (nur Rennen) und ist kleiner gerechnet (sonst über 4096 Pixel).
 - **Landschaften** (`tab_terrain.py`): je Landschaft `earth.png`, `grass.png`, `water.png` (wiederholen sich alle
   `tiles` Kacheln), `objects.png` (Bäume, Felsstücke, TABs **große Felsen** 3×3/4×4/5×5 für den Editor – gefärbt wie TABs Gebirge der Landschaft –, Kräuter, Erz, Kohle, Ölquelle), `floor.png` (TABs Pflaster unter Gebäuden, in der Farbe der Landschaft) mit `floor_masks.png` (seine drei weichen Ränder für 1, 2, 3+ Kacheln breite Gebäude) und `terrain.json`. Welche eine
@@ -48,12 +48,12 @@ Alle Bilder des Spiels – vorgerenderte **Sprite-Sheets** wie in TAB (DESIGN.md
   Licht ein Teil, das **addiert** wird (es leuchtet). So brauchen nur die kleinen bewegten Stücke viele Bilder. Endet
   ein TAB-Loop mit (fast) seinem ersten Bild (Radar, Fahnen, MG), fällt das letzte weg – sonst ruckelt es jede Runde. Ballista
   und MG: ihr Geschütz geht einmal im Kreis (das Spiel nimmt das zum Ziel), die Ballista hat dazu ihren Schuss je 18°.
-  Die Größe nach **unserer** Breite (`size` in `data\buildings.json`). Mauern und Tor als Stücke wie TABs `CWall`,
+  Die Größe nach **unserer** Breite (`size` in `data\buildings\`). Mauern und Tor als Stücke wie TABs `CWall`,
   Türme als Körper + Vorderwand. Köhlerei = TABs Kraftwerk, Munitionsfabrik = TABs Lagerhaus. Etwa 133 MB.
 - **Effekte** (`tab_effects.py`): TABs Effekt-Vorlagen (Bilder, Dauer, Größe, Färbung, Ausblenden) – wann welcher kommt,
   wie TAB (`VisualEffects.cs`): Treffer → `blood_splash`, toter Zombie → `blood_zombie` + `blood_stain`, tote Einheit →
   `blood_human`, Säure → `venom` + `venom_pool`, Fass → `fire_blast`, MG-Treffer → `gun_impact_a/b`, infiziert →
-  `crystal`, fallendes Gebäude → was `explosion` in `data\buildings.json` sagt. Mündungsfeuer `flash_*` (Werte aus TABs
+  `crystal`, fallendes Gebäude → was `explosion` in `data\buildings\` sagt. Mündungsfeuer `flash_*` (Werte aus TABs
   `CShotEffect`). Höchstens 48 Bilder je Effekt. Etwa 20 MB.
 - **TABs späte Gebäude** in **TABs Größe** (`TAB_BUILDINGS` in `tab_buildings.py`: `wood_house_1..10`, `power_plant`, `oil_platform`,
   `quarry`, `big_quarry`, `big_farm`, `big_mill`, `warehouse`, `engineering_center`, `shocking_tower`, `executor` –

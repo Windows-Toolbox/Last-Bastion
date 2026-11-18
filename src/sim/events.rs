@@ -12,7 +12,7 @@ use macroquad::math::Vec2;
 use serde::{Deserialize, Serialize};
 
 use super::spawning::{BreedCount, WaveFrom, WaveGroup};
-use super::story::TriggerEvent;
+use super::story::{Icon, Mood, Tint, TriggerEvent};
 use super::zombies::Breed;
 use super::{World, HOUR_TICKS};
 use crate::data::{self, EventPlan};
@@ -113,8 +113,10 @@ pub enum Notice {
     /// A research is done (`research.rs`).
     Researched { name: String },
     /// A script's line at the top of the screen, and its window (`story.rs`).
-    Message { text: String },
-    Window { title: String, text: String },
+    Message { text: String, color: Tint, icon: Icon },
+    Window { title: String, text: String, mood: Mood, picture: String },
+    /// A script plays one of TAB's custom-event sounds (`Action::Sound`).
+    Sound { mood: Mood },
     /// A train stopped at the command center (`trains.rs`), here.
     TrainArrived { at: Vec2 },
     /// A script sends the camera there (`Action::Camera`).

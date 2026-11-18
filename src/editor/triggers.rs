@@ -65,6 +65,9 @@ pub fn problems(world: &World, t: &Trigger) -> Vec<String> {
         TriggerEvent::Join { name_id } | TriggerEvent::Reached { name_id } if !has_thing(world, name_id) => {
             found.push(format!("No neutral thing has the name ID \"{name_id}\" (Objects)."));
         }
+        TriggerEvent::PickedUp { name_id } if !world.loot.iter().any(|l| l.name_id == *name_id) => {
+            found.push(format!("No pile of loot has the name ID \"{name_id}\" (Objects)."));
+        }
         TriggerEvent::Enters { zone } | TriggerEvent::Leaves { zone } if world.find_zone(*zone).is_none() => {
             found.push("The region of the event is gone (Regions) - choose another.".to_owned());
         }

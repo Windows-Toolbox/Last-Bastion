@@ -1,5 +1,5 @@
 //! The crowd moves like TAB's physics (DESIGN.md 8.1): every zombie is a smooth circle with a weight (`mass` in
-//! `data\zombies.json`). First each one takes the step it wants (`zombies.rs`). Then, a few rounds over, everyone is
+//! `data\zombies\`). First each one takes the step it wants (`zombies.rs`). Then, a few rounds over, everyone is
 //! pushed out of everyone it overlaps – each by its share of the overlap, the lighter one further – and fully out of
 //! walls, buildings, water and mountains. Where that leaves it is where it stands this tick.
 //!

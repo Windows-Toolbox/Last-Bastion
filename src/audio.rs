@@ -750,6 +750,17 @@ pub fn frame(camera: Option<&Camera>, volumes: &Volumes) {
     });
 }
 
+/// One of TAB's custom-event sounds (`Music\CustomEvent_<mood>N.ogg`): a story window opens, or a script plays it.
+pub fn mood(mood: crate::sim::Mood) {
+    let Some(names) = mood.sounds() else {
+        return;
+    };
+    with(|p| {
+        let now = p.now;
+        p.later.push((now, Later::Music { names }));
+    });
+}
+
 /// A click, an "invalid", a window opening (`Interface`).
 pub fn interface(names: &str) {
     with(|p| {

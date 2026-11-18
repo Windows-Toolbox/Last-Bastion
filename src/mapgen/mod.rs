@@ -504,7 +504,7 @@ pub struct Context {
     /// Radius around the base that stays free (tiles) – generators let their features fade out before it, so the
     /// clearing doesn't look cut out with scissors.
     pub keep_out: f32,
-    /// How far the command center's power reaches and a tesla tower's (`data\buildings.json`, tiles) – the start area
+    /// How far the command center's power reaches and a tesla tower's (`data\buildings\`, tiles) – the start area
     /// is planned with them (`start.rs`, `ores.rs`): what a building needs at the start lies within the grid, or one
     /// tesla tower further.
     pub grid: f32,

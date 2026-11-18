@@ -28,7 +28,7 @@ use macroquad::math::{vec2, Vec2};
 
 use super::regen::regen_amount;
 use super::zombies::{look_from, values, Breed, Idle, Lure};
-use super::{clear_line, World, DAY_TICKS, TICKS_PER_SECOND};
+use super::{clear_line, Tweak, World, DAY_TICKS, TICKS_PER_SECOND};
 use crate::data;
 
 /// Edge of a block (tiles).
@@ -58,6 +58,8 @@ pub struct Sleeper {
     next: u64,
     /// The skin it wears (`Zombie::look`) – it keeps it when it wakes.
     pub look: u8,
+    /// A boss: its place in `World::bosses` plus one (0: an ordinary zombie) – `Zombie::boss` when it wakes.
+    pub boss: u16,
 }
 
 /// The sleepers, block by block.
@@ -92,6 +94,12 @@ impl Sleep {
     /// Every sleeper, block by block.
     pub fn iter(&self) -> impl Iterator<Item = &Sleeper> {
         self.blocks.iter().flatten()
+    }
+
+    /// The sleeping boss lying at `pos` (the same spot it was placed at).
+    fn find_boss_mut(&mut self, pos: Vec2) -> Option<&mut Sleeper> {
+        let b = self.block_of(pos);
+        self.blocks[b].iter_mut().find(|s| s.boss > 0 && s.pos.distance(pos) < 0.05)
     }
 
     /// How many sleep in the rectangle from `min` to `max` (`max` not included) – only the blocks it touches are looked at.
@@ -179,13 +187,20 @@ impl World {
     /// A new roamer, asleep from the start (`scatter_roamers`) – with its own pace, rolled now like a zombie's. It
     /// stands and growls before its first trip, like one awake (`idle_wait`).
     pub(super) fn lay_to_sleep(&mut self, pos: Vec2, breed: Breed) {
+        self.lay_to_sleep_as(pos, breed, None);
+    }
+
+    /// The same for a boss (`tweak.rs`): its own hit points and pace – and it wakes with its values.
+    pub(super) fn lay_to_sleep_as(&mut self, pos: Vec2, breed: Breed, boss: Option<Tweak>) {
         let stats = breed.stats();
-        let speed = stats.speed * (0.8 + 0.4 * self.rng.unit_f32()) * self.zombie_pace();
+        let speed = stats.speed * (0.8 + 0.4 * self.rng.unit_f32()) * self.zombie_pace() * boss.map_or(1.0, |t| t.speed as f32 / 100.0);
         let next = self.tick + self.idle_wait(breed);
         // Its skin from where it lies (it has no number yet): the bits of its position mixed, no dice – the dice stay
         // as they were, so the map is the same as without skins.
         let look = look_from(pos.x.to_bits() ^ pos.y.to_bits().rotate_left(16));
-        self.sleep.push(Sleeper { pos, breed, hp: stats.hp, since: self.tick, speed, next, look });
+        let hp = boss.and_then(|t| t.hp).unwrap_or(stats.hp).max(1);
+        let boss = boss.map_or(0, |t| self.boss_index(t));
+        self.sleep.push(Sleeper { pos, breed, hp, since: self.tick, speed, next, look, boss });
     }
 
     /// How long an idle zombie stands and growls before it roams next – TAB's dice of the zombies awake (`next_idle`),
@@ -350,7 +365,7 @@ impl World {
     /// The picture puts a light on each of them (`draw.rs`).
     pub fn eyes(&self) -> Vec<(Vec2, f32)> {
         let units = self.units.iter().map(|u| (u.pos, self.eye_range(u.sight())));
-        let buildings = self.buildings.iter().filter(|b| !b.infected).map(|b| (b.center(), self.eye_range(b.stats().sight)));
+        let buildings = self.buildings.iter().filter(|b| !b.infected).map(|b| (b.center(), self.eye_range(b.sight())));
         units.chain(buildings).collect()
     }
 
@@ -434,17 +449,43 @@ impl World {
         }
     }
 
+    /// `Order::SetBoss`: the boss at `pos` gets these values (awake or asleep) – its hit points keep their share of the new
+    /// maximum and its pace follows the speed. Values that change nothing make it an ordinary zombie again.
+    pub(super) fn set_boss(&mut self, pos: Vec2, tweak: Tweak) {
+        let tweak = tweak.clamped();
+        if let Some(z) = self.zombies.iter_mut().find(|z| z.boss.is_some() && z.pos.distance(pos) < 0.05) {
+            let (before, pace) = (z.max_hp().max(1), z.boss.as_ref().map_or(100, |t| t.speed).max(1));
+            z.boss = (!tweak.is_default()).then(|| Box::new(tweak));
+            z.hp = (z.hp as u64 * z.max_hp() as u64 / before as u64).max(1) as u32;
+            z.speed = z.speed * tweak.speed as f32 / pace as f32;
+            return;
+        }
+        let new = if tweak.is_default() { 0 } else { self.boss_index(tweak) };
+        let bosses = self.bosses.clone();
+        if let Some(s) = self.sleep.find_boss_mut(pos) {
+            let stats = s.breed.stats();
+            let old = bosses[s.boss as usize - 1];
+            let (before, after) = (old.hp.unwrap_or(stats.hp).max(1), tweak.hp.unwrap_or(stats.hp).max(1));
+            s.hp = (s.hp as u64 * after as u64 / before as u64).max(1) as u32;
+            s.speed = s.speed * tweak.speed as f32 / old.speed.max(1) as f32;
+            s.boss = new;
+        }
+    }
+
     /// A sleeper wakes: a zombie in the list again, where it lay, with its hit points – and what it healed asleep,
     /// once every `regen_every_seconds` it slept (`regen.rs`) – and its pace.
     fn wake(&mut self, sleeper: Sleeper, waking: Waking) {
         let every = data::get().units.regen_every.max(1) as u64;
         let stats = sleeper.breed.stats();
         let healed = (self.tick.saturating_sub(sleeper.since) / every).min(u32::MAX as u64) as u32;
-        let hp = sleeper.hp.saturating_add(healed.saturating_mul(regen_amount(stats.hp, stats.regen))).min(stats.hp);
+        let boss = (sleeper.boss > 0).then(|| self.bosses[sleeper.boss as usize - 1]);
+        let max = boss.and_then(|t| t.hp).unwrap_or(stats.hp).max(1);
+        let hp = sleeper.hp.saturating_add(healed.saturating_mul(regen_amount(max, stats.regen))).min(max);
         self.spawn_zombie_as(sleeper.pos, sleeper.breed, true);
         let Some(zombie) = self.zombies.last_mut() else {
             return;
         };
+        zombie.boss = boss.map(Box::new);
         zombie.hp = hp;
         zombie.speed = sleeper.speed;
         zombie.look = sleeper.look;
@@ -475,11 +516,13 @@ impl World {
         let calm_long = (SLEEP_AFTER * TICKS_PER_SECOND) as u32;
         let mut sleepers = Vec::new();
         let sleep = &self.sleep;
+        let bosses = &self.bosses;
         let tick = self.tick;
         self.zombies.retain(|z| {
             let sleepy = z.is_alive() && z.calm_for >= calm_long && !kept[sleep.block_of(z.pos)];
             if sleepy {
-                sleepers.push(Sleeper { pos: z.pos, breed: z.breed, hp: z.hp, since: tick, speed: z.speed, next: 0, look: z.look });
+                let boss = z.boss.as_deref().map_or(0, |t| bosses.iter().position(|b| b == t).map_or(0, |i| i as u16 + 1));
+                sleepers.push(Sleeper { pos: z.pos, breed: z.breed, hp: z.hp, since: tick, speed: z.speed, next: 0, look: z.look, boss });
             }
             !sleepy
         });

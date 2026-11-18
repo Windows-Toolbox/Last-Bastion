@@ -1,0 +1,20 @@
+{
+  "name": "Gate",
+  "letter": "G",
+  "skins": ["buildings/gate"],
+  "explosion": ["wood_medium"],
+  "size": [3, 1],
+  "hp": 600,
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 0,
+  "cost": 50,
+  "cost_wood": 10,
+  "build_seconds": 28,
+  "repair_cost": 20,
+  "sight": 3.0,
+  "height": 0.6,
+  "joins": true,
+  "shield": 0,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

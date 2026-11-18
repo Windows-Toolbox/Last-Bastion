@@ -1,0 +1,29 @@
+{
+  "sell_from_percent": 80,
+  "sell_prices": { "wood": 2, "stone": 3, "iron_ore": 3, "coal": 3, "food": 1, "iron": 10, "oil": 10 },
+  "blast": {
+    "cost": 40,
+    "cost_coal": 2,
+    "build_seconds": 8.0,
+    "damage": 1000,
+    "radius": 2.5,
+    "noise": 400,
+    "carry_slow_percent": 30
+  },
+  "scan": {
+    "radius": 10.0,
+    "seconds": 10.0,
+    "charges": 2,
+    "every_seconds": 120.0,
+    "power": 30
+  },
+  "trap_every_seconds": 0.5,
+  "tower_slots": 4,
+  "tower_bonus": 3.0,
+  "zombie_free_radius": 4,
+  "replace_refund_percent": 50,
+  "demolish_refund_percent": 50,
+  "demolish_unfinished_refund_percent": 50,
+  "repair_seconds": 10,
+  "build_start_percent": 20
+}

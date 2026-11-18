@@ -58,7 +58,7 @@ fn same_seed_and_orders_give_same_result() {
 ///
 /// Changing the simulation on purpose changes the number: then copy the new one from the error message.
 /// Only on an otherwise unchanged state does a different number mean a desync.
-const SCRIPTED_GAME_CHECKSUM: u64 = 0x4c73_3046_2f23_4df3;
+const SCRIPTED_GAME_CHECKSUM: u64 = 0x5172_7a0f_ec1f_534d;
 
 #[test]
 fn scripted_game_matches_written_down_checksum() {
@@ -788,7 +788,7 @@ fn world_border_keeps_units_in_and_lets_zombies_in() {
     let outside = vec2(2.0, world.base.y);
     world.step(&[
         Order::Command { units: vec![id], command: Command::Move(outside), queue: false, formation: None },
-        Order::SpawnUnit { kind: UnitKind::Soldier, point: outside },
+        Order::SpawnUnit { kind: UnitKind::Soldier, point: outside, facing: None },
     ]);
     let units = world.units.len();
     for _ in 0..1000 {
@@ -1040,7 +1040,7 @@ fn demolishing_gives_part_of_the_price_back() {
     let t = (bx + 6, by - 8);
     clear_ground(&mut world, t, 4);
     let percent = (data::get().buildings.demolish_refund_percent, data::get().buildings.demolish_unfinished_refund_percent);
-    assert!(percent.0 > 0 && percent.0 <= percent.1 && percent.1 < 100, "data\\buildings.json changed – change this test too");
+    assert!(percent.0 > 0 && percent.0 <= percent.1 && percent.1 < 100, "data\\buildings\\ changed – change this test too");
     world.gold = 100;
     world.stock.set(Resource::Wood, 0);
     world.stock.set(Resource::Stone, 0);
@@ -1262,7 +1262,7 @@ fn units_cost_wood_and_iron() {
     let barracks = barracks(&mut world);
     let b = world.find_building(barracks).unwrap();
     let (ranger, soldier) = (UnitKind::Ranger.stats(), UnitKind::Soldier.stats());
-    assert!(ranger.cost_wood > 0 && soldier.cost_iron > 0, "data\\units.json changed – change this test too");
+    assert!(ranger.cost_wood > 0 && soldier.cost_iron > 0, "data\\units\\ changed – change this test too");
     world.gold = 10_000;
     world.stock.set(Resource::Wood, ranger.cost_wood - 1);
     world.stock.set(Resource::Iron, soldier.cost_iron - 1);
@@ -1368,7 +1368,7 @@ fn a_shot_zombie_comes_for_the_shooter() {
     world.zombies[0].speed = 0.0;
     world.spawn_unit(UnitKind::Sniper, p);
     let sniper = world.units[0].id;
-    // The sniper first looks around, turns, raises its rifle and aims (`data\units.json`) – then it shoots. (Healing
+    // The sniper first looks around, turns, raises its rifle and aims (`data\units\`) – then it shoots. (Healing
     // itself, the zombie would fall back to its own hit points – it has to live through the shot.)
     for _ in 0..80 {
         world.zombies[0].hp = 100_000;
@@ -1703,7 +1703,7 @@ fn every_roam_stays_within_its_stroll() {
     assert!(walker[1] < harpy[1] && harpy[1] < giant[1], "TAB: the harpy strolls further than a walker, the giant furthest");
 }
 
-/// Every breed sees as far as `data\zombies.json` says: a runner 5.2 tiles from a soldier sees it (6 tiles), a
+/// Every breed sees as far as `data\zombies\` says: a runner 5.2 tiles from a soldier sees it (6 tiles), a
 /// walker 5.8 tiles away doesn't (5) – counted to the soldier's edge.
 #[test]
 fn zombies_see_as_far_as_their_breed() {
@@ -1913,7 +1913,7 @@ fn a_fallen_hunter_cottage_brings_zombies_and_noise() {
     }
     let b = world.buildings.len() - 1;
     let workers = world.buildings[b].stats().worker_cost;
-    world.buildings[b].hp = 0;
+    world.buildings[b].destroy();
     world.step(&[]);
     assert!(!world.buildings.iter().any(|b| b.kind == BuildingKind::HunterCottage));
     assert_eq!(world.zombies.len() as u32, workers, "its workers didn't come out");
@@ -2054,7 +2054,7 @@ fn tower_holds_four_and_protects_them() {
     }
     assert_eq!(world.garrison(tower).len(), data::get().buildings.tower_slots);
     let b = world.find_building(tower).unwrap();
-    world.buildings[b].hp = 0;
+    world.buildings[b].destroy();
     world.step(&[]);
     assert!(world.find_building(tower).is_none());
     assert!(world.units.iter().all(|u| !u.is_inside()));
@@ -2397,7 +2397,7 @@ fn roamers_are_scattered_by_distance() {
     assert!(at_ring * 2 < further, "{at_ring} zombies right at the ring, {further} a little further out");
 }
 
-/// A unit that dies lies there for `rise_min_seconds` to `rise_max_seconds` (`data\zombies.json`), then gets up where it
+/// A unit that dies lies there for `rise_min_seconds` to `rise_max_seconds` (`data\zombies\`), then gets up where it
 /// fell as one of TAB's infected (`infected`), heading for the command center.
 #[test]
 fn dead_units_rise_as_tabs_infected() {
@@ -2491,7 +2491,7 @@ fn zombies_leave_an_infected_tent_alone() {
     assert_eq!(tent.hp, tent.stats().hp, "the zombies hit their own tent");
 }
 
-/// Every payout a fed tent pays its `gold` (`data\buildings.json`) – on top of the command center's. An infected tent
+/// Every payout a fed tent pays its `gold` (`data\buildings\`) – on top of the command center's. An infected tent
 /// pays nothing.
 #[test]
 fn tents_pay_gold_every_payout() {
@@ -2565,7 +2565,7 @@ fn a_repair_costs_its_share_and_takes_its_time() {
         (s.hp, s.max_shield(), s.repair_cost)
     };
     // TAB's barracks: as much shield as hit points – the shield gone is half of all it can lose.
-    assert_eq!(hp, shield, "data\\buildings.json changed – change this test too");
+    assert_eq!(hp, shield, "data\\buildings\\ changed – change this test too");
     world.buildings[b].shield = 0;
     let price = world.buildings[b].repair_price();
     assert_eq!(price, cost.div_ceil(2));
@@ -2915,7 +2915,7 @@ fn an_arrow_on_its_way_counts_against_overkill() {
     let first = world.units[0].id;
     world.step(&[
         Order::Command { units: vec![first], command: Command::Move(p - vec2(3.0, 3.0)), queue: false, formation: None },
-        Order::SpawnUnit { kind: UnitKind::Ranger, point: p + vec2(0.0, 0.6) },
+        Order::SpawnUnit { kind: UnitKind::Ranger, point: p + vec2(0.0, 0.6), facing: None },
         Order::PlaceZombies { center: p + vec2(5.5, 1.0), radius: 0.0, count: 1, breed: Breed::Walker, wander: true },
     ]);
     let other = world.zombies.iter().find(|z| z.id != doomed).unwrap().id;
@@ -2978,7 +2978,7 @@ fn walking_off_after_the_shot_keeps_reloading() {
 #[test]
 fn fat_zombies_are_big_and_tough() {
     let (fat, runner) = (Breed::Fat.stats(), Breed::Runner.stats());
-    assert!(fat.radius > runner.radius && fat.hp > runner.hp && fat.armor > runner.armor);
+    assert!(fat.radius > runner.radius && fat.hp > runner.hp);
     let (mut world, _) = quiet_world();
     world.units.clear();
     let home = world.base + vec2(12.0, -12.0);
@@ -3037,7 +3037,7 @@ fn losing_the_last_command_center_loses_the_round() {
     let (mut world, _) = quiet_world();
     world.step(&[]);
     assert_eq!(world.outcome, None);
-    world.buildings[0].hp = 0;
+    world.buildings[0].destroy();
     world.step(&[]);
     assert!(matches!(world.outcome, Some(Outcome::Lost { .. })), "{:?}", world.outcome);
 
@@ -3185,8 +3185,8 @@ fn a_crowd_spreads_its_fire() {
     clear_ground(&mut world, (p.x as i32, p.y as i32), 7);
     let walker = |at: Vec2| Order::PlaceZombies { center: at, radius: 0.0, count: 1, breed: Breed::Walker, wander: true };
     world.step(&[
-        Order::SpawnUnit { kind: UnitKind::Sniper, point: p },
-        Order::SpawnUnit { kind: UnitKind::Sniper, point: p + vec2(0.0, 0.8) },
+        Order::SpawnUnit { kind: UnitKind::Sniper, point: p, facing: None },
+        Order::SpawnUnit { kind: UnitKind::Sniper, point: p + vec2(0.0, 0.8), facing: None },
         walker(p + vec2(5.0, 0.3)),
         walker(p + vec2(5.5, 1.5)),
     ]);
@@ -3829,7 +3829,7 @@ fn a_switched_off_building_costs_and_does_nothing() {
     // No free workers (rangers took them all): it stays off.
     world.extra_workers = 0;
     let point = world.base + vec2(0.0, 4.0);
-    let rangers: Vec<Order> = (0..world.free_workers()).map(|_| Order::SpawnUnit { kind: UnitKind::Ranger, point }).collect();
+    let rangers: Vec<Order> = (0..world.free_workers()).map(|_| Order::SpawnUnit { kind: UnitKind::Ranger, point, facing: None }).collect();
     world.step(&rangers);
     assert_eq!(world.free_workers(), 0);
     world.step(&[Order::SwitchOff { buildings: vec![id], off: false }]);
@@ -3839,7 +3839,7 @@ fn a_switched_off_building_costs_and_does_nothing() {
     world.extra_workers = 100_000;
     // Snipers cost more upkeep than the command center pays: it stays off too.
     let snipers = world.income() / UnitKind::Sniper.stats().upkeep + 1;
-    let orders: Vec<Order> = (0..snipers).map(|_| Order::SpawnUnit { kind: UnitKind::Sniper, point }).collect();
+    let orders: Vec<Order> = (0..snipers).map(|_| Order::SpawnUnit { kind: UnitKind::Sniper, point, facing: None }).collect();
     world.step(&orders);
     world.step(&[Order::SwitchOff { buildings: vec![id], off: false }]);
     assert_eq!(world.switch_on_blocked(b), Some(SwitchBlock::Income));
@@ -4324,13 +4324,13 @@ fn towers_shoot_by_themselves() {
     let weapon = BuildingKind::Ballista.stats().weapon.as_ref().unwrap();
     world.step(&[]);
     assert_eq!(world.zombies[0].hp, walker, "the bolt went to the walker");
-    assert_eq!(world.zombies[1].hp, fat - after_armor(weapon.damage, Breed::Fat.stats().armor), "the fat one wasn't hit");
+    assert_eq!(world.zombies[1].hp, fat - after_armor(weapon.damage + weapon.bonus.against(&Breed::Fat.stats().attributes, 0), Breed::Fat.stats().armor), "the fat one wasn't hit");
     assert_eq!(world.unrest, unrest + weapon.noise as u64, "the shot made no noise");
     // Reloading: no second bolt before `reload_seconds`.
     for _ in 0..weapon.reload - 1 {
         world.step(&[]);
     }
-    assert_eq!(world.zombies[1].hp, fat - after_armor(weapon.damage, Breed::Fat.stats().armor), "a second bolt too soon");
+    assert_eq!(world.zombies[1].hp, fat - after_armor(weapon.damage + weapon.bonus.against(&Breed::Fat.stats().attributes, 0), Breed::Fat.stats().armor), "a second bolt too soon");
 
     // The machine gun tower: the nearest one, again and again.
     world.zombies.clear();
@@ -4582,6 +4582,77 @@ fn loot_is_picked_up_and_its_guards_come_out() {
     assert_eq!(world.score.loot_found, 2);
 }
 
+/// The editor puts down a pile of any kind (the usual amount), changes what it holds and names it; a unit that picks
+/// it up gets it – every good, also iron, oil and food – and fires the triggers of its name ID. The map file keeps it.
+#[test]
+fn the_editor_makes_loot_of_every_kind_and_a_named_pile_fires_when_picked_up() {
+    let (mut world, id) = quiet_world();
+    world.events.clear();
+    let spot = world.base + vec2(-6.5, 0.5);
+    clear_ground(&mut world, (spot.x as i32, spot.y as i32), 4);
+    for kind in LootKind::ALL {
+        world.apply_orders(&[Order::PlaceLoot { point: spot, kind: Some(kind) }]);
+        let pile = world.loot.last().unwrap();
+        assert_eq!((pile.kind, pile.amount), (kind, kind.usual_amount()));
+    }
+    assert_eq!(world.loot.len(), LootKind::ALL.len());
+    world.loot.clear();
+
+    // One pile: oil, changed to 7 of it, no guards, named.
+    world.apply_orders(&[Order::PlaceLoot { point: spot, kind: Some(LootKind::Gold) }]);
+    let pile = world.loot[0].id;
+    world.apply_orders(&[Order::SetLoot { id: pile, kind: LootKind::Oil, amount: 7, guards: 0, name_id: "barrel".into() }]);
+    let l = &world.loot[0];
+    assert_eq!((l.kind, l.amount, l.guards, l.name_id.as_str()), (LootKind::Oil, 7, 0, "barrel"));
+
+    // It keeps in the file.
+    let file = crate::mapfile::MapFile::from_world(&world, "Loot test");
+    let text = serde_json::to_string(&file).unwrap();
+    let back: crate::mapfile::MapFile = serde_json::from_str(&text).unwrap();
+    assert_eq!((back.loot[0].loot, back.loot[0].amount, back.loot[0].name_id.as_str()), (LootKind::Oil, 7, "barrel"));
+
+    use_triggers(&mut world, vec![trigger_of(TriggerEvent::PickedUp { name_id: "barrel".into() }, vec![var_step("n", true, 1)])]);
+    let oil = world.stock.get(Resource::Oil);
+    world.step(&[Order::Command { units: vec![id], command: Command::Move(spot), queue: false, formation: None }]);
+    for _ in 0..400 {
+        world.step(&[]);
+        if world.loot.is_empty() {
+            break;
+        }
+    }
+    assert!(world.loot.is_empty(), "the pile wasn't picked up");
+    assert_eq!(world.stock.get(Resource::Oil), oil + 7);
+    assert_eq!(world.variable("n"), 1, "the trigger for its name ID didn't run");
+}
+
+/// The editor places a unit facing a way, and the map file keeps it; without a way it faces the player, like before.
+#[test]
+fn a_unit_placed_in_the_editor_keeps_the_way_it_faces() {
+    let (mut world, _) = quiet_world();
+    let point = world.base + vec2(8.5, 0.5);
+    clear_ground(&mut world, (point.x as i32, point.y as i32), 3);
+    world.apply_orders(&[
+        Order::SpawnUnit { kind: UnitKind::Ranger, point, facing: Some(std::f32::consts::PI) },
+        Order::SpawnUnit { kind: UnitKind::Ranger, point: point + vec2(1.0, 0.0), facing: None },
+    ]);
+    let n = world.units.len();
+    assert_eq!(world.units[n - 2].facing, std::f32::consts::PI);
+    assert_eq!(world.units[n - 1].facing, std::f32::consts::FRAC_PI_4);
+    let file = crate::mapfile::MapFile::from_world(&world, "Facing test");
+    let back = crate::mapfile::MapFile::parse(&serde_json::to_string(&file).unwrap()).unwrap().to_world().unwrap();
+    let ranger_facings: Vec<f32> = back.units.iter().filter(|u| u.kind == UnitKind::Ranger).map(|u| u.facing).collect();
+    assert!(ranger_facings.contains(&std::f32::consts::PI), "{ranger_facings:?}");
+}
+
+/// Iron ore is still called "Iron" in the files – older maps keep reading.
+#[test]
+fn old_loot_files_still_read() {
+    let kind: LootKind = serde_json::from_str("\"Iron\"").unwrap();
+    assert_eq!(kind, LootKind::IronOre);
+    assert_eq!(serde_json::to_string(&LootKind::IronOre).unwrap(), "\"Iron\"");
+    assert_eq!(serde_json::to_string(&LootKind::IronBar).unwrap(), "\"IronBar\"");
+}
+
 /// TAB's supplies: picked up, the command center makes that much more food per payout and power for the rest of the
 /// round.
 #[test]
@@ -4633,8 +4704,9 @@ fn spitter_acid_flies_and_splashes() {
         }
     }
     assert!(flew, "the acid didn't fly – it hit at once");
-    assert_eq!(hp(&world, a), full - stats.damage, "the target");
-    assert_eq!(hp(&world, b), full - stats.damage, "next to the target");
+    let venom = (stats.damage as f32 * UnitKind::Ranger.stats().venom_factor).round_ties_even() as u32;
+    assert_eq!(hp(&world, a), full - venom, "the target");
+    assert_eq!(hp(&world, b), full - venom, "next to the target");
     assert_eq!(hp(&world, c), full, "further away");
 
     // Once more – but this time the target steps aside while the acid flies.
@@ -4691,7 +4763,7 @@ fn infested_shoot_from_almost_a_soldiers_range() {
 fn armored_runners_are_fast_and_shrug_off_arrows() {
     let (armored, runner) = (Breed::Armored.stats(), Breed::Runner.stats());
     assert_eq!(armored.speed, runner.speed);
-    assert!(armored.armor > runner.armor);
+    assert!(armored.hp > runner.hp, "TAB's armor share is in the hit points");
     let shots = |kind: UnitKind, breed: Breed| breed.stats().hp.div_ceil(after_armor(kind.stats().damage, breed.stats().armor));
     assert!(shots(UnitKind::Ranger, Breed::Armored) > shots(UnitKind::Ranger, Breed::Runner));
     assert_eq!(shots(UnitKind::Sniper, Breed::Armored), 1);
@@ -4967,7 +5039,7 @@ fn a_bank_gives_storage_and_credit() {
     assert!(world.debt <= credit && world.debt + sniper > credit, "debt {} with a credit of {credit}", world.debt);
 
     // The bank falls: its share of the debt goes with it – here all of it.
-    world.buildings[bank].hp = 0;
+    world.buildings[bank].destroy();
     world.step(&[]);
     world.step(&[]);
     assert_eq!(world.credit_line(), 0);
@@ -4978,7 +5050,7 @@ fn a_bank_gives_storage_and_credit() {
     world.step(&[]);
     world.gold = world.gold_storage();
     let bank = world.buildings.iter().position(|b| b.kind == BuildingKind::Bank).unwrap();
-    world.buildings[bank].hp = 0;
+    world.buildings[bank].destroy();
     world.step(&[]);
     world.step(&[]);
     assert_eq!(world.gold, storage);
@@ -5051,7 +5123,7 @@ fn the_editor_places_things_with_an_owner() {
     assert_eq!(world.buildings.len(), buildings, "the tent is the colony's");
     assert!(matches!(world.neutral.last(), Some(n) if n.joinable && matches!(n.thing, Thing::Building { kind: BuildingKind::Tent, .. })));
     let point = world.base + vec2(12.0, 6.0);
-    world.apply_orders(&[Order::PlaceAs { owner: Owner::Neutral, order: Box::new(Order::SpawnUnit { kind: UnitKind::Soldier, point }) }]);
+    world.apply_orders(&[Order::PlaceAs { owner: Owner::Neutral, order: Box::new(Order::SpawnUnit { kind: UnitKind::Soldier, point, facing: None }) }]);
     assert_eq!(world.units.len(), units, "the soldier is the colony's");
     assert!(matches!(world.neutral.last(), Some(n) if !n.joinable && matches!(n.thing, Thing::Unit { kind: UnitKind::Soldier, .. })));
     // The same spot again: no room – nothing new, and nobody else changes hands.
@@ -5440,11 +5512,11 @@ fn a_story_starts_counts_and_wins() {
                 TriggerEvent::Start,
                 vec![
                     Step::new(Action::Resources { gold: 500, goods: vec![(Resource::Stone, 7)] }),
-                    Step::new(Action::Notify { text: "Hold the line".into() }),
+                    Step::new(Action::notify("Hold the line")),
                     var_step("keys", false, 1),
                 ],
             ),
-            trigger_of(TriggerEvent::Won, script(vec![Action::Notify { text: "Well done".into() }])),
+            trigger_of(TriggerEvent::Won, script(vec![Action::notify("Well done")])),
             trigger_of(TriggerEvent::Button, vec![var_step("keys", true, 1)]),
         ],
         goals: vec![Goal {
@@ -5459,14 +5531,14 @@ fn a_story_starts_counts_and_wins() {
     let (gold, stone) = (world.gold, world.stock.get(Resource::Stone));
     world.step(&[]);
     assert_eq!((world.gold, world.stock.get(Resource::Stone)), (gold + 500, stone + 7));
-    assert!(world.notices.iter().any(|n| matches!(n, Notice::Message { text } if text == "Hold the line")));
+    assert!(world.notices.iter().any(|n| matches!(n, Notice::Message { text, .. } if text == "Hold the line")));
     assert_eq!((world.variable("keys"), world.goal_progress(0)), (1, 33));
     // The command center's button, twice – a third time does nothing.
     world.step(&[Order::CustomCommand]);
     assert_eq!(world.outcome, None);
     world.step(&[Order::CustomCommand]);
     assert!(matches!(world.outcome, Some(Outcome::Won { .. })), "the goal didn't win");
-    assert!(world.notices.iter().any(|n| matches!(n, Notice::Message { text } if text == "Well done")), "no victory script");
+    assert!(world.notices.iter().any(|n| matches!(n, Notice::Message { text, .. } if text == "Well done")), "no victory script");
     assert!(!world.command_ready());
 }
 
@@ -5668,8 +5740,8 @@ fn steps_have_conditions_and_code() {
     let sc = Scope { variables: &variables };
     let when = |t: &str| Some(parse_condition(t, sc).unwrap());
     let code = |t: &str| parse_code(t, sc).unwrap();
-    let said = |w: &World, what: &str| w.notices.iter().any(|n| matches!(n, Notice::Message { text } if text == what));
-    let note = |text: &str| Action::Notify { text: text.into() };
+    let said = |w: &World, what: &str| w.notices.iter().any(|n| matches!(n, Notice::Message { text, .. } if text == what));
+    let note = |text: &str| Action::notify(text);
     let steps = vec![
         Step { action: note("a"), when: when("n = 1"), code: code("n += 10") },
         Step { action: note("b"), when: None, code: code("n = n + 5") },
@@ -5694,6 +5766,12 @@ fn script_world(names: &[&str]) -> World {
     // Not tick 0: that tick starts the story (and the variables with it).
     world.tick = 1;
     world
+}
+
+/// Runs this code (as text) as a script.
+fn run_code(world: &mut World, text: &str) {
+    let step = Step::code(code_of(world, text));
+    run_script(world, vec![step]);
 }
 
 /// A step with this action, condition and code (both as text).
@@ -6030,9 +6108,10 @@ fn the_giant_sweeps_everyone_in_front_of_it() {
     let mut infected = Vec::new();
     world.sweep(giant, Hit::Unit(0), &mut infected);
     let full = UnitKind::Soldier.stats().hp;
+    // The giant's 160 less the soldier's armor is more than its life: it dies (the rest is lost).
     let blow = after_armor(Breed::Giant.stats().damage, UnitKind::Soldier.stats().armor);
-    assert_eq!(world.units[0].hp, full - blow, "the target");
-    assert_eq!(world.units[1].hp, full - blow, "the one beside it");
+    assert_eq!(world.units[0].hp, full.saturating_sub(blow), "the target");
+    assert_eq!(world.units[1].hp, full.saturating_sub(blow), "the one beside it");
     assert_eq!(world.units[2].hp, full, "the one behind the giant");
     assert!(!world.zombies[near_walker].is_alive(), "the walker in front");
     assert!(world.zombies[far_walker].is_alive(), "the walker out of reach");
@@ -6054,6 +6133,8 @@ fn the_giants_blow_throws_the_killed_away() {
     world.spawn_unit(UnitKind::Ranger, p + vec2(1.2, 0.0));
     world.spawn_unit(UnitKind::Soldier, p + vec2(2.0, 1.2));
     world.units[0].hp = 1; // the ranger dies, the soldier only gets hurt
+    world.units[1].tweak.hp = Some(10_000);
+    world.units[1].hp = 10_000;
     let walker_at = world.zombies[giant + 1].pos;
     let (ranger_at, soldier_at) = (world.units[0].pos, world.units[1].pos);
     let mut infected = Vec::new();
@@ -6303,10 +6384,15 @@ fn thanatos_blows_up_crowds_and_hits_close_up() {
     let far = at + vec2(5.0, 5.0);
     frozen_zombies(&mut world, &[far, far + vec2(0.6, 0.0), far + vec2(0.0, 0.7)], Breed::Fat);
     let hp = world.zombies[0].hp;
+    // They heal between two missiles, so: was each of them hit at some point?
+    let mut hit = [false; 3];
     for _ in 0..(8.0 * TICKS_PER_SECOND) as u32 {
         world.step(&[]);
+        for (h, z) in hit.iter_mut().zip(&world.zombies) {
+            *h |= z.hp < hp;
+        }
     }
-    assert!(world.zombies.iter().all(|z| z.hp < hp), "the missile didn't hit all three");
+    assert!(hit.iter().all(|&h| h), "the missile didn't hit all three");
 
     // Close up: 2 tiles – too close for the missile, too far for the blow: nothing. 1 tile: the blow.
     world.zombies.clear();
@@ -6401,7 +6487,7 @@ fn a_copy_keeps_everything_and_a_cut_takes_it_away() {
     let tile = (bx + 8, by + 8);
     world.apply_orders(&[
         Order::PlaceBuilding { kind: BuildingKind::Tent, tile, turned: false, editor: true },
-        Order::SpawnUnit { kind: UnitKind::Soldier, point: vec2(tile.0 as f32 + 3.5, tile.1 as f32 + 0.5) },
+        Order::SpawnUnit { kind: UnitKind::Soldier, point: vec2(tile.0 as f32 + 3.5, tile.1 as f32 + 0.5), facing: None },
         Order::PaintZombies { tiles: vec![(tile.0 + 5, tile.1)], per_tile: vec![(Breed::Runner, 1)], wander: true },
         Order::PlaceDoom { tile: (tile.0, tile.1 + 4), size: (2, 2) },
     ]);
@@ -6497,6 +6583,62 @@ fn a_train_stops_at_the_command_center_and_leaves_the_map() {
     assert!((front - CarKind::Locomotive.length() / 2.0).abs() < 0.5, "{front}");
     assert!(gone > when + data::get().trains.stop as u64, "it didn't wait at the stop");
     assert_eq!(world.variable("arrived"), 1, "the arrival ran more than once");
+}
+
+/// A train station named `Command Center` next to the track (`trains.rs`, docs/trains.md step 3): the train stops there,
+/// the middle of the locomotive at the point of the track closest to the station – not below the command center. A
+/// destroyed station stops no train: then it's TAB's stop again.
+#[test]
+fn a_train_stops_at_the_station_named_command_center() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let y = railway(&mut world);
+    let bx = world.base.x as i32;
+    let tile = (bx + 20, y - 2);
+    clear_ground(&mut world, (tile.0 + 1, tile.1 + 1), 4);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::TrainStation, tile, turned: false, editor: true }]);
+    let station = world.buildings.iter().position(|b| b.kind == BuildingKind::TrainStation).expect("the station wasn't placed");
+    // Without the name it isn't the command center's.
+    assert!(world.command_center_station().is_none());
+    world.buildings[station].tag = Some(Box::new(Tag { name_id: COMMAND_CENTER_STATION.into(), ..Tag::default() }));
+    assert!(world.command_center_station().is_some());
+    let arrived = vec![var_step("arrived", true, 1)];
+    run_script(&mut world, script(vec![Action::Train { stop: true, reverse: false, on_arrival: arrived }]));
+    let mut stood = None;
+    for _ in 0..3000 {
+        world.step(&[]);
+        let Some(train) = world.trains.first() else {
+            break;
+        };
+        if world.variable("arrived") == 1 && stood.is_none() {
+            stood = Some(train.line.point_at(train.offset));
+        }
+    }
+    let at = stood.expect("it never stopped at the station");
+    let middle = world.buildings[station].center();
+    assert!((at.x - middle.x).abs() < 0.5, "it stopped at {at}, the station's middle is {middle}");
+    assert!((at.x - world.base.x).abs() > 5.0, "it stopped at the command center");
+
+    // Destroyed, the station stops nobody.
+    world.buildings[station].destroy();
+    assert!(world.command_center_station().is_none());
+    let plan = world.train_plan(false).expect("there is a line");
+    assert!((plan.line.point_at(plan.stop).x - world.base.x).abs() < 1.0);
+}
+
+/// A station the track doesn't run next to isn't a stop, and no train goes for the command center then.
+#[test]
+fn a_station_away_from_the_track_stops_no_train() {
+    let (mut world, _) = quiet_world();
+    let y = railway(&mut world);
+    let bx = world.base.x as i32;
+    let tile = (bx + 20, y - 6);
+    clear_ground(&mut world, (tile.0 + 1, tile.1 + 1), 4);
+    world.apply_orders(&[Order::PlaceBuilding { kind: BuildingKind::TrainStation, tile, turned: false, editor: true }]);
+    let station = world.buildings.iter().position(|b| b.kind == BuildingKind::TrainStation).expect("the station wasn't placed");
+    world.buildings[station].tag = Some(Box::new(Tag { name_id: COMMAND_CENTER_STATION.into(), ..Tag::default() }));
+    assert!(world.rail_lines().iter().all(|l| world.station_stop(l, &world.buildings[station]).is_none()));
+    assert!(world.train_plan(false).is_none());
 }
 
 /// A line that ends on the playing field: there the train stays, like TAB's, its front at the buffer stop.
@@ -6723,7 +6865,7 @@ fn buildings_finished_and_fallen_fire_their_triggers() {
     world.step(&[]);
     assert_eq!((world.variable("wall"), world.variable("tent"), world.variable("any")), (0, 1, 1));
     assert_eq!(world.variable("fell"), 0);
-    world.buildings[b].hp = 0;
+    world.buildings[b].destroy();
     world.step(&[]);
     assert_eq!((world.variable("fell"), world.variable("fell any")), (1, 1));
 }
@@ -6756,4 +6898,588 @@ fn actions_name_regions_and_points() {
     world.notices.clear();
     world.fire(&TriggerEvent::Start);
     assert!(!world.notices.iter().any(|n| matches!(n, Notice::Camera { .. })), "the camera went to a region that is gone");
+}
+
+/// TAB's counting and hurting functions: `CountDeads` counts what died by name and group, `IsInfected` asks for all the
+/// buildings with an ID, `GiveEntities` gives units, `DamageAll` / `CureAll` hurt and heal a kind – and the action
+/// "Research" grants researches.
+#[test]
+fn script_functions_count_the_dead_and_hurt_whole_kinds() {
+    let mut world = script_world(&["deads", "walkers", "soldiers", "infected", "other"]);
+    world.units.clear();
+    world.zombies.clear();
+    for v in world.story.variables.iter_mut().filter(|v| v.name == "infected" || v.name == "other") {
+        v.kind = VarKind::Flag;
+    }
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    // Three walkers killed by a script, a soldier shot dead, a fourth walker lives.
+    let far = world.base + vec2(40.0, 40.0);
+    for k in 0..3 {
+        world.add_zombie(far + vec2(k as f32, 0.0), Breed::Walker, true);
+    }
+    run_code(&mut world, "DamageAll(\"Walker\", 10000)");
+    world.step(&[]);
+    world.add_zombie(far, Breed::Walker, true);
+    run_code(&mut world, "deads = CountDeads(\"Walker\"); walkers = CountDeads(\"Zombie\"); soldiers = CountDeads(\"Soldier\")");
+    assert_eq!((world.variable("deads"), world.variable("walkers"), world.variable("soldiers")), (3, 3, 0));
+    assert_eq!(world.zombies.len(), 1);
+    // Units: given by name, hurt and cured up to full.
+    run_code(&mut world, "GiveEntities(\"Soldier\", 3); GiveEntities(\"Nothing\", 3)");
+    let soldiers = world.units.iter().filter(|u| u.kind == UnitKind::Soldier).count();
+    assert_eq!(soldiers, 3, "none for the unknown name");
+    let full = world.units[0].max_hp();
+    run_code(&mut world, "DamageAll(\"Soldier\", 10)");
+    assert!(world.units.iter().all(|u| u.hp == u.max_hp() - 10));
+    run_code(&mut world, "CureAll(\"Soldier\", 4)");
+    assert!(world.units.iter().all(|u| u.hp == full - 6));
+    run_code(&mut world, "CureAll(\"soldier\", 400)");
+    assert!(world.units.iter().all(|u| u.hp == full), "cured over full");
+    // Buildings: hurt and cured; IsInfected asks about every one with the ID.
+    world.add_building_anywhere(BuildingKind::Tent, (bx + 12, by - 12), false);
+    world.add_building_anywhere(BuildingKind::Tent, (bx + 16, by - 12), false);
+    let tag = Tag { name_id: "camp".into(), ..Tag::default() };
+    for b in world.buildings.iter_mut().filter(|b| b.kind == BuildingKind::Tent) {
+        b.tag = Some(Box::new(tag.clone()));
+    }
+    let tents: Vec<usize> = (0..world.buildings.len()).filter(|&b| world.buildings[b].kind == BuildingKind::Tent).collect();
+    let ask = "infected = IsInfected(\"camp\"); other = IsInfected(\"nowhere\")";
+    run_code(&mut world, ask);
+    assert_eq!((world.variable("infected"), world.variable("other")), (0, 0), "no tent is infected");
+    world.buildings[tents[0]].infected = true;
+    run_code(&mut world, ask);
+    assert_eq!(world.variable("infected"), 0, "only one of two");
+    world.buildings[tents[1]].infected = true;
+    run_code(&mut world, ask);
+    assert_eq!((world.variable("infected"), world.variable("other")), (1, 0));
+    let hp = world.buildings[tents[0]].hp;
+    let shield = world.buildings[tents[0]].shield;
+    // The shield goes first, then the hit points.
+    run_code(&mut world, &format!("DamageAll(\"Tent\", {})", shield + 30));
+    assert_eq!((world.buildings[tents[0]].shield, world.buildings[tents[0]].hp), (0, hp - 30));
+    world.buildings[tents[0]].infected = false;
+    run_code(&mut world, "CureAll(\"Tent\", 100)");
+    let (cured, infected) = (&world.buildings[tents[0]], &world.buildings[tents[1]]);
+    assert_eq!((cured.hp, cured.shield), (hp, shield), "cured: hit points first, then the shield");
+    assert_eq!((infected.hp, infected.shield), (hp - 30, 0), "an infected tent isn't cured");
+    // Research: granted at once, once.
+    let id = crate::data::get().research.techs[0].id.clone();
+    world.researched.clear();
+    world.notices.clear();
+    run_script(&mut world, script(vec![Action::Research { ids: vec![id.clone(), id.clone(), "NoSuchTech".into()] }]));
+    assert_eq!(world.researched, [0]);
+    assert_eq!(world.notices.iter().filter(|n| matches!(n, Notice::Researched { .. })).count(), 1);
+}
+
+/// Texts of the story (TAB's `ProcessText`): `{expression}` is worked out when the line, the window or the choice
+/// comes up – yes/no as Yes/No, `\n` is a new line, what doesn't parse stays – and a notification and a window carry
+/// their colour, picture and mood to the screen.
+#[test]
+fn texts_work_out_their_expressions() {
+    let mut world = script_world(&["keys", "found"]);
+    world.story.variables[1].kind = VarKind::Flag;
+    run_code(&mut world, "keys = 3; found = keys > 2");
+    assert_eq!(world.render(r"Keys: {keys + 1} on day {Day}\nfound: {found}, {keys > 5}"), "Keys: 4 on day 1\nfound: Yes, No");
+    assert_eq!(world.render("{nonsense(} stays, {keys} and {open"), "{nonsense(} stays, 3 and {open");
+    assert_eq!(world.render("no braces"), "no braces");
+    let mut window = Action::window("Day {Day}", "{keys} keys");
+    if let Action::Window { mood, picture, .. } = &mut window {
+        (*mood, *picture) = (Mood::Sad, "header.png".into());
+    }
+    let notify = Action::Notify { text: "Keys: {keys}".into(), color: Tint::Red, icon: Icon::Warning };
+    let ask = Action::Choose { text: "You have {keys}.".into(), options: vec![Pick::new("Take {keys + 1}", Vec::new()), Pick::new("Leave", Vec::new())] };
+    world.notices.clear();
+    run_script(&mut world, script(vec![notify, window, Action::Sound { mood: Mood::Tension }, ask]));
+    assert!(world.notices.contains(&Notice::Message { text: "Keys: 3".into(), color: Tint::Red, icon: Icon::Warning }));
+    assert!(world.notices.contains(&Notice::Window { title: "Day 1".into(), text: "3 keys".into(), mood: Mood::Sad, picture: "header.png".into() }));
+    assert!(world.notices.contains(&Notice::Sound { mood: Mood::Tension }));
+    let choice = world.choice().expect("a choice waits");
+    assert_eq!((choice.text.as_str(), choice.options.as_slice()), ("You have 3.", ["Take 4".to_owned(), "Leave".to_owned()].as_slice()));
+}
+
+/// The action "Playing field to region": the field becomes the smallest straight rectangle on screen around the region
+/// (every tile of the region inside), and a region that is gone leaves it as it is.
+#[test]
+fn an_action_moves_the_playing_field_to_a_region() {
+    let (mut world, _) = quiet_world();
+    world.events.clear();
+    let at = (world.base.x as i32 + 10, world.base.y as i32 - 6);
+    world.step(&[Order::AddZone { zone: Zone::new("part two", 0, Form::Rect { min: at, size: (8, 5) }) }]);
+    let zone = world.zones.last().unwrap().id;
+    let before = world.map.play_steps();
+    world.step(&[]);
+    use_triggers(&mut world, vec![trigger_of(TriggerEvent::Start, script(vec![Action::PlayArea { to: zone }]))]);
+    world.fire(&TriggerEvent::Start);
+    world.step(&[]);
+    assert_ne!(world.map.play_steps(), before);
+    for x in at.0..at.0 + 8 {
+        for y in at.1..at.1 + 5 {
+            assert!(world.map.in_play(x, y), "tile {x},{y} of the region is outside");
+        }
+    }
+    // Not much more than the region: a tile far from it is outside.
+    assert!(!world.map.in_play(at.0 - 20, at.1 + 20));
+    // Gone: the field stays.
+    let now = world.map.play_steps();
+    world.step(&[Order::RemoveZone { zone }]);
+    world.fire(&TriggerEvent::Start);
+    world.step(&[]);
+    assert_eq!(world.map.play_steps(), now);
+}
+
+/// The Data module's orders: a value changed for the map is kept in the world and in its file, and goes away again.
+#[test]
+fn the_map_keeps_the_values_it_changes() {
+    let (mut world, _) = quiet_world();
+    world.step(&[Order::SetData { key: "units.ranger.hp".into(), value: Some(serde_json::json!(60)) }]);
+    // The standard value itself (60), so the tests that run at the same time notice nothing.
+    let kept = world.overrides.clone();
+    world.step(&[Order::ClearData]);
+    assert_eq!(kept.get("units.ranger.hp"), Some(&serde_json::json!(60)));
+    assert!(world.overrides.is_empty());
+    world.overrides = kept.clone();
+    let json = serde_json::to_string(&crate::mapfile::MapFile::from_world(&world, "Own values")).unwrap();
+    assert!(json.contains("\"units.ranger.hp\":60"), "{json}");
+    assert_eq!(crate::mapfile::MapFile::parse(&json).unwrap().data, kept, "the file gives them back");
+    world.overrides = data::Overrides::default();
+    world.use_data();
+    let plain = serde_json::to_string(&crate::mapfile::MapFile::from_world(&world, "Plain")).unwrap();
+    assert!(!plain.contains("\"data\""), "a map with nothing changed writes no `data`");
+}
+
+/// A value the map changes is what the whole game reads from the next order list on (`kind.stats()`), and the standard
+/// is back after `ClearData`. A value no other test looks at, put back at once.
+#[test]
+fn a_changed_value_reaches_the_game() {
+    let (mut world, _) = quiet_world();
+    let standard = UnitKind::Lucifer.stats().noise;
+    world.step(&[Order::SetData { key: "units.lucifer.noise".into(), value: Some(serde_json::json!(standard + 1.0)) }]);
+    let changed = UnitKind::Lucifer.stats().noise;
+    world.step(&[Order::ClearData]);
+    assert_eq!(changed, standard + 1.0);
+    assert_eq!(UnitKind::Lucifer.stats().noise, standard, "the standard is back");
+}
+
+/// A map can block a research: it isn't offered on its workshop's card (and so can't be started), but a script's action
+/// "Research" still grants it. A tech no other test looks at, unblocked again at once.
+#[test]
+fn a_blocked_research_is_not_offered_but_a_script_can_grant_it() {
+    let (mut world, _) = quiet_world();
+    world.research_all();
+    let last = data::get().research.techs.len() as u16 - 1;
+    let id = data::get().research.techs[last as usize].id.clone();
+    world.researched.clear();
+    let key = format!("research.techs.{last}.blocked");
+    world.step(&[Order::SetData { key, value: Some(serde_json::json!(true)) }]);
+    let (offered, shows_blocked) = (world.tech_offered(last), crate::hud::research_first(last));
+    run_script(&mut world, script(vec![Action::Research { ids: vec![id] }]));
+    let granted = world.researched(last);
+    world.step(&[Order::ClearData]);
+    assert!(!offered, "a blocked research was offered");
+    assert!(shows_blocked.contains("can't be researched"), "{shows_blocked}");
+    assert!(granted, "the script's Research action should grant it anyway");
+}
+
+/// One unit's own combat values (`Order::SetTweak`): attack speed shoots more often, damage hits harder, life keeps its
+/// share of the new maximum, a tougher armor takes more off a hit – and the file keeps all of it.
+#[test]
+fn a_single_unit_can_have_its_own_combat_values() {
+    // The damage a soldier does to a runner that stands still and can't die, in 300 ticks.
+    let dealt = |tweak: Tweak| {
+        let (mut world, _) = quiet_world();
+        world.units.clear();
+        world.zombies.clear();
+        let p = world.base + vec2(0.0, -30.0);
+        clear_ground(&mut world, (p.x as i32, p.y as i32), 12);
+        world.spawn_zombie_as(p + vec2(4.0, 0.0), Breed::Runner, true);
+        world.zombies[0].speed = 0.0;
+        world.spawn_unit(UnitKind::Soldier, p);
+        let id = world.units[0].id;
+        world.step(&[Order::SetTweak { thing: ThingRef::Unit(id), tweak }]);
+        let mut total = 0;
+        for _ in 0..300 {
+            world.zombies[0].hp = 100_000;
+            world.step(&[]);
+            total += 100_000 - world.zombies[0].hp;
+        }
+        total
+    };
+    let plain = dealt(Tweak::default());
+    assert!(plain > 0, "the soldier didn't shoot at all");
+    let fast = dealt(Tweak { attack_speed: 200, ..Tweak::default() });
+    assert!(fast as f32 > plain as f32 * 1.5 && (fast as f32) < plain as f32 * 2.3, "twice the attack speed: {plain} → {fast}");
+    let strong = dealt(Tweak { damage: 200, ..Tweak::default() });
+    assert!(strong as f32 > plain as f32 * 1.8 && (strong as f32) < plain as f32 * 2.3, "twice the damage: {plain} → {strong}");
+
+    // Life: the same share of the new maximum; armor: a hit lets less through.
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.spawn_unit(UnitKind::Soldier, world.base + vec2(0.0, 6.0));
+    let id = world.units[0].id;
+    let max = world.units[0].max_hp();
+    world.units[0].hp = max / 2;
+    world.step(&[Order::SetTweak { thing: ThingRef::Unit(id), tweak: Tweak { hp: Some(max * 2), armor: Some(5), ..Tweak::default() } }]);
+    let unit = &world.units[world.find_unit(id).unwrap()];
+    assert_eq!((unit.max_hp(), unit.hp), (max * 2, max), "half of the maximum stays half of it");
+    assert_eq!(unit.armor(), 5, "its own armor in points instead of the kind's {}", UnitKind::Soldier.stats().armor);
+    // And the file: written, read, the same – a unit with nothing changed writes nothing.
+    let text = serde_json::to_string(&crate::mapfile::MapFile::from_world(&world, "x")).unwrap();
+    assert!(text.contains("\"tweak\":{") && text.contains(&format!("\"hp\":{}", max * 2)), "{text}");
+    let back = crate::mapfile::MapFile::parse(&text).unwrap().to_world().unwrap();
+    assert_eq!(back.units.iter().filter(|u| !u.tweak.is_default()).count(), 1);
+    let plain_text = serde_json::to_string(&crate::mapfile::MapFile::from_world(&quiet_world().0, "y")).unwrap();
+    assert!(!plain_text.contains("tweak"), "nothing changed, nothing written");
+}
+
+/// One building's own combat values: a machine gun tower with more damage or a faster attack hurts a zombie more, its
+/// life (hit points and shield) keeps its share of a new maximum, armor counts, and the file keeps it.
+#[test]
+fn a_single_tower_can_have_its_own_combat_values() {
+    // The life a fat zombie standing 2 tiles from the tower loses in 20 ticks.
+    let lost = |tweak: Tweak| {
+        let (mut world, _) = quiet_world();
+        world.units.clear();
+        no_more_zombies(&mut world);
+        let (bx, by) = (world.base.x as i32, world.base.y as i32);
+        let spot = (bx + 12, by);
+        clear_ground(&mut world, (spot.0 + 4, spot.1), 9);
+        world.step(&[Order::PlaceBuilding { kind: BuildingKind::MachineGunTower, tile: spot, turned: false, editor: true }]);
+        let (id, center) = (world.buildings.last().unwrap().id, world.buildings.last().unwrap().center());
+        world.step(&[Order::SetTweak { thing: ThingRef::Building(id), tweak }]);
+        world.spawn_zombie_as(center + vec2(2.0, 0.0), Breed::Fat, true);
+        world.zombies[0].speed = 0.0;
+        world.zombies[0].hp = 1_000_000;
+        for _ in 0..20 {
+            world.step(&[]);
+        }
+        1_000_000 - world.zombies[0].hp
+    };
+    let plain = lost(Tweak::default());
+    assert!(plain > 0, "the tower didn't shoot");
+    let strong = lost(Tweak { damage: 200, ..Tweak::default() });
+    assert!(strong as f32 > plain as f32 * 1.7 && (strong as f32) < plain as f32 * 2.3, "twice the damage: {plain} → {strong}");
+    let fast = lost(Tweak { attack_speed: 200, ..Tweak::default() });
+    // A reload of 2 ticks becomes 1, and a tower waits one tick more than its reload: 3 ticks a shot become 2, so 1.5 times.
+    assert!(fast as f32 > plain as f32 * 1.3 && (fast as f32) < plain as f32 * 1.7, "twice the attack speed: {plain} → {fast}");
+
+    // Life and file.
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    clear_ground(&mut world, (bx + 14, by), 8);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::StoneHouse, tile: (bx + 14, by), turned: false, editor: true }]);
+    let id = world.buildings.last().unwrap().id;
+    let (hp, shield) = (world.buildings.last().unwrap().max_hp(), world.buildings.last().unwrap().max_shield());
+    world.buildings.last_mut().unwrap().hp = hp / 2;
+    world.step(&[Order::SetTweak { thing: ThingRef::Building(id), tweak: Tweak { hp: Some(hp * 2), shield: Some(shield * 3), ..Tweak::default() } }]);
+    let b = &world.buildings[world.find_building(id).unwrap()];
+    assert_eq!((b.max_hp(), b.max_shield(), b.hp, b.shield), (hp * 2, shield * 3, hp / 2 * 2, shield * 3), "life keeps its share of the new maximum");
+    let text = serde_json::to_string(&crate::mapfile::MapFile::from_world(&world, "x")).unwrap();
+    let back = crate::mapfile::MapFile::parse(&text).unwrap().to_world().unwrap();
+    assert_eq!(back.buildings.iter().filter(|b| !b.tweak.is_default()).count(), 1, "{text}");
+    let b = back.buildings.iter().find(|b| !b.tweak.is_default()).unwrap();
+    assert_eq!(b.max_hp(), hp * 2);
+    assert!((48..=50).contains(&(b.hp * 100 / b.max_hp())), "the saved share is of the changed maximum: {} of {}", b.hp, b.max_hp());
+}
+
+/// A boss is one zombie with its own values: more hit points, harder blows, a slower attack, tougher armor – it keeps
+/// them when it falls asleep and wakes again, and in the map file.
+#[test]
+fn a_boss_zombie_has_its_own_values() {
+    let boss = Tweak { hp: Some(2500), damage: 300, speed: 50, ..Tweak::default() };
+    // Awake: the values are there at once.
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.zombies.clear();
+    let at = world.base + vec2(0.0, -30.0);
+    clear_ground(&mut world, (at.x as i32, at.y as i32), 12);
+    world.step(&[Order::PlaceBoss { pos: at, breed: Breed::Walker, wander: false, tweak: boss }]);
+    let z = &world.zombies[0];
+    assert_eq!(z.max_hp(), 2500);
+    assert_eq!(z.hp(), z.max_hp());
+    assert_eq!(z.damage(), Breed::Walker.stats().damage * 3);
+    // It hits a unit three times as hard as an ordinary walker does.
+    let blow = |boss: Option<Tweak>| {
+        let (mut world, _) = quiet_world();
+        world.units.clear();
+        world.zombies.clear();
+        let at = world.base + vec2(0.0, -30.0);
+        clear_ground(&mut world, (at.x as i32, at.y as i32), 12);
+        world.spawn_unit(UnitKind::Soldier, at);
+        world.units[0].hp = 100_000;
+        let tweak = boss.unwrap_or_default();
+        world.step(&[Order::PlaceBoss { pos: at + vec2(0.8, 0.0), breed: Breed::Walker, wander: false, tweak }]);
+        let ordinary = boss.is_none();
+        if ordinary {
+            world.zombies[0].boss = None;
+        }
+        // Not killed meanwhile: the unit doesn't shoot back, the zombie can't die.
+        world.units[0].queue.clear();
+        for _ in 0..80 {
+            world.zombies[0].hp = world.zombies[0].max_hp();
+            world.units[0].weapon = 0;
+            world.step(&[]);
+        }
+        100_000 - world.units[0].hp
+    };
+    let (plain, strong) = (blow(None), blow(Some(Tweak { damage: 300, ..Tweak::default() })));
+    assert!(plain > 0, "the walker didn't hit");
+    // Three times the damage – the soldier has no armor points of its own, so three times as much.
+    assert_eq!(strong, plain * 3, "three times the damage: {plain} → {strong}");
+
+    // Asleep: the file keeps it, it wakes as a boss with its life.
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.zombies.clear();
+    let far = world.base + vec2(0.0, -40.0);
+    world.step(&[Order::PlaceBoss { pos: far, breed: Breed::Fat, wander: true, tweak: boss }]);
+    assert!(world.zombies.is_empty() && world.sleep.iter().count() == 1);
+    let text = serde_json::to_string(&crate::mapfile::MapFile::from_world(&world, "x")).unwrap();
+    assert!(text.contains("\"hp\":2500"), "{text}");
+    let mut back = crate::mapfile::MapFile::parse(&text).unwrap().to_world().unwrap();
+    assert_eq!(back.sleep.iter().filter(|s| s.boss > 0).count(), 1, "the sleeping boss came back as one");
+    back.wake_area(far, 5.0);
+    let z = back.zombies.iter().find(|z| z.breed == Breed::Fat && z.boss.is_some()).expect("the boss didn't wake as one");
+    assert_eq!((z.max_hp(), z.hp()), (2500, 2500));
+    // A plain map writes nothing about bosses.
+    let plain_text = serde_json::to_string(&crate::mapfile::MapFile::from_world(&quiet_world().0, "y")).unwrap();
+    assert!(!plain_text.contains("\"tweak\""), "nothing changed, nothing written");
+}
+
+/// A ranged boss's shots take its damage; a boss's values can be changed later (`Order::SetBoss`), awake or asleep, and
+/// its hit points keep their share; a wall may have only a shield – it falls when that is gone.
+#[test]
+fn bosses_can_be_changed_and_shoot_with_their_damage_and_a_wall_may_be_all_shield() {
+    // Ranged: the acid of a spitter does what it is told to – the boss's three times.
+    let lost = |damage: u32| {
+        let (mut world, _) = quiet_world();
+        world.units.clear();
+        world.zombies.clear();
+        let at = world.base + vec2(0.0, -30.0);
+        clear_ground(&mut world, (at.x as i32, at.y as i32), 12);
+        world.spawn_unit(UnitKind::Soldier, at);
+        // So much life that healing can't cap it.
+        world.units[0].tweak.hp = Some(100_000);
+        world.units[0].hp = 100_000;
+        world.zombie_shoots(at + vec2(3.0, 0.0), Breed::Spitter, zombies::Hit::Unit(0), damage, crate::attrs::ExtraDamage::default());
+        // The lowest it gets – it heals itself again after a while.
+        let mut lowest = 100_000;
+        for _ in 0..200 {
+            world.step(&[]);
+            lowest = lowest.min(world.units[0].hp);
+        }
+        100_000 - lowest
+    };
+    let base = Breed::Spitter.stats().damage;
+    let (plain, strong) = (lost(base), lost(base * 3));
+    assert!(plain > 0 && strong > plain * 2, "{plain} → {strong}");
+
+    // Changed later: awake and asleep.
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.zombies.clear();
+    let (a, b) = (world.base + vec2(0.0, -30.0), world.base + vec2(6.0, -40.0));
+    world.step(&[
+        Order::PlaceBoss { pos: a, breed: Breed::Walker, wander: false, tweak: Tweak { hp: Some(1000), ..Tweak::default() } },
+        Order::PlaceBoss { pos: b, breed: Breed::Fat, wander: true, tweak: Tweak { hp: Some(1000), ..Tweak::default() } },
+    ]);
+    world.zombies[0].hp = 500;
+    world.step(&[Order::SetBoss { pos: a, tweak: Tweak { hp: Some(3000), ..Tweak::default() } }, Order::SetBoss { pos: b, tweak: Tweak { hp: Some(3000), armor: Some(10), ..Tweak::default() } }]);
+    assert_eq!((world.zombies[0].max_hp(), world.zombies[0].hp()), (3000, 1500), "half of the life stays half");
+    let asleep = world.sleep.iter().find(|s| s.boss > 0).unwrap();
+    assert_eq!(world.bosses[asleep.boss as usize - 1].hp, Some(3000));
+    // Values that change nothing: an ordinary zombie again.
+    world.step(&[Order::SetBoss { pos: a, tweak: Tweak::default() }]);
+    assert!(world.zombies[0].boss.is_none());
+
+    // A wall that is only a shield: hurt, it stands while the shield lasts, and falls when it is gone.
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    clear_ground(&mut world, (bx + 14, by), 6);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::Wall, tile: (bx + 14, by), turned: false, editor: true }]);
+    let id = world.buildings.last().unwrap().id;
+    world.step(&[Order::SetTweak { thing: ThingRef::Building(id), tweak: Tweak { hp: Some(0), shield: Some(200), ..Tweak::default() } }]);
+    let wall = &world.buildings[world.find_building(id).unwrap()];
+    assert_eq!((wall.hp, wall.shield, wall.max_hp(), wall.max_shield()), (0, 200, 0, 200));
+    assert!(wall.alive(), "a wall with only a shield stands");
+    let i = world.find_building(id).unwrap();
+    world.buildings[i].take_friendly_fire(120);
+    world.step(&[]);
+    assert!(world.find_building(id).is_some(), "it fell with shield left");
+    let i = world.find_building(id).unwrap();
+    world.buildings[i].take_friendly_fire(1000);
+    world.step(&[]);
+    assert!(world.find_building(id).is_none(), "it stood with no shield left");
+}
+
+/// Upgrades like SC2's: a track's level gives every unit that lists it its own flat bonus per level – the ones that
+/// stand and the ones built later –, more hit points come at once, a level comes down to the track's number of levels,
+/// the file keeps the levels, and a research never lowers a track.
+#[test]
+fn upgrade_levels_give_every_unit_its_own_flat_bonus() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.spawn_unit(UnitKind::Soldier, world.base + vec2(0.0, 6.0));
+    world.spawn_unit(UnitKind::Ranger, world.base + vec2(1.0, 6.0));
+    world.step(&[]);
+    let (soldier, ranger) = (UnitKind::Soldier.stats().damage, UnitKind::Ranger.stats().damage);
+    assert_eq!((world.units[0].damage(), world.units[1].damage()), (soldier, ranger));
+    // Level 2 of the infantry's weapons: a soldier +2 a level, a ranger +1 – each its own.
+    world.step(&[Order::SetUpgrade { track: "infantry_weapons".into(), level: 2 }]);
+    assert_eq!((world.units[0].damage(), world.units[1].damage()), (soldier + 4, ranger + 2));
+    // Built later: it has it at once (from the next order list on).
+    world.spawn_unit(UnitKind::Soldier, world.base + vec2(2.0, 6.0));
+    world.step(&[]);
+    assert_eq!(world.units[2].damage(), soldier + 4);
+    // Armor from the other track, hit points a map gives by data: they come right away, with the level.
+    world.step(&[Order::SetData { key: "units.soldier.upgrades.infantry_armor.hp".into(), value: Some(serde_json::json!(10)) }]);
+    let before = (world.units[0].max_hp(), world.units[0].hp);
+    world.step(&[Order::SetUpgrade { track: "infantry_armor".into(), level: 3 }]);
+    let u = &world.units[0];
+    assert_eq!((u.max_hp(), u.hp), (before.0 + 30, before.1 + 30));
+    assert_eq!(u.armor(), UnitKind::Soldier.stats().armor + 3, "a point of armor a level");
+    // Never above the track's levels, never a track that isn't there.
+    world.step(&[Order::SetUpgrade { track: "infantry_weapons".into(), level: 99 }, Order::SetUpgrade { track: "nonsense".into(), level: 1 }]);
+    assert_eq!((world.upgrade_level("infantry_weapons"), world.upgrade_level("nonsense")), (3, 0));
+    // A research raises, never lowers.
+    world.raise_upgrade("infantry_weapons", 1);
+    assert_eq!(world.upgrade_level("infantry_weapons"), 3);
+    // The file keeps the levels; a plain map writes none.
+    let text = serde_json::to_string(&crate::mapfile::MapFile::from_world(&world, "x")).unwrap();
+    assert!(text.contains("\"upgrades\":{\"infantry_armor\":3,\"infantry_weapons\":3}"), "{text}");
+    let back = crate::mapfile::MapFile::parse(&text).unwrap().to_world().unwrap();
+    assert_eq!((back.upgrade_level("infantry_weapons"), back.upgrade_level("infantry_armor")), (3, 3));
+    let plain = serde_json::to_string(&crate::mapfile::MapFile::from_world(&quiet_world().0, "y")).unwrap();
+    assert!(!plain.contains("\"upgrades\""), "no levels, nothing written");
+    world.step(&[Order::ClearData]);
+}
+
+/// Armor like SC2's: points come off every single hit, at least 1 gets through.
+#[test]
+fn armor_in_points_comes_off_every_hit() {
+    assert_eq!((after_armor(6, 3), after_armor(2, 5), after_armor(160, 5), after_armor(10, 0)), (3, 1, 155, 10));
+    // So many small hits are the ones armor stops: a walker's 6 against a soldier (0 – TAB's share is in its hit
+    // points) and against three levels of infantry armor.
+    let soldier = UnitKind::Soldier.stats().armor;
+    assert_eq!((after_armor(6, soldier), after_armor(6, soldier + 3)), (6, 3));
+}
+
+/// Extra damage against attributes: a sniper's bolt does more to an armored zombie than to a light one, a point of an
+/// upgrade's `bonus_damage` more to the one it has a bonus against – and a thing that isn't one of them gets none. No
+/// weapon has one shipped (TAB has none), so the map gives the sniper +25 against armored.
+#[test]
+fn extra_damage_counts_against_the_attributes_of_the_target() {
+    let give = [Order::SetData { key: "units.sniper.bonus.armored".into(), value: Some(serde_json::json!(25)) }];
+    let (mut world, _) = quiet_world();
+    world.step(&give);
+    let sniper = UnitKind::Sniper.stats();
+    assert_eq!(sniper.bonus.against(&Breed::Fat.stats().attributes, 0), 25, "the fat one is armored");
+    assert_eq!(sniper.bonus.against(&Breed::Walker.stats().attributes, 0), 0, "the walker is light");
+    assert_eq!(sniper.bonus.against(&Breed::Fat.stats().attributes, 3), 28, "each extra grows with the upgrade");
+    assert_eq!(sniper.bonus.against(&Breed::Walker.stats().attributes, 3), 0, "and only the ones it has");
+
+    // In a fight: the loss of an armored zombie standing still is the bolt plus the extra, less its armor.
+    let lost = |breed: Breed| {
+        let (mut world, _) = quiet_world();
+        world.step(&give);
+        world.units.clear();
+        world.zombies.clear();
+        let p = world.base + vec2(0.0, -30.0);
+        clear_ground(&mut world, (p.x as i32, p.y as i32), 12);
+        world.spawn_zombie_as(p + vec2(5.0, 0.0), breed, true);
+        world.zombies[0].speed = 0.0;
+        world.spawn_unit(UnitKind::Sniper, p);
+        for _ in 0..300 {
+            let before = world.zombies[0].hp;
+            world.step(&[]);
+            if world.zombies[0].hp < before {
+                return before - world.zombies[0].hp;
+            }
+        }
+        0
+    };
+    let damage = UnitKind::Sniper.stats().damage;
+    assert_eq!(lost(Breed::Fat), after_armor(damage + 25, Breed::Fat.stats().armor));
+    assert_eq!(lost(Breed::Harpy), after_armor(damage, Breed::Harpy.stats().armor), "the harpy is light: no extra");
+}
+
+/// A building's shield has its own armor: a hit on the shield loses the shield armor, a hit on the hit points the armor.
+#[test]
+fn a_buildings_shield_has_its_own_armor() {
+    let (mut world, _) = quiet_world();
+    let (bx, by) = (world.base.x as i32, world.base.y as i32);
+    clear_ground(&mut world, (bx + 14, by), 8);
+    world.step(&[Order::PlaceBuilding { kind: BuildingKind::StoneHouse, tile: (bx + 14, by), turned: false, editor: true }]);
+    let id = world.buildings.last().unwrap().id;
+    world.step(&[Order::SetTweak { thing: ThingRef::Building(id), tweak: Tweak { armor: Some(2), shield_armor: Some(7), ..Tweak::default() } }]);
+    let i = world.find_building(id).unwrap();
+    assert_eq!((world.buildings[i].armor(), world.buildings[i].shield_armor()), (2, 7));
+    let (hp, shield) = (world.buildings[i].hp, world.buildings[i].shield);
+    world.buildings[i].take_friendly_fire(20);
+    assert_eq!((world.buildings[i].hp, world.buildings[i].shield), (hp, shield - 13), "the shield took it: 20 - 7");
+    world.buildings[i].shield = 0;
+    world.buildings[i].take_friendly_fire(20);
+    assert_eq!(world.buildings[i].hp, hp - 18, "the hit points took it: 20 - 2");
+    // The armor of the upgrades comes on top, in both.
+    world.step(&[Order::SetUpgrade { track: "structure_armor".into(), level: 2 }]);
+    let b = &world.buildings[world.find_building(id).unwrap()];
+    assert_eq!((b.armor(), b.shield_armor()), (4, 9));
+    // The file keeps the numbers and a plain map writes none.
+    let text = serde_json::to_string(&crate::mapfile::MapFile::from_world(&world, "x")).unwrap();
+    assert!(text.contains("\"armor_points\":2") && text.contains("\"shield_armor_points\":7"), "{text}");
+    let back = crate::mapfile::MapFile::parse(&text).unwrap().to_world().unwrap();
+    let b = back.buildings.iter().find(|b| !b.tweak.is_default()).unwrap();
+    assert_eq!((b.tweak.armor, b.tweak.shield_armor), (Some(2), Some(7)));
+}
+
+/// The zombies get upgrades of their own (`zombie_weapons`, `zombie_armor`) – from the map or a script –, every breed its
+/// own bonus: harder blows, tougher armor, for those that stand and those that come later; units' tracks don't touch them.
+#[test]
+fn zombies_have_weapons_and_armor_that_upgrades_raise() {
+    let (mut world, _) = quiet_world();
+    world.units.clear();
+    world.zombies.clear();
+    world.spawn_zombie_as(world.base + vec2(30.0, 0.0), Breed::Giant, true);
+    world.spawn_zombie_as(world.base + vec2(32.0, 0.0), Breed::Walker, true);
+    world.step(&[]);
+    let (giant, walker) = (Breed::Giant.stats(), Breed::Walker.stats());
+    assert_eq!((world.zombies[0].damage(), world.zombies[0].armor()), (giant.damage, giant.armor));
+    world.step(&[Order::SetUpgrade { track: "zombie_weapons".into(), level: 2 }, Order::SetUpgrade { track: "zombie_armor".into(), level: 3 }]);
+    assert_eq!((world.zombies[0].damage(), world.zombies[0].armor()), (giant.damage + 2 * giant.upgrades["zombie_weapons"].damage, giant.armor + 3));
+    assert_eq!((world.zombies[1].damage(), world.zombies[1].armor()), (walker.damage + 2 * walker.upgrades["zombie_weapons"].damage, walker.armor + 3));
+    // One that comes later has it at once; the units' tracks leave zombies alone.
+    world.spawn_zombie_as(world.base + vec2(34.0, 0.0), Breed::Runner, true);
+    world.step(&[Order::SetUpgrade { track: "infantry_armor".into(), level: 3 }]);
+    assert_eq!(world.zombies[2].armor(), Breed::Runner.stats().armor + 3);
+    assert_eq!(world.zombies[1].armor(), walker.armor + 3);
+    // A boss's own armor is its base: the upgrades still come on top.
+    world.zombies[1].boss = Some(Box::new(Tweak { armor: Some(10), ..Tweak::default() }));
+    assert_eq!(world.zombies[1].armor(), 13);
+    // And they hit a soldier harder: the blow less his armor.
+    world.zombies.truncate(1);
+    world.units.clear();
+    world.spawn_unit(UnitKind::Soldier, world.zombies[0].pos + vec2(0.3, 0.0));
+    world.units[0].tweak.hp = Some(100_000);
+    world.units[0].hp = 100_000;
+    let mut infected = Vec::new();
+    world.sweep(0, Hit::Unit(0), &mut infected);
+    let armor = world.units[0].armor();
+    assert_eq!(100_000 - world.units[0].hp, after_armor(world.zombies[0].damage(), armor), "the giant's blow with both levels, less the soldier's armor ({armor})");
+    assert_eq!(world.zombies[0].damage(), giant.damage + 2 * giant.upgrades["zombie_weapons"].damage);
+}
+
+/// A script can read and set a track: UpgradeLevel("zombie_weapons") and SetUpgrade("zombie_weapons", 2).
+#[test]
+fn a_script_reads_and_sets_the_levels_of_a_track() {
+    let (mut world, _) = quiet_world();
+    assert_eq!(world.upgrade_level("zombie_weapons"), 0);
+    let code = code_of(&world, "SetUpgrade(\"zombie_weapons\", 2)");
+    run_script(&mut world, vec![Step::code(code)]);
+    assert_eq!(world.upgrade_level("zombie_weapons"), 2);
+    let read = cond(&world, "UpgradeLevel(\"zombie_weapons\") == 2");
+    assert!(world.holds(&read), "the level can be read");
+    let read = cond(&world, "UpgradeLevel(\"nonsense\") == 0");
+    assert!(world.holds(&read), "a track that isn't there is 0");
+    // Never above the track's levels.
+    let code = code_of(&world, "SetUpgrade(\"zombie_weapons\", 99)");
+    run_script(&mut world, vec![Step::code(code)]);
+    assert_eq!(world.upgrade_level("zombie_weapons"), 3);
 }

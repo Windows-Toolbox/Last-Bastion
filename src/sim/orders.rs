@@ -6,6 +6,7 @@ use macroquad::math::{vec2, Vec2};
 use super::buildings::{Product, Rally, MAX_PRODUCTION};
 use super::clipboard::{Clip, Piece};
 use super::commands::Command;
+use super::doom::LootKind;
 use super::events::{plan_events, Event};
 use super::landscaping::{Area, Patch, TerrainClip};
 use super::neutral::{Owner, Tag, ThingRef};
@@ -76,7 +77,7 @@ pub enum Order {
     /// All zombies gone.
     ClearZombies,
     /// A new unit at a point (only inside the world border).
-    SpawnUnit { kind: UnitKind, point: Vec2 },
+    SpawnUnit { kind: UnitKind, point: Vec2, facing: Option<f32> },
     /// Editor: these tiles get this terrain (grass = erase). Tiles with buildings stay as they are,
     /// whoever stands on new solid ground is pushed out.
     PaintTerrain { terrain: Terrain, tiles: Vec<(i32, i32)> },
@@ -129,8 +130,12 @@ pub enum Order {
     Paste { clip: Box<Clip>, to: (i32, i32) },
     /// Editor (Ctrl+X, Del): these off the map – buildings, units, zombies, houses of doom, loot, spawners, decoration.
     RemovePieces { pieces: Vec<Piece> },
-    /// Editor: a pile of loot at this point – what lies in it and how many guards, rolled like the generator does.
-    PlaceLoot { point: Vec2 },
+    /// Editor: a pile of loot at this point – of this kind (`None`: rolled), the usual amount and as many guards as the
+    /// generator would hide there.
+    PlaceLoot { point: Vec2, kind: Option<LootKind> },
+    /// Editor: what a pile holds – its kind, how much, how many guards lie hidden around it, and the name ID triggers
+    /// know it by.
+    SetLoot { id: u32, kind: LootKind, amount: u32, guards: u32, name_id: String },
     /// Editor: an ornament – a piece of the railway (`ornaments.rs`). Only where all of it is on the map, and not twice
     /// the same on the same tile.
     PlaceOrnament(Ornament),
@@ -148,6 +153,16 @@ pub enum Order {
     PlaceAs { owner: Owner, order: Box<Order> },
     SetHealth { thing: ThingRef, percent: u32 },
     SetMark { thing: ThingRef, on: bool },
+    /// One thing's combat values as percents of its kind's (`tweak.rs`): hit points, damage, attack speed, range, sight,
+    /// speed, armor. Its life stays the same share of the new maximum. Only units so far.
+    SetTweak { thing: ThingRef, tweak: super::Tweak },
+    /// The editor's Boss tool: one zombie of this breed with its own hit points, damage, attack speed, speed and armor
+    /// (`tweak.rs`) – asleep (`wander`) or storming the command center.
+    PlaceBoss { pos: Vec2, breed: Breed, wander: bool, tweak: super::Tweak },
+    /// A track of upgrades is at this level (`data\upgrades.json`; the editor's start level of a map, a campaign).
+    SetUpgrade { track: String, level: u32 },
+    /// The boss at `pos` gets other values (the Zombies module's list, or a click on it).
+    SetBoss { pos: Vec2, tweak: super::Tweak },
     RemoveThing { thing: ThingRef },
     /// Editor: the map's story – triggers, goals, the command center's button, variables (`story.rs`).
     SetStory { story: Story },
@@ -169,6 +184,12 @@ pub enum Order {
     /// The round's difficulty, by name (`data\game_difficulties.json`; an unknown name is the default one): how close
     /// each breed may come (`keep_out`) and what new villages of doom hold. The gold, wood and everything placed stay.
     SetDifficulty { name: String },
+    /// The map changes one value of `data` for itself ("units.soldier.hp" = 150, `data::Overrides`) – `None` puts it
+    /// back. Every part of the game reads the new value from now on; what already exists keeps what it was made with
+    /// (a unit's life now, not its maximum).
+    SetData { key: String, value: Option<serde_json::Value> },
+    /// Every value of the map back to what `data` says.
+    ClearData,
     /// The colony's gold right now – in the editor that's the gold the map starts with.
     SetGold { gold: u32 },
     /// The wood in the stock right now – in the editor the wood the map starts with.
@@ -227,6 +248,10 @@ impl World {
         for order in orders {
             self.apply(order);
         }
+        // Overrides may have changed – or the world is a different one than the last (undo): the values follow.
+        self.use_data();
+        // Levels of upgrades changed, or something new stands: its sums are made now.
+        self.refresh_upgrades();
         if self.map_changed {
             self.push_out_of_terrain();
             self.reroute_units();
@@ -318,9 +343,12 @@ impl World {
                 self.spits.clear();
                 self.arrows.clear();
             }
-            Order::SpawnUnit { kind, point } => {
+            Order::SpawnUnit { kind, point, facing } => {
                 if !self.map.blocks_unit(point.x.floor() as i32, point.y.floor() as i32) {
                     self.spawn_unit(*kind, *point);
+                    if let (Some(facing), Some(unit)) = (facing, self.units.last_mut()) {
+                        unit.facing = *facing;
+                    }
                 }
             }
             Order::PaintTerrain { terrain, tiles } => {
@@ -399,11 +427,15 @@ impl World {
                     self.add_doom(*tile, *size, World::doom_zombies(*size, population), population);
                 }
             }
-            Order::PlaceLoot { point } => {
+            Order::PlaceLoot { point, kind } => {
                 if self.map.in_play(point.x.floor() as i32, point.y.floor() as i32) && !self.map.is_blocked(point.x.floor() as i32, point.y.floor() as i32) {
-                    let guards = data::get().difficulty(&self.difficulty).loot_guards;
-                    let (kind, amount, guards) = self.roll_loot(*point, guards);
-                    self.add_loot(*point, kind, amount, guards);
+                    self.place_loot(*point, *kind);
+                }
+            }
+            Order::SetLoot { id, kind, amount, guards, name_id } => {
+                if let Some(l) = self.find_loot(*id) {
+                    let pile = &mut self.loot[l];
+                    (pile.kind, pile.amount, pile.guards, pile.name_id) = (*kind, *amount, *guards, name_id.clone());
                 }
             }
             Order::PlaceOrnament(ornament) => {
@@ -434,6 +466,10 @@ impl World {
             }
             Order::SetHealth { thing, percent } => self.set_health(*thing, *percent),
             Order::SetMark { thing, on } => self.set_mark(*thing, *on),
+            Order::SetTweak { thing, tweak } => self.set_tweak(*thing, *tweak),
+            Order::PlaceBoss { pos, breed, wander, tweak } => self.add_boss(*pos, *breed, *wander, *tweak),
+            Order::SetBoss { pos, tweak } => self.set_boss(*pos, *tweak),
+            Order::SetUpgrade { track, level } => self.set_upgrade_level(track, *level),
             Order::RemoveThing { thing } => self.remove_thing(*thing),
             Order::SetStory { story } => {
                 self.story = story.clone();
@@ -449,6 +485,8 @@ impl World {
             Order::PaintZombies { tiles, per_tile, wander } => self.paint_zombies(tiles, per_tile, *wander),
             Order::SetDays { days } => self.set_days(*days),
             Order::SetDifficulty { name } => self.set_difficulty(data::get().difficulty(name)),
+            Order::SetData { key, value } => self.overrides.set(key, value.clone()),
+            Order::ClearData => self.overrides = data::Overrides::default(),
             Order::SetGold { gold } => {
                 self.gold = *gold;
                 self.debt = 0;

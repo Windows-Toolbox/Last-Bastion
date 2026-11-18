@@ -4,7 +4,7 @@
 //! dragging builds piece after piece towards the mouse. Right click stops there.
 //!
 //! And what a train sent now would do (`World::train_plan`): where it comes in and where it stops for the command
-//! center – drawn on the map while the railway or the scripts are being edited.
+//! center – drawn on the map while the railway or the scripts are being edited, with the switches marked.
 //!
 //! Only the editor's look and its orders – the pieces go onto the map as `Order::PlaceOrnament` like any other.
 
@@ -13,8 +13,9 @@ use macroquad::prelude::*;
 use crate::data;
 use crate::draw::{draw_diamond, draw_ornament_ghost};
 use crate::iso::Camera;
+use crate::kinds::BuildingKind;
 use crate::map::Region;
-use crate::sim::{extensions, joined, line_start, open_ends, rail_pieces, CarAt, Connector, Extension, Order, Ornament, OrnamentKind, Piece, RailPiece, Side, Turn, World};
+use crate::sim::{COMMAND_CENTER_STATION, extensions, joined, line_start, open_ends, rail_pieces, CarAt, Connector, Extension, Order, Ornament, OrnamentKind, Piece, RailPiece, Side, Turn, World};
 use crate::sprites::Sprites;
 use crate::ui::tile_of;
 
@@ -28,6 +29,8 @@ const CURVE_STEP: f32 = 2.5;
 const CURVE_AHEAD: f32 = 1.0;
 /// At most this many pieces in one frame – a fast drag catches up over a few.
 const MOST_PER_FRAME: usize = 8;
+/// The ghost shows at most this many pieces on the way to the mouse.
+const MOST_IN_PREVIEW: usize = 200;
 /// Straight on while the mouse is within this angle of the way ahead (tan 30°) – plus this much to the side (tiles).
 const STRAIGHT_CONE: f32 = 0.58;
 const STRAIGHT_SIDE: f32 = 0.75;
@@ -180,6 +183,26 @@ impl RailPlanner {
         }
     }
 
+    /// The pieces a drag would build from here towards `point` – the way `drag_on` does it, on a copy of the track, so
+    /// every piece sees the ones before it. Without limit per frame: all the way to the mouse.
+    fn chain(&self, track: &Track, point: Vec2) -> Vec<Extension> {
+        let mut track = Track { pieces: track.pieces.clone(), map: track.map };
+        let mut chain = Vec::new();
+        let mut from = self.from;
+        while let Some(at) = from.filter(|_| chain.len() < MOST_IN_PREVIEW) {
+            let Some(c) = choice(at, point, &track).filter(|&c| reached(c, point)) else {
+                break;
+            };
+            if let Some(stop) = c.replaces {
+                track.pieces.retain(|&p| p != stop);
+            }
+            from = c.piece.exit.filter(|&e| !joined(&track.pieces, e)).map(From::End);
+            track.pieces.push(RailPiece { shape: c.piece.shape, tile: c.piece.tile });
+            chain.push(c.piece);
+        }
+        chain
+    }
+
     /// Is where it builds from still there? Undone or erased: it stops.
     fn check(&mut self, track: &Track) {
         if self.pending.is_some_and(|p| track.pieces.contains(&p)) {
@@ -235,6 +258,17 @@ impl RailPlanner {
                     end_arrows(camera, end, replaces, &track, chosen);
                 }
             }
+        }
+        // Everything a drag would build on the way to the mouse – ghosts, fainter than the piece the mouse points to.
+        let chain = self.chain(&track, point);
+        for piece in chain.iter().skip(1) {
+            let rail = RailPiece { shape: piece.shape, tile: piece.tile };
+            for y in piece.tile.1..piece.tile.1 + piece.shape.size() {
+                for x in (piece.tile.0..piece.tile.0 + piece.shape.size()).filter(|&x| rail.covers((x, y))) {
+                    draw_diamond(camera, vec2(x as f32, y as f32), Vec2::ONE, Color::new(1.0, 0.85, 0.2, 0.12));
+                }
+            }
+            draw_ornament_ghost(camera, sprites, Ornament { kind: OrnamentKind::Rail(piece.shape), tile: piece.tile }, Color::new(1.0, 1.0, 1.0, 0.5));
         }
         match chosen {
             Some(c) => {
@@ -359,6 +393,30 @@ fn arrow(camera: &Camera, points: &[Vec2], color: Color) {
 /// What a train sent now would do (`World::train_plan`): the whole train where it comes in (white) and where it stops
 /// for the command center (yellow). No line long enough: why, at the first piece of track.
 pub fn draw_train_plan(world: &World, camera: &Camera) {
+    // The switches: where a train has a choice (`RailNet::switches`).
+    for point in world.rail_switches() {
+        let at = camera.world_to_screen(point);
+        draw_circle_lines(at.x, at.y, 9.0, 2.5, CHOSEN);
+        draw_text("switch", at.x + 12.0, at.y + 4.0, 18.0, CHOSEN);
+    }
+    // The stations: where a train stops at each (the track right next to it), or that none passes.
+    let lines = world.rail_lines();
+    for station in world.buildings.iter().filter(|b| b.kind == BuildingKind::TrainStation) {
+        let name = station.tag.as_deref().map_or("", |t| t.name_id.as_str());
+        let name = if name.is_empty() { "(no Name-ID)" } else { name };
+        let at = camera.world_to_screen(station.center());
+        match lines.iter().find_map(|l| world.station_stop(l, station).map(|o| l.point_at(o))) {
+            Some(stop) => {
+                let stop = camera.world_to_screen(stop);
+                draw_circle_lines(stop.x, stop.y, 7.0, 2.5, CHOSEN);
+                draw_line(at.x, at.y, stop.x, stop.y, 1.5, CHOSEN);
+                draw_text(name, at.x + 10.0, at.y - 10.0, 20.0, CHOSEN);
+            }
+            None => {
+                draw_text(format!("{name}: no track right next to it"), at.x + 10.0, at.y - 10.0, 20.0, Color::new(1.0, 0.45, 0.4, 1.0));
+            }
+        }
+    }
     let pieces = rail_pieces(&world.ornaments);
     let Some(first) = pieces.first() else {
         return;
@@ -370,6 +428,9 @@ pub fn draw_train_plan(world: &World, camera: &Camera) {
         let at = camera.world_to_screen(vec2(first.tile.0 as f32, first.tile.1 as f32) + 0.5);
         let longest = world.rail_lines().iter().map(|l| l.length()).fold(None, |m: Option<f32>, l| Some(m.map_or(l, |m| m.max(l))));
         let text = match longest {
+            _ if world.command_center_station().is_some() && lines.iter().any(|l| l.length() >= length) => {
+                format!("No line for a train passes the station '{COMMAND_CENTER_STATION}' (the track must run right next to it)")
+            }
             None => "No line for a train: a line starts at a buffer stop - the track has none".to_owned(),
             Some(l) => format!("No line fits a train: the longest from a buffer stop is {l:.0} tiles, a train needs {}", length.ceil()),
         };
@@ -387,7 +448,12 @@ pub fn draw_train_plan(world: &World, camera: &Camera) {
         }
     };
     let seconds = data::get().trains.stop as f32 / crate::sim::TICKS_PER_SECOND;
-    let stops = format!("Stops here for the command center ({seconds:.0} s)");
+    let place = if world.command_center_station().is_some() { "the station" } else { "the command center" };
+    let stops = format!("Stops here for {place} ({seconds:.0} s)");
+    if plan.cramped {
+        let at = camera.world_to_screen(plan.line.point_at(plan.start));
+        draw_text("The station is closer to the start of the line than the train is long - it stops where it comes in", at.x + 12.0, at.y - 58.0, 20.0, Color::new(1.0, 0.45, 0.4, 1.0));
+    }
     if plan.stop - plan.start < 1.0 {
         label(&plan.cars_at(plan.stop), &format!("Train comes in here - {stops}"), 0.0, CHOSEN);
     } else {

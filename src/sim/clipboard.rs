@@ -121,7 +121,7 @@ impl World {
                 }
                 Piece::Sleeper(pos) => {
                     if let Some(s) = self.sleep.iter().find(|s| s.pos == pos) {
-                        clip.zombies.push(ZombieData::asleep(s));
+                        clip.zombies.push(ZombieData::asleep(self, s));
                         points.push(pos);
                     }
                 }

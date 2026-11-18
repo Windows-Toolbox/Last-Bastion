@@ -77,7 +77,9 @@ mod story;
 mod terrain;
 mod towers;
 mod trains;
+mod tweak;
 mod units;
+mod upgrades;
 mod veterans;
 mod watch;
 mod weather;
@@ -113,15 +115,18 @@ pub use fx::{Fallen, Fx, Struck};
 pub use landscaping::{Area, Patch, TerrainClip};
 pub use neutral::{Neutral, Owner, Tag, Thing, ThingRef};
 pub use regions::{Form, Shape, Spot, Zone, MOST_SHAPES, ZONE_COLORS};
-pub use expr::{code_text, parse_code, parse_condition, parse_expr, Expr, ExprError, Scope, Ty, Value};
+pub use expr::{code_text, parse_code, parse_condition, parse_expr, parse_value, template_parts, Expr, ExprError, Scope, Ty, Value};
 pub use funcs::{signature, FUNCS};
 pub use script::{Place, Run};
 pub use story::{
-    Action, CommandState, CustomCommand, Goal, GoalState, Pick, Script, Site, Step, Story, Trigger, TriggerEvent, VarKind, Variable, Weighted, MOST_NOISE,
+    Action, CommandState, CustomCommand, Goal, GoalState, Icon, Mood, Pick, Script, Site, Step, Story, Tint, Trigger, TriggerEvent, VarKind, Variable, Weighted,
+    MOST_NOISE,
 };
 pub use weather::{Weather, LOOKS};
 pub use ranged::Spit;
 pub use research::{researched_in, tech};
+pub use tweak::{Tweak, MOST_ARMOR, MOST_LIFE, PERCENT};
+pub use upgrades::Bonus;
 use arrows::Arrow;
 pub use arrows::MUZZLE;
 pub use orders::{Order, MAP_SIZES, MOST_PER_TILE};
@@ -129,7 +134,7 @@ pub use ornaments::{Ornament, OrnamentKind};
 pub use rails::{extensions, joined, line_start, open_ends, rail_pieces, snap as snap_rail, Connector, Extension, RailPiece, Side, Turn};
 #[cfg(test)]
 pub use rails::RailShape;
-pub use trains::{CarAt, CarKind, Motion, Train};
+pub use trains::{CarAt, CarKind, Motion, Train, COMMAND_CENTER_STATION};
 pub use round::{Outcome, Score};
 pub use scan::Scanned;
 pub use sound::CELL as SOUND_CELL;
@@ -161,14 +166,21 @@ pub fn payout_text() -> String {
 }
 
 /// How big units are (radius in tiles) – here, because the zombies need it too. Zombies: per breed (`radius` in
-/// `data\zombies.json`). TAB's soldier: a body 0.5 wide (its ranger 0.45, its sniper 0.6).
+/// `data\zombies\`). TAB's soldier: a body 0.5 wide (its ranger 0.45, its sniper 0.6).
 pub const UNIT_RADIUS: f32 = 0.25;
 
-/// What's left of a hit of `damage` against `armor` – like TAB (`CLife.AddDamage`): armor is a share (0.1 = a tenth
-/// less), the rest rounded to the nearest whole point, at least 1. `round_ties_even`: a half goes to the even number,
-/// like C#'s `Math.Round` – so 6 against 0.25 is 4 here too, not 5. Only `*` and `-` on `f32`: the same on every PC.
-pub fn after_armor(damage: u32, armor: f32) -> u32 {
-    ((damage as f32 * (1.0 - armor)).round_ties_even() as u32).max(1)
+/// A thing's hit points in percent of its full ones (for a map file, a neutral one) – rounded to the nearest, at least 1,
+/// 100 only when full. Rounded down, 30 % of 198 (59) would come back as 29 % (57).
+pub fn hp_percent(hp: u32, full: u32) -> u32 {
+    let full = full.max(1);
+    let p = ((hp * 100 + full / 2) / full).clamp(1, 100);
+    if hp < full { p.min(99) } else { p }
+}
+
+/// What's left of a hit of `damage` against `armor` – like StarCraft 2: the armor's points come off every single hit,
+/// but at least 1 always gets through (SC2: ½). So upgrades of armor do most against many small hits.
+pub fn after_armor(damage: u32, armor: u32) -> u32 {
+    damage.saturating_sub(armor).max(1)
 }
 
 #[derive(Clone)]
@@ -255,6 +267,15 @@ pub struct World {
     pub keep_out: KeepOut,
     /// What the map's landscape does to the whole round (`data::Modifiers`) – kept in the map file.
     pub modifiers: Modifiers,
+    /// The values of `data` this map changes for itself (`data::Overrides`) – kept in the map file. `use_data` makes the
+    /// game read them.
+    pub overrides: data::Overrides,
+    /// The sets of values the sleeping bosses have (`Sleeper::boss`).
+    pub bosses: Vec<Tweak>,
+    /// The level of every upgrade track that is above 0 (`upgrades.rs`) – kept in the map file.
+    pub upgrade_levels: std::collections::BTreeMap<String, u32>,
+    /// Counts every change of a level – a unit or building with an older number has its sums made again.
+    pub(super) upgrade_rev: u32,
     /// Which of TAB's landscapes the map is drawn as (`MapSetup::look`) – the simulation never looks at it. Set with
     /// `set_look`, which brings the landscape's weather.
     pub look: String,
@@ -307,6 +328,9 @@ pub struct World {
     pub command_state: CommandState,
     ending: Option<story::Ending>,
     command_used: u32,
+    /// Who died in this round, counted by name – (name without spaces in lower case, count); `unit`, `building` and
+    /// `zombie` count all of their kind (`CountDeads`, `funcs.rs`).
+    dead: Vec<(String, u32)>,
     /// What the triggers watch between ticks (`watch.rs`).
     watched: watch::Watched,
     rng: Rng,
@@ -390,7 +414,7 @@ impl World {
             let (kind, amount) = spot.haul.unwrap_or((kind, amount));
             world.add_loot(pos, kind, amount, guards);
         }
-        // The command center right on the base, its middle tile on it – however big `data\buildings.json` makes it.
+        // The command center right on the base, its middle tile on it – however big `data\buildings\` makes it.
         let (w, h) = BuildingKind::CommandCenter.footprint(false);
         let (bx, by) = generated.base;
         world.add_building(BuildingKind::CommandCenter, (bx - w / 2, by - h / 2), false);
@@ -452,6 +476,8 @@ impl World {
     /// A world with this map and nothing on it yet – no spawner, no building, nobody. The base is the middle.
     /// `generate` and loading a map file (`mapfile.rs`) fill it.
     pub fn empty(seed: u64, map: Map) -> World {
+        // A new world starts on the standard values; a map file with its own puts them on right after (`to_world`).
+        data::ensure(&data::Overrides::default());
         let center = map.size as i32 / 2;
         let base = vec2(center as f32 + 0.5, center as f32 + 0.5);
         let size = map.size;
@@ -518,6 +544,10 @@ impl World {
             difficulty: difficulty.name.clone(),
             keep_out: difficulty.keep_out,
             modifiers: Modifiers::default(),
+            overrides: data::Overrides::default(),
+            bosses: Vec::new(),
+            upgrade_levels: std::collections::BTreeMap::new(),
+            upgrade_rev: 1,
             look: String::new(),
             weather: Weather::Clear,
             outcome: None,
@@ -545,6 +575,7 @@ impl World {
             command_state: CommandState::default(),
             ending: None,
             command_used: 0,
+            dead: Vec::new(),
             watched: watch::Watched::default(),
             // Not `Rng::new(seed)`: the map generator already uses that one – this way the two don't repeat each other.
             rng: Rng::new(seed ^ 0x5157_4F52_4C44),
@@ -588,6 +619,44 @@ impl World {
         self.lay_to_sleep(pos, breed);
     }
 
+    /// A boss (`Order::PlaceBoss`, the map file): a zombie with its own combat values (`tweak.rs`) – asleep like the
+    /// wanderers, or storming like a wave's. Its hit points and pace come with them.
+    pub fn add_boss(&mut self, pos: Vec2, breed: Breed, wander: bool, tweak: Tweak) {
+        let tweak = tweak.clamped();
+        if tweak.is_default() {
+            return self.add_zombie_or_sleeper(pos, breed, wander);
+        }
+        if wander {
+            self.lay_to_sleep_as(pos, breed, Some(tweak));
+            return;
+        }
+        self.spawn_zombie_as(pos, breed, false);
+        if let Some(zombie) = self.zombies.last_mut() {
+            zombie.speed *= tweak.speed as f32 / 100.0;
+            zombie.boss = Some(Box::new(tweak));
+            zombie.hp = zombie.max_hp();
+        }
+    }
+
+    fn add_zombie_or_sleeper(&mut self, pos: Vec2, breed: Breed, wander: bool) {
+        if wander {
+            self.lay_to_sleep(pos, breed);
+        } else {
+            self.spawn_zombie_as(pos, breed, false);
+        }
+    }
+
+    /// Its place in `bosses` plus one – put in if it's new. The list only grows (a few bosses per map).
+    pub(super) fn boss_index(&mut self, tweak: Tweak) -> u16 {
+        match self.bosses.iter().position(|b| *b == tweak) {
+            Some(i) => i as u16 + 1,
+            None => {
+                self.bosses.push(tweak);
+                self.bosses.len() as u16
+            }
+        }
+    }
+
     /// Everything that depends on the map and on what stands on it, computed anew – after loading a map file.
     pub fn settle(&mut self) {
         self.push_out_of_terrain();
@@ -617,10 +686,10 @@ impl World {
         // Radar, lookout tower and the wonders see over forest (TAB's `WatchThroughOpaque`) – finished and not infected;
         // they're added on top below, like the scans.
         let over_forest = |b: &Building| b.stats().sees_through_forest && b.is_built() && !b.infected;
-        let buildings = self.buildings.iter().filter(|b| !over_forest(b)).map(|b| (b.center(), b.stats().sight * reach));
+        let buildings = self.buildings.iter().filter(|b| !over_forest(b)).map(|b| (b.center(), b.sight() * reach));
         self.vision.update(&self.map, units.chain(buildings));
         for b in self.buildings.iter().filter(|b| over_forest(b)) {
-            self.vision.reveal_circle(b.center(), b.stats().sight * reach);
+            self.vision.reveal_circle(b.center(), b.sight() * reach);
         }
         // The scans on top – they see over forests too, like StarCraft's.
         let radius = scan::scan_reach();
@@ -683,6 +752,11 @@ impl World {
         self.share_experience(); // veterans.rs – the units around the fallen learn
         self.start_dying(); // fallen.rs
         self.score.zombies_killed += self.zombies.iter().filter(|z| !z.is_alive()).count() as u32;
+        for k in 0..self.zombies.len() {
+            if !self.zombies[k].is_alive() {
+                self.count_dead("zombie", self.zombies[k].breed.name());
+            }
+        }
         self.zombies.retain(|z| z.is_alive());
         // Now and then: the calm ones far from everything fall asleep (`sleep.rs`), and the rest are put in order of
         // where they stand – quicker with many (`zombies.rs`).
@@ -694,6 +768,12 @@ impl World {
     }
 
     /// Checksum over all positions and hit points. Same seed + same orders → same number.
+    /// Makes the game read this map's values: `data::get()` gives `data` with `overrides` put in (`data::ensure`).
+    /// Cheap when it's so already. A new world, a loaded one and an undone one call it before anyone reads a value.
+    pub fn use_data(&self) {
+        data::ensure(&self.overrides);
+    }
+
     pub fn checksum(&self) -> u64 {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
         let mut mix = |value: u32| {

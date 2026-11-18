@@ -10,6 +10,7 @@
 use macroquad::math::Vec2;
 
 use super::fx::Fx;
+use crate::attrs::ExtraDamage;
 use super::zombies::{Breed, Hit, Zombie};
 use super::{World, TICKS_PER_SECOND, UNIT_RADIUS};
 
@@ -22,6 +23,9 @@ pub struct Spit {
     flight: u32,
     pub(super) left: u32,
     breed: Breed,
+    /// What it does where it lands: its breed's damage, a boss's own – and the extra damage against attributes.
+    damage: u32,
+    extra: ExtraDamage,
 }
 
 impl Spit {
@@ -60,7 +64,7 @@ impl World {
     }
 
     /// A ranged zombie at `from` shoots at `target`: acid goes on its way (`fly_spits`), a bullet hits at once.
-    pub(super) fn zombie_shoots(&mut self, from: Vec2, breed: Breed, target: Hit) {
+    pub(super) fn zombie_shoots(&mut self, from: Vec2, breed: Breed, target: Hit, damage: u32, extra: ExtraDamage) {
         let to = match target {
             Hit::Unit(u) => self.units[u].pos,
             // The spot of the building closest to the zombie.
@@ -70,19 +74,26 @@ impl World {
         if stats.projectile_speed > 0.0 {
             // Rounded with `floor` – the list of allowed float operations stays short (`sim/mod.rs`).
             let flight = ((to.distance(from) / stats.projectile_speed * TICKS_PER_SECOND + 0.5).floor() as u32).max(1);
-            self.spits.push(Spit { from, to, flight, left: flight, breed });
+            self.spits.push(Spit { from, to, flight, left: flight, breed, damage, extra });
             return;
         }
         self.zombie_shots.push((from, to));
         if stats.splash > 0.0 {
-            self.splash(to, breed);
+            self.splash(to, breed, damage, extra);
             return;
         }
         match target {
-            Hit::Unit(u) if stats.venom => self.units[u].take_venom(stats.damage, self.tick),
-            Hit::Unit(u) => self.units[u].take_hit(stats.damage, self.tick),
+            Hit::Unit(u) => {
+                let damage = damage + extra.against(self.units[u].attributes());
+                if stats.venom {
+                    self.units[u].take_venom(damage, self.tick);
+                } else {
+                    self.units[u].take_hit(damage, self.tick);
+                }
+            }
             Hit::Building(b) => {
-                if self.buildings[b].take_damage(stats.damage) {
+                let damage = damage + extra.against(self.buildings[b].attributes());
+                if self.buildings[b].take_damage(damage) {
                     self.infect(b);
                 }
             }
@@ -96,33 +107,34 @@ impl World {
         self.spits.retain_mut(|spit| {
             spit.left = spit.left.saturating_sub(1);
             if spit.left == 0 {
-                landed.push((spit.to, spit.breed));
+                landed.push((spit.to, spit.breed, spit.damage, spit.extra));
             }
             spit.left > 0
         });
-        for (at, breed) in landed {
+        for (at, breed, damage, extra) in landed {
             self.fx.push(Fx::Acid { at });
-            self.splash(at, breed);
+            self.splash(at, breed, damage, extra);
         }
     }
 
     /// A shot lands at `at`: every unit on the ground whose body is within `splash` of the spot takes the breed's damage
     /// (after its armor – venom: its `venom_factor` of it), and every building that close (a broken shield infects it,
     /// like a hit). Units in a tower can't be hit – the tower is. Without splash only what stands right on the spot.
-    fn splash(&mut self, at: Vec2, breed: Breed) {
+    fn splash(&mut self, at: Vec2, breed: Breed, damage: u32, extra: ExtraDamage) {
         let stats = breed.stats();
         let radius = stats.splash.max(0.1);
         let tick = self.tick;
         for unit in self.units.iter_mut().filter(|u| !u.is_inside() && u.pos.distance(at) <= radius + UNIT_RADIUS) {
+            let damage = damage + extra.against(unit.attributes());
             if stats.venom {
-                unit.take_venom(stats.damage, tick);
+                unit.take_venom(damage, tick);
             } else {
-                unit.take_hit(stats.damage, tick);
+                unit.take_hit(damage, tick);
             }
         }
         let mut infected = Vec::new();
         for (b, building) in self.buildings.iter_mut().enumerate() {
-            if !building.zombies_ignore() && building.distance_to(at) <= radius && building.take_damage(stats.damage) {
+            if !building.zombies_ignore() && building.distance_to(at) <= radius && building.take_damage(damage + extra.against(building.attributes())) {
                 infected.push(b);
             }
         }

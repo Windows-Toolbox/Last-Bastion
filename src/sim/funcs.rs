@@ -8,10 +8,10 @@
 //!
 //! Everything is deterministic: only whole numbers, the world's dice (`Random`, `D100`) and the order of the lists.
 
-use super::expr::{Assign, Code, Expr, Op, Stmt, Ty, Value};
+use super::expr::{parse_value, template_parts, Assign, Code, Expr, Op, Scope, Stmt, Ty, Value};
 use super::story::Ending;
 use super::{World, DAY_TICKS, HOUR_TICKS};
-use crate::kinds::Resource;
+use crate::kinds::{Resource, UnitKind};
 
 /// One function (or value without parameters like `Day`).
 pub struct Func {
@@ -64,17 +64,37 @@ pub static FUNCS: &[Func] = &[
     func!("Colonists", [], Some(Ty::Number), "The colonists in the houses that aren't infected.", |w, _| count(w.colonists() as usize)),
     func!("Kills", [], Some(Ty::Number), "The zombies killed so far.", |w, _| count(w.score.zombies_killed as usize)),
     func!("Count", [Ty::Text], Some(Ty::Number), "How many finished buildings and units have this name (\"Soldier\", \"Tent\") - or are \"Unit\", \"Building\", \"Dwelling\", \"Infected\".", |w, a| count(w.count_kind(&a[0].text()))),
-    func!("IsDead", [Ty::Text], Some(Ty::Flag), "Yes if no building or unit with this name ID is left.", |w, a| Value::Flag(!w.has_name_id(&a[0].text()))),
     func!("EventDone", [Ty::Text], Some(Ty::Flag), "Yes if the event with this name has come every time it will.", |w, a| {
         let name = a[0].text();
         Value::Flag(w.events.iter().any(|e| e.name == name && e.is_done()))
     }),
+    func!("CountDeads", [Ty::Text], Some(Ty::Number), "How many buildings, units and zombies with this name died or were destroyed in this round - or all of them: \"Unit\", \"Building\", \"Zombie\".", |w, a| count(w.dead_count(&a[0].text()))),
+    func!("CountBonus", [Ty::Text], Some(Ty::Number), "Always 0: bonus units come at once (TAB keeps them in the command center until the player takes them).", |_, _| number(0)),
+    func!("IsDead", [Ty::Text], Some(Ty::Flag), "Yes if no building or unit with this name ID is left.", |w, a| Value::Flag(!w.has_name_id(&a[0].text()))),
+    func!("IsInfected", [Ty::Text], Some(Ty::Flag), "Yes if there are buildings with this name ID and all of them are infected.", |w, a| Value::Flag(w.all_infected(&a[0].text()))),
     func!("EndGameWon", [], None, "The round is won.", |w, _| {
         w.ending = w.ending.or(Some(Ending::Won));
         nothing()
     }),
     func!("EndGameLost", [], None, "The round is lost.", |w, _| {
         w.ending = Some(Ending::Lost);
+        nothing()
+    }),
+    func!("GiveEntities", [Ty::Text, Ty::Number], None, "Units for the colony next to the command center: GiveEntities(\"Soldier\", 3). Buildings can't be given.", |w, a| {
+        w.give_units_named(&a[0].text(), a[1].number());
+        nothing()
+    }),
+    func!("DamageAll", [Ty::Text, Ty::Number], None, "Hurts every building, unit or zombie with this name (or all \"Unit\", \"Building\", \"Zombie\") by so many points - armor doesn't count.", |w, a| {
+        w.hurt_or_heal_all(&a[0].text(), a[1].number(), true);
+        nothing()
+    }),
+    func!("CureAll", [Ty::Text, Ty::Number], None, "Gives every finished building, unit or zombie with this name (or all \"Unit\", \"Building\", \"Zombie\") so many hit points back, up to full. Infected buildings stay as they are.", |w, a| {
+        w.hurt_or_heal_all(&a[0].text(), a[1].number(), false);
+        nothing()
+    }),
+    func!("UpgradeLevel", [Ty::Text], Some(Ty::Number), "The level of a track of upgrades (\"infantry_weapons\", \"zombie_armor\" ...): 0 up to the track's number of levels, 0 for a name that isn't one.", |w, a| count(w.upgrade_level(&a[0].text()) as usize)),
+    func!("SetUpgrade", [Ty::Text, Ty::Number], None, "Puts a track of upgrades on this level at once, up and down (at most its number of levels) - for everything that stands and is built later. The zombies' tracks \"zombie_weapons\" and \"zombie_armor\" have no research: this is how a map makes them stronger.", |w, a| {
+        w.set_upgrade_level(&a[0].text(), a[1].number().max(0) as u32);
         nothing()
     }),
     func!("GiveGold", [Ty::Number], None, "Gold for the colony - taken away below 0.", |w, a| {
@@ -126,7 +146,115 @@ pub fn signature(f: &Func) -> String {
     format!("{}({})", f.name, params.join(", "))
 }
 
+/// A name the way the language compares them: no spaces, lower case.
+pub fn name_key(name: &str) -> String {
+    name.to_lowercase().replace(' ', "")
+}
+
 impl World {
+    /// Something of `group` ("unit", "building", "zombie") named `name` died (`CountDeads`).
+    pub(super) fn count_dead(&mut self, group: &str, name: &str) {
+        for key in [group.to_owned(), name_key(name)] {
+            match self.dead.iter_mut().find(|d| d.0 == key) {
+                Some(d) => d.1 += 1,
+                None => self.dead.push((key, 1)),
+            }
+        }
+    }
+
+    /// How many of this name (or group: "unit", "building"/"structure", "zombie") died so far.
+    pub fn dead_count(&self, name: &str) -> usize {
+        let key = match name_key(name).as_str() {
+            "structure" => "building".to_owned(),
+            other => other.to_owned(),
+        };
+        self.dead.iter().find(|d| d.0 == key).map_or(0, |d| d.1 as usize)
+    }
+
+    /// Are there buildings with this name ID, and every one of them infected?
+    pub fn all_infected(&self, name_id: &str) -> bool {
+        let mut with_id = self.buildings.iter().filter(|b| b.tag.as_ref().is_some_and(|t| t.name_id == name_id)).peekable();
+        with_id.peek().is_some() && with_id.all(|b| b.infected)
+    }
+
+    /// A text of the story as the player reads it (TAB's `ZXCompiler.ProcessText`): `\n` and `\t` are a new line and
+    /// a tab, and each `{expression}` is worked out now – yes/no as "Yes" / "No". One that doesn't parse stays as it is
+    /// (the editor warns about it).
+    pub fn render(&mut self, text: &str) -> String {
+        let text = text.replace("\\n", "\n").replace("\\t", "\t");
+        if !text.contains('{') {
+            return text;
+        }
+        let mut out = String::new();
+        for (is_code, part) in template_parts(&text) {
+            if !is_code {
+                out.push_str(part);
+                continue;
+            }
+            match parse_value(part, Scope { variables: &self.story.variables }) {
+                Ok(e) => match self.eval(&e) {
+                    Value::Flag(f) => out.push_str(if f { "Yes" } else { "No" }),
+                    v => out.push_str(&v.text()),
+                },
+                Err(_) => {
+                    out.push('{');
+                    out.push_str(part);
+                    out.push('}');
+                }
+            }
+        }
+        out
+    }
+
+    /// `count` units of the kind with this name (any case, no spaces) for the colony, next to the command center
+    /// (`give_units`). An unknown name – or a building's – gives nothing: bonus buildings don't exist here.
+    pub(super) fn give_units_named(&mut self, name: &str, count: i32) {
+        let wanted = name_key(name);
+        if let Some(kind) = UnitKind::ALL.into_iter().find(|k| name_key(&k.stats().name) == wanted) {
+            self.give_units(kind, count.clamp(0, 1000) as u32);
+        }
+    }
+
+    /// Every finished building, every unit and every zombie called `name` – or all of a group: "unit", "building"
+    /// (also "structure"), "zombie" – is hurt by `points` (`hurt`), or cured by them. Hurt, a unit or zombie at 0 is
+    /// dead when the tick ends, a building falls (`remove_dead`); the damage skips armor, and shields go first.
+    /// Cured, nobody gets above full hit points; infected buildings are not cured (they need a repair). Sleeping zombies
+    /// are left alone.
+    pub(super) fn hurt_or_heal_all(&mut self, name: &str, points: i32, hurt: bool) {
+        if points <= 0 {
+            return;
+        }
+        let points = points as u32;
+        let wanted = match name_key(name).as_str() {
+            "structure" => "building".to_owned(),
+            other => other.to_owned(),
+        };
+        let tick = self.tick;
+        for unit in &mut self.units {
+            if wanted == "unit" || name_key(&unit.stats().name) == wanted {
+                unit.hp = if hurt { unit.hp.saturating_sub(points) } else { (unit.hp + points).min(unit.max_hp()).max(unit.hp) };
+            }
+        }
+        for zombie in &mut self.zombies {
+            if zombie.is_alive() && (wanted == "zombie" || name_key(zombie.breed.name()) == wanted) {
+                if hurt {
+                    zombie.hurt(points, tick);
+                } else {
+                    zombie.heal(points);
+                }
+            }
+        }
+        for building in &mut self.buildings {
+            if building.alive() && (wanted == "building" || name_key(&building.stats().name) == wanted) {
+                if hurt {
+                    building.hurt_by(points);
+                } else if building.is_built() && !building.infected {
+                    building.heal_by(points);
+                }
+            }
+        }
+    }
+
     /// The colonists living in houses that aren't infected.
     pub fn colonists(&self) -> u32 {
         self.buildings.iter().filter(|b| !b.infected && b.is_built()).map(|b| b.stats().colonists).sum()

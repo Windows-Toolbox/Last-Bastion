@@ -4,7 +4,7 @@
 //!
 //! `charges` at most, a new one every `every_seconds` – none at the start, a radar charges them – and while one
 //! charges, the radar takes `power` from its grid (`World::power`), so a scan costs the colony something: you don't
-//! scan all the time. Values in `data\buildings.json` ("scan").
+//! scan all the time. Values in `data\buildings\` ("scan").
 
 use macroquad::math::Vec2;
 

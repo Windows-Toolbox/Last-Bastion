@@ -1,0 +1,22 @@
+{
+  "name": "Wood workshop",
+  "letter": "Ww",
+  "skins": ["buildings/wood_workshop"],
+  "explosion": ["wood_big"],
+  "size": [2, 2],
+  "hp": 600,
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 10,
+  "cost": 500,
+  "cost_wood": 40,
+  "energy_use": 10,
+  "build_seconds": 84,
+  "repair_cost": 25,
+  "sight": 7.0,
+  "height": 0.6,
+  "joins": false,
+  "shield": 200,
+  "upkeep": 16,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

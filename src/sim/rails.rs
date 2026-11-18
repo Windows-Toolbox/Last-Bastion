@@ -1,6 +1,7 @@
-//! TAB's railway (`ZX.Components\CRailWay.cs`): pieces of track on the map (ornaments, `ornaments.rs`) and the lines
-//! they make – from a buffer stop along every piece that fits on to the next buffer stop (or the last piece). A train
-//! (`trains.rs`) runs along such a line.
+//! TAB's railway (`ZX.Components\CRailWay.cs`): pieces of track on the map (ornaments, `ornaments.rs`) and the network
+//! they make (`RailNet`: switches where two pieces join one connector, crossings where pieces only share a tile). A
+//! train (`trains.rs`) runs along a route of it – a line from a buffer stop along the pieces to the next buffer stop (or
+//! the last piece).
 //!
 //! Every piece has one or two **connectors**: a side of one of its tiles where the track leaves it (TAB's
 //! `RailConnection`). Two pieces are joined where a connector of one faces a connector of the other on the next tile.
@@ -9,6 +10,9 @@
 //! edge.
 //!
 //! Deterministic like the rest of the simulation: the curves' sine and cosine come from `libm`.
+
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 
 use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
@@ -208,6 +212,11 @@ impl Connector {
         }
     }
 
+    /// A key for finding connectors: the tile and side as numbers.
+    fn key(self) -> (i32, i32, u8) {
+        (self.cell.0, self.cell.1, self.side as u8)
+    }
+
     /// Does `other` face this one from the next tile – are the two pieces joined here (TAB's `ConnectedTo`)?
     fn meets(self, other: Connector) -> bool {
         let (dx, dy) = self.side.step();
@@ -381,54 +390,6 @@ pub struct RailLine {
 }
 
 impl RailLine {
-    /// The line that starts at buffer stop `origin` of `pieces` – along every piece that joins on, until a buffer
-    /// stop or a piece nothing joins (TAB's `TrainLine.UpdateFrom`).
-    fn from(pieces: &[RailPiece], origin: usize) -> RailLine {
-        let mut used = vec![false; pieces.len()];
-        used[origin] = true;
-        let (mut exit, _) = pieces[origin].connectors();
-        let mut line = RailLine { points: vec![exit.point()], along: vec![0.0], pieces: Vec::new(), start: pieces[origin].tile, end: pieces[origin].tile };
-        loop {
-            // The next piece: one whose connector faces where the track left the last one.
-            let next = (0..pieces.len()).filter(|&p| !used[p]).find_map(|p| {
-                let (a, b) = pieces[p].connectors();
-                if exit.meets(a) {
-                    Some((p, false))
-                } else if b.is_some_and(|b| exit.meets(b)) {
-                    Some((p, true))
-                } else {
-                    None
-                }
-            });
-            let Some((p, backwards)) = next else {
-                break;
-            };
-            used[p] = true;
-            let piece = pieces[p];
-            line.end = piece.tile;
-            if piece.shape.is_end() {
-                break;
-            }
-            let mut way = piece.shape.points(piece.tile);
-            let (a, b) = piece.connectors();
-            if backwards {
-                way.reverse();
-                exit = a;
-            } else {
-                exit = b.expect("only buffer stops have one connector");
-            }
-            let from = line.length();
-            for point in way.into_iter().skip(1) {
-                let last = *line.points.last().expect("a line has a first point");
-                let d = point.distance(last);
-                line.points.push(point);
-                line.along.push(line.length() + d);
-            }
-            line.pieces.push((from, line.length() - from));
-        }
-        line
-    }
-
     /// The same line the other way round – it starts where this one ends.
     pub fn reversed(&self) -> RailLine {
         let total = self.length();
@@ -464,6 +425,21 @@ impl RailLine {
         if way.length_squared() > 0.0 { way.normalize() } else { vec2(1.0, 0.0) }
     }
 
+    /// The point of the line closest to `to`: how far along it lies (tiles) and how far from `to` it is. On the
+    /// straight stretches between the points – a train stops at a station at its middle (`World::station_stop`).
+    pub fn nearest(&self, to: Vec2) -> (f32, f32) {
+        let mut best = (0.0, self.points[0].distance(to));
+        for (i, pair) in self.points.windows(2).enumerate() {
+            let way = pair[1] - pair[0];
+            let t = if way.length_squared() > 0.0 { ((to - pair[0]).dot(way) / way.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+            let distance = (pair[0] + way * t).distance(to);
+            if distance < best.1 {
+                best = (self.along[i] + (self.along[i + 1] - self.along[i]) * t, distance);
+            }
+        }
+        best
+    }
+
     /// The offset of the middle of the piece of track closest to `to` (TAB's `GetNearestOffsetTo`: where a train stops
     /// for a place). `None`: the line has no piece with a length.
     pub fn stop_near(&self, to: Vec2) -> Option<f32> {
@@ -474,19 +450,187 @@ impl RailLine {
     }
 }
 
-impl World {
-    /// The lines of track on the map: one from every buffer stop that isn't the far end of a line found before – in
-    /// the order the ornaments lie in.
-    pub fn rail_lines(&self) -> Vec<RailLine> {
-        let pieces = rail_pieces(&self.ornaments);
-        let mut lines: Vec<RailLine> = Vec::new();
-        for (p, piece) in pieces.iter().enumerate().filter(|(_, p)| p.shape.is_end()) {
-            if lines.iter().any(|l| l.end == piece.tile) {
+/// The track as a network (Factorio's way, `docs\trains.md` step 2). There is no piece for a switch: **two pieces that
+/// join the same connector are a switch**, and a straight piece along x and one along y on one tile are a crossing –
+/// they have no connector in common. A train finds its way through it forwards only (never turning round on the
+/// spot): a **route** is the way from a buffer stop along the pieces to another buffer stop – or to the last piece of
+/// track, if nothing joins on – as a `RailLine` of points. Where it forks, the shortest way to each end is a route of
+/// its own.
+pub struct RailNet<'a> {
+    pieces: &'a [RailPiece],
+    /// Per piece and per connector (0: the first, 1: the second): the pieces joined there – the piece, and whether it
+    /// joins with its second connector.
+    joins: Vec<[Vec<(usize, bool)>; 2]>,
+    /// How long each piece's way is (tiles; a buffer stop 0) – to find the shortest route.
+    lengths: Vec<f32>,
+}
+
+/// Where a search ended: a buffer stop, or a piece whose far end nothing joins.
+struct Terminal {
+    state: usize,
+    buffer_stop: bool,
+}
+
+impl<'a> RailNet<'a> {
+    pub fn new(pieces: &'a [RailPiece]) -> RailNet<'a> {
+        // Every connector by the tile side it sits on.
+        let mut at: HashMap<(i32, i32, u8), Vec<(usize, bool)>> = HashMap::new();
+        for (p, piece) in pieces.iter().enumerate() {
+            let (a, b) = piece.connectors();
+            at.entry(a.key()).or_default().push((p, false));
+            if let Some(b) = b {
+                at.entry(b.key()).or_default().push((p, true));
+            }
+        }
+        // What a connector meets: the connectors on the next tile facing back.
+        let meets = |c: Connector, p: usize| -> Vec<(usize, bool)> {
+            let (dx, dy) = c.side.step();
+            let key = Connector { cell: (c.cell.0 + dx, c.cell.1 + dy), side: c.side.opposite() }.key();
+            at.get(&key).map(|v| v.iter().copied().filter(|&(q, _)| q != p).collect()).unwrap_or_default()
+        };
+        let joins = pieces
+            .iter()
+            .enumerate()
+            .map(|(p, piece)| {
+                let (a, b) = piece.connectors();
+                [meets(a, p), b.map(|b| meets(b, p)).unwrap_or_default()]
+            })
+            .collect();
+        // A curve is 90 chords of a degree each (`RailShape::points`).
+        let chord = 2.0 * CURVE_RADIUS * libm::sinf(std::f32::consts::PI / 360.0);
+        let lengths = pieces
+            .iter()
+            .map(|p| match p.shape {
+                s if s.is_end() => 0.0,
+                s if s.is_curve() => 90.0 * chord,
+                _ => 1.0,
+            })
+            .collect();
+        RailNet { pieces, joins, lengths }
+    }
+
+    /// Every connector where a train has a choice: more than one piece joins it – the switches (their points).
+    pub fn switches(&self) -> Vec<Vec2> {
+        let mut found: Vec<Vec2> = Vec::new();
+        for (p, piece) in self.pieces.iter().enumerate() {
+            let (a, b) = piece.connectors();
+            for (k, c) in [Some(a), b].into_iter().enumerate() {
+                let Some(c) = c else {
+                    continue;
+                };
+                if self.joins[p][k].len() >= 2 && !found.contains(&c.point()) {
+                    found.push(c.point());
+                }
+            }
+        }
+        found
+    }
+
+    /// The shortest way from buffer stop `origin` forwards to every end it reaches (Dijkstra over "this piece, entered
+    /// from this side"): each state's distance and the state before it, and where the ways end.
+    fn search(&self, origin: usize) -> (Vec<usize>, Vec<Terminal>) {
+        let n = self.pieces.len();
+        let mut dist = vec![f32::INFINITY; n * 2];
+        let mut before = vec![usize::MAX; n * 2];
+        let mut ends = Vec::new();
+        let mut heap = BinaryHeap::new();
+        dist[origin * 2] = 0.0;
+        heap.push(Reverse((0f32.to_bits(), origin * 2)));
+        while let Some(Reverse((bits, s))) = heap.pop() {
+            let d = f32::from_bits(bits);
+            if d > dist[s] {
                 continue;
             }
-            lines.push(RailLine::from(&pieces, p));
+            let (p, second) = (s / 2, s % 2 == 1);
+            let buffer_stop = self.pieces[p].shape.is_end();
+            if buffer_stop && p != origin {
+                ends.push(Terminal { state: s, buffer_stop: true });
+                continue;
+            }
+            // Entered at the first connector it leaves at the second – a buffer stop only has its first.
+            let leaves = if buffer_stop || second { 0 } else { 1 };
+            let next = &self.joins[p][leaves];
+            if next.is_empty() {
+                if p != origin {
+                    ends.push(Terminal { state: s, buffer_stop: false });
+                }
+                continue;
+            }
+            let reach = d + self.lengths[p];
+            for &(q, joined_second) in next {
+                let t = q * 2 + usize::from(joined_second);
+                if reach < dist[t] {
+                    dist[t] = reach;
+                    before[t] = s;
+                    heap.push(Reverse((reach.to_bits(), t)));
+                }
+            }
         }
-        lines
+        (before, ends)
+    }
+
+    /// The route that ends in `end`: the states back to `origin`, then the points along them.
+    fn route(&self, origin: usize, before: &[usize], end: usize) -> RailLine {
+        let mut path = vec![end];
+        while *path.last().expect("a path has a last state") != origin * 2 {
+            path.push(before[*path.last().expect("a path has a last state")]);
+        }
+        path.reverse();
+        let (first, _) = self.pieces[origin].connectors();
+        let tile = self.pieces[origin].tile;
+        let mut line = RailLine { points: vec![first.point()], along: vec![0.0], pieces: Vec::new(), start: tile, end: tile };
+        for &s in &path[1..] {
+            let piece = self.pieces[s / 2];
+            line.end = piece.tile;
+            if piece.shape.is_end() {
+                break;
+            }
+            let mut way = piece.shape.points(piece.tile);
+            // Entered at its second connector, the way runs backwards.
+            if s % 2 == 1 {
+                way.reverse();
+            }
+            let from = line.length();
+            for point in way.into_iter().skip(1) {
+                let last = *line.points.last().expect("a line has a first point");
+                let d = point.distance(last);
+                line.points.push(point);
+                line.along.push(line.length() + d);
+            }
+            line.pieces.push((from, line.length() - from));
+        }
+        line
+    }
+
+    /// The routes of the track: from every buffer stop the shortest way to each end it reaches – to another buffer stop
+    /// only once (the way back is the same route turned round), to a piece nothing joins always. In the order of the
+    /// pieces, nearest end first.
+    pub fn routes(&self) -> Vec<RailLine> {
+        let mut routes = Vec::new();
+        for (origin, _) in self.pieces.iter().enumerate().filter(|(_, p)| p.shape.is_end()) {
+            let (before, ends) = self.search(origin);
+            for end in ends {
+                if end.buffer_stop && end.state / 2 < origin {
+                    continue;
+                }
+                routes.push(self.route(origin, &before, end.state));
+            }
+        }
+        routes
+    }
+}
+
+impl World {
+    /// The routes of the track on the map (`RailNet::routes`) – the lines a train can be sent along.
+    pub fn rail_lines(&self) -> Vec<RailLine> {
+        let pieces = rail_pieces(&self.ornaments);
+        RailNet::new(&pieces).routes()
+    }
+
+    /// The switches of the track on the map: where more than one piece joins a connector (`RailNet::switches`).
+    pub fn rail_switches(&self) -> Vec<Vec2> {
+        let pieces = rail_pieces(&self.ornaments);
+        RailNet::new(&pieces).switches()
     }
 }
 
@@ -511,8 +655,10 @@ mod tests {
         pieces.push(piece(RailShape::Y, (19, 11)));
         pieces.push(piece(RailShape::Y, (19, 12)));
         pieces.push(piece(RailShape::EndS, (19, 13)));
-        let line = RailLine::from(&pieces, 0);
-        assert_eq!(line.end, (19, 13));
+        let routes = RailNet::new(&pieces).routes();
+        assert_eq!(routes.len(), 1, "the way back is the same route");
+        let line = routes.into_iter().next().unwrap();
+        assert_eq!((line.start, line.end), ((10, 5), (19, 13)));
         let quarter = std::f32::consts::FRAC_PI_2 * CURVE_RADIUS;
         assert!((line.length() - (3.0 + quarter + 2.0)).abs() < 0.01, "{}", line.length());
         assert_eq!(line.point_at(0.0), vec2(11.0, 5.5));
@@ -526,6 +672,60 @@ mod tests {
         // A train stops in the middle of the piece closest to the place.
         let stop = line.stop_near(vec2(12.5, 8.0)).unwrap();
         assert!((stop - 1.5).abs() < 1e-4, "{stop}");
+    }
+
+    /// A fork: buffer stop at the west, two straight pieces, then at the connector east of the second a straight piece
+    /// going on to a buffer stop (4 tiles) and a curve down to a buffer stop in the south – two pieces at one connector
+    /// are a switch. A crossing piece along y on the first tile of the straight branch joins nothing.
+    fn fork() -> Vec<RailPiece> {
+        let mut pieces = vec![piece(RailShape::EndW, (10, 5)), piece(RailShape::X, (11, 5)), piece(RailShape::X, (12, 5))];
+        pieces.extend([piece(RailShape::X, (13, 5)), piece(RailShape::X, (14, 5)), piece(RailShape::EndE, (15, 5))]);
+        pieces.extend([piece(RailShape::CurveSE, (13, 5)), piece(RailShape::Y, (18, 11)), piece(RailShape::EndS, (18, 12))]);
+        pieces
+    }
+
+    #[test]
+    fn a_fork_gives_a_route_to_each_end_and_one_switch() {
+        let pieces = fork();
+        let net = RailNet::new(&pieces);
+        let routes = net.routes();
+        assert_eq!(routes.len(), 2, "one route to each buffer stop - none between the two ends: that needs a turn");
+        let quarter = std::f32::consts::FRAC_PI_2 * CURVE_RADIUS;
+        let (straight, bent) = (&routes[0], &routes[1]);
+        assert_eq!((straight.start, straight.end), ((10, 5), (15, 5)));
+        assert!((straight.length() - 4.0).abs() < 0.01, "{}", straight.length());
+        assert_eq!((bent.start, bent.end), ((10, 5), (18, 12)));
+        assert!((bent.length() - (2.0 + quarter + 1.0)).abs() < 0.05, "{}", bent.length());
+        // Both start the same way and part at the switch.
+        assert!(straight.point_at(1.5).distance(bent.point_at(1.5)) < 1e-4);
+        assert_eq!(net.switches(), vec![vec2(13.0, 5.5)]);
+        // Without the branch there is no switch.
+        let plain: Vec<RailPiece> = pieces.iter().copied().filter(|p| p.shape != RailShape::CurveSE).collect();
+        assert!(RailNet::new(&plain).switches().is_empty());
+    }
+
+    #[test]
+    fn a_straight_x_and_y_on_one_tile_are_a_crossing_not_a_switch() {
+        // West to east along row 5 and north to south along column 12 – both on tile (12, 5).
+        let mut pieces = vec![piece(RailShape::EndW, (10, 5)), piece(RailShape::X, (11, 5)), piece(RailShape::X, (12, 5)), piece(RailShape::X, (13, 5)), piece(RailShape::EndE, (14, 5))];
+        pieces.extend([piece(RailShape::EndN, (12, 3)), piece(RailShape::Y, (12, 4)), piece(RailShape::Y, (12, 5)), piece(RailShape::Y, (12, 6)), piece(RailShape::EndS, (12, 7))]);
+        let net = RailNet::new(&pieces);
+        assert!(net.switches().is_empty());
+        let routes = net.routes();
+        assert_eq!(routes.len(), 2);
+        assert!(routes.iter().all(|r| (r.length() - 3.0).abs() < 0.01), "each runs straight over the tile");
+        // Each goes straight over the tile.
+        assert!(routes.iter().any(|r| r.end == (14, 5)) && routes.iter().any(|r| r.end == (12, 7)));
+    }
+
+    #[test]
+    fn a_route_never_turns_round() {
+        // A buffer stop, three pieces, an open end: from the stop the route runs to the open end; nothing starts
+        // there (only buffer stops are origins), so no way back.
+        let pieces = vec![piece(RailShape::EndW, (10, 5)), piece(RailShape::X, (11, 5)), piece(RailShape::X, (12, 5)), piece(RailShape::X, (13, 5))];
+        let routes = RailNet::new(&pieces).routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!((routes[0].end, routes[0].length()), ((13, 5), 3.0));
     }
 
     #[test]

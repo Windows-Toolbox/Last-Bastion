@@ -65,6 +65,9 @@ impl HealthBars {
 #[serde(default)]
 pub struct Settings {
     pub window_mode: WindowMode,
+    /// Which monitor the window is on, or the borderless one covers (`screen.rs`): 0 is the main one, then the others
+    /// from left to right. One that isn't there: the main one.
+    pub monitor: usize,
     /// Move the camera when the mouse is at the window edge.
     pub edge_scroll: bool,
     /// Pixels per second, for the edge and the arrow keys.
@@ -112,6 +115,7 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             window_mode: WindowMode::Window,
+            monitor: 0,
             edge_scroll: true,
             scroll_speed: 900.0,
             confine_mouse: true,
@@ -161,8 +165,12 @@ impl Settings {
     /// Changed since `before` (one frame earlier)? Then apply it right away and save it (DESIGN.md 11.4).
     pub fn apply_changes(&self, before: &Settings) {
         if self != before {
+            let borderless = self.window_mode == WindowMode::Borderless;
             if self.window_mode != before.window_mode {
-                macroquad::window::set_fullscreen(self.window_mode == WindowMode::Borderless);
+                macroquad::window::set_fullscreen(borderless);
+            }
+            if self.window_mode != before.window_mode || self.monitor != before.monitor {
+                crate::screen::set_target(borderless, self.monitor, true);
             }
             self.save();
         }

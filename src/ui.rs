@@ -8,7 +8,7 @@ use macroquad::prelude::*;
 use crate::cursor::Cursor;
 use crate::data;
 use crate::draw::{draw_diamond, draw_ring, mark_color, ore_color, terrain_color, SpawnerShape, TESLA_GLOW, ZOMBIE};
-use crate::draw::draw_ornament_ghost;
+use crate::draw::{draw_breed_ghost, draw_building_ghost, draw_doom_ghost, draw_loot_ghost, draw_ornament_ghost, draw_unit_ghost};
 use crate::editor::{fill_tiles, ornament_spot, rect_tiles, Editor, Module, PaintShape, Picked, Sight, Tool};
 use crate::sim::Area;
 use crate::rail_planner::{draw_train_plan, RailPlanner};
@@ -252,6 +252,7 @@ const EVENT_SECONDS: f32 = 12.0;
 /// A line of TAB's event list: its picture, its text, how many seconds it stays.
 pub struct EventLine {
     pub icon: &'static str,
+    pub color: Color,
     pub text: String,
     pub time_left: f32,
 }
@@ -571,11 +572,11 @@ impl Ui {
 
     /// A line in TAB's event list, with its picture (`assets\ui\events\<icon>.png`: `EventSwarm`, `EventInfo` …).
     /// At most `MAX_EVENTS` – the oldest goes.
-    pub fn event(&mut self, icon: &'static str, text: &str) {
+    pub fn event(&mut self, icon: &'static str, color: Color, text: &str) {
         if self.events.len() >= MAX_EVENTS {
             self.events.remove(0);
         }
-        self.events.push(EventLine { icon, text: text.to_owned(), time_left: EVENT_SECONDS });
+        self.events.push(EventLine { icon, color, text: text.to_owned(), time_left: EVENT_SECONDS });
         crate::audio::interface("MapNotification");
     }
 
@@ -1311,6 +1312,12 @@ impl Ui {
                 let wander = self.editor.wander;
                 orders.push(Order::PaintZombies { tiles: vec![tile_of(point)], per_tile: vec![(Breed::Giant, 1)], wander });
             }
+            // One boss on the tile: a zombie with its own values (`Order::PlaceBoss`).
+            Tool::Boss => {
+                let tile = tile_of(point);
+                let pos = vec2(tile.0 as f32 + 0.5, tile.1 as f32 + 0.5);
+                orders.push(Order::PlaceBoss { pos, breed: self.editor.boss_breed, wander: self.editor.wander, tweak: self.editor.boss_tweak });
+            }
             // An edge of the border (or two at a corner) – or, inside, all of it.
             Tool::PlayArea => {
                 let (min, size) = world.map.play_steps();
@@ -1318,13 +1325,13 @@ impl Ui {
                     self.rect_drag = Some(RectDrag { what: Dragged::PlayArea, edges, start: point, min, size, axes: Axes::Screen });
                 }
             }
-            Tool::Unit(kind) => orders.push(self.editor.owned(Order::SpawnUnit { kind, point })),
+            Tool::Unit(kind) => orders.push(self.editor.owned(Order::SpawnUnit { kind, point: self.editor.placed_point(point), facing: Some(self.editor.unit_facing) })),
             // A house of its size with its middle tile under the mouse.
             Tool::Doom(nest) => {
                 let (tile, size) = doom_spot(nest, point);
                 orders.push(Order::PlaceDoom { tile, size });
             }
-            Tool::Loot => orders.push(Order::PlaceLoot { point }),
+            Tool::Loot(kind) => orders.push(Order::PlaceLoot { point: self.editor.placed_point(point), kind }),
             Tool::BigRock(size) => orders.push(Order::PlaceBigRock(self.editor.big_rock(size, tile_of(point)))),
             Tool::Ornament(kind) => orders.push(Order::PlaceOrnament(Ornament { kind, tile: ornament_spot(world, kind, point) })),
             Tool::Spawner => {
@@ -1884,6 +1891,11 @@ impl Ui {
             if let Some(zombie) = self.zombie_at(world, camera, end).filter(|_| !shift && !ctrl) {
                 self.deselect();
                 self.selected_zombie = Some(zombie);
+                // In the editor a boss clicked on the map opens its values (Zombies module, "Bosses on the map").
+                if edit && let Some(z) = world.find_zombie(zombie).map(|i| &world.zombies[i]).filter(|z| z.boss.is_some()) {
+                    self.editor.boss_pick = Some((z.pos.x, z.pos.y));
+                    self.editor.module = crate::editor::Module::Zombies;
+                }
                 return;
             }
             // The same for a house of doom or a pile of loot.
@@ -2190,7 +2202,11 @@ impl Ui {
         let (_, wheel) = mouse_wheel();
         // On the editor panel the wheel scrolls the panel (egui does that), not the map.
         if !self.editor.has_mouse() {
-            if wheel > 0.0 {
+            let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+            if wheel != 0.0 && shift && matches!(self.editor.tool, Some(Tool::Unit(_))) {
+                // Shift + wheel with a unit in hand: it turns, the map stays.
+                self.editor.turn_unit(wheel);
+            } else if wheel > 0.0 {
                 camera.zoom_by(1.15);
             } else if wheel < 0.0 {
                 camera.zoom_by(1.0 / 1.15);
@@ -2353,6 +2369,8 @@ impl Ui {
                     Color::new(0.9, 0.2, 0.2, 0.45)
                 };
                 draw_diamond(camera, tile_corner(tile), vec2(w as f32, h as f32), color);
+                let ghost = if plan.built.contains(&tile) { Color::new(1.0, 1.0, 1.0, 0.6) } else { Color::new(1.0, 0.45, 0.45, 0.5) };
+                draw_building_ghost(world, camera, sprites, kind, tile, turned, ghost);
                 // The gate: its door (the middle) lighter – that's where your units walk through.
                 if kind == BuildingKind::Gate {
                     let door = tile_corner(tile) + vec2((w / 2) as f32, (h / 2) as f32);
@@ -2496,6 +2514,12 @@ impl Ui {
                         }
                     }
                     if tool == Tool::ZombieBrush {
+                        // What it puts on the tiles: one zombie of the first breed on each (at most 60 – more is a blur).
+                        if let Some(&(breed, _)) = self.editor.per_tile.iter().find(|&&(_, n)| n > 0) {
+                            for (x, y) in self.editor.brush_tiles(tile_of(camera.screen_to_world(mouse))).into_iter().take(60) {
+                                draw_breed_ghost(camera, sprites, breed, vec2(x as f32 + 0.5, y as f32 + 0.5), Color::new(1.0, 1.0, 1.0, 0.6));
+                            }
+                        }
                         draw_text(self.editor.brush_text(), mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
                     }
                 }
@@ -2503,6 +2527,7 @@ impl Ui {
                     // The area where they land: a circle on the ground – on screen a flat ellipse (like the tiles).
                     let w = self.editor.drop_radius() * TILE_W * std::f32::consts::FRAC_1_SQRT_2 * camera.zoom;
                     draw_ellipse_lines(mouse.x, mouse.y, w, w * FLAT, 0.0, 2.0, ZOMBIE);
+                    draw_breed_ghost(camera, sprites, self.editor.breed, camera.screen_to_world(mouse), Color::new(1.0, 1.0, 1.0, 0.6));
                     draw_text(format!("{} zombies", self.editor.drop), mouse.x + 14.0, mouse.y - 8.0, 20.0, ZOMBIE);
                 }
                 // Its tiles, in the colour of mountain.
@@ -2521,6 +2546,7 @@ impl Ui {
                     let fits = world.doom_fits(tile, size);
                     let color = if fits { Color::new(0.55, 0.30, 0.20, 0.65) } else { Color::new(0.9, 0.15, 0.15, 0.5) };
                     draw_diamond(camera, vec2(tile.0 as f32, tile.1 as f32), vec2(size.0 as f32, size.1 as f32), color);
+                    draw_doom_ghost(camera, sprites, nest, tile, size, if fits { Color::new(1.0, 1.0, 1.0, 0.6) } else { Color::new(1.0, 0.45, 0.45, 0.5) });
                     let inside = World::doom_zombies(size, data::get().difficulty(&world.difficulty).population);
                     let text = if fits { format!("{} house - {inside} zombies inside", nest.name()) } else { "No room here".to_owned() };
                     draw_text(&text, mouse.x + 14.0, mouse.y - 8.0, 20.0, if fits { YELLOW } else { Color::new(1.0, 0.45, 0.4, 1.0) });
@@ -2543,9 +2569,25 @@ impl Ui {
                     draw_text(tool.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
                 }
                 Tool::RailPlanner => self.rail.draw(world, camera, sprites, mouse),
-                Tool::Unit(_) | Tool::Spawner | Tool::Loot | Tool::Giant | Tool::Spot => {
-                    draw_circle_lines(mouse.x, mouse.y, 10.0, 2.0, YELLOW);
-                    draw_text(tool.name(), mouse.x + 14.0, mouse.y - 8.0, 20.0, YELLOW);
+                Tool::Unit(_) | Tool::Spawner | Tool::Loot(_) | Tool::Giant | Tool::Boss | Tool::Spot => {
+                    // On the grid a unit or a pile shows the tile it will stand on.
+                    let mut at = mouse;
+                    let point = self.editor.placed_point(camera.screen_to_world(mouse));
+                    if matches!(tool, Tool::Unit(_) | Tool::Loot(_)) && self.editor.place_on_grid {
+                        draw_diamond(camera, point.floor(), Vec2::ONE, Color::new(1.0, 0.9, 0.3, 0.25));
+                        at = camera.world_to_screen(point);
+                    }
+                    // The thing itself, see-through, where it will stand.
+                    let ghost = Color::new(1.0, 1.0, 1.0, 0.6);
+                    match tool {
+                        Tool::Unit(kind) => draw_unit_ghost(camera, sprites, kind, point, self.editor.unit_facing, ghost),
+                        Tool::Loot(Some(kind)) => draw_loot_ghost(camera, sprites, kind, point, ghost),
+                        Tool::Giant => draw_breed_ghost(camera, sprites, Breed::Giant, vec2(point.x.floor() + 0.5, point.y.floor() + 0.5), ghost),
+                        Tool::Boss => draw_breed_ghost(camera, sprites, self.editor.boss_breed, vec2(point.x.floor() + 0.5, point.y.floor() + 0.5), ghost),
+                        _ => {}
+                    }
+                    draw_circle_lines(at.x, at.y, 10.0, 2.0, YELLOW);
+                    draw_text(tool.name(), at.x + 14.0, at.y - 8.0, 20.0, YELLOW);
                 }
                 // Its edges light up – below.
                 Tool::PlayArea | Tool::Building(_) => {}

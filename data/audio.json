@@ -70,7 +70,8 @@
     "Academy": {"placed": "PlaceBuilding_Big", "selected": "TheAcademy", "destroyed": "Explosion_BigBuilding", "infected": "InfectionBuilding_Big"},
     "Victorious": {"placed": "PlaceBuilding_Big", "selected": "TheVictorious", "destroyed": "Explosion_BigBuilding", "infected": "InfectionBuilding_Big"},
     "Transmutator": {"placed": "PlaceBuilding_Big", "selected": "TheTransmutator", "destroyed": "Explosion_BigBuilding", "infected": "InfectionBuilding_Big"},
-    "CrystalPalace": {"placed": "PlaceBuilding_Big", "selected": "TheCrystalPalace", "destroyed": "Explosion_BigBuilding", "infected": "InfectionBuilding_Big"}
+    "CrystalPalace": {"placed": "PlaceBuilding_Big", "selected": "TheCrystalPalace", "destroyed": "Explosion_BigBuilding", "infected": "InfectionBuilding_Big"},
+    "TrainStation": {"placed": "PlaceBuilding_Small", "destroyed": "Explosion_SmallBuilding", "infected": "InfectionBuilding_Small"}
   },
   "doom_small": "Explosion_SmallBuilding",
   "doom_big": "Explosion_BigBuilding",

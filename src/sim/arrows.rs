@@ -1,5 +1,5 @@
 //! Arrows in flight – the ranger's, like TAB's `Proyectile`. A bullet hits the moment it's fired; an arrow is shot at
-//! where the zombie will be and hits when it gets there (`projectile_speed` in `data\units.json`, TAB: 12 tiles a second).
+//! where the zombie will be and hits when it gets there (`projectile_speed` in `data\units\`, TAB: 12 tiles a second).
 //!
 //! Like TAB, an arrow always hits the one it was shot at – if that one is still alive when it lands. It doesn't hit
 //! others on the way, and stepping aside doesn't dodge it: where it flies to is only for the picture. Meanwhile it
@@ -13,6 +13,7 @@ use super::areas::Blow;
 use super::combat::Aim;
 use super::fx::Fx;
 use super::{after_armor, zombies, World, TICKS_PER_SECOND};
+use crate::attrs::ExtraDamage;
 
 /// TAB lets the arrow leave a bit in front of the shooter, not out of its middle (tiles).
 pub const MUZZLE: f32 = 0.3;
@@ -38,16 +39,20 @@ pub struct Arrow {
     splash: f32,
     edge: f32,
     to: Vec2,
+    /// The missile's blow: the damage without the extra, the extra against attributes and the debt's share (`areas.rs`).
+    plain: u32,
+    extra: ExtraDamage,
+    keep: u32,
 }
 
 impl Arrow {
     pub(super) fn new(target: Aim, shooter: u32, by: zombies::Aim, damage: u32, flight: u32) -> Arrow {
-        Arrow { target, shooter, by, damage, left: flight, splash: 0.0, edge: 1.0, to: Vec2::ZERO }
+        Arrow { target, shooter, by, damage, left: flight, splash: 0.0, edge: 1.0, to: Vec2::ZERO, plain: damage, extra: ExtraDamage::default(), keep: 1000 }
     }
 
     /// The same, as a missile that blows up (`splash`).
-    pub(super) fn with_splash(self, splash: f32, edge: f32, to: Vec2) -> Arrow {
-        Arrow { splash, edge, to, ..self }
+    pub(super) fn with_splash(self, splash: f32, edge: f32, to: Vec2, blow: (u32, ExtraDamage, u32)) -> Arrow {
+        Arrow { splash, edge, to, plain: blow.0, extra: blow.1, keep: blow.2, ..self }
     }
 }
 
@@ -97,13 +102,15 @@ impl World {
                     _ => arrow.to,
                 };
                 let blow = Blow {
-                    damage: arrow.damage,
+                    damage: arrow.plain,
                     edge: arrow.edge,
                     shooter: arrow.shooter,
                     by: arrow.by,
                     fire: false,
                     burn_chance: 0.0,
                     friendly: false,
+                    extra: arrow.extra,
+                    keep: arrow.keep,
                 };
                 self.hit_splash(at, arrow.splash, &blow);
                 let by = self.find_unit(arrow.shooter).map(|u| self.units[u].kind);
@@ -141,7 +148,7 @@ impl World {
         on_the_way.sort_unstable();
         for (z, zombie) in self.zombies.iter().enumerate() {
             let first = on_the_way.partition_point(|&(id, _)| id < zombie.id);
-            let armor = zombie.breed.stats().armor;
+            let armor = zombie.armor();
             for &(_, damage) in on_the_way[first..].iter().take_while(|&&(id, _)| id == zombie.id) {
                 aimed[z] += after_armor(damage, armor);
             }

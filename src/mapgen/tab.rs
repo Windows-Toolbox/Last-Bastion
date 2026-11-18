@@ -473,7 +473,7 @@ fn attempt_map(rng: &mut Rng, size: usize, common: &Common, p: &Params, strict: 
                     let kind = match roll {
                         r if r > 90 => LootKind::Gold,
                         r if r > 69 => LootKind::Coal,
-                        r if r > 55 => LootKind::Iron,
+                        r if r > 55 => LootKind::IronOre,
                         r if r > 27 => LootKind::Stone,
                         _ => LootKind::Wood,
                     };

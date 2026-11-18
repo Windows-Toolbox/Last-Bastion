@@ -1,0 +1,23 @@
+{
+  "name": "Stone workshop",
+  "letter": "Sw",
+  "skins": ["buildings/stone_workshop"],
+  "explosion": ["wood_big", "stone_big"],
+  "size": [2, 2],
+  "hp": 750,
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 20,
+  "cost": 1000,
+  "cost_wood": 40,
+  "cost_stone": 40,
+  "energy_use": 20,
+  "build_seconds": 84,
+  "repair_cost": 30,
+  "sight": 7.0,
+  "height": 0.65,
+  "joins": false,
+  "shield": 250,
+  "upkeep": 40,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

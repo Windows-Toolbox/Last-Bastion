@@ -62,13 +62,15 @@ impl World {
         self.buildings.iter().any(|b| b.production.contains(&Product::Research(t)))
     }
 
-    /// Does research `t` show on its workshop's card: not done, not going on, and what it `needs` is there (TAB's
-    /// `IsVisibleFor`).
+    /// Does research `t` show on its workshop's card: not blocked by the map, not done, not going on, and what it
+    /// `needs` is there (TAB's `IsVisibleFor`).
     pub fn tech_offered(&self, t: u16) -> bool {
         let tech = tech(t);
         let research = &data::get().research;
         let needs_tech = tech.needs_tech.as_deref().and_then(|id| research.index(id)).is_none_or(|n| self.researched(n));
-        !self.researched(t) && !self.researching(t) && needs_tech && self.stands(tech.needs_building)
+        // A research of an upgrade track comes in order: it is offered when the track is one level below.
+        let in_order = tech.upgrade.as_ref().is_none_or(|u| self.upgrade_level(&u.track) + 1 == u.level);
+        !tech.blocked && !self.researched(t) && !self.researching(t) && needs_tech && in_order && self.stands(tech.needs_building)
     }
 
     /// Are wood, stone, iron and oil enough for research `t`?
@@ -103,6 +105,9 @@ impl World {
     pub(super) fn finish_research(&mut self, t: u16) {
         if !self.researched(t) {
             self.researched.push(t);
+        }
+        if let Some(u) = &tech(t).upgrade {
+            self.raise_upgrade(&u.track, u.level);
         }
         self.notices.push(Notice::Researched { name: tech(t).name.clone() });
     }

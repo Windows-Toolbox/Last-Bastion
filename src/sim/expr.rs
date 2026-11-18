@@ -363,6 +363,37 @@ pub fn parse_expr(text: &str, scope: Scope, want: Ty) -> Result<Expr, ExprError>
     Ok(t.expr)
 }
 
+/// An expression of any type – what a `{...}` in a text holds. Empty text is an error.
+pub fn parse_value(text: &str, scope: Scope) -> Result<Expr, ExprError> {
+    let mut p = Parser::new(text, scope)?;
+    let t = p.expr()?;
+    p.finish()?;
+    t.ty.ok_or(ExprError { at: t.at, msg: "that gives no value".to_owned() })?;
+    Ok(t.expr)
+}
+
+/// A text cut at its `{...}`: pieces that are text as it is (`false`) and pieces that are an expression's source
+/// (`true`, without the braces). A `{` without a closing `}` stays text. TAB's `FinderGetText("{", "}")`: from a
+/// `{` to the first `}` after it.
+pub fn template_parts(text: &str) -> Vec<(bool, &str)> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}') else {
+            break;
+        };
+        if open > 0 {
+            parts.push((false, &rest[..open]));
+        }
+        parts.push((true, &rest[open + 1..open + close]));
+        rest = &rest[open + close + 1..];
+    }
+    if !rest.is_empty() {
+        parts.push((false, rest));
+    }
+    parts
+}
+
 /// A condition: an expression of yes/no.
 pub fn parse_condition(text: &str, scope: Scope) -> Result<Expr, ExprError> {
     parse_expr(text, scope, Ty::Flag)

@@ -1,0 +1,12 @@
+{
+  "regen_every_seconds": 1.0,
+  "regen_after_seconds": 2.0,
+  "dismiss_refund_percent": 50,
+  "search_seconds": 0.35,
+  "veterans": {
+    "xp": 100,
+    "share_radius": 8.0,
+    "hp_percent": 25,
+    "damage_percent": 20
+  }
+}

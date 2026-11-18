@@ -1,7 +1,7 @@
 //! Combat of your units: whom they aim at (the nearest zombie in sight, with none in range a house of a village of
 //! doom, for medics the nearest hurt unit) and shooting. Zombies hitting back is part of their walking (`zombies.rs`).
 //!
-//! A shot goes like in TAB (`ZXBehaviour.ExecuteCurrentAction`), with the times from `data\units.json`:
+//! A shot goes like in TAB (`ZXBehaviour.ExecuteCurrentAction`), with the times from `data\units\`:
 //! 1. **raise** the weapon (`raise_seconds`, TAB's `LoadAttack`) – only if it's down; it stays up while the unit keeps
 //!    shooting. Meanwhile it **turns** to face the target (`turn_around_seconds` for 180°).
 //! 2. wait until the weapon is **reloaded** (`cooldown_seconds`, counted from the last shot),
@@ -32,8 +32,9 @@ use super::units::{Intent, Unit, WEAPON_UP};
 use crate::data;
 use super::zombies::{self, Breed};
 use super::{after_armor, slide, World, TICKS_PER_SECOND};
+use crate::attrs::Attribute;
 
-/// The noise of one shot (`noise` in `data\units.json`), as a whole number for the sound grid.
+/// The noise of one shot (`noise` in `data\units\`), as a whole number for the sound grid.
 fn shot_noise(noise: f32) -> u32 {
     (noise + 0.5).floor().max(0.0) as u32
 }
@@ -84,7 +85,7 @@ impl World {
                     (Aim::Doom(self.doom[d].id), self.doom[d].closest_point(self.units[i].pos))
                 }
                 Some(Target::Friend(u)) if self.units[u].hp > 0 => (Aim::Friend(self.units[u].id), self.units[u].pos),
-                Some(Target::Building(b)) if self.buildings[b].hp > 0 => {
+                Some(Target::Building(b)) if self.buildings[b].alive() => {
                     (Aim::Building(self.buildings[b].id), self.buildings[b].closest_point(self.units[i].pos))
                 }
                 // No target (or already finished off by another unit this tick): stop aiming.
@@ -105,6 +106,8 @@ impl World {
                     continue;
                 }
             };
+            // What it is that the shot goes at – its attributes decide the extra damage (`attrs.rs`).
+            let target_attrs = intent.target.map_or(&[][..], |t| self.target_attributes(t));
             let unit = &mut self.units[i];
             let stats = unit.stats();
             unit.since_target = 0;
@@ -116,8 +119,8 @@ impl World {
             // Thanatos close up: its blow instead of its missile – with the blow's times (`Melee`).
             let close = stats.melee.as_ref().filter(|m| unit.pos.distance(to) <= m.range);
             let (aim_time, windup, cooldown) = match close {
-                Some(m) => (0, m.windup, m.cooldown),
-                None => (stats.aim, stats.windup, stats.cooldown),
+                Some(m) => (0, unit.quicker(m.windup), unit.quicker(m.cooldown)),
+                None => (unit.quicker(stats.aim), unit.quicker(stats.windup), unit.quicker(stats.cooldown)),
             };
             // 1. Raise the weapon – while it turns, too.
             unit.raise_weapon();
@@ -143,7 +146,11 @@ impl World {
             // 5. Shoot.
             unit.aim = 0;
             unit.cooldown = cooldown * 1000 / keep;
-            let damage = (unit.damage() * keep / 1000).max(1);
+            // The damage without the extra (what the blows and areas scale from) and the extra against this target.
+            let plain = (unit.damage() * keep / 1000).max(1);
+            let extra_weapon = unit.extra();
+            let extra = extra_weapon.against(target_attrs) * keep / 1000;
+            let damage = plain + extra;
             match intent.target {
                 // Thanatos's blow: everyone in a wide cone in front of it (`areas.rs`), as hard as its missile is
                 // made stronger (veteran) or weaker (debt).
@@ -151,8 +158,8 @@ impl World {
                     let m = close.expect("checked");
                     let (from, id, kind) = (unit.pos, unit.id, unit.kind);
                     let by = unit.inside.map_or(zombies::Aim::Unit(id), zombies::Aim::Building);
-                    let damage = (m.damage * damage / stats.damage.max(1)).max(1);
-                    let blow = Blow { damage, edge: m.edge_factor, shooter: id, by, fire: false, burn_chance: 0.0, friendly: false };
+                    let damage = (m.damage * plain / stats.damage.max(1)).max(1);
+                    let blow = Blow { damage, edge: m.edge_factor, shooter: id, by, fire: false, burn_chance: 0.0, friendly: false, extra: extra_weapon, keep };
                     self.hit_cone(from, to, m.range, m.cone_degrees, &blow);
                     self.fx.push(Fx::UnitShot { from, to, kind, bleeds: true, flight: 0 });
                     self.make_colony_sound(from, shot_noise(stats.noise.min(3.0)));
@@ -162,13 +169,15 @@ impl World {
                     let (from, id, range) = (unit.pos, unit.id, unit.range());
                     let by = unit.inside.map_or(zombies::Aim::Unit(id), zombies::Aim::Building);
                     let blow = Blow {
-                        damage,
+                        damage: plain,
                         edge: stats.edge_factor,
                         shooter: id,
                         by,
                         fire: stats.burn_chance > 0.0,
                         burn_chance: stats.burn_chance,
                         friendly: stats.friendly_fire,
+                        extra: extra_weapon,
+                        keep,
                     };
                     self.hit_cone(from, to, range, stats.cone_degrees, &blow);
                     self.fx.push(Fx::Flame { from, to: from + (to - from).normalize_or_zero() * range });
@@ -188,17 +197,19 @@ impl World {
                     self.fx.push(Fx::UnitShot { from, to, kind, bleeds: true, flight });
                     // A shell or missile with a splash (`areas.rs`): everyone round where it lands.
                     let splash = (stats.splash > 0.0).then(|| Blow {
-                        damage,
+                        damage: plain,
                         edge: stats.edge_factor,
                         shooter: id,
                         by,
                         fire: false,
                         burn_chance: 0.0,
                         friendly: stats.friendly_fire,
+                        extra: extra_weapon,
+                        keep,
                     });
                     if flight > 0 {
                         let arrow = Arrow::new(Aim::Zombie(self.zombies[z].id), id, by, damage, flight);
-                        self.arrows.push(if splash.is_some() { arrow.with_splash(stats.splash, stats.edge_factor, to) } else { arrow });
+                        self.arrows.push(if splash.is_some() { arrow.with_splash(stats.splash, stats.edge_factor, to, (plain, extra_weapon, keep)) } else { arrow });
                     } else if let Some(blow) = splash {
                         self.hit_splash(to, stats.splash, &blow);
                         self.fx.push(Fx::Blast { at: to, radius: stats.splash, by: Some(kind) });
@@ -241,7 +252,7 @@ impl World {
     /// so do the ones right around it that aren't after anything yet (`zombies.rs`). They noticed even if it fell.
     pub(super) fn hit_zombie(&mut self, z: usize, damage: u32, shooter: u32, by: zombies::Aim) {
         let zombie = &mut self.zombies[z];
-        zombie.hurt(after_armor(damage, zombie.breed.stats().armor), self.tick);
+        zombie.hurt(after_armor(damage, zombie.armor()), self.tick);
         if !zombie.is_alive() {
             if let Some(s) = self.find_unit(shooter) {
                 self.units[s].kills += 1;
@@ -268,7 +279,7 @@ impl World {
                 }
             }
             Aim::Building(id) => {
-                if let Some(b) = self.find_building(id).filter(|&b| self.buildings[b].hp > 0) {
+                if let Some(b) = self.find_building(id).filter(|&b| self.buildings[b].alive()) {
                     self.buildings[b].take_friendly_fire(damage);
                 }
             }
@@ -287,7 +298,7 @@ impl World {
                 .map(|u| (Target::Friend(u), self.units[u].pos)),
             Prey::Building(id) => self
                 .find_building(id)
-                .filter(|&b| self.buildings[b].hp > 0)
+                .filter(|&b| self.buildings[b].alive())
                 .map(|b| (Target::Building(b), self.buildings[b].closest_point(from))),
         }
     }
@@ -413,7 +424,19 @@ impl World {
     /// What one shot of unit `i` does to zombie `z`: the damage (a veteran's more, less in debt) after the zombie's
     /// armor, at least 1.
     fn shot_damage(&self, i: usize, z: usize) -> u32 {
-        after_armor(self.army_damage(self.units[i].damage()), self.zombies[z].breed.stats().armor)
+        let unit = &self.units[i];
+        let damage = self.army_damage(unit.damage()) + unit.extra().against(self.zombies[z].attributes()) * self.army_keep / 1000;
+        after_armor(damage, self.zombies[z].armor())
+    }
+
+    /// What a unit's shot goes at is: the attributes of that – a house of doom is a structure (`attrs.rs`).
+    pub(super) fn target_attributes(&self, target: Target) -> &'static [Attribute] {
+        match target {
+            Target::Zombie(z) => self.zombies[z].attributes(),
+            Target::Ally(u) | Target::Friend(u) => self.units[u].attributes(),
+            Target::Building(b) => self.buildings[b].attributes(),
+            Target::Doom(_) => &[Attribute::Structure],
+        }
     }
 
     /// The nearest living zombie within `range` that's in sight and that `accept` takes (by its index).
@@ -494,21 +517,21 @@ impl Unit {
 
     /// One tick of raising the weapon: all the way up in `raise` ticks (0: at once).
     fn raise_weapon(&mut self) {
-        let step = WEAPON_UP.div_ceil(self.stats().raise.max(1));
+        let step = WEAPON_UP.div_ceil(self.quicker(self.stats().raise).max(1));
         self.weapon = (self.weapon + step).min(WEAPON_UP);
     }
 
     /// One tick of taking it down: all the way in `lower` ticks. Walked only a bit, it's only partly down – coming up
     /// again takes the same share of `raise`.
     fn lower_weapon(&mut self) {
-        let step = WEAPON_UP.div_ceil(self.stats().lower.max(1));
+        let step = WEAPON_UP.div_ceil(self.quicker(self.stats().lower).max(1));
         self.weapon = self.weapon.saturating_sub(step);
     }
 
     /// The wind-up is broken off (walked off, turned away, another target): the shot doesn't happen, and its animation
     /// isn't played on. Already shot: nothing to cancel – the rest of the animation goes on.
     fn cancel_windup(&mut self) {
-        if self.aim > self.stats().aim {
+        if self.aim > self.quicker(self.stats().aim) {
             self.swing_from = None;
         }
     }

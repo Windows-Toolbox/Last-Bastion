@@ -37,8 +37,149 @@ fn one() -> u32 {
     1
 }
 
+/// Is it what a value left out of the file would be? (Such fields aren't written.)
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
 /// The loudest noise an action makes (TAB: 10,000).
 pub const MOST_NOISE: u32 = 10_000;
+
+/// The colour of a notification's text (TAB's `ZXAction_ShowNotification.TColor`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Tint {
+    #[default]
+    White,
+    Green,
+    Orange,
+    Gold,
+    Red,
+    Blue,
+}
+
+impl Tint {
+    pub const ALL: [Tint; 6] = [Tint::White, Tint::Green, Tint::Orange, Tint::Gold, Tint::Red, Tint::Blue];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Tint::White => "White",
+            Tint::Green => "Green",
+            Tint::Orange => "Orange",
+            Tint::Gold => "Gold",
+            Tint::Red => "Red",
+            Tint::Blue => "Blue",
+        }
+    }
+
+    /// TAB's colours (`YellowGreen`, `Orange`, `Gold`, `Red`, `Aqua`).
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            Tint::White => [255, 255, 255],
+            Tint::Green => [154, 205, 50],
+            Tint::Orange => [255, 165, 0],
+            Tint::Gold => [255, 215, 0],
+            Tint::Red => [255, 0, 0],
+            Tint::Blue => [0, 255, 255],
+        }
+    }
+}
+
+/// The picture of a notification (TAB's `TIcon`): the file `assets\ui\events\<file>.png`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Icon {
+    #[default]
+    Info,
+    Warning,
+    Reward,
+    Swarm,
+    Fire,
+    GoalCompleted,
+}
+
+impl Icon {
+    pub const ALL: [Icon; 6] = [Icon::Info, Icon::Warning, Icon::Reward, Icon::Swarm, Icon::Fire, Icon::GoalCompleted];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Icon::Info => "Info",
+            Icon::Warning => "Warning",
+            Icon::Reward => "Reward",
+            Icon::Swarm => "Swarm",
+            Icon::Fire => "Fire",
+            Icon::GoalCompleted => "Goal completed",
+        }
+    }
+
+    /// The file's name.
+    pub fn file(self) -> &'static str {
+        match self {
+            Icon::Info => "EventInfo",
+            Icon::Warning => "EventWarning",
+            Icon::Reward => "EventReward",
+            Icon::Swarm => "EventSwarm",
+            Icon::Fire => "EventFire",
+            Icon::GoalCompleted => "EventGoalCompleted",
+        }
+    }
+}
+
+/// The sound of a window or a "Sound" action: one of TAB's custom-event pieces (`Music\CustomEvent_<name>N.ogg`,
+/// `ZXCustomEventSoundType`) – or none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Mood {
+    #[default]
+    Informative,
+    Apocalyptic,
+    Celebration,
+    Crazy,
+    Fun,
+    Mystery,
+    Negative,
+    Positive,
+    Sad,
+    Scary,
+    Tension,
+    Silent,
+}
+
+impl Mood {
+    pub const ALL: [Mood; 12] = [
+        Mood::Informative,
+        Mood::Apocalyptic,
+        Mood::Celebration,
+        Mood::Crazy,
+        Mood::Fun,
+        Mood::Mystery,
+        Mood::Negative,
+        Mood::Positive,
+        Mood::Sad,
+        Mood::Scary,
+        Mood::Tension,
+        Mood::Silent,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Mood::Informative => "Informative",
+            Mood::Apocalyptic => "Apocalyptic",
+            Mood::Celebration => "Celebration",
+            Mood::Crazy => "Crazy",
+            Mood::Fun => "Fun",
+            Mood::Mystery => "Mystery",
+            Mood::Negative => "Negative",
+            Mood::Positive => "Positive",
+            Mood::Sad => "Sad",
+            Mood::Scary => "Scary",
+            Mood::Tension => "Tension",
+            Mood::Silent => "No sound",
+        }
+    }
+
+    /// The list of sound files this mood plays one of (`audio.rs`) – none: it is silent.
+    pub fn sounds(self) -> Option<String> {
+        (self != Mood::Silent).then(|| format!("CustomEvent_{}", self.name()))
+    }
+}
 
 /// A script: steps one after the other (TAB's `ZXScript`).
 pub type Script = Vec<Step>;
@@ -136,10 +277,27 @@ pub enum Action {
     Units { units: Vec<(UnitKind, u32)> },
     /// So many houses with colonists, picked at random, are infected ("Infect Random Dwellings").
     InfectHouses { count: u32 },
-    /// A line at the top of the screen ("Display Notification").
-    Notify { text: String },
-    /// A window with a title and a text – the game pauses until it's closed ("Display Window Message").
-    Window { title: String, text: String },
+    /// A line at the top of the screen ("Display Notification"), with a colour and a picture. `{expression}` in the
+    /// text is worked out when it is shown (`World::render`).
+    Notify {
+        text: String,
+        #[serde(default, skip_serializing_if = "is_default")]
+        color: Tint,
+        #[serde(default, skip_serializing_if = "is_default")]
+        icon: Icon,
+    },
+    /// A window with a title and a text – the game pauses until it's closed ("Display Window Message"). `mood` is the
+    /// sound that plays when it opens, `picture` the name of a PNG next to the map file that is shown above the text.
+    Window {
+        title: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "is_default")]
+        mood: Mood,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        picture: String,
+    },
+    /// A sound of TAB's custom events plays ("Play Sound").
+    Sound { mood: Mood },
     /// Steps one after the other, as one ("Block") – with its own condition and code.
     Block { steps: Script },
     /// The steps again and again until an exit loop leaves it ("Loop"). Without one it never ends: put a wait or a
@@ -161,6 +319,9 @@ pub enum Action {
     Code,
     /// The neutral thing with this name ID joins the colony.
     Join { name_id: String },
+    /// The colony gets these researches (TAB's `Tech…` names, `data\esearch.json`) without a workshop – at once
+    /// ("Grant Technologies"). One it has is skipped; one a workshop is working on is done when that one is.
+    Research { ids: Vec<String> },
     /// The whole map is shown from now on.
     Reveal,
     /// Snow, rain or clear from now on (TAB's map conditions Snowy / Rainy) – the picture fades over a few seconds.
@@ -180,12 +341,27 @@ pub enum Action {
     Camera { to: Site },
     /// A noise there that the zombies hear, 0 to 10,000 (TAB's noise of "On Enter").
     Noise { at: Site, volume: u32 },
+    /// The playing field becomes the smallest straight rectangle on screen that covers this region ("Playing field to
+    /// region", SC2's missions in parts): units outside it are moved in, the border moves, nothing else changes.
+    PlayArea { to: u32 },
     /// The round is won – or lost – now.
     Win,
     Lose,
 }
 
 impl Action {
+    /// A line of text, white, with the info picture.
+    #[cfg(test)]
+    pub fn notify(text: &str) -> Action {
+        Action::Notify { text: text.to_owned(), color: Tint::default(), icon: Icon::default() }
+    }
+
+    /// A window with this title and text, informative, without a picture.
+    #[cfg(test)]
+    pub fn window(title: &str, text: &str) -> Action {
+        Action::Window { title: title.to_owned(), text: text.to_owned(), mood: Mood::default(), picture: String::new() }
+    }
+
     /// The script of child `k`: the steps of a block or loop (0), an option of a random action or a choice, the arrival
     /// of a train (0). A running script finds its place by these numbers (`script.rs`).
     pub fn child(&self, k: usize) -> Option<&Script> {
@@ -208,6 +384,7 @@ impl Action {
         match self {
             Action::Camera { to } => site(to),
             Action::Noise { at, .. } => site(at),
+            Action::PlayArea { to } => zones.push(*to),
             Action::Zombies { groups, .. } => {
                 for group in groups {
                     if let WaveFrom::Zones(ids) = &group.from {
@@ -454,6 +631,8 @@ pub enum TriggerEvent {
     /// One of your units comes within a tile of the neutral thing with this name ID, once (TAB's "On Enter",
     /// `CScriptOnEnter`) – a joinable one joins at the same time (`Join` first).
     Reached { name_id: String },
+    /// One of your units picks up the pile of loot with this name ID (the editor's Name ID on a pile of loot).
+    PickedUp { name_id: String },
 }
 
 impl TriggerEvent {
@@ -824,6 +1003,7 @@ impl World {
     pub(super) fn start_story(&mut self) {
         self.variables = self.story.variables.iter().map(|v| (v.name.clone(), v.start.as_ty(v.kind.ty()))).collect();
         self.runs.clear();
+        self.dead.clear();
         self.watched = Watched::default();
         self.fire(&TriggerEvent::Start);
         self.refresh_story_view();
@@ -857,13 +1037,7 @@ impl World {
             }
             Action::Units { units } => {
                 for &(kind, count) in units {
-                    for k in 0..count {
-                        // Around the command center's bottom, one after the other – the free spot nearest each.
-                        let want = self.base + vec2((k % 6) as f32 - 2.5, 3.0 + (k / 6) as f32);
-                        if let Some(at) = free_point_near(&self.map, want) {
-                            self.spawn_unit(kind, at);
-                        }
-                    }
+                    self.give_units(kind, count);
                 }
             }
             Action::InfectHouses { count } => {
@@ -878,12 +1052,28 @@ impl World {
                     self.infect(b);
                 }
             }
-            Action::Notify { text } => self.notices.push(Notice::Message { text: text.clone() }),
-            Action::Window { title, text } => self.notices.push(Notice::Window { title: title.clone(), text: text.clone() }),
+            Action::Notify { text, color, icon } => {
+                let text = self.render(text);
+                self.notices.push(Notice::Message { text, color: *color, icon: *icon });
+            }
+            Action::Window { title, text, mood, picture } => {
+                let (title, text) = (self.render(title), self.render(text));
+                self.notices.push(Notice::Window { title, text, mood: *mood, picture: picture.clone() });
+            }
+            Action::Sound { mood } => self.notices.push(Notice::Sound { mood: *mood }),
             Action::Join { name_id } => {
                 let found = self.neutral.iter().find(|n| n.tag.as_ref().is_some_and(|t| t.name_id == *name_id)).map(|n| n.id);
                 if let Some(id) = found {
                     self.set_owner(ThingRef::Neutral(id), super::neutral::Owner::Colony);
+                }
+            }
+            Action::Research { ids } => {
+                for id in ids {
+                    if let Some(t) = crate::data::get().research.index(id)
+                        && !self.researched(t)
+                    {
+                        self.finish_research(t);
+                    }
                 }
             }
             Action::Reveal => self.revealed = true,
@@ -898,6 +1088,14 @@ impl World {
                     self.make_sound(at, (*volume).min(MOST_NOISE));
                 }
             }
+            Action::PlayArea { to } => {
+                if let Some(bounds) = self.find_zone(*to).and_then(|i| self.zones.get(i)).and_then(|z| z.bounds()) {
+                    // A tile (x, y) is at a = x − y, b = x + y; the corners of the tile rectangle reach furthest.
+                    let (x0, y0, x1, y1) = (bounds.min.0, bounds.min.1, bounds.max.0 + 1, bounds.max.1 + 1);
+                    self.map.set_play_area((x0 - y1, x0 + y0), (x1 - y0 - (x0 - y1), x1 + y1 - (x0 + y0)));
+                    self.map_changed = true;
+                }
+            }
             Action::Win => self.ending = self.ending.or(Some(Ending::Won)),
             Action::Lose => self.ending = Some(Ending::Lost),
             // These are steps of their own (`script.rs`); the code of a step runs there too.
@@ -909,6 +1107,17 @@ impl World {
             | Action::Random { .. }
             | Action::Choose { .. }
             | Action::Train { .. } => {}
+        }
+    }
+
+    /// `count` units for the colony, around the command center's bottom, one after the other – the free spot nearest
+    /// each.
+    pub(super) fn give_units(&mut self, kind: UnitKind, count: u32) {
+        for k in 0..count {
+            let want = self.base + vec2((k % 6) as f32 - 2.5, 3.0 + (k / 6) as f32);
+            if let Some(at) = free_point_near(&self.map, want) {
+                self.spawn_unit(kind, at);
+            }
         }
     }
 

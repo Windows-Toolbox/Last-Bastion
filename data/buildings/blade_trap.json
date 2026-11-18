@@ -1,0 +1,23 @@
+{
+  "name": "Blade Trap",
+  "letter": "BT",
+  "skins": ["buildings/blade_trap_1", "buildings/blade_trap_2", "buildings/blade_trap_3", "buildings/blade_trap_4"],
+  "explosion": ["stone_medium"],
+  "size": [1, 1],
+  "hp": 350,
+  "colonists": 0,
+  "workers": 0,
+  "worker_cost": 0,
+  "cost": 100,
+  "cost_iron": 3,
+  "trap_damage": 10,
+  "trap_wear": 1,
+  "slow_percent": 50,
+  "build_seconds": 14.0,
+  "repair_cost": 5,
+  "sight": 1.0,
+  "height": 0.15,
+  "joins": false,
+  "shield": 0,
+  "upgrades": { "structure_armor": { "armor": 1, "shield_armor": 1 } }
+}

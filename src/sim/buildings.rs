@@ -11,7 +11,8 @@ use super::story::TriggerEvent;
 use super::commands::Command;
 use super::terrain::free_point_near;
 
-use super::{after_armor, payout_ticks, World, TICKS_PER_SECOND};
+use super::{after_armor, payout_ticks, Bonus, Tweak, World, TICKS_PER_SECOND};
+use crate::attrs::Attribute;
 use crate::data;
 use crate::kinds::{BuildingKind, BuildingStats, Resource, UnitKind};
 
@@ -31,6 +32,12 @@ pub struct Building {
     pub hp: u32,
     /// What's left of the shield – zombies hit it first (`BuildingStats::max_shield`).
     pub shield: u32,
+    /// What the editor changed on this one building: percents of its kind's combat values (sim/tweak.rs) – life (hit points
+    /// and shield), armor, sight, and a tower's damage, range and attack speed.
+    pub tweak: Tweak,
+    /// What the levels of the upgrade tracks give it (`upgrades.rs`) – and the `upgrade_rev` they are from.
+    pub up: Bonus,
+    pub(super) up_rev: u32,
     /// The shield broke: its colonists came out as zombies, it pays no more gold, everyone walks through it.
     pub infected: bool,
     /// Switched off (Y, like in TAB – `BuildingKind::can_switch_off`): it does nothing and costs nothing – no upkeep,
@@ -124,6 +131,9 @@ impl Building {
             turned,
             hp: kind.stats().hp,
             shield: kind.stats().max_shield(),
+            tweak: Tweak::default(),
+            up: Bonus::default(),
+            up_rev: 0,
             infected: false,
             off: false,
             construction: 0,
@@ -187,6 +197,53 @@ impl Building {
     }
 
     /// All tiles the building stands on.
+    /// Hit points with what the editor changed (`tweak`). A building is destroyed when hit points and shield are both 0
+    /// (`alive`) – a wall can have only a shield.
+    pub fn max_hp(&self) -> u32 {
+        self.tweak.hp.unwrap_or(self.stats().hp) + self.up.hp
+    }
+
+    /// The shield with its own percent (`tweak`).
+    pub fn max_shield(&self) -> u32 {
+        self.tweak.shield.unwrap_or(self.stats().max_shield()) + self.up.shield
+    }
+
+    /// Armor points of its hit points (`armor`): the kind's (or the editor's own number) and what the upgrades give.
+    pub fn armor(&self) -> u32 {
+        self.tweak.armor_of(self.stats().armor) + self.up.armor
+    }
+
+    /// Armor points of its shield (`shield_armor`) – a hit that lands on the shield loses these, not `armor`.
+    pub fn shield_armor(&self) -> u32 {
+        self.tweak.shield_armor_of(self.stats().shield_armor) + self.up.shield_armor
+    }
+
+    /// The armor a hit meets right now: the shield's while there is one, then the hit points'.
+    pub fn armor_now(&self) -> u32 {
+        if self.shield > 0 { self.shield_armor() } else { self.armor() }
+    }
+
+    /// What it is (`attrs.rs`).
+    pub fn attributes(&self) -> &'static [Attribute] {
+        &self.stats().attributes
+    }
+
+    /// It falls now: nothing left of either (blown up, taken apart before it was finished).
+    pub fn destroy(&mut self) {
+        self.hp = 0;
+        self.shield = 0;
+    }
+
+    /// Still standing: hit points or shield left.
+    pub fn alive(&self) -> bool {
+        self.hp > 0 || self.shield > 0
+    }
+
+    /// How far it sees, with what the editor changed.
+    pub fn sight(&self) -> f32 {
+        (self.stats().sight + self.up.sight) * self.tweak.sight as f32 / 100.0
+    }
+
     pub fn tiles(&self) -> Vec<(i32, i32)> {
         let (w, h) = self.footprint();
         let (x0, y0) = self.tile;
@@ -197,12 +254,26 @@ impl Building {
     /// first the shield, then the hit points, but it never infects. Only: with its shield gone, the next zombie hit does
     /// (`take_damage`).
     pub fn take_friendly_fire(&mut self, damage: u32) {
-        let damage = after_armor(damage, self.stats().armor);
+        let damage = after_armor(damage, self.armor_now());
         if self.shield == 0 {
             self.hp = self.hp.saturating_sub(damage);
         } else {
             self.shield = self.shield.saturating_sub(damage); // what's left over is lost, like a zombie's
         }
+    }
+
+    /// A script's `DamageAll`: `points` off the shield first, then the hit points – no armor, and it never infects.
+    pub fn hurt_by(&mut self, points: u32) {
+        let from_shield = points.min(self.shield);
+        self.shield -= from_shield;
+        self.hp = self.hp.saturating_sub(points - from_shield);
+    }
+
+    /// A script's `CureAll`: `points` of hit points back, then of the shield – up to full, no gold.
+    pub fn heal_by(&mut self, points: u32) {
+        let to_hp = points.min(self.max_hp().saturating_sub(self.hp));
+        self.hp += to_hp;
+        self.shield = (self.shield + points - to_hp).min(self.max_shield()).max(self.shield);
     }
 
     /// The spot of its edge closest to `p` – where a shot at it lands.
@@ -216,14 +287,14 @@ impl Building {
     /// colonists whose shield is already gone – your own shot it down (`take_friendly_fire`) – is infected by the next
     /// hit, and hurt by it too. Still being built, nobody lives or works in it yet: it can't be infected.
     pub fn take_damage(&mut self, damage: u32) -> bool {
-        let damage = after_armor(damage, self.stats().armor);
+        let damage = after_armor(damage, self.armor_now());
         let stats = self.stats();
         // The command center too, like TAB's (`EndGameIfInfected`): infected, the round is lost (`round.rs`). Already
         // infected: its people are out already.
         let has_people = stats.colonists > 0 && self.is_built() && !self.infected;
         if self.shield == 0 {
             self.hp = self.hp.saturating_sub(damage);
-            let infects = has_people && stats.max_shield() > 0;
+            let infects = has_people && self.max_shield() > 0;
             self.infected |= infects;
             return infects;
         }
@@ -235,7 +306,7 @@ impl Building {
 
     /// Hit points and shield together, when it's whole.
     fn full(&self) -> u32 {
-        self.stats().hp + self.stats().max_shield()
+        self.max_hp() + self.max_shield()
     }
 
     /// What's missing to whole and isn't paid for yet – what a repair would fix now. Nothing while it's being built:
@@ -256,7 +327,7 @@ impl Building {
             return false;
         }
         let stats = self.stats();
-        let start = stats.hp * data::get().buildings.build_start_percent / 100;
+        let start = self.max_hp() * data::get().buildings.build_start_percent / 100;
         let total = stats.build_time.max(1);
         // Life built when `left` ticks are left – a share of what's between the start and full (hit points and shield).
         // `u64`: life times ticks could get too big for a `u32`.
@@ -265,9 +336,9 @@ impl Building {
         let before = grown(self.construction);
         self.construction -= 1;
         let step = grown(self.construction) - before;
-        let hp = step.min(stats.hp.saturating_sub(self.hp));
+        let hp = step.min(self.max_hp().saturating_sub(self.hp));
         self.hp += hp;
-        self.shield = (self.shield + step - hp).min(stats.max_shield());
+        self.shield = (self.shield + step - hp).min(self.max_shield());
         self.construction == 0
     }
 
@@ -287,10 +358,10 @@ impl Building {
         let ticks = (data::get().buildings.repair_seconds * TICKS_PER_SECOND).max(1.0) as u32;
         let mut step = self.full().div_ceil(ticks).min(self.repair_left);
         self.repair_left -= step;
-        let hp = step.min(self.stats().hp - self.hp);
+        let hp = step.min(self.max_hp() - self.hp);
         self.hp += hp;
         step -= hp;
-        self.shield = (self.shield + step).min(self.stats().max_shield());
+        self.shield = (self.shield + step).min(self.max_shield());
         if self.hp + self.shield == self.full() {
             self.repair_left = 0; // whole – nothing left to do (it can only be left over if it was hit meanwhile)
             return std::mem::take(&mut self.infected);
@@ -402,7 +473,7 @@ impl World {
     }
 
     /// The building just placed (`b`, by a player – the editor's and the generator's stand at once) builds itself
-    /// first, like in TAB: `build_seconds` long (`data\buildings.json`), from `build_start_percent` of its hit points
+    /// first, like in TAB: `build_seconds` long (`data\buildings\`), from `build_start_percent` of its hit points
     /// up, without a shield – that grows once the hit points are full (`build_step`). Built every tick in
     /// `update_buildings`, power or not.
     pub(super) fn start_construction(&mut self, b: usize) {
@@ -416,7 +487,7 @@ impl World {
             return;
         }
         building.construction = stats.build_time;
-        building.hp = (stats.hp * data::get().buildings.build_start_percent / 100).max(1);
+        building.hp = (building.max_hp() * data::get().buildings.build_start_percent / 100).max(1);
         building.shield = 0;
     }
 
@@ -448,7 +519,7 @@ impl World {
         building.kind != BuildingKind::CommandCenter && !building.infected
     }
 
-    /// What tearing building `b` down gives back: `demolish_refund_percent` of its price (`data\buildings.json`), of
+    /// What tearing building `b` down gives back: `demolish_refund_percent` of its price (`data\buildings\`), of
     /// one still being built `demolish_unfinished_refund_percent` – gold, then wood, stone, coal, iron, oil (rounded
     /// down).
     pub fn demolish_refund(&self, b: usize) -> [u32; 6] {
@@ -489,12 +560,16 @@ impl World {
     pub(super) fn remove_destroyed_buildings(&mut self) -> bool {
         let before = self.buildings.len();
         // A barrel that went off did its job – it isn't counted as lost.
-        let blown = self.buildings.iter().filter(|b| b.hp == 0 && b.blown).count();
+        let blown = self.buildings.iter().filter(|b| !b.alive() && b.blown).count();
         let mut command_center_fell = false;
         // (middle, its tiles, its workers, its kind – none if a barrel went off) of every fallen building – they come out after the list is cleaned up.
         let mut fallen = Vec::new();
+        let mut names = Vec::new();
         for building in &self.buildings {
-            if building.hp == 0 {
+            if !building.alive() {
+                if !building.blown {
+                    names.push(building.stats().name.clone());
+                }
                 self.map.set_occupied(building.tile.0, building.tile.1, building.footprint(), false);
                 for unit in self.units.iter_mut().filter(|u| u.inside == Some(building.id)) {
                     unit.inside = None;
@@ -509,7 +584,10 @@ impl World {
                 fallen.push((building.center(), building.tiles(), workers, (!building.blown).then_some(building.kind)));
             }
         }
-        self.buildings.retain(|b| b.hp > 0);
+        self.buildings.retain(|b| b.alive());
+        for name in names {
+            self.count_dead("building", &name);
+        }
         if self.buildings.len() != before {
             self.score.buildings_lost += (before - self.buildings.len() - blown) as u32;
             self.refresh_map();
@@ -553,7 +631,7 @@ impl World {
         let (center, unfinished) = (building.center(), !building.is_built());
         self.infected_come_out(center, &ring, people);
         if unfinished {
-            self.buildings[b].hp = 0;
+            self.buildings[b].destroy();
         }
     }
 
@@ -725,7 +803,7 @@ impl World {
             }
             trap.hp = trap.hp.saturating_sub(stats.trap_wear);
             let zombie = &mut self.zombies[z];
-            let damage = after_armor(stats.trap_damage, zombie.breed.stats().armor);
+            let damage = after_armor(stats.trap_damage, zombie.armor());
             zombie.hurt(damage, self.tick);
         }
     }
